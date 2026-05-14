@@ -673,75 +673,74 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
                   </span>
                 )}
               </p>
-              {sel.score >= T ? (
-                <div className="outreach">
-                  {selPreview ? (
-                    <>
-                      <p className="msg-label">
-                        Connection note ({selEdits.note?.length || 0} / 300 chars)
-                        {selEdits.note?.length > 300 && (
-                          <span className="msg-warn"> · over LinkedIn's 300-char limit</span>
-                        )}
-                      </p>
-                      <textarea className="msg-edit"
-                                value={selEdits.note || ""}
-                                onChange={(e) => updateEdit(sel.id, "note", e.target.value)}
-                                rows={4} maxLength={400} />
-                      <p className="msg-label">Post-accept DM</p>
-                      <textarea className="msg-edit msg-edit-long"
-                                value={selEdits.message || ""}
-                                onChange={(e) => updateEdit(sel.id, "message", e.target.value)}
-                                rows={8} />
-                      <span className="outreach-tag">
-                        <Zap size={11} /> composed by agent · edit before sending
-                        {isDirty && (
-                          <button className="btn-reset" onClick={() => resetEdit(sel.id)}>
-                            reset to agent text
-                          </button>
-                        )}
-                      </span>
-                      <div className="send-row">
-                        <button className="btn-send btn-send-invite"
-                                disabled={!selPreview.eligible || selSend?.status === "sending"}
-                                onClick={() => fire("invite", sel.id)}>
-                          {selSend?.kind === "invite" && selSend.status === "sending"
-                            ? "Sending invite…"
-                            : <>Send invite <ArrowRight size={14} /></>}
+              <div className="outreach">
+                {sel.score < T && (
+                  <div className="below-threshold-warn">
+                    ⚠ This candidate is below the agent's fit threshold ({sel.score} / {T}).
+                    The agent wouldn't have auto-sent — but you can review and send manually.
+                  </div>
+                )}
+                {selPreview ? (
+                  <>
+                    <p className="msg-label">
+                      Connection note ({selEdits.note?.length || 0} / 300 chars)
+                      {selEdits.note?.length > 300 && (
+                        <span className="msg-warn"> · over LinkedIn's 300-char limit</span>
+                      )}
+                    </p>
+                    <textarea className="msg-edit"
+                              value={selEdits.note || ""}
+                              onChange={(e) => updateEdit(sel.id, "note", e.target.value)}
+                              rows={4} maxLength={400} />
+                    <p className="msg-label">Post-accept DM</p>
+                    <textarea className="msg-edit msg-edit-long"
+                              value={selEdits.message || ""}
+                              onChange={(e) => updateEdit(sel.id, "message", e.target.value)}
+                              rows={8} />
+                    <span className="outreach-tag">
+                      <Zap size={11} /> composed by agent · edit before sending
+                      {isDirty && (
+                        <button className="btn-reset" onClick={() => resetEdit(sel.id)}>
+                          reset to agent text
                         </button>
-                        <button className="btn-send btn-send-dm"
-                                disabled={!selPreview.eligible || selSend?.status === "sending"}
-                                onClick={() => fire("dm", sel.id)}>
-                          {selSend?.kind === "dm" && selSend.status === "sending"
-                            ? "Sending DM…"
-                            : <>Send DM (if connected) <ArrowRight size={14} /></>}
-                        </button>
+                      )}
+                    </span>
+                    <div className="send-row">
+                      <button className="btn-send btn-send-invite"
+                              disabled={!selPreview.eligible || selSend?.status === "sending"}
+                              onClick={() => fire("invite", sel.id)}>
+                        {selSend?.kind === "invite" && selSend.status === "sending"
+                          ? "Sending invite…"
+                          : <>Send invite <ArrowRight size={14} /></>}
+                      </button>
+                      <button className="btn-send btn-send-dm"
+                              disabled={!selPreview.eligible || selSend?.status === "sending"}
+                              onClick={() => fire("dm", sel.id)}>
+                        {selSend?.kind === "dm" && selSend.status === "sending"
+                          ? "Sending DM…"
+                          : <>Send DM (if connected) <ArrowRight size={14} /></>}
+                      </button>
+                    </div>
+                    {selSend && selSend.status === "sent" && (
+                      <div className="send-result ok">
+                        <Check size={11} strokeWidth={3} /> {selSend.kind === "invite" ? "Invite" : "DM"} sent
+                        {selSend.dry_run && <span> · dry-run</span>}
+                        {selSend.state && <span> · state: {selSend.state}</span>}
                       </div>
-                      {selSend && selSend.status === "sent" && (
-                        <div className="send-result ok">
-                          <Check size={11} strokeWidth={3} /> {selSend.kind === "invite" ? "Invite" : "DM"} sent
-                          {selSend.dry_run && <span> · dry-run</span>}
-                          {selSend.state && <span> · state: {selSend.state}</span>}
-                        </div>
-                      )}
-                      {selSend && selSend.status === "failed" && (
-                        <div className="send-result err">
-                          ⚠ {selSend.kind === "invite" ? "Invite" : "DM"} failed: {selSend.error}
-                        </div>
-                      )}
-                      {!selPreview.eligible && (
-                        <div className="send-result muted">Skipped: {selPreview.skip_reason}</div>
-                      )}
-                    </>
-                  ) : (
-                    <p className="muted-text">Loading composed messages…</p>
-                  )}
-                </div>
-              ) : (
-                <div className="outreach muted">
-                  <p>Held by the agent — below fit threshold for this event. Routed to the
-                    pool for a future event with a matching ICP.</p>
-                </div>
-              )}
+                    )}
+                    {selSend && selSend.status === "failed" && (
+                      <div className="send-result err">
+                        ⚠ {selSend.kind === "invite" ? "Invite" : "DM"} failed: {selSend.error}
+                      </div>
+                    )}
+                    {!selPreview.eligible && (
+                      <div className="send-result muted">Skipped: {selPreview.skip_reason}</div>
+                    )}
+                  </>
+                ) : (
+                  <p className="muted-text">Loading composed messages…</p>
+                )}
+              </div>
             </div>
           </aside>
 
@@ -1316,6 +1315,9 @@ const CSS = `
   box-shadow:0 0 0 3px rgba(108,67,217,0.12); }
 .msg-edit-long { min-height:120px; }
 .msg-warn { color:#b03030; font-weight:600; }
+.below-threshold-warn { font-size:11px; color:#8a6a1f; background:#fff8e1;
+  border:1px solid #f3e2a8; border-radius:8px; padding:9px 12px; margin:0 0 4px 0;
+  line-height:1.5; }
 .btn-reset { margin-left:auto; background:transparent; border:none; color:var(--acc);
   font-family:inherit; font-size:9px; font-weight:600; cursor:pointer;
   text-transform:uppercase; letter-spacing:0.04em; padding:0; }

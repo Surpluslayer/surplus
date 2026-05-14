@@ -63,11 +63,16 @@ def _adapter_timeout() -> float:
 
 
 def _judge_timeout() -> float:
-    """Wall-clock cap for the batched judge call."""
+    """Wall-clock cap for the batched judge call.
+
+    Fail-open on timeout (keep all candidates). 6s default is tuned for
+    Haiku 4.5 batched calls — anything slower than that is rate-limiting
+    or a backend hiccup and we'd rather take the noisier pool than wait.
+    """
     try:
-        return max(2.0, float(os.environ.get("PROSPECTING_JUDGE_TIMEOUT", "15")))
+        return max(2.0, float(os.environ.get("PROSPECTING_JUDGE_TIMEOUT", "6")))
     except ValueError:
-        return 15.0
+        return 6.0
 
 
 def _icp_cache_key(icp: dict) -> str:
@@ -156,8 +161,11 @@ async def prospect(
         # Anthropic's web_search going into a multi-minute retry loop on the
         # server side) can't pin the whole pipeline. On timeout we treat that
         # source as "returned nothing" and continue with the others.
+        a_start = time.time()
         try:
-            return await asyncio.wait_for(adapter.fetch(icp), timeout=timeout)
+            result = await asyncio.wait_for(adapter.fetch(icp), timeout=timeout)
+            print(f"  [adapter] {adapter.key} → {len(result)} candidates in {time.time() - a_start:.1f}s")
+            return result
         except asyncio.TimeoutError:
             print(f"  [adapter] {adapter.key} exceeded {timeout}s — skipped")
             return []
@@ -165,7 +173,9 @@ async def prospect(
             print(f"  [adapter] {adapter.key} crashed: {type(exc).__name__}: {exc}")
             return []
 
+    discover_start = time.time()
     batches = await asyncio.gather(*(_bounded(a) for a in adapters))
+    print(f"  [prospect] all adapters completed in {time.time() - discover_start:.1f}s")
 
     merged: dict[str, dict] = {}
     for batch in batches:
@@ -203,7 +213,10 @@ async def prospect(
               f"{'…' if len(dropped_no_linkedin) > 5 else ''}")
 
     if llm.llm_available() and out:
+        judge_start = time.time()
         out = await _judge_all(out, icp)
+        print(f"  [prospect] judge step took {time.time() - judge_start:.1f}s  "
+              f"({len(out)} survived)")
 
     # Only cache non-empty results — caching an empty pool would lock in
     # a transient LLM blip for the full TTL and give the operator a
