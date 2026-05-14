@@ -93,14 +93,15 @@ def _client() -> "anthropic.Anthropic":
 _DISCOVERY_SYSTEM = (
     "You are an AI prospecting agent. Given an ICP (ideal customer profile) "
     "and a target source (github / linkedin / x), use the web_search tool to "
-    "find real candidates that publicly match. For each candidate, emit ONE "
-    "tool_use call to `emit_candidate`. Be precise: only emit candidates "
-    "whose public profile clearly indicates relevance. Never invent names, "
-    "URLs, follower counts, or star counts. If a numeric signal isn't "
-    "visible from your searches, omit the field rather than guessing. The "
-    "`identity` field must be a stable lowercase slug derived from the "
-    "person's name (e.g. 'maya-rodriguez') so the same person is mergeable "
-    "across sources."
+    "find real candidates that publicly match. Emit ONE tool_use call to "
+    "`emit_candidate` per candidate. Cast a wide net: any real person whose "
+    "public signal plausibly aligns with the ICP role + seniority should be "
+    "surfaced — a downstream ICP gate decides who stays. Skip only when the "
+    "profile clearly contradicts the ICP. Never invent names, URLs, follower "
+    "counts, or star counts; if a numeric signal isn't visible, omit the "
+    "field. The `identity` field must be a stable lowercase slug derived "
+    "from the person's name (e.g. 'maya-rodriguez') so the same person is "
+    "mergeable across sources."
 )
 
 _GITHUB_TOOL = {
@@ -258,9 +259,12 @@ def discover_candidates(source: str, icp: dict, max_candidates: int | None = Non
 # ----------------------------------------------------------------------------
 
 _RELEVANCE_SYSTEM = (
-    "You are a strict ICP gatekeeper. Decide whether the candidate is a real "
-    "match for the ICP, not just a plausible one. Bias toward exclusion when "
-    "evidence is thin. Use the `emit_verdict` tool to return your decision."
+    "You are an ICP gatekeeper. Be inclusive: any candidate whose public "
+    "signal plausibly aligns with the ICP role + seniority + company stage "
+    "should be kept, even if evidence is thin. Reject only when the profile "
+    "clearly contradicts the ICP (wrong domain entirely, wrong career level "
+    "by a wide margin, obvious mismatch). Borderline candidates are kept — "
+    "downstream scoring will sort them. Use the `emit_verdict` tool."
 )
 
 _VERDICT_TOOL = {
