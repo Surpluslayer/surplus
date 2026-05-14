@@ -297,7 +297,15 @@ function Pipeline({ profile, eventId, onResult, onError, onDone }) {
         }
       } catch (e) {
         if (!cancelled) {
-          onError && onError(`Prospecting failed: ${e.message}`);
+          if (e.status === 404) {
+            onError && onError(
+              "Event not found — the backend probably redeployed and wiped " +
+              "the ephemeral SQLite store. Click Intake in the side rail to " +
+              "create a new event."
+            );
+          } else {
+            onError && onError(`Prospecting failed: ${e.message}`);
+          }
           setApiDone(true);
         }
       }
@@ -468,7 +476,19 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
         setEditsById((cur) => ({ ...edits, ...cur }));  // don't clobber in-flight edits
         setProviderInfo({ provider: pv.provider, dry_run: pv.dry_run });
       } catch (e) {
-        onError && onError(`Couldn't load outreach preview: ${e.message}`);
+        // 404 here means the event no longer exists on the backend —
+        // almost always because Railway's container restarted and wiped
+        // the ephemeral SQLite file. Tell the operator what to do instead
+        // of leaving them staring at a bare red banner.
+        if (e.status === 404) {
+          onError && onError(
+            "This event no longer exists on the server. The backend most " +
+            "likely redeployed and wiped its ephemeral SQLite store. Click " +
+            "Intake in the side rail and create a new event."
+          );
+        } else {
+          onError && onError(`Couldn't load outreach preview: ${e.message}`);
+        }
       }
     })();
     return () => { cancelled = true; };

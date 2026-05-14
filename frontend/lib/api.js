@@ -14,7 +14,12 @@ async function request(path, opts = {}) {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText} — ${text.slice(0, 240)}`);
+    const err = new Error(`${res.status} ${res.statusText} — ${text.slice(0, 240)}`);
+    // Surface the status so callers can branch on 404 (event wiped by a
+    // backend redeploy) vs 409 (precondition not met) vs 5xx (server error)
+    // without parsing the message string.
+    err.status = res.status;
+    throw err;
   }
   // some endpoints return empty body
   const ct = res.headers.get("content-type") || "";
