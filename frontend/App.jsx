@@ -559,12 +559,34 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
           <p className="eyebrow">Stage 03 — Auto-outreach</p>
           <h1>No candidates surfaced</h1>
           <p className="lede">
-            Prospecting completed but the ICP gate dropped every result. If you're
-            running with an <code>ANTHROPIC_API_KEY</code> set, the relevance verdict
-            judged none of the discovered profiles to be a strong match — try
-            broadening the event's ICP (role, seniority, co-stage), or unset the key
-            to fall back to the curated mock pool. Check the backend logs for
-            per-candidate drop reasons.
+            Prospecting completed but returned an empty pool. Check the backend
+            logs — the cause is one of:
+          </p>
+          <ul className="lede">
+            <li>
+              <code>[adapter] &lt;name&gt; exceeded 60.0s — skipped</code> — web_search
+              is timing out. Bump <code>PROSPECTING_ADAPTER_TIMEOUT</code> in env,
+              or try a narrower ICP that requires less search.
+            </li>
+            <li>
+              <code>[llm] discover_candidates(...) failed: ...</code> — Anthropic
+              API error. Hit <code>/api/diagnostics/anthropic</code> to check
+              connectivity + key.
+            </li>
+            <li>
+              <code>[llm] dropped &lt;name&gt;: &lt;reason&gt;</code> — the ICP gate
+              rejected discovered profiles. Try a less specific ICP.
+            </li>
+            <li>
+              No <code>[adapter]</code> or <code>[llm]</code> lines at all — the
+              backend may not be running the latest code, or the SDK call is
+              silently retrying. Hit <code>?fresh=true</code> on /prospect to
+              skip cache.
+            </li>
+          </ul>
+          <p className="lede">
+            Or unset <code>ANTHROPIC_API_KEY</code> to fall back to the curated
+            mock pool (always returns 22 candidates).
           </p>
         </header>
       </div>
