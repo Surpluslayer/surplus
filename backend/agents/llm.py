@@ -41,7 +41,10 @@ MODEL = "claude-opus-4-7"
 # stays on Opus because web_search reasoning + structured extraction
 # benefits from the bigger model.
 JUDGE_MODEL = "claude-haiku-4-5"
-WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search"}
+# Cap each adapter's web_search iterations. Opus 4.7 will happily run 5-8
+# searches per call; 3 is plenty for finding a handful of candidates and
+# is the biggest single latency lever on discovery.
+WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 3}
 
 
 def max_per_source() -> int:
@@ -219,7 +222,11 @@ def discover_candidates(source: str, icp: dict, max_candidates: int | None = Non
     try:
         response = _client().messages.create(
             model=MODEL,
-            max_tokens=16000,
+            max_tokens=8000,
+            # Opus 4.7 defaults to "high" effort; discovery is search +
+            # structured extraction, not deep reasoning. "medium" trims
+            # latency noticeably without affecting the result quality.
+            output_config={"effort": "medium"},
             system=[{
                 "type": "text",
                 "text": _DISCOVERY_SYSTEM,
@@ -311,3 +318,83 @@ def judge_relevance(candidate: dict, icp: dict) -> tuple[bool, str]:
         if getattr(block, "type", "") == "tool_use" and block.name == "emit_verdict":
             return bool(block.input.get("relevant")), str(block.input.get("reason", ""))
     return False, "no verdict emitted"
+
+
+_BATCH_VERDICT_TOOL = {
+    "name": "emit_verdicts",
+    "description": "Emit relevance verdicts for the entire candidate batch.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "verdicts": {
+                "type": "array",
+                "description": "One entry per input candidate. Match on `identity`.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "identity": {"type": "string"},
+                        "relevant": {"type": "boolean"},
+                        "reason": {"type": "string", "description": "1-2 sentences"},
+                    },
+                    "required": ["identity", "relevant", "reason"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["verdicts"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
+
+
+def judge_relevance_batch(candidates: list[dict], icp: dict) -> dict[str, tuple[bool, str]]:
+    """
+    Run the ICP gatekeeper over a whole pool in ONE Haiku call.
+
+    Massive latency win vs calling `judge_relevance` per candidate — for
+    a pool of 15 candidates that's 1 API round-trip instead of 15.
+
+    Returns a dict keyed by candidate `identity` → (relevant, reason).
+    Missing entries default to (False, "no verdict emitted") so callers
+    can treat unjudged candidates as dropped (fail-closed, same as the
+    single-call version).
+    """
+    if not candidates:
+        return {}
+    user_msg = (
+        "ICP:\n"
+        + json.dumps(icp, indent=2)
+        + "\n\nCandidates (judge each one — emit ONE entry per candidate, "
+        "matched by `identity`):\n"
+        + json.dumps(candidates, indent=2, default=str)
+    )
+    out: dict[str, tuple[bool, str]] = {}
+    try:
+        response = _client().messages.create(
+            model=JUDGE_MODEL,
+            max_tokens=4096,
+            system=[{
+                "type": "text",
+                "text": _RELEVANCE_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            tools=[_BATCH_VERDICT_TOOL],
+            tool_choice={"type": "tool", "name": "emit_verdicts"},
+            messages=[{"role": "user", "content": user_msg}],
+        )
+    except Exception as exc:  # noqa: BLE001
+        cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+        print(f"  [llm] judge_relevance_batch failed: {type(exc).__name__}: {exc}"
+              + (f"  (cause: {type(cause).__name__}: {cause})" if cause else ""))
+        # Fail-closed: every candidate gets dropped with the error as reason.
+        return {c["identity"]: (False, f"verdict error: {exc}") for c in candidates}
+
+    for block in response.content:
+        if getattr(block, "type", "") == "tool_use" and block.name == "emit_verdicts":
+            for v in block.input.get("verdicts", []):
+                ident = v.get("identity")
+                if ident:
+                    out[str(ident)] = (bool(v.get("relevant")), str(v.get("reason", "")))
+            break
+    return out
