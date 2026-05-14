@@ -26,7 +26,7 @@ it's worth per goal).
 ## Repo layout
 
 ```
-surplus-roi-engine/
+.
 ├── backend/
 │   ├── main.py              FastAPI app — wires the stage routers
 │   ├── config.py            mechanism levers (FORMAT_CONFIG, GOAL_CONFIG)
