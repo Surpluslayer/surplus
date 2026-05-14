@@ -33,18 +33,18 @@ except ImportError:
     _SDK_AVAILABLE = False
 
 
-MODEL = "claude-opus-4-7"
-# Judge is a binary classifier ("does this profile match the ICP, yes/no").
-# Haiku is more than enough and is ~80% cheaper / faster, which matters a
-# lot here — judge_relevance is called once per merged candidate, so it's
-# what makes large pools hit Anthropic's per-minute rate limit. Discovery
-# stays on Opus because web_search reasoning + structured extraction
-# benefits from the bigger model.
+# Discovery runs Sonnet 4.6 — Opus 4.7 was 2-3x slower per web_search
+# round-trip and the extra reasoning headroom is not worth it for the
+# search-+-extract task. Sonnet 4.6 supports web_search_20260209 with
+# the same dynamic filtering. Judge is Haiku 4.5: a binary classifier
+# doesn't need anything bigger, and Haiku is what keeps the per-minute
+# token rate-limit from biting on large pools.
+MODEL = "claude-sonnet-4-6"
 JUDGE_MODEL = "claude-haiku-4-5"
-# Cap each adapter's web_search iterations. Opus 4.7 will happily run 5-8
-# searches per call; 3 is plenty for finding a handful of candidates and
-# is the biggest single latency lever on discovery.
-WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 3}
+# Cap each adapter's web_search iterations. 2 is plenty for finding a
+# handful of candidates and is the biggest single latency lever on
+# discovery — Sonnet would otherwise happily run 5-6 search rounds.
+WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 2}
 
 
 def max_per_source() -> int:
@@ -220,13 +220,15 @@ def discover_candidates(source: str, icp: dict, max_candidates: int | None = Non
     )
 
     try:
-        response = _client().messages.create(
+        # `output_config` is intentionally NOT set here: the pinned
+        # anthropic==0.42.0 raises TypeError on it. Re-add when we bump
+        # the SDK to a version that knows the parameter.
+        # Hard 90s timeout per discover call so a Railway proxy timeout
+        # (typically 100s) doesn't strand the request — better to fail
+        # fast and let the catch return [] than hang the whole pipeline.
+        response = _client().with_options(timeout=90.0).messages.create(
             model=MODEL,
             max_tokens=8000,
-            # Opus 4.7 defaults to "high" effort; discovery is search +
-            # structured extraction, not deep reasoning. "medium" trims
-            # latency noticeably without affecting the result quality.
-            output_config={"effort": "medium"},
             system=[{
                 "type": "text",
                 "text": _DISCOVERY_SYSTEM,
