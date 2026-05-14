@@ -100,15 +100,19 @@ async def prospect(
 
     Memoizes the full result by ICP fingerprint for PROSPECTING_CACHE_TTL
     seconds (default 1h). Subsequent runs against the same ICP return in
-    <1s instead of re-running web_search. Pass force_fresh=True to bust.
+    <1s instead of re-running web_search. Pass force_fresh=True to bust
+    AND delete any stale entry (so a one-off bad cache value can be
+    cleared without restarting the process).
     """
     ttl = _cache_ttl()
-    key = _icp_cache_key(icp)
-    if ttl and not force_fresh:
-        hit = _PROSPECT_CACHE.get(key)
+    cache_key = _icp_cache_key(icp)
+    if force_fresh:
+        _PROSPECT_CACHE.pop(cache_key, None)
+    elif ttl:
+        hit = _PROSPECT_CACHE.get(cache_key)
         if hit and time.time() - hit[0] < ttl:
             age = int(time.time() - hit[0])
-            print(f"  [prospect] cache HIT for {key} ({age}s old, {len(hit[1])} candidates)")
+            print(f"  [prospect] cache HIT for {cache_key} ({age}s old, {len(hit[1])} candidates)")
             return copy.deepcopy(hit[1])
 
     adapters = adapters or ALL_ADAPTERS
@@ -120,23 +124,28 @@ async def prospect(
             ident = raw["identity"]
             rec = merged.setdefault(ident, {"identity": ident, "sources": set()})
             rec["sources"].add(raw.get("source", "?"))
-            for key, val in raw.items():
-                if key in ("identity", "source"):
+            for raw_key, raw_val in raw.items():
+                if raw_key in ("identity", "source"):
                     continue
-                rec.setdefault(key, val)  # first source to resolve a field wins
+                rec.setdefault(raw_key, raw_val)  # first source to resolve a field wins
 
     out: list[dict] = []
     for rec in merged.values():
         rec["sources"] = ",".join(sorted(rec["sources"]))
-        for key, default in _DEFAULTS.items():
-            rec.setdefault(key, default)
+        for default_key, default_val in _DEFAULTS.items():
+            rec.setdefault(default_key, default_val)
         rec["li_resolved"] = bool(rec.pop("contact_resolved", False))
         out.append(rec)
 
     if llm.llm_available() and out:
         out = await _judge_all(out, icp)
 
-    if ttl:
-        _PROSPECT_CACHE[key] = (time.time(), copy.deepcopy(out))
-        print(f"  [prospect] cache MISS for {key} — stored {len(out)} candidates")
+    # Only cache non-empty results — caching an empty pool would lock in
+    # a transient LLM blip for the full TTL and give the operator a
+    # permanently broken event until redeploy.
+    if ttl and out:
+        _PROSPECT_CACHE[cache_key] = (time.time(), copy.deepcopy(out))
+        print(f"  [prospect] cache MISS for {cache_key} — stored {len(out)} candidates")
+    elif not out:
+        print(f"  [prospect] empty pool for {cache_key} — NOT caching")
     return out
