@@ -42,8 +42,30 @@ def _adjacent(a: str, b: str) -> bool:
     return a == b or b in _AFFINITY.get(a, set()) or a in _AFFINITY.get(b, set())
 
 
-def build_edges(attending: list) -> list[dict]:
-    """Score every pair of confirmed guests. Returns edge dicts ready to persist."""
+def build_edges(attending: list, event=None) -> list[dict]:
+    """Score every pair of confirmed guests. Returns edge dicts ready to persist.
+
+    Two backends:
+
+    1. surplus-match-library (preferred) — runs when ANTHROPIC_API_KEY is set
+       AND `event` is passed. Uses LLM enrichment + LLM-synthesized rubric +
+       deterministic multi-axis composite scoring. Cached by content hash.
+
+    2. Heuristic fallback — the original `avg_fit + 10` for symbiotic edges,
+       `avg_fit - 8` for affinity, no edge for same-side non-adjacent pairs.
+       Always works, no LLM call.
+
+    The event arg is optional so legacy callers (tests, older code paths)
+    don't break — they just get the heuristic.
+    """
+    if event is not None:
+        from . import matcher_lib
+        if matcher_lib.library_available():
+            matrix = matcher_lib.score_attendees(attending, event)
+            if matrix is not None:
+                return matcher_lib.build_edges_from_matrix(matrix, attending)
+
+    # Heuristic fallback
     edges: list[dict] = []
     for a, b in combinations(attending, 2):
         avg = (a.fit_score + b.fit_score) / 2

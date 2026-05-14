@@ -23,3 +23,7 @@ backend/data/*.db
 frontend/node_modules/
 frontend/dist/
 .claude/
+
+# matching library cache + outputs
+.cache/
+data/matches/

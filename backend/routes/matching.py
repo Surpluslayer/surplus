@@ -35,7 +35,7 @@ def match(event_id: int, db: Session = Depends(get_db)):
         p.group_id = None
     db.flush()
 
-    edges = build_edges(attending)
+    edges = build_edges(attending, event=ev)
     for e in edges:
         db.add(models.MatchEdge(event_id=ev.id, **e))
 
