@@ -174,11 +174,12 @@ def _parse_result(source: str, r: dict) -> Optional[dict]:
         # When title parsing didn't yield role/company, mine the page
         # snippet text. Exa returns ~500-1000 chars of page text with
         # `contents.text: true`; LinkedIn snippets typically include
-        # the current role + company near the top.
+        # the current role + company near the top in a structured form.
         if not role or not company:
             r_from_text, c_from_text = _extract_role_company_from_text(text)
             role = role or r_from_text
             company = company or c_from_text
+        headline = _extract_headline_from_text(text)
         return {
             "identity": handle,
             "name": name,
@@ -186,9 +187,10 @@ def _parse_result(source: str, r: dict) -> Optional[dict]:
             "role": role,
             "company": company,
             "contact_resolved": True,
-            # Pass the snippet through so the downstream LLM judge has
-            # extra context beyond the structured fields (which Exa
-            # sometimes leaves empty).
+            # Headline is the one-liner bio under the name. The LLM judge
+            # reads this as a high-signal summary of who the person is.
+            "headline": headline,
+            # Full snippet for additional context (truncated).
             "description": text[:600],
         }
 
@@ -316,35 +318,116 @@ def _looks_like_org(name: str) -> bool:
     return any(h in lower for h in _ORG_HINTS)
 
 
+_HEADER_RE = re.compile(r"^#+\s+")
+_AT_LINE_RE = re.compile(
+    # Strip leading markdown header (## / ### / ####)
+    r"^(?:#+\s+)?"
+    # "<Role> at [<Company>](url)" — markdown link form
+    # "<Role> at <Company>"       — plain form, greedy (terminates at newline)
+    r"(?P<role>.+?)\s+at\s+"
+    r"(?:\[(?P<company_link>[^\]]+)\]\([^)]*\)|(?P<company_plain>[^|()\n]+))",
+    re.IGNORECASE,
+)
+_SECTION_KEYWORDS = ("about", "experience", "education", "skills",
+                     "licenses", "certifications", "languages")
+_DATE_TRAILER_RE = re.compile(
+    r"\s+(?:\(?Current\)?|\d{4}\s*[-–]\s*(?:Present|\d{4}).*|\d{4}\s*[-–]\s*\d{4}.*)$",
+    re.IGNORECASE,
+)
+
+
 def _extract_role_company_from_text(text: str) -> tuple[str, str]:
     """
-    Mine a LinkedIn page snippet for the current role + company.
+    Mine a LinkedIn page snippet for the CURRENT role + company.
 
-    LinkedIn snippets typically open with something like:
-      "Experience: Acme · Education: Stanford · Location: SF"
-      "Senior ML Engineer at Acme | 500+ followers..."
-      "Software engineer at Acme. Building..."
+    Exa returns LinkedIn snippets as markdown:
 
-    We try a few common patterns. Returns ("", "") if nothing matches.
+        # <Name>
+        <Headline>                       ← bio with possible "@" but rarely "at"
+        <Current Role> at [<Company>](url)   ← canonical "current" line
+        <Location>                       ← skip
+        ## Experience
+        ### <Role> at [<Company>](url)   ← first one is the current job
+
+    We walk every line (no early break on `## Section`), skipping noise
+    lines (location, follower counts, pure section headers), and return
+    the first "Role at Company" match. The headline is also skipped
+    because it's typically pipe-separated bio text — `_extract_headline_
+    from_text` captures it separately.
     """
     if not text:
         return ("", "")
-    # Compact whitespace for matching
-    flat = re.sub(r"\s+", " ", text).strip()
-    # Pattern: "<Role> at <Company>" — only take the FIRST occurrence.
-    # Role: 2-6 words, mostly letters. Company: 1-5 words.
-    m = re.search(
-        r"([A-Z][A-Za-z+/\- ]{2,80}?)\s+at\s+([A-Z][A-Za-z0-9&+./'\- ]{1,60}?)"
-        r"(?:[\.\|\(,]|$)",
-        flat,
-    )
-    if m:
-        role = m.group(1).strip(" -·")
-        company = m.group(2).strip(" -·")
-        # Sanity: role shouldn't be a full sentence
-        if len(role.split()) <= 8 and len(company.split()) <= 6:
-            return (role, company)
+
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    # Drop the leading "# Name" header
+    if lines and _HEADER_RE.match(lines[0]) and not lines[0].startswith("##"):
+        lines = lines[1:]
+    # Skip the headline line — usually pipe-separated buzzwords or has
+    # "@" but not " at ". Don't skip if it already matches our pattern.
+    if lines and " at " not in lines[0].lower() and (
+        "|" in lines[0] or "@" in lines[0]
+    ):
+        lines = lines[1:]
+
+    for line in lines:
+        # Skip location lines ("Berkeley, California, United States (US)")
+        if re.search(r"\([A-Z]{2}\)\s*$", line):
+            continue
+        # Skip count / metadata lines
+        lower = line.lower()
+        if "connection" in lower or "follower" in lower:
+            continue
+        # Skip pure section names (## About, ### Skills, etc.)
+        stripped = line.lower().strip("# :")
+        if stripped in _SECTION_KEYWORDS:
+            continue
+        # Skip total-experience summaries
+        if lower.startswith("total experience"):
+            continue
+        # Skip lines that are too long to be a role — likely descriptive
+        if len(line) > 200:
+            continue
+
+        m = _AT_LINE_RE.match(line)
+        if not m:
+            continue
+        role = (m.group("role") or "").strip(" -·#")
+        company = (m.group("company_link") or m.group("company_plain") or "").strip(" -·")
+        # Strip trailing date/range/"(Current)" from the company side
+        company = _DATE_TRAILER_RE.sub("", company).strip()
+        # Sanity caps
+        if not (1 <= len(role.split()) <= 12):
+            continue
+        if not (1 <= len(company.split()) <= 8):
+            continue
+        if len(role) < 2 or len(company) < 1:
+            continue
+        return (role, company)
     return ("", "")
+
+
+def _extract_headline_from_text(text: str) -> str:
+    """
+    Pull the LinkedIn headline (the one-line bio under the name).
+
+    Goes between the "# Name" header and the structured Role-at-Company
+    block. Often the single richest signal about who the person is.
+    """
+    if not text:
+        return ""
+    for line in text.split("\n"):
+        s = line.strip()
+        if not s:
+            continue
+        if _HEADER_RE.match(s):
+            continue
+        if s.startswith("##"):
+            break
+        # Skip Role-at-Company structured lines — we capture those elsewhere
+        if _AT_LINE_RE.match(s) and "|" not in s:
+            continue
+        return s[:200]
+    return ""
 
 
 def _parse_github_title(title: str) -> str:
