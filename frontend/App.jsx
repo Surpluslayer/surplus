@@ -781,11 +781,20 @@ function Matching({ profile, onNext }) {
         <p className="eyebrow">Stage 04 — Symbiotic matching market</p>
         <h1>Guest list as a value graph</h1>
         <p className="lede">
-          Edges aren't friendship — they're <em>predicted total value created</em> by a
-          pairing. Two kinds: <em>symbiotic</em> (one side's offer meets another's seek —
-          a builder and someone who can hire them, a founder and an investor) and{" "}
-          <em>affinity</em> (worked on similar things). {groupWord}s are formed to
-          maximize the first. {FORMAT_CONFIG[profile.format].topo}.
+          Edges aren't friendship — they're <em>predicted mutual value</em>. Nodes
+          are people; edges split into <em>symbiotic</em> (offer meets seek — a
+          builder and someone hiring them, a founder and an investor) and{" "}
+          <em>affinity</em> (worked on similar things). The objective is{" "}
+          <em>multi-sided</em>: a weighted sum across attendees <em>and</em> the
+          host/sponsor side, not just attendee-to-attendee gain.
+        </p>
+        <p className="lede">
+          Two passes. <em>Pre-RSVP</em> — community detection over the value
+          graph picks who to even invite. <em>Post-RSVP</em> — given who actually
+          said yes, a seating/assignment optimizer decides who sits near whom.
+          Different inputs, different timing; the second can't run until RSVPs
+          land. {groupWord}s are formed to maximize the multi-sided objective.{" "}
+          {FORMAT_CONFIG[profile.format].topo}.
         </p>
       </header>
 
@@ -873,7 +882,7 @@ function Matching({ profile, onNext }) {
 
       <div className="stage-foot">
         <p className="foot-note">
-          {attending.length} confirmed · {groups.length} {groupWord.toLowerCase()}s · objective = Σ symbiotic value, affinity as tiebreak
+          {attending.length} confirmed · {groups.length} {groupWord.toLowerCase()}s · objective = weighted Σ over attendees + host side · affinity as tiebreak
         </p>
         <button className="btn-primary" onClick={onNext}>Settle ROI <ArrowRight size={16} /></button>
       </div>
