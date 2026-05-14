@@ -37,11 +37,17 @@ _DEFAULTS = {
 
 
 def _relevance_concurrency() -> int:
-    """How many judge_relevance calls to run in parallel."""
+    """How many judge_relevance calls to run in parallel.
+
+    Default is intentionally low (2) — on pools >20 candidates, higher
+    concurrency bursts past Anthropic's per-minute token rate-limit and
+    crashes the run. The SDK auto-retries 429s, but only up to a point.
+    Bump if you're on a higher tier and have headroom.
+    """
     try:
-        return max(1, int(os.environ.get("PROSPECTING_JUDGE_CONCURRENCY", "4")))
+        return max(1, int(os.environ.get("PROSPECTING_JUDGE_CONCURRENCY", "2")))
     except ValueError:
-        return 4
+        return 2
 
 
 async def _judge_all(candidates: list[dict], icp: dict) -> list[dict]:

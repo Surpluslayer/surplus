@@ -34,7 +34,22 @@ except ImportError:
 
 
 MODEL = "claude-opus-4-7"
+# Judge is a binary classifier ("does this profile match the ICP, yes/no").
+# Haiku is more than enough and is ~80% cheaper / faster, which matters a
+# lot here — judge_relevance is called once per merged candidate, so it's
+# what makes large pools hit Anthropic's per-minute rate limit. Discovery
+# stays on Opus because web_search reasoning + structured extraction
+# benefits from the bigger model.
+JUDGE_MODEL = "claude-haiku-4-5"
 WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search"}
+
+
+def max_per_source() -> int:
+    """Cap on candidates per source adapter. Lower = smaller rate-limit burst."""
+    try:
+        return max(1, int(os.environ.get("PROSPECTING_MAX_PER_SOURCE", "5")))
+    except ValueError:
+        return 5
 
 
 def _api_key() -> str:
@@ -62,7 +77,9 @@ _CLIENT: Optional["anthropic.Anthropic"] = None
 def _client() -> "anthropic.Anthropic":
     global _CLIENT
     if _CLIENT is None:
-        _CLIENT = anthropic.Anthropic(api_key=_api_key())
+        # max_retries=5 lets the SDK absorb transient 429s and 5xx without
+        # crashing the whole prospecting run on a single spike.
+        _CLIENT = anthropic.Anthropic(api_key=_api_key(), max_retries=5)
     return _CLIENT
 
 
@@ -169,14 +186,20 @@ _SOURCE_GUIDANCE = {
 }
 
 
-def discover_candidates(source: str, icp: dict, max_candidates: int = 8) -> list[dict]:
+def discover_candidates(source: str, icp: dict, max_candidates: int | None = None) -> list[dict]:
     """
     Use Claude + web_search to surface candidates from one source.
+
+    `max_candidates` defaults to PROSPECTING_MAX_PER_SOURCE (env var, 5)
+    — a smaller cap keeps the downstream per-candidate judge phase from
+    bursting against Anthropic's rate limits on large runs.
 
     Returns a list of dicts in the per-source shape defined by the emit
     tool's input_schema. The caller (the SourceAdapter) merges these into
     the standard adapter-record shape.
     """
+    if max_candidates is None:
+        max_candidates = max_per_source()
     tool = _SOURCE_TOOL[source]
     guidance = _SOURCE_GUIDANCE[source]
     user_msg = (
@@ -264,7 +287,10 @@ def judge_relevance(candidate: dict, icp: dict) -> tuple[bool, str]:
     )
     try:
         response = _client().messages.create(
-            model=MODEL,
+            # Haiku 4.5 — see JUDGE_MODEL note. Binary classifier, doesn't
+            # need Opus, and Haiku is the lever that lets large pools not
+            # bury the per-minute token budget.
+            model=JUDGE_MODEL,
             max_tokens=1024,
             system=[{
                 "type": "text",
