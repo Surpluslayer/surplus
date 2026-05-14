@@ -139,7 +139,10 @@ def exa_discover_probe(
     icp = {"role": role, "seniority": seniority, "co_stage": co_stage}
     available = exa.exa_available()
     query = exa._build_query(source, icp)
+    # Run the parsed-output path the SourceAdapter uses, AND also surface
+    # the raw Exa response so we can debug why parsing dropped fields.
     candidates = exa.discover_via_exa(source, icp, max_candidates=max_candidates) if available else []
+    raw_results = _exa_raw_results(source, icp, max_candidates) if available else []
     return {
         "exa_configured": available,
         "source": source,
@@ -147,7 +150,45 @@ def exa_discover_probe(
         "exa_query": query,
         "count": len(candidates),
         "candidates": candidates,
+        "raw": raw_results,
     }
+
+
+def _exa_raw_results(source: str, icp: dict, max_candidates: int) -> list:
+    """Tap the same Exa request but return the raw response items (title +
+    text snippet) — exposes what the parser is working with."""
+    from .agents import exa as _exa
+    import httpx
+    query = _exa._build_query(source, icp)
+    domain = {"linkedin": "linkedin.com", "github": "github.com", "x": "x.com"}[source]
+    category = {"linkedin": "linkedin profile", "github": "github", "x": "tweet"}[source]
+    body = {
+        "query": query,
+        "type": "neural",
+        "category": category,
+        "numResults": max(max_candidates * 3, 10),
+        "includeDomains": [domain],
+        "contents": {"text": True},
+    }
+    headers = {
+        "x-api-key": _exa._api_key(),
+        "content-type": "application/json",
+        "accept": "application/json",
+    }
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            resp = client.post("https://api.exa.ai/search",
+                               headers=headers, json=body)
+        if resp.status_code >= 400:
+            return [{"_error": f"{resp.status_code}: {resp.text[:200]}"}]
+        results = (resp.json() or {}).get("results") or []
+        # Trim text payload so the response stays readable
+        for r in results:
+            if isinstance(r.get("text"), str):
+                r["text"] = r["text"][:400]
+        return results
+    except Exception as exc:  # noqa: BLE001
+        return [{"_error": f"{type(exc).__name__}: {exc}"}]
 
 
 @app.get("/api/diagnostics/exa", tags=["meta"])

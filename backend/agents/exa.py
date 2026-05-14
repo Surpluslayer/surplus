@@ -154,6 +154,7 @@ def _build_query(source: str, icp: dict) -> str:
 def _parse_result(source: str, r: dict) -> Optional[dict]:
     url = (r.get("url") or "").strip()
     title = (r.get("title") or "").strip()
+    text = (r.get("text") or "").strip()
     if not url:
         return None
 
@@ -165,6 +166,19 @@ def _parse_result(source: str, r: dict) -> Optional[dict]:
         name, role, company = _parse_linkedin_title(title)
         if not name:
             return None
+        # Filter out org/company pages that snuck through (the category
+        # filter helps but isn't bulletproof — e.g., "UCD Sociology",
+        # "Supreme Incubator" came back for a Senior+ engineer query).
+        if _looks_like_org(name):
+            return None
+        # When title parsing didn't yield role/company, mine the page
+        # snippet text. Exa returns ~500-1000 chars of page text with
+        # `contents.text: true`; LinkedIn snippets typically include
+        # the current role + company near the top.
+        if not role or not company:
+            r_from_text, c_from_text = _extract_role_company_from_text(text)
+            role = role or r_from_text
+            company = company or c_from_text
         return {
             "identity": handle,
             "name": name,
@@ -172,6 +186,10 @@ def _parse_result(source: str, r: dict) -> Optional[dict]:
             "role": role,
             "company": company,
             "contact_resolved": True,
+            # Pass the snippet through so the downstream LLM judge has
+            # extra context beyond the structured fields (which Exa
+            # sometimes leaves empty).
+            "description": text[:600],
         }
 
     if source == "github":
@@ -215,24 +233,118 @@ def _normalize_linkedin_url(url: str, handle: str) -> str:
 
 def _parse_linkedin_title(title: str) -> tuple[str, str, str]:
     """
-    LinkedIn pages typically look like one of:
+    LinkedIn page titles come in many shapes in practice — sometimes:
       "Daniel Wang - Software Engineer at Acme | LinkedIn"
       "Daniel Wang - Software Engineer | LinkedIn"
       "Daniel Wang | LinkedIn"
+      "Daniel Wang | Senior Engineer"
+      "Daniel Wang | Senior Engineer | LinkedIn"
+      "Daniel Wang"   (Exa often strips the trailer entirely)
     Returns (name, role, company); any field can be "".
     """
     if not title:
         return ("", "", "")
-    # strip "| LinkedIn" trailer
+
+    # Strip a trailing " | LinkedIn" if present (case-insensitive)
     base = re.sub(r"\s*\|\s*LinkedIn\s*$", "", title, flags=re.I).strip()
-    # split on first " - "
+    # Some Exa results have "| LinkedIn" in the middle; strip that too
+    base = re.sub(r"\s*\|\s*LinkedIn\s*\|\s*", " | ", base, flags=re.I).strip()
+
+    # Try " - " as separator first (canonical pattern)
     if " - " in base:
         name, rest = base.split(" - ", 1)
-        if " at " in rest:
-            role, company = rest.split(" at ", 1)
-            return (name.strip(), role.strip(), company.strip())
-        return (name.strip(), rest.strip(), "")
-    return (base.strip(), "", "")
+        return _split_role_company(name.strip(), rest.strip())
+
+    # Fall back to " | " as separator (Exa often uses this)
+    # "Name | Role at Company" or "Name | Role" or "Name | Company"
+    if " | " in base:
+        name, rest = base.split(" | ", 1)
+        return _split_role_company(name.strip(), rest.strip())
+
+    # No separator — title is just the name (or unparseable garbage).
+    # Heuristic: if it looks like a person name (≤4 words, no digits-heavy),
+    # take it; otherwise treat as empty so we drop the result.
+    if _looks_like_person_name(base):
+        return (base, "", "")
+    return ("", "", "")
+
+
+def _split_role_company(name: str, rest: str) -> tuple[str, str, str]:
+    """Given a name + remainder, figure out role + company from the rest."""
+    if " at " in rest:
+        role, company = rest.split(" at ", 1)
+        # The company part can have another " | " separator: "Acme | LinkedIn"
+        company = re.split(r"\s*\|\s*", company, maxsplit=1)[0]
+        return (name, role.strip(), company.strip())
+    return (name, rest, "")
+
+
+# Heuristics ---------------------------------------------------------------
+
+_DIGIT_RE = re.compile(r"\d")
+
+
+def _looks_like_person_name(s: str) -> bool:
+    """Cheap check: does this string read like a person's name?"""
+    if not s:
+        return False
+    words = s.split()
+    if len(words) < 1 or len(words) > 5:
+        return False
+    # Names rarely have digits
+    if _DIGIT_RE.search(s):
+        return False
+    # First word should be a real-looking word (≥2 letters, mostly alpha)
+    return len(words[0]) >= 2 and words[0][0].isalpha()
+
+
+_ORG_HINTS = (
+    "incubator", "sociology", "university", "school", "college",
+    "department", "ventures", "capital", "fund", "investments",
+    "labs", "studio", "agency", "consulting", "group", "associates",
+    "council", "society", "association", "institute", "foundation",
+    "academy", "team", "company", "corporation", "limited", "ltd",
+    "inc", "llc", " co.", "events", "office",
+)
+
+
+def _looks_like_org(name: str) -> bool:
+    """True when `name` looks like an organization, not a person."""
+    if not name:
+        return False
+    lower = name.lower()
+    return any(h in lower for h in _ORG_HINTS)
+
+
+def _extract_role_company_from_text(text: str) -> tuple[str, str]:
+    """
+    Mine a LinkedIn page snippet for the current role + company.
+
+    LinkedIn snippets typically open with something like:
+      "Experience: Acme · Education: Stanford · Location: SF"
+      "Senior ML Engineer at Acme | 500+ followers..."
+      "Software engineer at Acme. Building..."
+
+    We try a few common patterns. Returns ("", "") if nothing matches.
+    """
+    if not text:
+        return ("", "")
+    # Compact whitespace for matching
+    flat = re.sub(r"\s+", " ", text).strip()
+    # Pattern: "<Role> at <Company>" — only take the FIRST occurrence.
+    # Role: 2-6 words, mostly letters. Company: 1-5 words.
+    m = re.search(
+        r"([A-Z][A-Za-z+/\- ]{2,80}?)\s+at\s+([A-Z][A-Za-z0-9&+./'\- ]{1,60}?)"
+        r"(?:[\.\|\(,]|$)",
+        flat,
+    )
+    if m:
+        role = m.group(1).strip(" -·")
+        company = m.group(2).strip(" -·")
+        # Sanity: role shouldn't be a full sentence
+        if len(role.split()) <= 8 and len(company.split()) <= 6:
+            return (role, company)
+    return ("", "")
 
 
 def _parse_github_title(title: str) -> str:
