@@ -776,45 +776,167 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
 }
 
 // ---- Stage 3: Symbiotic matching ----------------------------
-function Matching({ profile, onNext }) {
-  const groupWord = FORMAT_CONFIG[profile.format].group;
-  const attending = PROSPECTS.filter((p) => p.status === "rsvp");
-  const groups = [...new Set(attending.map((p) => p.grp))].sort((a, b) => a - b);
-
-  const centerFor = (i) => {
-    if (groups.length === 1) return [300, 165];
-    if (groups.length === 2) return i === 0 ? [195, 170] : [415, 170];
-    return [[185, 145], [415, 145], [300, 295]][i];
-  };
-  const nodes = [];
-  groups.forEach((g, gi) => {
-    const [cx, cy] = centerFor(gi);
-    const members = attending.filter((p) => p.grp === g);
-    members.forEach((p, idx) => {
-      const n = members.length;
-      const ang = -Math.PI / 2 + (idx / n) * Math.PI * 2;
-      const r = n === 1 ? 0 : 52;
-      nodes.push({ ...p, x: cx + Math.cos(ang) * r, y: cy + Math.sin(ang) * r });
-    });
+// Group centers for the matching graph. Generalizes the old hardcoded
+// 1/2/3-group positions to any N by laying additional groups around a
+// circle centered in the SVG viewport (600 × 340).
+function layoutGroupCenters(n) {
+  if (n === 0) return [];
+  if (n === 1) return [[300, 165]];
+  if (n === 2) return [[195, 170], [415, 170]];
+  if (n === 3) return [[185, 145], [415, 145], [300, 295]];
+  // 4+: equal-angle ring around the canvas center
+  const cx = 300, cy = 170;
+  const R = n <= 5 ? 110 : 130;
+  return Array.from({ length: n }, (_, i) => {
+    const ang = -Math.PI / 2 + (i / n) * Math.PI * 2;
+    return [cx + Math.cos(ang) * R, cy + Math.sin(ang) * R];
   });
-  const nodeById = (id) => nodes.find((n) => n.id === id);
+}
 
-  // edges: symbiotic when sides differ (offer<->seek), affinity when same side
-  const edges = [];
-  for (let i = 0; i < attending.length; i++) {
-    for (let j = i + 1; j < attending.length; j++) {
-      const a = attending[i], b = attending[j];
-      const sym = a.side !== b.side;
-      edges.push({
-        a: a.id, b: b.id,
-        type: sym ? "sym" : "aff",
-        cross: a.grp !== b.grp,
-        w: (a.score + b.score) / 2,
+
+function Matching({ profile, eventId, onError, onNext }) {
+  const [matchResult, setMatchResult] = useState(null);
+  const [matchError, setMatchError] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  // Run /match (idempotent on the backend — re-running clears and re-builds)
+  // on mount when we have a real event. Falls back to the client-side mock
+  // when no eventId is set so demo navigation still works.
+  useEffect(() => {
+    if (!eventId) { setLoading(false); return; }
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setMatchError(null);
+      try {
+        const data = await api.runMatch(eventId);
+        if (!cancelled) {
+          setMatchResult(data);
+          setLoading(false);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          if (e.status === 409) {
+            setMatchError("No RSVPs yet — re-run outreach so some prospects confirm before settling the room.");
+          } else if (e.status === 404) {
+            setMatchError("Event not found — the backend may have redeployed and wiped the SQLite store. Restart from Intake.");
+          } else {
+            setMatchError(`Matching failed: ${e.message}`);
+          }
+          setLoading(false);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [eventId]);
+
+  const useReal = !!matchResult;
+  const groupWord = useReal ? matchResult.group_word : FORMAT_CONFIG[profile.format].group;
+
+  // Build the rendering data — from real /match output when available,
+  // otherwise from the client-side mock pool.
+  let groups, nodes, edges, symPairs;
+  if (useReal) {
+    // Group ids from the backend (sequential 1..N).
+    groups = matchResult.groups.map((g) => g.group_id);
+    const positions = layoutGroupCenters(groups.length);
+
+    // Per-member node positions
+    nodes = [];
+    const memberLookup = {};   // id -> {name, side, company, group_id}
+    matchResult.groups.forEach((g, gi) => {
+      const [cx, cy] = positions[gi];
+      g.members.forEach((m, idx) => {
+        const n = g.members.length;
+        const ang = -Math.PI / 2 + (idx / n) * Math.PI * 2;
+        const r = n === 1 ? 0 : 52;
+        const node = {
+          id: m.id, name: m.name, side: m.side, company: m.company,
+          grp: g.group_id,
+          x: cx + Math.cos(ang) * r,
+          y: cy + Math.sin(ang) * r,
+        };
+        nodes.push(node);
+        memberLookup[m.id] = node;
       });
+    });
+
+    edges = matchResult.edges.map((e) => ({
+      a: e.a_id, b: e.b_id,
+      type: e.edge_type === "symbiotic" ? "sym" : "aff",
+      cross: memberLookup[e.a_id]?.grp !== memberLookup[e.b_id]?.grp,
+      w: e.weight,
+    }));
+    // Backend already pre-computed the top symbiotic pairs with the
+    // value-flow strings — much nicer than re-deriving client-side.
+    symPairs = matchResult.top_symbiotic;
+  } else {
+    // mock fallback (offline demo / no event)
+    const attending = PROSPECTS.filter((p) => p.status === "rsvp");
+    groups = [...new Set(attending.map((p) => p.grp))].sort((a, b) => a - b);
+    const positions = layoutGroupCenters(groups.length);
+    nodes = [];
+    groups.forEach((g, gi) => {
+      const [cx, cy] = positions[gi];
+      const members = attending.filter((p) => p.grp === g);
+      members.forEach((p, idx) => {
+        const n = members.length;
+        const ang = -Math.PI / 2 + (idx / n) * Math.PI * 2;
+        const r = n === 1 ? 0 : 52;
+        nodes.push({ ...p, x: cx + Math.cos(ang) * r, y: cy + Math.sin(ang) * r });
+      });
+    });
+    edges = [];
+    for (let i = 0; i < attending.length; i++) {
+      for (let j = i + 1; j < attending.length; j++) {
+        const a = attending[i], b = attending[j];
+        const sym = a.side !== b.side;
+        edges.push({
+          a: a.id, b: b.id,
+          type: sym ? "sym" : "aff",
+          cross: a.grp !== b.grp,
+          w: (a.score + b.score) / 2,
+        });
+      }
     }
+    symPairs = edges.filter((e) => e.type === "sym" && !e.cross)
+      .sort((x, y) => y.w - x.w).slice(0, 4)
+      .map((e) => {
+        const a = PROSPECTS.find((p) => p.id === e.a);
+        const b = PROSPECTS.find((p) => p.id === e.b);
+        return {
+          a: a.name, b: b.name, weight: Math.round(e.w),
+          flow: [`${a.offers} -> ${b.seeks}`, `${b.offers} -> ${a.seeks}`],
+        };
+      });
   }
-  const symPairs = edges.filter((e) => e.type === "sym" && !e.cross)
-    .sort((x, y) => y.w - x.w).slice(0, 4);
+  const nodeById = (id) => nodes.find((n) => n.id === id);
+  const totalAttending = nodes.length;
+
+  // Loading / error guards — show before the heavy SVG render so the
+  // page doesn't flash empty + stale layout while the call is in flight.
+  if (loading) {
+    return (
+      <div className="stage">
+        <header className="stage-head">
+          <p className="eyebrow">Stage 04 — Symbiotic matching market</p>
+          <h1>Building the value graph…</h1>
+          <p className="lede">Pairing confirmed guests by what they offer and seek.</p>
+        </header>
+      </div>
+    );
+  }
+  if (matchError) {
+    return (
+      <div className="stage">
+        <header className="stage-head">
+          <p className="eyebrow">Stage 04 — Symbiotic matching market</p>
+          <h1>Can't build the room yet</h1>
+          <p className="lede">{matchError}</p>
+        </header>
+      </div>
+    );
+  }
 
   return (
     <div className="stage">
@@ -877,53 +999,64 @@ function Matching({ profile, onNext }) {
         <div className="match-side">
           <div className="sym-panel">
             <p className="pd-label">Top symbiotic pairs</p>
-            {symPairs.map((e, i) => {
-              const a = PROSPECTS.find((p) => p.id === e.a);
-              const b = PROSPECTS.find((p) => p.id === e.b);
-              return (
-                <div className="sym-pair" key={i}>
-                  <div className="sym-names">
-                    {a.name.split(" ")[0]} <span className="sym-link">⟷</span> {b.name.split(" ")[0]}
-                    <span className="sym-w">{Math.round(e.w)}</span>
-                  </div>
-                  <div className="sym-flow">{a.offers} <span>↔</span> {b.seeks}</div>
-                  <div className="sym-flow">{b.offers} <span>↔</span> {a.seeks}</div>
+            {symPairs.length === 0 && (
+              <div className="muted-text" style={{padding: "10px 0"}}>
+                No symbiotic pairs surfaced — confirmed guests may all be on the same market side.
+              </div>
+            )}
+            {symPairs.map((e, i) => (
+              <div className="sym-pair" key={i}>
+                <div className="sym-names">
+                  {(e.a || "").split(" ")[0]} <span className="sym-link">⟷</span> {(e.b || "").split(" ")[0]}
+                  <span className="sym-w">{Math.round(e.weight)}</span>
                 </div>
-              );
-            })}
+                {(e.flow || []).map((f, fi) => {
+                  // Each flow is "<offers> -> <seeks>". Render as "offers ↔ seeks".
+                  const parts = f.split(" -> ");
+                  return (
+                    <div className="sym-flow" key={fi}>
+                      {parts[0] || ""} <span>↔</span> {parts[1] || ""}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
           </div>
 
           <div className="tables-panel">
-            {groups.map((g) => {
-              const grp = attending.filter((p) => p.grp === g);
-              const builds = grp.filter((p) => p.side === "Builds").length;
-              const hires = grp.filter((p) => p.side === "Hires").length;
-              return (
-                <div key={g} className="table-card">
-                  <div className="table-card-head">
-                    <span className="table-dot" /> {groupWord} {g}
-                    <span className="table-count">{grp.length}</span>
-                  </div>
-                  {grp.map((p) => (
-                    <div key={p.id} className="table-guest">
-                      <span>{p.name}</span>
-                      <span className={`side-tag sm ${SIDE_CLASS[p.side]}`}>{p.side}</span>
-                    </div>
-                  ))}
-                  <p className="table-rationale">
-                    {builds} building · {hires} hiring — complementary sides seated together so
-                    every offer meets a seek.
-                  </p>
+            {(useReal ? matchResult.groups : groups.map((g) => {
+              const grp = nodes.filter((p) => p.grp === g);
+              return {
+                group_id: g,
+                members: grp.map((p) => ({id: p.id, name: p.name, side: p.side, company: p.company})),
+                builds: grp.filter((p) => p.side === "Builds").length,
+                counterparts: grp.filter((p) => p.side !== "Builds").length,
+              };
+            })).map((g) => (
+              <div key={g.group_id} className="table-card">
+                <div className="table-card-head">
+                  <span className="table-dot" /> {groupWord} {g.group_id}
+                  <span className="table-count">{g.members.length}</span>
                 </div>
-              );
-            })}
+                {g.members.map((p) => (
+                  <div key={p.id} className="table-guest">
+                    <span>{p.name}</span>
+                    <span className={`side-tag sm ${SIDE_CLASS[p.side]}`}>{p.side}</span>
+                  </div>
+                ))}
+                <p className="table-rationale">
+                  {g.builds} building · {g.counterparts} other side — complementary sides seated together so
+                  every offer meets a seek.
+                </p>
+              </div>
+            ))}
           </div>
         </div>
       </div>
 
       <div className="stage-foot">
         <p className="foot-note">
-          {attending.length} confirmed · {groups.length} {groupWord.toLowerCase()}s · objective = weighted Σ over attendees + host side · affinity as tiebreak
+          {totalAttending} confirmed · {groups.length} {groupWord.toLowerCase()}{groups.length === 1 ? "" : "s"} · objective = weighted Σ over attendees + host side · affinity as tiebreak
         </p>
         <button className="btn-primary" onClick={onNext}>Settle ROI <ArrowRight size={16} /></button>
       </div>
@@ -1101,7 +1234,9 @@ export default function App() {
           {stage === 2 && <Prospects profile={profile} runResult={runResult}
                                        eventId={eventId} onError={setApiError}
                                        onNext={() => go(3)} />}
-          {stage === 3 && <Matching profile={profile} onNext={() => go(4)} />}
+          {stage === 3 && <Matching profile={profile} eventId={eventId}
+                                     onError={setApiError}
+                                     onNext={() => go(4)} />}
           {stage === 4 && <ROI profile={profile} onRestart={restart} />}
         </main>
       </div>
