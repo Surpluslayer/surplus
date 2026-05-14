@@ -192,7 +192,12 @@ def discover_candidates(source: str, icp: dict, max_candidates: int = 8) -> list
             messages=[{"role": "user", "content": user_msg}],
         )
     except Exception as exc:  # noqa: BLE001 — surface, but don't crash the run
-        print(f"  [llm] discover_candidates({source}) failed: {exc}")
+        # Anthropic SDK's APIConnectionError stringifies to a bare
+        # "Connection error." — surface the underlying cause so we can
+        # tell DNS / TLS / refused / unreachable apart in logs.
+        cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+        print(f"  [llm] discover_candidates({source}) failed: {type(exc).__name__}: {exc}"
+              + (f"  (cause: {type(cause).__name__}: {cause})" if cause else ""))
         return []
 
     out: list[dict] = []
@@ -257,7 +262,9 @@ def judge_relevance(candidate: dict, icp: dict) -> tuple[bool, str]:
             messages=[{"role": "user", "content": user_msg}],
         )
     except Exception as exc:  # noqa: BLE001
-        print(f"  [llm] judge_relevance failed: {exc}")
+        cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+        print(f"  [llm] judge_relevance failed: {type(exc).__name__}: {exc}"
+              + (f"  (cause: {type(cause).__name__}: {cause})" if cause else ""))
         return False, f"verdict error: {exc}"
 
     for block in response.content:
