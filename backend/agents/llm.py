@@ -70,7 +70,15 @@ def _api_key() -> str:
 
 
 def llm_available() -> bool:
-    """True when the Anthropic SDK is installed and a key is in the env."""
+    """
+    True when ANY discovery backend is configured — Exa OR Anthropic.
+
+    Source adapters call this to decide between LLM-driven discovery and
+    the mock pool. `discover_candidates()` below picks the actual backend.
+    """
+    from . import exa
+    if exa.exa_available():
+        return True
     return _SDK_AVAILABLE and bool(_api_key())
 
 
@@ -193,18 +201,35 @@ _SOURCE_GUIDANCE = {
 
 def discover_candidates(source: str, icp: dict, max_candidates: int | None = None) -> list[dict]:
     """
-    Use Claude + web_search to surface candidates from one source.
+    Surface candidates from one source for this ICP.
 
-    `max_candidates` defaults to PROSPECTING_MAX_PER_SOURCE (env var, 5)
-    — a smaller cap keeps the downstream per-candidate judge phase from
-    bursting against Anthropic's rate limits on large runs.
+    Backend selection:
+      1. Exa (when EXA_API_KEY is set) — preferred: cheaper, faster,
+         structured profile URLs from a search index.
+      2. Anthropic Claude + web_search — fallback when EXA is unavailable
+         but ANTHROPIC_API_KEY is set.
+      3. Caller falls back to the mock pool when neither is available
+         (handled by `llm_available()` being False, which the source
+         adapters check before calling here).
 
-    Returns a list of dicts in the per-source shape defined by the emit
-    tool's input_schema. The caller (the SourceAdapter) merges these into
-    the standard adapter-record shape.
+    Returns a list of dicts in the per-source shape. Same contract
+    regardless of which backend produced the result.
     """
     if max_candidates is None:
         max_candidates = max_per_source()
+
+    # Prefer Exa when configured. Only fall through to Claude if Exa
+    # returned nothing (e.g., a transient HTTP error).
+    from . import exa
+    if exa.exa_available():
+        out = exa.discover_via_exa(source, icp, max_candidates)
+        if out:
+            return out
+        # Exa returned empty — fall through to Claude if we have it,
+        # otherwise return the empty list.
+        if not (_SDK_AVAILABLE and bool(_api_key())):
+            return []
+
     tool = _SOURCE_TOOL[source]
     guidance = _SOURCE_GUIDANCE[source]
     user_msg = (
