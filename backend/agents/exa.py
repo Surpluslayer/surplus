@@ -124,29 +124,50 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[di
 # ---- query construction --------------------------------------------------
 
 def _build_query(source: str, icp: dict) -> str:
-    """Compose a semantic query Exa can match. One sentence, plain English."""
+    """
+    Compose a semantic query Exa can match. Reads like a description, not
+    a database query — Exa's neural search responds best to natural
+    phrasing without articles. "Senior ML engineers at seed startups"
+    pulls way more profiles than "LinkedIn profile of a Senior ML
+    engineer working at a Seed-stage startup" (awkward "a + plural").
+    """
     role = (icp.get("role") or "").strip()
-    seniority = (icp.get("seniority") or "").strip()
+    seniority = (icp.get("seniority") or "").strip().rstrip("+")
     co_stage = (icp.get("co_stage") or "").strip()
 
-    parts: list[str] = []
+    # Seniority adjective: "Senior", "Staff", "Principal", "Mid", "Leadership"
+    # → folds Staff+ to "Staff" for natural reading.
+    seniority_word = ""
     if seniority:
-        parts.append(seniority)
-    if role:
-        parts.append(role)
-    base = " ".join(parts) or "engineer"
+        sl = seniority.lower()
+        if "leadership" in sl:
+            seniority_word = "senior leadership"
+        else:
+            seniority_word = seniority.lower()
 
-    if source == "linkedin":
-        prefix = "LinkedIn profile of a"
-    elif source == "github":
-        prefix = "GitHub profile of a"
-    else:  # x
-        prefix = "X / Twitter profile of a"
+    # Pluralize role for natural matching. Just append 's' if needed.
+    role_phrase = role.lower() if role else "engineer"
+    if role_phrase and not role_phrase.endswith("s"):
+        role_phrase += "s"
 
-    q = f"{prefix} {base}"
+    base = f"{seniority_word} {role_phrase}".strip()
+
+    # Anchor by stage when present. Drop the article — "seed startups"
+    # reads naturally; "a Seed-stage startup" introduces grammar friction
+    # that hurts neural matching.
     if co_stage:
-        q += f" working at a {co_stage}-stage startup"
-    return q
+        stage_phrase = co_stage.lower().replace("-stage", "").strip()
+        base = f"{base} at {stage_phrase} startups"
+
+    # Source-specific prefix that anchors the platform without forcing
+    # singular grammar.
+    prefix = {
+        "linkedin": "linkedin profile",
+        "github":   "github profile",
+        "x":        "x / twitter profile",
+    }[source]
+
+    return f"{prefix} {base}".strip()
 
 
 # ---- per-source parsing --------------------------------------------------
