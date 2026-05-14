@@ -72,11 +72,15 @@ def anthropic_diagnostics():
     """
     import os
     import socket
-    from . import models as _models  # keep linters happy; intentional unused
 
+    raw_key = os.environ.get("ANTHROPIC_API_KEY") or ""
+    stripped_key = raw_key.strip()
     out: dict = {
-        "anthropic_api_key_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
-        "anthropic_api_key_prefix": (os.environ.get("ANTHROPIC_API_KEY") or "")[:7],
+        "anthropic_api_key_set": bool(stripped_key),
+        "anthropic_api_key_prefix": stripped_key[:7],
+        # Trailing newlines / spaces in the env var cause httpx to reject
+        # the request as an "Illegal header value" before any TCP. Flag it.
+        "anthropic_api_key_has_whitespace": raw_key != stripped_key,
         "https_proxy": os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy"),
         "http_proxy": os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"),
     }
@@ -94,7 +98,7 @@ def anthropic_diagnostics():
         with httpx.Client(timeout=15.0) as client:
             resp = client.get("https://api.anthropic.com/v1/models",
                               headers={
-                                  "x-api-key": os.environ.get("ANTHROPIC_API_KEY", ""),
+                                  "x-api-key": stripped_key,
                                   "anthropic-version": "2023-06-01",
                               })
         out["http"] = {

@@ -37,9 +37,23 @@ MODEL = "claude-opus-4-7"
 WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search"}
 
 
+def _api_key() -> str:
+    """Read ANTHROPIC_API_KEY and strip any whitespace/newlines.
+
+    The Railway dashboard (and copy-paste in general) loves to append a
+    trailing newline to env-var values. The Anthropic SDK passes the raw
+    string through to the `x-api-key` HTTP header, and httpx rejects the
+    request with `LocalProtocolError: Illegal header value` before it
+    ever hits the wire — surfacing in our logs as a misleading
+    "Connection error." Stripping here keeps the SDK happy regardless of
+    what the platform did to the value.
+    """
+    return (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+
+
 def llm_available() -> bool:
     """True when the Anthropic SDK is installed and a key is in the env."""
-    return _SDK_AVAILABLE and bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return _SDK_AVAILABLE and bool(_api_key())
 
 
 _CLIENT: Optional["anthropic.Anthropic"] = None
@@ -48,7 +62,7 @@ _CLIENT: Optional["anthropic.Anthropic"] = None
 def _client() -> "anthropic.Anthropic":
     global _CLIENT
     if _CLIENT is None:
-        _CLIENT = anthropic.Anthropic()
+        _CLIENT = anthropic.Anthropic(api_key=_api_key())
     return _CLIENT
 
 
