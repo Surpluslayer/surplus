@@ -737,9 +737,10 @@ export default function App() {
       <div className="frame">
         <header className="topbar">
           <div className="brand">
-            <span className="brand-mark" />
-            <span className="brand-name">surplus</span>
-            <span className="brand-sub">event ROI engine · demo</span>
+            <img className="brand-logo" src="/surplus-logo.png" alt="Surplus logo" />
+            <div className="brand-text">
+              <span className="brand-name">surplus</span>
+            </div>
           </div>
           <StageRail stage={stage} setStage={go} maxReached={maxReached} />
         </header>
@@ -757,11 +758,11 @@ export default function App() {
 
 // ---- styles -------------------------------------------------
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,500&family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;1,500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,500&family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;1,500&display=swap');
 * { box-sizing:border-box; margin:0; padding:0; }
 .root {
-  --bg:#f4f2fb; --panel:#ffffff; --panel-2:#faf9fe; --panel-3:#f2f0fa;
-  --line:#e9e4f4; --line-soft:#f1edf9;
+  --bg:#f6f7f9; --panel:#ffffff; --panel-2:#fbfcfd; --panel-3:#f1f3f6;
+  --line:#e4e8ee; --line-soft:#edf1f5;
   --ink:#1f1c2e; --ink-dim:#5f5b73; --ink-faint:#9b96ac;
   --acc:#6b46e0; --acc-deep:#5836c6; --acc-soft:#ede9fb; --acc-light:#9d8ae8;
   --ok:#1f9d6b; --ok-soft:#e3f4ec; --no:#d8654f; --no-soft:#fbe9e4;
@@ -770,8 +771,7 @@ const CSS = `
   --r-card:16px; --r-panel:13px; --r-el:10px; --r-pill:999px;
   font-family:'Plus Jakarta Sans',system-ui,sans-serif; background:var(--bg);
   color:var(--ink); min-height:100vh; padding:24px;
-  background-image:radial-gradient(rgba(108,67,217,0.07) 1px, transparent 1px);
-  background-size:24px 24px;
+  background-image:none;
 }
 .frame { max-width:1080px; margin:0 auto; }
 .topbar {
@@ -780,12 +780,13 @@ const CSS = `
   border-radius:var(--r-card); box-shadow:var(--shadow-sm);
   flex-wrap:wrap; gap:14px; margin-bottom:18px;
 }
-.brand { display:flex; align-items:center; gap:10px; }
-.brand-mark { width:26px; height:26px; border-radius:8px;
-  background:linear-gradient(135deg,#a48cf2,#6b46e0);
-  box-shadow:0 4px 12px rgba(108,67,217,0.35); }
-.brand-name { font-weight:700; letter-spacing:-0.02em; font-size:19px; color:var(--ink); }
-.brand-sub { font-size:11px; color:var(--ink-faint); }
+.brand { display:flex; align-items:center; gap:12px; isolation:isolate; }
+.brand-logo { width:44px; height:44px; display:block; object-fit:contain;
+  mix-blend-mode:multiply; filter:drop-shadow(0 8px 18px rgba(108,67,217,0.14)); }
+.brand-text { min-height:44px; display:flex; flex-direction:column; justify-content:center; gap:1px; }
+.brand-name { font-family:'Inter',system-ui,sans-serif; font-weight:800;
+  letter-spacing:-0.05em; font-size:1.85rem; line-height:1; color:var(--ink); }
+.brand-sub { font-size:11px; color:var(--ink-faint); line-height:1.2; }
 .rail { display:flex; gap:5px; flex-wrap:wrap; }
 .rail-item { display:flex; align-items:center; gap:7px; background:transparent;
   border:1px solid transparent; color:var(--ink-faint); padding:7px 12px; cursor:pointer;
