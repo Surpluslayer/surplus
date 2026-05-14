@@ -17,7 +17,6 @@ already hand-curated, so re-filtering would just churn the demo.
 """
 from __future__ import annotations
 import asyncio
-import os
 
 from . import llm
 from .sources import ALL_ADAPTERS, SourceAdapter
@@ -36,32 +35,17 @@ _DEFAULTS = {
 }
 
 
-def _relevance_concurrency() -> int:
-    """How many judge_relevance calls to run in parallel.
-
-    Default is intentionally low (2) — on pools >20 candidates, higher
-    concurrency bursts past Anthropic's per-minute token rate-limit and
-    crashes the run. The SDK auto-retries 429s, but only up to a point.
-    Bump if you're on a higher tier and have headroom.
-    """
-    try:
-        return max(1, int(os.environ.get("PROSPECTING_JUDGE_CONCURRENCY", "2")))
-    except ValueError:
-        return 2
-
-
 async def _judge_all(candidates: list[dict], icp: dict) -> list[dict]:
-    """Run the LLM gate over every candidate; keep the relevant ones."""
-    sem = asyncio.Semaphore(_relevance_concurrency())
+    """Run the LLM gate over every candidate; keep the relevant ones.
 
-    async def _one(c: dict) -> tuple[dict, bool, str]:
-        async with sem:
-            relevant, reason = await asyncio.to_thread(llm.judge_relevance, c, icp)
-            return c, relevant, reason
-
-    results = await asyncio.gather(*(_one(c) for c in candidates))
+    Uses `judge_relevance_batch` — a single Haiku call that emits a
+    verdict per candidate. On a pool of 15 that's 1 API round-trip
+    instead of 15, saving ~25-30s of wall-clock.
+    """
+    verdicts = await asyncio.to_thread(llm.judge_relevance_batch, candidates, icp)
     kept: list[dict] = []
-    for c, relevant, reason in results:
+    for c in candidates:
+        relevant, reason = verdicts.get(c["identity"], (False, "no verdict emitted"))
         if relevant:
             # Surfaced for visibility in seed/log output; the field is not
             # persisted to the DB (no migration), but compose() doesn't need
