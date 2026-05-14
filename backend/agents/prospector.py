@@ -47,6 +47,23 @@ def _cache_ttl() -> int:
         return 3600
 
 
+def _adapter_timeout() -> float:
+    """Per-adapter wall-clock cap. Anthropic web_search occasionally takes
+    minutes when its servers retry; we'd rather get partial results fast."""
+    try:
+        return max(5.0, float(os.environ.get("PROSPECTING_ADAPTER_TIMEOUT", "30")))
+    except ValueError:
+        return 30.0
+
+
+def _judge_timeout() -> float:
+    """Wall-clock cap for the batched judge call."""
+    try:
+        return max(2.0, float(os.environ.get("PROSPECTING_JUDGE_TIMEOUT", "15")))
+    except ValueError:
+        return 15.0
+
+
 def _icp_cache_key(icp: dict) -> str:
     # Only the fields the LLM actually conditions on. Sorted for stable bytes.
     return json.dumps(
@@ -72,10 +89,20 @@ async def _judge_all(candidates: list[dict], icp: dict) -> list[dict]:
     """Run the LLM gate over every candidate; keep the relevant ones.
 
     Uses `judge_relevance_batch` — a single Haiku call that emits a
-    verdict per candidate. On a pool of 15 that's 1 API round-trip
-    instead of 15, saving ~25-30s of wall-clock.
+    verdict per candidate. Wrapped in asyncio.wait_for so a slow Haiku
+    response can't pin the whole /prospect call; on timeout we keep
+    every surfaced candidate (fail-open here — discovery already
+    self-filters, the judge is a second pass).
     """
-    verdicts = await asyncio.to_thread(llm.judge_relevance_batch, candidates, icp)
+    timeout = _judge_timeout()
+    try:
+        verdicts = await asyncio.wait_for(
+            asyncio.to_thread(llm.judge_relevance_batch, candidates, icp),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        print(f"  [llm] judge_relevance_batch exceeded {timeout}s — keeping all candidates")
+        return candidates
     kept: list[dict] = []
     for c in candidates:
         relevant, reason = verdicts.get(c["identity"], (False, "no verdict emitted"))
@@ -116,7 +143,23 @@ async def prospect(
             return copy.deepcopy(hit[1])
 
     adapters = adapters or ALL_ADAPTERS
-    batches = await asyncio.gather(*(a.fetch(icp) for a in adapters))
+    timeout = _adapter_timeout()
+
+    async def _bounded(adapter: SourceAdapter) -> list[dict]:
+        # Each adapter gets its own wall-clock cap so one stuck call (often
+        # Anthropic's web_search going into a multi-minute retry loop on the
+        # server side) can't pin the whole pipeline. On timeout we treat that
+        # source as "returned nothing" and continue with the others.
+        try:
+            return await asyncio.wait_for(adapter.fetch(icp), timeout=timeout)
+        except asyncio.TimeoutError:
+            print(f"  [adapter] {adapter.key} exceeded {timeout}s — skipped")
+            return []
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [adapter] {adapter.key} crashed: {type(exc).__name__}: {exc}")
+            return []
+
+    batches = await asyncio.gather(*(_bounded(a) for a in adapters))
 
     merged: dict[str, dict] = {}
     for batch in batches:
