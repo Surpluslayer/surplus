@@ -49,11 +49,15 @@ def _cache_ttl() -> int:
 
 def _adapter_timeout() -> float:
     """Per-adapter wall-clock cap. Anthropic web_search occasionally takes
-    minutes when its servers retry; we'd rather get partial results fast."""
+    minutes when its servers retry; we'd rather get partial results fast.
+
+    60s default — sized to fit a single web_search round (max_uses=1) with
+    healthy headroom for Sonnet's reasoning. 30s caught nothing in prod.
+    """
     try:
-        return max(5.0, float(os.environ.get("PROSPECTING_ADAPTER_TIMEOUT", "30")))
+        return max(5.0, float(os.environ.get("PROSPECTING_ADAPTER_TIMEOUT", "60")))
     except ValueError:
-        return 30.0
+        return 60.0
 
 
 def _judge_timeout() -> float:

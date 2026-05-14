@@ -40,10 +40,11 @@ except ImportError:
 # because it's plain text-in / verdict-out, no web_search tool.
 MODEL = "claude-sonnet-4-6"
 JUDGE_MODEL = "claude-haiku-4-5"
-# Cap each adapter's web_search iterations. 2 is plenty for finding a
-# handful of candidates and is the biggest single latency lever on
-# discovery — Sonnet would otherwise happily run 5-6 search rounds.
-WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 2}
+# Cap each adapter's web_search iterations. 1 is enough for the demo —
+# a single SERP usually yields 5+ candidates, and a second round adds
+# ~15s of latency that wasn't worth it in practice. Raise back to 2 if
+# discovery quality drops.
+WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 1}
 
 
 def max_per_source() -> int:
