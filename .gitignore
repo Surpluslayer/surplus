@@ -13,3 +13,7 @@ backend/data/*.db
 .ruff_cache/
 .mypy_cache/
 .DS_Store
+
+# frontend
+frontend/node_modules/
+frontend/dist/

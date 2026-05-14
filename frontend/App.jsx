@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import {
   ArrowRight, Check, Circle, Activity, Send, Network, Target,
-  Github, Twitter, Linkedin, Zap, TrendingUp, RotateCw, Mail,
+  GitBranch, BriefcaseBusiness, Zap, TrendingUp, RotateCw, Mail,
   CornerDownRight
 } from "lucide-react";
 
@@ -247,9 +247,9 @@ function Intake({ profile, setProfile, onRun }) {
 // ---- Stage 1: Pipeline --------------------------------------
 function Pipeline({ profile, onDone }) {
   const sources = [
-    { key: "github", label: "GitHub adapter", icon: Github, note: "OSS signal · clean API" },
-    { key: "x", label: "X adapter", icon: Twitter, note: "Reach signal · paid API" },
-    { key: "linkedin", label: "LinkedIn adapter", icon: Linkedin, note: "Contact resolve · provider" },
+    { key: "github", label: "GitHub adapter", icon: GitBranch, note: "OSS signal · clean API" },
+    { key: "x", label: "X adapter", icon: Send, note: "Reach signal · paid API" },
+    { key: "linkedin", label: "LinkedIn adapter", icon: BriefcaseBusiness, note: "Contact resolve · provider" },
   ];
   const steps = ["Prospecting", "Fit scoring", "Auto-outreach"];
   const [progress, setProgress] = useState(0);
@@ -388,8 +388,8 @@ function Prospects({ profile, onNext }) {
                   <span className="pr-role">{p.role} · {p.company}</span>
                 </span>
                 <span className="pr-signal">
-                  <span className="sig"><Github size={11} /> {fmtNum(p.gh)}</span>
-                  <span className="sig"><Twitter size={11} /> {fmtNum(p.x)}</span>
+                  <span className="sig"><GitBranch size={11} /> {fmtNum(p.gh)}</span>
+                  <span className="sig"><Send size={11} /> {fmtNum(p.x)}</span>
                 </span>
                 <span className="pr-score">
                   <span className={`score-num ${p.score >= THRESHOLD ? "ok" : "no"}`}>{p.score}</span>
