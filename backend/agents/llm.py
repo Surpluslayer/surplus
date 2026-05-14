@@ -50,16 +50,15 @@ WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_use
 def max_per_source() -> int:
     """Cap on candidates per source adapter.
 
-    12 default — gives Exa room to return a fuller pool while the LLM
-    judge filters obvious mismatches. The old cap (5) was a rate-limit
-    hedge for the Anthropic web_search path; with Exa each query is
-    one cheap call, so the cap is now about UX (how many cards to
-    render) and judge tokens (cost is ~$0.001/candidate at Haiku).
+    50 default — Exa is generous (one query, ~$0.005, up to 100 results)
+    and we have free credits to burn. Judge handles ~50 candidates in
+    one batched Haiku call for ~$0.005, so the total cost ceiling per
+    /prospect run is ~$0.02 even at this cap.
     """
     try:
-        return max(1, int(os.environ.get("PROSPECTING_MAX_PER_SOURCE", "12")))
+        return max(1, int(os.environ.get("PROSPECTING_MAX_PER_SOURCE", "50")))
     except ValueError:
-        return 12
+        return 50
 
 
 def _api_key() -> str:

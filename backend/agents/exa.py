@@ -78,8 +78,9 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[di
         "type": "neural",
         "category": category,
         # over-fetch — even with category filter, some results won't yield a
-        # parseable handle (snippets, archives, etc.)
-        "numResults": max(max_candidates * 3, 10),
+        # parseable handle (snippets, archives, etc.). Exa caps at 100 per
+        # request so clamp there even when max_candidates is high.
+        "numResults": min(100, max(max_candidates * 3, 10)),
         "includeDomains": [domain],
         "contents": {"text": True},
     }
