@@ -179,12 +179,28 @@ async def prospect(
                 rec.setdefault(raw_key, raw_val)  # first source to resolve a field wins
 
     out: list[dict] = []
+    dropped_no_linkedin: list[str] = []
     for rec in merged.values():
         rec["sources"] = ",".join(sorted(rec["sources"]))
         for default_key, default_val in _DEFAULTS.items():
             rec.setdefault(default_key, default_val)
         rec["li_resolved"] = bool(rec.pop("contact_resolved", False))
+
+        # LinkedIn URL is the primary driver — without it we can't do
+        # outreach at all, so the candidate is noise. GitHub stars and X
+        # follower counts are kept as supplementary signal only when they
+        # arrived attached to a LinkedIn-anchored record (handles matched
+        # at merge time). Discovery via GitHub/X alone, without a LinkedIn
+        # handle that matched, gets dropped here.
+        if not rec.get("linkedin_url"):
+            dropped_no_linkedin.append(rec.get("name") or rec["identity"])
+            continue
         out.append(rec)
+
+    if dropped_no_linkedin:
+        print(f"  [prospect] dropped {len(dropped_no_linkedin)} candidate(s) "
+              f"with no LinkedIn URL: {dropped_no_linkedin[:5]}"
+              f"{'…' if len(dropped_no_linkedin) > 5 else ''}")
 
     if llm.llm_available() and out:
         out = await _judge_all(out, icp)
