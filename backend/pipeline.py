@@ -29,11 +29,20 @@ from .agents.outreach import compose, run_outreach
 from .providers import get_provider, ProviderResult
 
 
-async def run_prospect(db: Session, event: models.Event) -> list[models.Prospect]:
-    """Fan out, persist, score, set the floating threshold, mark approved/below."""
+async def run_prospect(
+    db: Session,
+    event: models.Event,
+    force_fresh: bool = False,
+) -> list[models.Prospect]:
+    """Fan out, persist, score, set the floating threshold, mark approved/below.
+
+    `force_fresh=True` bypasses the in-memory ICP cache in prospect().
+    Use it when the user explicitly asks for new results (e.g. via
+    `?fresh=true` on the route); default reuses the cached pool.
+    """
     icp = {"role": event.role, "seniority": event.seniority, "co_stage": event.co_stage}
 
-    raw = await prospect(icp)
+    raw = await prospect(icp, force_fresh=force_fresh)
     prospects: list[models.Prospect] = []
     for r in raw:
         p = models.Prospect(

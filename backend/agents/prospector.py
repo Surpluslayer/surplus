@@ -17,9 +17,42 @@ already hand-curated, so re-filtering would just churn the demo.
 """
 from __future__ import annotations
 import asyncio
+import copy
+import json
+import os
+import time
 
 from . import llm
 from .sources import ALL_ADAPTERS, SourceAdapter
+
+
+# ── ICP-keyed response cache ────────────────────────────────────────────────
+# Web search is the wall-clock bottleneck in LLM mode and it's the same work
+# every time when the ICP doesn't change. Iterating on copy / styling / the
+# outreach UI shouldn't pay 25s to re-fetch the same candidates. We cache
+# prospect()'s output in-memory keyed by a stable hash of the ICP fields
+# we actually pass to the model. Cleared on redeploy (which is what you want
+# — fresh data per deploy).
+#
+# Tunables:
+#   PROSPECTING_CACHE_TTL — seconds, default 3600 (1h). Set 0 to disable.
+#   `force_fresh=True` passed to prospect() bypasses the cache for one call.
+_PROSPECT_CACHE: dict[str, tuple[float, list[dict]]] = {}
+
+
+def _cache_ttl() -> int:
+    try:
+        return max(0, int(os.environ.get("PROSPECTING_CACHE_TTL", "3600")))
+    except ValueError:
+        return 3600
+
+
+def _icp_cache_key(icp: dict) -> str:
+    # Only the fields the LLM actually conditions on. Sorted for stable bytes.
+    return json.dumps(
+        {k: icp.get(k) for k in ("role", "seniority", "co_stage")},
+        sort_keys=True,
+    )
 
 # fields a record may still be missing after the merge, and their defaults
 _DEFAULTS = {
@@ -58,8 +91,26 @@ async def _judge_all(candidates: list[dict], icp: dict) -> list[dict]:
     return kept
 
 
-async def prospect(icp: dict, adapters: list[SourceAdapter] | None = None) -> list[dict]:
-    """Fan out across all source adapters concurrently; merge on identity."""
+async def prospect(
+    icp: dict,
+    adapters: list[SourceAdapter] | None = None,
+    force_fresh: bool = False,
+) -> list[dict]:
+    """Fan out across all source adapters concurrently; merge on identity.
+
+    Memoizes the full result by ICP fingerprint for PROSPECTING_CACHE_TTL
+    seconds (default 1h). Subsequent runs against the same ICP return in
+    <1s instead of re-running web_search. Pass force_fresh=True to bust.
+    """
+    ttl = _cache_ttl()
+    key = _icp_cache_key(icp)
+    if ttl and not force_fresh:
+        hit = _PROSPECT_CACHE.get(key)
+        if hit and time.time() - hit[0] < ttl:
+            age = int(time.time() - hit[0])
+            print(f"  [prospect] cache HIT for {key} ({age}s old, {len(hit[1])} candidates)")
+            return copy.deepcopy(hit[1])
+
     adapters = adapters or ALL_ADAPTERS
     batches = await asyncio.gather(*(a.fetch(icp) for a in adapters))
 
@@ -84,4 +135,8 @@ async def prospect(icp: dict, adapters: list[SourceAdapter] | None = None) -> li
 
     if llm.llm_available() and out:
         out = await _judge_all(out, icp)
+
+    if ttl:
+        _PROSPECT_CACHE[key] = (time.time(), copy.deepcopy(out))
+        print(f"  [prospect] cache MISS for {key} — stored {len(out)} candidates")
     return out

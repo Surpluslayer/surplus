@@ -22,19 +22,28 @@ def _wipe_prior_prospects(db: Session, ev: models.Event) -> None:
 
 
 @router.post("/{event_id}/prospect", response_model=schemas.PipelineResult)
-async def prospect_only(event_id: int, db: Session = Depends(get_db)):
+async def prospect_only(
+    event_id: int,
+    fresh: bool = False,
+    db: Session = Depends(get_db),
+):
     """
     Stage 02 + 03a only: fan-out + score + threshold. No outreach.
 
     Marks every prospect 'approved' or 'below'. Idempotent — wipes prior
     prospects (and their outreach + conversions) first.
+
+    Pass `?fresh=true` to bypass the in-memory ICP cache and force a
+    real web_search round. By default the prospector reuses the cached
+    pool for the same ICP, which makes iterating on UI / outreach copy
+    essentially instant.
     """
     ev = db.get(models.Event, event_id)
     if not ev:
         raise HTTPException(404, "event not found")
 
     _wipe_prior_prospects(db, ev)
-    prospects = await run_prospect(db, ev)
+    prospects = await run_prospect(db, ev, force_fresh=fresh)
     return schemas.PipelineResult.build(ev, prospects)
 
 
