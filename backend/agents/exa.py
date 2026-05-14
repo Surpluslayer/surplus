@@ -48,6 +48,11 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[di
     """
     Search Exa for one source's candidates matching the ICP.
 
+    Uses Exa's `category` filter to scope to actual profile pages — this is
+    more precise than `includeDomains` alone (which would also surface
+    LinkedIn job posts, company pages, etc.). We pass both as belt-and-
+    suspenders so we don't pay tokens reading pages we'll discard anyway.
+
     Returns up to `max_candidates` dicts. On any error, returns [] so the
     caller can fall through to another backend or the mock pool.
     """
@@ -62,10 +67,18 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[di
         "github": "github.com",
         "x": "x.com",
     }[source]
+    # Exa's canonical category labels for entity-type results
+    category = {
+        "linkedin": "linkedin profile",
+        "github": "github",
+        "x": "tweet",
+    }[source]
     body = {
         "query": query,
         "type": "neural",
-        # over-fetch — many results won't have a matching profile URL
+        "category": category,
+        # over-fetch — even with category filter, some results won't yield a
+        # parseable handle (snippets, archives, etc.)
         "numResults": max(max_candidates * 3, 10),
         "includeDomains": [domain],
         "contents": {"text": True},

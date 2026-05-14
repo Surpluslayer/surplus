@@ -116,6 +116,71 @@ def anthropic_diagnostics():
     return out
 
 
+@app.get("/api/diagnostics/exa", tags=["meta"])
+def exa_diagnostics():
+    """
+    Tests outbound connectivity to api.exa.ai from inside the container.
+    Useful when /prospect is silently returning 0 LinkedIn candidates —
+    the answer here tells you whether the Exa backend can even reach
+    their API and whether the key is valid.
+
+    Does a minimal /search call (1 result, cheap) so it does cost a query
+    credit. Surfaces the specific failure: DNS / TLS / 401 / 5xx.
+    """
+    import os
+    import socket
+
+    raw_key = os.environ.get("EXA_API_KEY") or ""
+    stripped_key = raw_key.strip()
+    out: dict = {
+        "exa_api_key_set": bool(stripped_key),
+        "exa_api_key_prefix": stripped_key[:6],
+        "exa_api_key_has_whitespace": raw_key != stripped_key,
+    }
+
+    # 1. DNS
+    try:
+        out["dns"] = {"ok": True, "ip": socket.gethostbyname("api.exa.ai")}
+    except Exception as exc:  # noqa: BLE001
+        out["dns"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return out
+
+    # 2. Minimal search to validate the key + category filter end-to-end
+    if not stripped_key:
+        out["http"] = {"ok": False, "error": "no key configured"}
+        return out
+    try:
+        import httpx
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(
+                "https://api.exa.ai/search",
+                headers={
+                    "x-api-key": stripped_key,
+                    "content-type": "application/json",
+                },
+                json={
+                    "query": "Senior software engineer",
+                    "type": "neural",
+                    "category": "linkedin profile",
+                    "numResults": 1,
+                    "includeDomains": ["linkedin.com"],
+                },
+            )
+        out["http"] = {
+            "ok": resp.status_code < 400,
+            "status_code": resp.status_code,
+            "body_preview": resp.text[:400],
+        }
+    except Exception as exc:  # noqa: BLE001
+        cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+        out["http"] = {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "cause": f"{type(cause).__name__}: {cause}" if cause else None,
+        }
+    return out
+
+
 # --- Serve the built React frontend ---------------------------------------
 # In prod (Docker build): /app/frontend/dist exists and is mounted at "/".
 # Locally without a build, this branch is skipped — visit /docs for the API

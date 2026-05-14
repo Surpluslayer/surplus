@@ -158,6 +158,32 @@ def test_discover_via_exa_filters_and_dedups(monkeypatch):
     handles = {c["identity"] for c in out}
     assert handles == {"maya-rodriguez", "jiahui-jin"}
 
+    # Verify the request body includes the LinkedIn-specific category filter
+    call_kwargs = fake_client.post.call_args.kwargs
+    body = call_kwargs["json"]
+    assert body["category"] == "linkedin profile"
+    assert body["includeDomains"] == ["linkedin.com"]
+    assert body["type"] == "neural"
+
+
+def test_discover_via_exa_category_per_source(monkeypatch):
+    """Each source maps to the right Exa category label."""
+    monkeypatch.setenv("EXA_API_KEY", "test-key")
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    fake_response.json.return_value = {"results": []}
+    fake_client = MagicMock()
+    fake_client.post.return_value = fake_response
+    fake_client.__enter__.return_value = fake_client
+    fake_client.__exit__.return_value = None
+
+    expected = {"linkedin": "linkedin profile", "github": "github", "x": "tweet"}
+    for source, category in expected.items():
+        with patch("httpx.Client", return_value=fake_client):
+            exa.discover_via_exa(source, {"role": "engineer"})
+        body = fake_client.post.call_args.kwargs["json"]
+        assert body["category"] == category, f"source={source}"
+
 
 def test_discover_via_exa_returns_empty_on_http_error(monkeypatch):
     monkeypatch.setenv("EXA_API_KEY", "test-key")
