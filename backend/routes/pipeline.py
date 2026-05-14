@@ -7,6 +7,8 @@ from .. import models, schemas
 from ..db import get_db
 from ..pipeline import run_prospect, run_outreach_stage, run_pipeline
 from ..agents.outreach import compose
+from ..agents.prospector import prospect as run_discovery
+from ..agents import llm
 from ..providers import get_provider
 
 router = APIRouter(prefix="/events", tags=["02-03 · pipeline"])
@@ -111,6 +113,74 @@ def get_prospects(event_id: int, db: Session = Depends(get_db)):
     if not ev.prospects:
         raise HTTPException(409, "pipeline has not been run for this event yet")
     return schemas.PipelineResult.build(ev, ev.prospects)
+
+
+@router.get("/{event_id}/prospect/preview", response_model=schemas.ProspectingPreview)
+async def prospect_preview(event_id: int, db: Session = Depends(get_db)):
+    """
+    Run discovery + LLM ICP gate WITHOUT persisting anything.
+
+    In LLM mode (ANTHROPIC_API_KEY set), this fires real web_search calls
+    plus a relevance verdict per merged candidate. In mock mode it reads
+    the hand-curated prospect_pool.json. In both modes, every surfaced
+    candidate is run through compose() so the response shows the exact
+    LinkedIn connection note + post-accept DM that would land in their
+    inbox — proving the LLM-extracted profile fields (works_on, offers,
+    seeks) actually feed the outreach personalization.
+
+    Read-only: no DB writes, no provider calls. Safe to hit before
+    committing to /prospect.
+    """
+    from types import SimpleNamespace
+
+    ev = db.get(models.Event, event_id)
+    if not ev:
+        raise HTTPException(404, "event not found")
+
+    icp = {"role": ev.role, "seniority": ev.seniority, "co_stage": ev.co_stage}
+    candidates = await run_discovery(icp)
+
+    rows: list[schemas.ProspectingPreviewCandidate] = []
+    all_names = [c["name"] for c in candidates]
+    for c in candidates:
+        # compose() reads .name, .works_on, .offers — a SimpleNamespace is
+        # enough, we don't need an ORM row. peers come from the other
+        # surfaced candidates (the same logic the live pipeline uses).
+        fake_prospect = SimpleNamespace(
+            name=c["name"],
+            works_on=c.get("works_on", "general"),
+            offers=c.get("offers", ""),
+        )
+        peers = [n for n in all_names if n != c["name"]]
+        msg = compose(fake_prospect, ev, peers=peers)
+
+        rows.append(schemas.ProspectingPreviewCandidate(
+            identity=c["identity"],
+            name=c["name"],
+            role=c.get("role", "Unknown"),
+            company=c.get("company", "Unknown"),
+            seniority=c.get("seniority", "Mid"),
+            side=c.get("side", "Builds"),
+            works_on=c.get("works_on", "general"),
+            offers=c.get("offers", ""),
+            seeks=c.get("seeks", ""),
+            gh_stars=int(c.get("gh_stars") or 0),
+            x_followers=int(c.get("x_followers") or 0),
+            li_resolved=bool(c.get("li_resolved", False)),
+            linkedin_url=c.get("linkedin_url"),
+            sources=c.get("sources", ""),
+            llm_verdict=c.get("llm_verdict"),
+            note=msg.note,
+            note_chars=len(msg.note),
+            message=msg.message,
+        ))
+
+    return schemas.ProspectingPreview(
+        event_id=ev.id,
+        mode="llm" if llm.llm_available() else "mock",
+        count=len(rows),
+        candidates=rows,
+    )
 
 
 @router.get("/{event_id}/outreach/preview", response_model=schemas.OutreachPreview)

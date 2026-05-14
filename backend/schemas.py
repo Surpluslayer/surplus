@@ -173,6 +173,35 @@ class OutreachRunResult(BaseModel):
         )
 
 
+class ProspectingPreviewCandidate(BaseModel):
+    identity: str
+    name: str
+    role: str
+    company: str
+    seniority: str
+    side: str
+    works_on: str
+    offers: str
+    seeks: str
+    gh_stars: int
+    x_followers: int
+    li_resolved: bool
+    linkedin_url: str | None
+    sources: str
+    llm_verdict: str | None
+    # what compose() would produce if this candidate were persisted + outreached
+    note: str
+    note_chars: int
+    message: str
+
+
+class ProspectingPreview(BaseModel):
+    event_id: int
+    mode: str           # "llm" | "mock"
+    count: int
+    candidates: list[ProspectingPreviewCandidate]
+
+
 class OutreachPreviewRow(BaseModel):
     prospect_id: int
     name: str

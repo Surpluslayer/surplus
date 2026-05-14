@@ -14,7 +14,7 @@ those levers, wired end to end.
 | Stage | What it does | Code |
 |------:|--------------|------|
 | **01 intake** | Capture the event profile — ICP, shape, goal, budget. Derive the funnel target. | `routes/events.py`, `models.Event` |
-| **02 prospecting** | Fan out across source adapters *concurrently*, merge on identity. | `agents/prospector.py`, `agents/sources/` |
+| **02 prospecting** | AI-driven discovery: Claude + web_search surfaces real candidates from GitHub / LinkedIn / X against the ICP, merges on identity, then an LLM gatekeeper drops anyone who isn't an ICP match. Falls back to a mock pool when no `ANTHROPIC_API_KEY` is set. | `agents/prospector.py`, `agents/sources/`, `agents/llm.py` |
 | **03 scoring + outreach** | Deterministic fit score + reasoning; the threshold *floats* to hit funnel supply; autonomous outreach for everyone above it. | `agents/scorer.py`, `agents/outreach.py`, `pipeline.py` |
 | **04 matching** | Guest list as a value graph — symbiotic edges (offer↔seek across sides) + affinity edges; side-balanced group formation. | `agents/matcher.py` |
 | **05 ROI** | Per-guest conversion ledger + net ROI, settled against the intake goal. | `agents/roi.py` |
@@ -36,12 +36,13 @@ it's worth per goal).
 │   ├── pipeline.py          stage 02-03 orchestrator (fan-out → score → threshold → outreach)
 │   ├── seed.py              run all 5 stages end to end, no HTTP — `python -m backend.seed`
 │   ├── agents/
-│   │   ├── prospector.py    concurrent fan-out, merge on identity
+│   │   ├── prospector.py    fan-out, merge on identity, LLM ICP gate
+│   │   ├── llm.py           Claude wrapper: discover_candidates + judge_relevance
 │   │   ├── scorer.py        fit score + floating threshold
 │   │   ├── outreach.py      autonomous compose / send / track
 │   │   ├── matcher.py       symbiotic + affinity edges, group formation
 │   │   ├── roi.py           conversion ledger + net ROI
-│   │   └── sources/         pluggable prospect-source adapters
+│   │   └── sources/         per-source web_search adapters (mock-pool fallback)
 │   │       ├── base.py      SourceAdapter contract
 │   │       ├── github.py    OSS signal
 │   │       ├── x.py         reach signal

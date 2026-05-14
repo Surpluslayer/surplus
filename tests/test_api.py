@@ -178,6 +178,40 @@ def test_outreach_preview_shows_messages_without_mutating(client):
     assert before_statuses == after_statuses
 
 
+def test_prospect_preview_runs_discovery_without_persisting(client):
+    """The preview surfaces candidates AND shows the outreach note each one
+    would receive, without writing a single row to the DB."""
+    r = client.post("/events", json={})
+    assert r.status_code in (200, 201)
+    eid = r.json()["id"]
+
+    # Nothing persisted before, nothing persisted after.
+    with SessionLocal() as db:
+        assert db.query(models.Prospect).count() == 0
+
+    preview = client.get(f"/events/{eid}/prospect/preview").json()
+    assert preview["event_id"] == eid
+    assert preview["mode"] in ("llm", "mock")
+    # No ANTHROPIC_API_KEY in the test env -> mock mode -> 22 mock candidates.
+    assert preview["mode"] == "mock"
+    assert preview["count"] >= 10
+
+    with SessionLocal() as db:
+        assert db.query(models.Prospect).count() == 0
+
+    # Every candidate carries the LLM-extractable profile fields AND the
+    # composed outreach note. This is the wire from discovery -> outreach.
+    for c in preview["candidates"]:
+        assert c["identity"]
+        assert c["name"]
+        assert c["note"]
+        assert c["note_chars"] <= 300
+        assert c["message"]
+        # Peer reveal should mention at least one other surfaced candidate.
+        if preview["count"] > 1:
+            assert "are already in" in c["note"] or "is already in" in c["note"]
+
+
 def test_outreach_log_endpoint_returns_timeline(client):
     eid = _create_event_and_prospect(client)
     client.post(f"/events/{eid}/outreach")
