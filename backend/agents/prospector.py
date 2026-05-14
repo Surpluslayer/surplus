@@ -48,16 +48,18 @@ def _cache_ttl() -> int:
 
 
 def _adapter_timeout() -> float:
-    """Per-adapter wall-clock cap. Anthropic web_search occasionally takes
-    minutes when its servers retry; we'd rather get partial results fast.
+    """Per-adapter wall-clock cap on web_search.
 
-    60s default — sized to fit a single web_search round (max_uses=1) with
-    healthy headroom for Sonnet's reasoning. 30s caught nothing in prod.
+    120s default. Anthropic's web_search_20260209 is consistently taking
+    60-90s per call from Railway EU West, even with max_uses=1. 60s
+    caught nothing in prod. Trade off latency for actually-finishing.
+    The right long-term fix is to swap web_search for a real search
+    backend (Exa) — see PR notes.
     """
     try:
-        return max(5.0, float(os.environ.get("PROSPECTING_ADAPTER_TIMEOUT", "60")))
+        return max(5.0, float(os.environ.get("PROSPECTING_ADAPTER_TIMEOUT", "120")))
     except ValueError:
-        return 60.0
+        return 120.0
 
 
 def _judge_timeout() -> float:

@@ -225,10 +225,10 @@ def discover_candidates(source: str, icp: dict, max_candidates: int | None = Non
         # `output_config` is intentionally NOT set here: the pinned
         # anthropic==0.42.0 raises TypeError on it. Re-add when we bump
         # the SDK to a version that knows the parameter.
-        # Hard 90s timeout per discover call so a Railway proxy timeout
-        # (typically 100s) doesn't strand the request — better to fail
-        # fast and let the catch return [] than hang the whole pipeline.
-        response = _client().with_options(timeout=90.0).messages.create(
+        # 110s SDK timeout — slightly under the 120s adapter timeout in
+        # prospector.py so the SDK raises a clean APITimeoutError that
+        # our except catches, instead of getting cancelled mid-flight.
+        response = _client().with_options(timeout=110.0).messages.create(
             model=MODEL,
             max_tokens=8000,
             system=[{
