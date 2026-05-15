@@ -417,6 +417,7 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
         offers: p.offers,
         seeks: p.seeks,
         worksOn: p.works_on,
+        linkedinUrl: p.linkedin_url,
       }))
     : PROSPECTS;
   const T = useReal ? runResult.event.threshold : THRESHOLD;
@@ -705,6 +706,15 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
                 )}
               </div>
             )}
+            {sel.linkedinUrl && (
+              <div className="pd-section">
+                <p className="pd-label">Profile</p>
+                <a href={sel.linkedinUrl} target="_blank" rel="noopener noreferrer"
+                   className="pd-link">
+                  {sel.linkedinUrl.replace(/^https?:\/\/(www\.)?/, "")} ↗
+                </a>
+              </div>
+            )}
             <div className="pd-section">
               <p className="pd-label">Fit reasoning</p>
               <p className="pd-reason">{sel.reason}</p>
@@ -855,6 +865,9 @@ function Matching({ profile, eventId, onError, onNext }) {
   const [runTick, setRunTick] = useState(0);
   // pairExplanations[`${a_id}-${b_id}`] = { status: "loading"|"ok"|"err", text }
   const [pairExplanations, setPairExplanations] = useState({});
+  // picked is at most two prospect ids — selecting two enables a Why? button
+  // in the floating compare panel. Picking a third bumps the oldest out.
+  const [picked, setPicked] = useState([]);
 
   async function fetchExplain(a_id, b_id) {
     const key = `${a_id}-${b_id}`;
@@ -1133,6 +1146,52 @@ function Matching({ profile, eventId, onError, onNext }) {
             })}
           </div>
 
+          {useReal && eventId && (() => {
+            // Compare-two-guests panel. Always available when matching ran,
+            // even if top_pairs is empty (heuristic fallback / one-sided pool).
+            const nameOf = (pid) => {
+              for (const g of matchResult.groups) {
+                const m = g.members.find((x) => x.id === pid);
+                if (m) return m.name;
+              }
+              return `#${pid}`;
+            };
+            const ready = picked.length === 2;
+            const key = ready ? `${picked[0]}-${picked[1]}` : null;
+            const state = key ? pairExplanations[key] : null;
+            return (
+              <div className="sym-panel" style={{marginTop: 12}}>
+                <p className="pd-label">Compare two guests</p>
+                <div className="muted-text" style={{marginBottom: 6}}>
+                  {picked.length === 0 && "Click any two guests in the tables below."}
+                  {picked.length === 1 && `Selected: ${nameOf(picked[0])} — pick one more.`}
+                  {picked.length === 2 && `Selected: ${nameOf(picked[0])} ⟷ ${nameOf(picked[1])}`}
+                </div>
+                {ready && (
+                  <div style={{display: "flex", gap: 8, alignItems: "center"}}>
+                    <button className="btn-reset"
+                            disabled={state?.status === "loading"}
+                            onClick={() => fetchExplain(picked[0], picked[1])}>
+                      {state?.status === "loading" ? "Asking the LLM…"
+                        : state ? "Refresh explanation" : "Why these two?"}
+                    </button>
+                    <button className="btn-reset" onClick={() => setPicked([])}>Clear</button>
+                  </div>
+                )}
+                {state?.status === "ok" && (
+                  <div className="sym-flow" style={{marginTop: 8, fontStyle: "normal"}}>
+                    {state.text}
+                  </div>
+                )}
+                {state?.status === "err" && (
+                  <div className="sym-flow" style={{marginTop: 8, color: "#c33"}}>
+                    {state.text}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           <div className="tables-panel">
             {(useReal ? matchResult.groups : groups.map((g) => {
               const grp = nodes.filter((p) => p.grp === g);
@@ -1142,22 +1201,40 @@ function Matching({ profile, eventId, onError, onNext }) {
                 builds: grp.filter((p) => p.side === "Builds").length,
                 counterparts: grp.filter((p) => p.side !== "Builds").length,
               };
-            })).map((g) => (
-              <div key={g.group_id} className="table-card">
-                <div className="table-card-head">
-                  <span className="table-dot" /> {groupWord} {g.group_id}
-                  <span className="table-count">{g.members.length}</span>
-                </div>
-                {g.members.map((p) => (
-                  <div key={p.id} className="table-guest">
-                    <span>{p.name}</span>
+            })).map((g) => {
+              const isSelected = (pid) => picked.includes(pid);
+              const togglePick = (pid) => {
+                setPicked((cur) => {
+                  if (cur.includes(pid)) return cur.filter((x) => x !== pid);
+                  if (cur.length >= 2) return [cur[1], pid];
+                  return [...cur, pid];
+                });
+              };
+              return (
+                <div key={g.group_id} className="table-card">
+                  <div className="table-card-head">
+                    <span className="table-dot" /> {groupWord} {g.group_id}
+                    <span className="table-count">{g.members.length}</span>
                   </div>
-                ))}
-                <p className="table-rationale">
-                  {g.members.length} guests — seated by the LLM's pairwise value scores, not by market-side bucketing.
-                </p>
-              </div>
-            ))}
+                  {g.members.map((p) => (
+                    <div key={p.id}
+                         className="table-guest"
+                         style={{
+                           cursor: useReal && eventId ? "pointer" : "default",
+                           background: isSelected(p.id) ? "rgba(124,92,255,0.12)" : undefined,
+                           borderRadius: 4,
+                           padding: "2px 6px",
+                         }}
+                         onClick={() => useReal && eventId && togglePick(p.id)}>
+                      <span>{p.name}{isSelected(p.id) ? " ✓" : ""}</span>
+                    </div>
+                  ))}
+                  <p className="table-rationale">
+                    {g.members.length} guests — seated by the LLM's pairwise value scores, not by market-side bucketing.
+                  </p>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
