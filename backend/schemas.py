@@ -302,13 +302,18 @@ class MatchResult(BaseModel):
                 counterparts=sum(m.side != "Builds" for m in members),
             ))
 
-        top = sorted((e for e in edges if e["edge_type"] == "symbiotic"),
-                     key=lambda e: -e["weight"])[:4]
+        # Top edges by weight, regardless of type — the LLM-derived weight
+        # is the source of truth. (Old behavior filtered to symbiotic which
+        # could leave this list empty for one-side pools.)
+        top = sorted(edges, key=lambda e: -e["weight"])[:6]
         top_rows = []
         for e in top:
             a, b = by_id[e["a_id"]], by_id[e["b_id"]]
             top_rows.append({
+                "a_id": a.id, "b_id": b.id,
                 "a": a.name, "b": b.name, "weight": e["weight"],
+                "edge_type": e["edge_type"],
+                # Kept for backward-compat; UI no longer leans on these.
                 "flow": [f"{a.offers} -> {b.seeks}", f"{b.offers} -> {a.seeks}"],
             })
 

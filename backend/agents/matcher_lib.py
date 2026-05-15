@@ -40,7 +40,9 @@ def library_available() -> bool:
 
 # In-process cache so form_groups can reuse the matrix that build_edges
 # just computed without re-running the library (which is async + slow).
-# Keyed by (event_id, frozenset of attending prospect ids).
+# Keyed by (event_id, frozenset of attending prospect ids). Stores both
+# the matrix and the rubric so the route handler can return diagnostics
+# explaining *which* signal produced the scores.
 _MATRIX_CACHE: dict[tuple, dict[str, Any]] = {}
 
 
@@ -49,7 +51,19 @@ def _cache_key(event, attending: list) -> tuple:
 
 
 def get_cached_matrix(event, attending: list) -> Optional[dict[str, Any]]:
-    return _MATRIX_CACHE.get(_cache_key(event, attending))
+    entry = _MATRIX_CACHE.get(_cache_key(event, attending))
+    return entry.get("matrix") if entry else None
+
+
+def get_cached_rubric(event, attending: list) -> Optional[dict[str, Any]]:
+    entry = _MATRIX_CACHE.get(_cache_key(event, attending))
+    return entry.get("rubric") if entry else None
+
+
+def get_cached_enriched(event, attending: list) -> Optional[dict[str, Any]]:
+    """{library_person_id ('prospect-N') -> EnrichedPerson}. None if cache miss."""
+    entry = _MATRIX_CACHE.get(_cache_key(event, attending))
+    return entry.get("enriched") if entry else None
 
 
 # ---- adapter: surplus Prospect → library Person ---------------------------
@@ -117,18 +131,26 @@ def score_attendees(attending: list, event) -> Optional[dict[str, Any]]:
             f"goal is a {event.goal.lower()}. Budget: ${event.budget:,}."
         )
 
-        # The library is fully async — drive it from a fresh event loop so
-        # we can call it from the synchronous route handler.
-        async def _run() -> dict[str, Any]:
+        # Drive the async library from a fresh event loop so we can call it
+        # from the synchronous route handler. Capture rubric (to detect
+        # fallback) and enriched profiles (so the explain endpoint can
+        # reason over LinkedIn/GitHub/X signal without re-enriching).
+        async def _run_full() -> tuple[dict[str, Any], dict[str, Any], list[EnrichedPerson]]:
             rubric = await synthesize_rubric(event_name, event_desc, people)
             enriched: list[EnrichedPerson] = await enrich_batch(people)
-            return compute_matrix(enriched, rubric, top_k=min(8, len(people) - 1))
+            return compute_matrix(enriched, rubric, top_k=min(8, len(people) - 1)), rubric, enriched
 
-        matrix = asyncio.run(_run())
-        # Cache so form_groups can reuse without re-calling the library.
-        _MATRIX_CACHE[_cache_key(event, attending)] = matrix
+        matrix, rubric, enriched = asyncio.run(_run_full())
+        _MATRIX_CACHE[_cache_key(event, attending)] = {
+            "matrix": matrix, "rubric": rubric,
+            "enriched": {p.id: p for p in enriched},
+        }
+        fb = " (FALLBACK rubric)" if rubric.get("_fallback") else ""
         print(f"  [matcher_lib] library scored {len(matrix.get('pairs', []))} pairs "
-              f"({len(matrix.get('mutual_pairs', []))} mutual)")
+              f"({len(matrix.get('mutual_pairs', []))} mutual){fb}")
+        if rubric.get("_fallback"):
+            err = (rubric.get("_telemetry") or {}).get("error")
+            print(f"  [matcher_lib] rubric synthesis fell back: {err}")
         return matrix
     except Exception as exc:  # noqa: BLE001
         print(f"  [matcher_lib] library scoring failed, falling back: "
@@ -190,10 +212,11 @@ def build_edges_from_matrix(matrix: dict[str, Any], attending: list) -> list[dic
 # that maximizes the sum of library-derived composite scores within each
 # group, with a soft penalty against same-side concentration.
 
-# Side-imbalance penalty per duplicate side already in the group (0..1).
-# Tuned so the LLM score is the dominant signal but a perfectly one-sided
-# group is still discouraged.
-_SIDE_PENALTY = 0.15
+# Side framing intentionally dropped — the LLM judges complementarity
+# from enriched profile signal (skills, domains, conviction, experience
+# asymmetry, role complement from the rubric). Bucketing people as
+# Builds/Hires/Operates was a forced taxonomy that pre-decided who's
+# "complementary" before the LLM got to look.
 
 
 def _pair_score_map(matrix: dict[str, Any]) -> dict[frozenset, float]:
@@ -282,14 +305,12 @@ def form_groups_from_matrix(attending: list, matrix: dict[str, Any],
         for gid, members in groups.items():
             if len(members) >= cap:
                 continue
-            # sum of composites to current members
+            # Pure LLM-driven: place where the sum of composite scores to
+            # already-seated members is highest. No side bookkeeping.
             s = sum(
                 pair_scores.get(frozenset({p.id, m.id}), 0.0)
                 for m in members
             )
-            # soft side-balance penalty per same-side member already seated
-            same_side = sum(1 for m in members if m.side == p.side)
-            s -= _SIDE_PENALTY * same_side
             if s > best_score:
                 best_score, best_gid = s, gid
         if best_gid is None:

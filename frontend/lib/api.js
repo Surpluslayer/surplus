@@ -66,6 +66,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  // on-demand LLM justification for a single pair
+  explainPair: (eid, a_id, b_id) =>
+    request(`/events/${eid}/pairs/explain`, {
+      method: "POST",
+      body: JSON.stringify({ a_id, b_id }),
+    }),
 
   // 05 ROI
   getRoi: (id) => request(`/events/${id}/roi`),

@@ -105,6 +105,65 @@ def match(event_id: int, db: Session = Depends(get_db)):
     return schemas.MatchResult.build(ev, attending, edges, groups)
 
 
+class ExplainRequest(BaseModel):
+    a_id: int
+    b_id: int
+
+
+class ExplainResponse(BaseModel):
+    a_id: int
+    b_id: int
+    explanation: str
+    grounded_in_llm: bool   # False when the cache miss forces a fallback path
+
+
+@router.post("/{event_id}/pairs/explain", response_model=ExplainResponse)
+def explain_pair_endpoint(event_id: int, payload: ExplainRequest,
+                          db: Session = Depends(get_db)):
+    """On-demand LLM explanation for one pair.
+
+    Uses the enriched profile data + structured component scores cached
+    during the most recent /match call. Cache miss => no LLM call (we
+    don't want to silently re-enrich behind the user's back).
+    """
+    import asyncio
+    from ..agents import matcher_lib, pair_explainer
+
+    ev = db.get(models.Event, event_id)
+    if not ev:
+        raise HTTPException(404, "event not found")
+
+    attending = _confirmed(ev)
+    enriched = matcher_lib.get_cached_enriched(ev, attending)
+    matrix = matcher_lib.get_cached_matrix(ev, attending)
+    if enriched is None or matrix is None:
+        raise HTTPException(
+            409,
+            "no cached enrichment for this event — re-run /match first "
+            "(the in-process cache is lost on server restart)"
+        )
+
+    a_key = f"prospect-{payload.a_id}"
+    b_key = f"prospect-{payload.b_id}"
+    a_person = enriched.get(a_key)
+    b_person = enriched.get(b_key)
+    if a_person is None or b_person is None:
+        raise HTTPException(404, "one of the prospects is not in the enriched cache")
+
+    pair = next(
+        (p for p in matrix.get("pairs", [])
+         if {p.get("a_id"), p.get("b_id")} == {a_key, b_key}),
+        None,
+    )
+
+    text = asyncio.run(pair_explainer.explain_pair(a_person, b_person, pair))
+    grounded = not text.startswith("Explanation failed")
+    return ExplainResponse(
+        a_id=payload.a_id, b_id=payload.b_id,
+        explanation=text, grounded_in_llm=grounded,
+    )
+
+
 @router.get("/{event_id}/matches", response_model=schemas.MatchResult)
 def get_matches(event_id: int, db: Session = Depends(get_db)):
     """Read the stored value graph without recomputing it."""

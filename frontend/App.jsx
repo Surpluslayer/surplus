@@ -853,6 +853,23 @@ function Matching({ profile, eventId, onError, onNext }) {
   const [rsvpBusy, setRsvpBusy] = useState(false);
   const [rsvpInfo, setRsvpInfo] = useState(null);
   const [runTick, setRunTick] = useState(0);
+  // pairExplanations[`${a_id}-${b_id}`] = { status: "loading"|"ok"|"err", text }
+  const [pairExplanations, setPairExplanations] = useState({});
+
+  async function fetchExplain(a_id, b_id) {
+    const key = `${a_id}-${b_id}`;
+    setPairExplanations((s) => ({ ...s, [key]: { status: "loading" } }));
+    try {
+      const r = await api.explainPair(eventId, a_id, b_id);
+      setPairExplanations((s) => ({
+        ...s, [key]: { status: "ok", text: r.explanation },
+      }));
+    } catch (e) {
+      setPairExplanations((s) => ({
+        ...s, [key]: { status: "err", text: e.message },
+      }));
+    }
+  }
 
   // Run /match (idempotent on the backend — re-running clears and re-builds)
   // on mount when we have a real event. Falls back to the client-side mock
@@ -1023,22 +1040,20 @@ function Matching({ profile, eventId, onError, onNext }) {
   return (
     <div className="stage">
       <header className="stage-head">
-        <p className="eyebrow">Stage 04 — Symbiotic matching market</p>
+        <p className="eyebrow">Stage 04 — Value graph</p>
         <h1>Guest list as a value graph</h1>
         <p className="lede">
-          Edges aren't friendship — they're <em>predicted mutual value</em>. Nodes
-          are people; edges split into <em>symbiotic</em> (offer meets seek — a
-          builder and someone hiring them, a founder and an investor) and{" "}
-          <em>affinity</em> (worked on similar things). The objective is{" "}
-          <em>multi-sided</em>: a weighted sum across attendees <em>and</em> the
-          host/sponsor side, not just attendee-to-attendee gain.
+          Edges aren't friendship — they're <em>predicted mutual value</em>, scored
+          by an LLM over each guest's enriched profile (LinkedIn history, GitHub,
+          conviction themes, what they're working on). Edges split into{" "}
+          <em>complementary</em> (different strengths that fit together) and{" "}
+          <em>similar</em> (overlap in domain or background). The LLM decides
+          which is which — no pre-built market-side bucketing.
         </p>
         <p className="lede">
-          Two passes. <em>Pre-RSVP</em> — community detection over the value
-          graph picks who to even invite. <em>Post-RSVP</em> — given who actually
-          said yes, a seating/assignment optimizer decides who sits near whom.
-          Different inputs, different timing; the second can't run until RSVPs
-          land. {groupWord}s are formed to maximize the multi-sided objective.{" "}
+          {groupWord}s are formed by greedily maximizing the sum of pairwise LLM
+          scores. Click <em>"Why?"</em> on any top pair to get an on-demand,
+          profile-grounded explanation of what makes the pairing valuable.{" "}
           {FORMAT_CONFIG[profile.format].topo}.
         </p>
       </header>
@@ -1071,38 +1086,51 @@ function Matching({ profile, eventId, onError, onNext }) {
             ))}
           </svg>
           <div className="legend">
-            <span><i className="lg-sym" /> symbiotic value</span>
-            <span><i className="lg-aff" /> affinity</span>
-            <span><i className="lg-build" /> Builds</span>
-            <span><i className="lg-hire" /> Hires</span>
+            <span><i className="lg-sym" /> complementary</span>
+            <span><i className="lg-aff" /> similar</span>
           </div>
         </div>
 
         <div className="match-side">
           <div className="sym-panel">
-            <p className="pd-label">Top symbiotic pairs</p>
+            <p className="pd-label">Top pairs <span className="muted-text" style={{fontWeight: 400}}>— click "Why?" for an LLM-grounded explanation</span></p>
             {symPairs.length === 0 && (
               <div className="muted-text" style={{padding: "10px 0"}}>
-                No symbiotic pairs surfaced — confirmed guests may all be on the same market side.
+                No pairs surfaced yet.
               </div>
             )}
-            {symPairs.map((e, i) => (
-              <div className="sym-pair" key={i}>
-                <div className="sym-names">
-                  {(e.a || "").split(" ")[0]} <span className="sym-link">⟷</span> {(e.b || "").split(" ")[0]}
-                  <span className="sym-w">{Math.round(e.weight)}</span>
-                </div>
-                {(e.flow || []).map((f, fi) => {
-                  // Each flow is "<offers> -> <seeks>". Render as "offers ↔ seeks".
-                  const parts = f.split(" -> ");
-                  return (
-                    <div className="sym-flow" key={fi}>
-                      {parts[0] || ""} <span>↔</span> {parts[1] || ""}
+            {symPairs.map((e, i) => {
+              const pairKey = `${e.a_id}-${e.b_id}`;
+              const state = pairExplanations[pairKey];
+              return (
+                <div className="sym-pair" key={i}>
+                  <div className="sym-names">
+                    {(e.a || "").split(" ")[0]} <span className="sym-link">⟷</span> {(e.b || "").split(" ")[0]}
+                    <span className="sym-w">{Math.round(e.weight)}</span>
+                  </div>
+                  {useReal && eventId && e.a_id && e.b_id && (
+                    <div style={{marginTop: 6}}>
+                      <button className="btn-reset"
+                              disabled={state?.status === "loading"}
+                              onClick={() => fetchExplain(e.a_id, e.b_id)}>
+                        {state?.status === "loading" ? "Asking the LLM…"
+                          : state ? "Refresh explanation" : "Why?"}
+                      </button>
                     </div>
-                  );
-                })}
-              </div>
-            ))}
+                  )}
+                  {state?.status === "ok" && (
+                    <div className="sym-flow" style={{marginTop: 6, fontStyle: "normal"}}>
+                      {state.text}
+                    </div>
+                  )}
+                  {state?.status === "err" && (
+                    <div className="sym-flow" style={{marginTop: 6, color: "#c33"}}>
+                      {state.text}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           <div className="tables-panel">
@@ -1123,12 +1151,10 @@ function Matching({ profile, eventId, onError, onNext }) {
                 {g.members.map((p) => (
                   <div key={p.id} className="table-guest">
                     <span>{p.name}</span>
-                    <span className={`side-tag sm ${SIDE_CLASS[p.side]}`}>{p.side}</span>
                   </div>
                 ))}
                 <p className="table-rationale">
-                  {g.builds} building · {g.counterparts} other side — complementary sides seated together so
-                  every offer meets a seek.
+                  {g.members.length} guests — seated by the LLM's pairwise value scores, not by market-side bucketing.
                 </p>
               </div>
             ))}
