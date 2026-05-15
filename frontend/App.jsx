@@ -2,11 +2,10 @@ import React, { useState, useEffect } from "react";
 import {
   ArrowRight, Check, Circle, Activity, Send, Network, Target,
   GitBranch, Zap, TrendingUp, RotateCw, Mail,
-  CornerDownRight, LogOut
+  CornerDownRight
 } from "lucide-react";
 import { api } from "./lib/api.js";
 import MatchingRadarGraph from "./components/MatchingRadarGraph.jsx";
-import SignIn from "./SignIn.jsx";
 import pipeGithubIcon from "./src/assets/pipe/github-icon.png";
 import pipeXIcon from "./src/assets/pipe/x-icon.png";
 import pipeLinkedinIcon from "./src/assets/pipe/linkedin-icon.png";
@@ -1276,86 +1275,7 @@ function ROI({ profile, onRestart }) {
 }
 
 // ---- root ---------------------------------------------------
-function UserMenu({ user, onLogout }) {
-  const [open, setOpen] = useState(false);
-  const handleLogout = async () => {
-    try { await api.logout(); } catch (e) { /* still clear local state */ }
-    onLogout();
-  };
-  const initials = (user?.name || "?").trim().split(/\s+/).map(s => s[0] || "").join("").slice(0, 2).toUpperCase();
-  // Close when clicking outside
-  useEffect(() => {
-    if (!open) return;
-    const close = () => setOpen(false);
-    setTimeout(() => document.addEventListener("click", close, { once: true }), 0);
-    return () => document.removeEventListener("click", close);
-  }, [open]);
-  return (
-    <div className="user-menu" onClick={(e) => e.stopPropagation()}>
-      <button className="user-pill" onClick={() => setOpen(o => !o)} title={user?.email || user?.name || "Account"}>
-        {user?.avatar_url
-          ? <img src={user.avatar_url} alt="" className="user-avatar-img" />
-          : <span className="user-avatar-initials">{initials}</span>}
-        <span className="user-name">{user?.name || "Signed in"}</span>
-      </button>
-      {open && (
-        <div className="user-dropdown" role="menu">
-          <div className="user-dropdown-head">
-            <div className="user-dropdown-name">{user?.name}</div>
-            {user?.email && <div className="user-dropdown-email">{user.email}</div>}
-            <div className="user-dropdown-status">
-              <span className={`status-dot ${user?.linkedin_status === "active" ? "ok" : "stale"}`}></span>
-              LinkedIn {user?.linkedin_status === "active" ? "connected" : "disconnected"}
-            </div>
-          </div>
-          <button className="user-dropdown-action" onClick={handleLogout} role="menuitem">
-            <LogOut size={14} />
-            <span>Sign out</span>
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ──────────────────────────────────────────────────────────────
-// Auth gate — wraps the real app. While we check /api/auth/me:
-//   null  → still loading, show nothing (keeps SSR-clean)
-//   false → unauthenticated, show <SignIn />
-//   user  → authenticated, render the app, pass user down
-// ──────────────────────────────────────────────────────────────
 export default function App() {
-  const [user, setUser] = useState(null); // null = loading, false = unauth, object = signed in
-
-  useEffect(() => {
-    let cancelled = false;
-    api.me()
-      .then((u) => { if (!cancelled) setUser(u); })
-      .catch((e) => {
-        if (cancelled) return;
-        if (e.status === 401) setUser(false);
-        else {
-          // Network / server error — surface a recoverable signed-out state
-          // rather than blocking the whole app. Worst case the user clicks
-          // "Sign in with LinkedIn" again.
-          console.warn("Auth check failed:", e);
-          setUser(false);
-        }
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  if (user === null) {
-    // Brief "checking session" placeholder — same body bg so there's no flash
-    return <div style={{ minHeight: "100vh", background: "#f6f7f9" }} />;
-  }
-  if (user === false) {
-    return <SignIn />;
-  }
-  return <SurplusApp user={user} onLogout={() => setUser(false)} />;
-}
-
-function SurplusApp({ user, onLogout }) {
   const [stage, setStage] = useState(0);
   const [maxReached, setMaxReached] = useState(0);
   const [profile, setProfile] = useState({
@@ -1420,7 +1340,6 @@ function SurplusApp({ user, onLogout }) {
             )}
           </div>
           <StageRail stage={stage} setStage={go} maxReached={maxReached} />
-          <UserMenu user={user} onLogout={onLogout} />
         </header>
         {apiError && (
           <div className="api-error">{apiError}</div>
@@ -1808,54 +1727,4 @@ const CSS = `
   .ledger-head span:nth-child(2), .ledger-row > span:nth-child(2) { display:none; }
   .stage-head h1 { font-size:1.35rem; }
 }
-
-/* ─── User menu in topbar ─────────────────────────────────── */
-.user-menu { position:relative; margin-left:auto; }
-.user-pill {
-  display:inline-flex; align-items:center; gap:8px;
-  padding:5px 12px 5px 5px;
-  background:var(--panel); border:1px solid var(--line);
-  border-radius:var(--r-pill); cursor:pointer;
-  font-family:inherit; font-size:13px; color:var(--ink);
-  transition:border-color 0.12s, background 0.12s;
-}
-.user-pill:hover { border-color:var(--acc); background:var(--acc-soft); }
-.user-avatar-img { width:26px; height:26px; border-radius:50%; object-fit:cover; }
-.user-avatar-initials {
-  width:26px; height:26px; border-radius:50%;
-  background:var(--acc); color:white;
-  display:flex; align-items:center; justify-content:center;
-  font-size:11px; font-weight:600;
-}
-.user-name {
-  max-width:160px; overflow:hidden; text-overflow:ellipsis;
-  white-space:nowrap; font-weight:500;
-}
-.user-dropdown {
-  position:absolute; top:calc(100% + 8px); right:0; min-width:240px;
-  background:var(--panel); border:1px solid var(--line);
-  border-radius:12px; box-shadow:0 8px 24px rgba(15,15,30,0.10);
-  padding:6px; z-index:30;
-}
-.user-dropdown-head {
-  padding:12px 14px 10px;
-  border-bottom:1px solid var(--line-soft);
-  margin-bottom:4px;
-}
-.user-dropdown-name { font-weight:600; font-size:13.5px; color:var(--ink); }
-.user-dropdown-email { font-size:12px; color:var(--ink-faint); margin-top:2px; }
-.user-dropdown-status {
-  display:inline-flex; align-items:center; gap:6px;
-  font-size:11.5px; color:var(--ink-dim); margin-top:8px;
-}
-.status-dot { width:6px; height:6px; border-radius:50%; }
-.status-dot.ok { background:#10b981; }
-.status-dot.stale { background:#f59e0b; }
-.user-dropdown-action {
-  display:flex; align-items:center; gap:8px; width:100%;
-  padding:9px 12px; background:transparent; border:0; border-radius:8px;
-  font-family:inherit; font-size:13px; color:var(--ink-dim);
-  cursor:pointer; text-align:left;
-}
-.user-dropdown-action:hover { background:var(--panel-3); color:var(--ink); }
 `;
