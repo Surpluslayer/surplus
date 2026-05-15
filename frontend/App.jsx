@@ -7,6 +7,9 @@ import {
 import { api } from "./lib/api.js";
 import MatchingRadarGraph from "./components/MatchingRadarGraph.jsx";
 import SignIn from "./SignIn.jsx";
+import pipeGithubIcon from "./src/assets/pipe/github-icon.png";
+import pipeXIcon from "./src/assets/pipe/x-icon.png";
+import pipeLinkedinIcon from "./src/assets/pipe/linkedin-icon.png";
 
 // ============================================================
 // Event ROI MVP — browser demo
@@ -242,9 +245,9 @@ function Intake({ profile, setProfile, onRun }) {
 // ---- Stage 1: Pipeline --------------------------------------
 function Pipeline({ profile, eventId, onResult, onError, onDone }) {
   const sources = [
-    { key: "github", label: "GitHub adapter", image: "/github-icon.png", note: "OSS signal · clean API" },
-    { key: "x", label: "X adapter", image: "/x-icon.png", note: "Reach signal · paid API" },
-    { key: "linkedin", label: "LinkedIn adapter", image: "/linkedin-icon.png", note: "Contact resolve · provider" },
+    { key: "github", label: "GitHub adapter", image: pipeGithubIcon, note: "OSS signal · clean API" },
+    { key: "x", label: "X adapter", image: pipeXIcon, note: "Reach signal · paid API" },
+    { key: "linkedin", label: "LinkedIn adapter", image: pipeLinkedinIcon, note: "Contact resolve · provider" },
   ];
   const steps = ["Prospecting", "Fit scoring", "Auto-outreach"];
   const [progress, setProgress] = useState(0);
