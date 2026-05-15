@@ -73,28 +73,11 @@ def _unipile_api_key() -> Optional[str]:
 def _surplus_base_url(request: Request) -> str:
     """Base URL the user's browser sees us at — used to construct redirect/notify
     URLs Unipile will call back. Prefer SURPLUS_BASE_URL env (production), fall
-    back to the request's own origin (local dev). Always force https:// for
-    surpluslayer.com hosts — Railway terminates SSL upstream so request.url.scheme
-    is "http" but the user-facing URL is "https"."""
+    back to the request's own origin (local dev)."""
     env = (os.environ.get("SURPLUS_BASE_URL", "") or "").strip().rstrip("/")
     if env:
         return env
-    host = request.url.netloc
-    # Trust X-Forwarded-Proto if present, otherwise infer https for production hosts
-    forwarded = request.headers.get("x-forwarded-proto", "").lower()
-    scheme = forwarded or request.url.scheme
-    if "surpluslayer.com" in host or "railway.app" in host:
-        scheme = "https"
-    return f"{scheme}://{host}"
-
-
-def _unipile_iso_timestamp(dt: datetime) -> str:
-    """Format a UTC datetime as Unipile's strict ISO 8601 with exactly 3-digit ms.
-    Unipile's regex is ^[1-2]\\d{3}-[0-1]\\d-[0-3]\\dT\\d{2}:\\d{2}:\\d{2}.\\d{3}Z$
-    so Python's default isoformat (microseconds, +00:00) is rejected.
-    """
-    millis = dt.microsecond // 1000
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{millis:03d}Z"
+    return f"{request.url.scheme}://{request.url.netloc}"
 
 
 def _ensure_unipile_configured() -> tuple[str, str]:
@@ -122,7 +105,7 @@ async def linkedin_start(
     db.commit()
 
     base = _surplus_base_url(request)
-    expires = _unipile_iso_timestamp(_utcnow() + timedelta(hours=1))
+    expires = (_utcnow() + timedelta(hours=1)).isoformat().replace("+00:00", ".000Z")
 
     body = {
         "type": "create",
@@ -192,7 +175,7 @@ async def linkedin_start_redirect(
     db.commit()
 
     base = _surplus_base_url(request)
-    expires = _unipile_iso_timestamp(_utcnow() + timedelta(hours=1))
+    expires = (_utcnow() + timedelta(hours=1)).isoformat().replace("+00:00", ".000Z")
     body = {
         "type": "create",
         "providers": ["LINKEDIN"],
