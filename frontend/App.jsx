@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import {
   ArrowRight, Check, Circle, Activity, Send, Network, Target,
-  GitBranch, BriefcaseBusiness, Zap, TrendingUp, RotateCw, Mail,
+  GitBranch, Zap, TrendingUp, RotateCw, Mail,
   CornerDownRight, LogOut
 } from "lucide-react";
 import { api } from "./lib/api.js";
@@ -26,7 +26,7 @@ const STAGES = [
 
 const FORMATS = ["Sit-down dinner", "Hackathon", "Workshop", "Mixer", "Roundtable"];
 const GOALS = ["Hiring pipeline", "Fundraising", "Sales pipeline", "Product testing", "Community density"];
-const SENIORITY = ["New grad", "Junior", "Mid", "Senior", "Staff+", "Leadership"];
+const SENIORITY = ["New grad", "Junior", "Senior", "Staff+", "Leadership"];
 const STAGES_CO = ["Pre-seed", "Seed", "Series A", "Series B+"];
 
 // ---- format config: matching topology -----------------------
@@ -242,9 +242,9 @@ function Intake({ profile, setProfile, onRun }) {
 // ---- Stage 1: Pipeline --------------------------------------
 function Pipeline({ profile, eventId, onResult, onError, onDone }) {
   const sources = [
-    { key: "github", label: "GitHub adapter", icon: GitBranch, note: "OSS signal · clean API" },
-    { key: "x", label: "X adapter", icon: Send, note: "Reach signal · paid API" },
-    { key: "linkedin", label: "LinkedIn adapter", icon: BriefcaseBusiness, note: "Contact resolve · provider" },
+    { key: "github", label: "GitHub adapter", image: "/github-icon.png", note: "OSS signal · clean API" },
+    { key: "x", label: "X adapter", image: "/x-icon.png", note: "Reach signal · paid API" },
+    { key: "linkedin", label: "LinkedIn adapter", image: "/linkedin-icon.png", note: "Contact resolve · provider" },
   ];
   const steps = ["Prospecting", "Fit scoring", "Auto-outreach"];
   const [progress, setProgress] = useState(0);
@@ -330,7 +330,11 @@ function Pipeline({ profile, eventId, onResult, onError, onDone }) {
           return (
             <div className="pipe-card" key={s.key}>
               <div className="pipe-card-top">
-                <Icon size={18} />
+                {s.image ? (
+                  <img src={s.image} alt="" className="pipe-card-icon" width={18} height={18} />
+                ) : (
+                  Icon && <Icon size={18} />
+                )}
                 <div>
                   <p className="pipe-card-label">{s.label}</p>
                   <p className="pipe-card-note">{s.note}</p>
@@ -1521,6 +1525,7 @@ const CSS = `
 .pipe-card { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
   padding:16px; box-shadow:var(--shadow-sm); }
 .pipe-card-top { display:flex; align-items:center; gap:11px; margin-bottom:13px; color:var(--ink-dim); }
+.pipe-card-icon { flex-shrink:0; display:block; object-fit:contain; }
 .pipe-card-top > div { flex:1; }
 .pipe-card-label { font-size:12.5px; color:var(--ink); font-weight:600; }
 .pipe-card-note { font-size:10px; color:var(--ink-faint); }
