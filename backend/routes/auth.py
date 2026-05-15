@@ -139,6 +139,52 @@ async def linkedin_start(
         raise HTTPException(status_code=502, detail=f"Could not reach Unipile: {e!r}")
 
 
+# ─── 1b. Redirect-style start (for landing-page links) ────────────
+# The POST /linkedin/start returns JSON for in-app fetch flows. This
+# variant accepts a top-level GET navigation (e.g. clicked from
+# join.surpluslayer.com) and 303-redirects the user straight to the
+# Unipile hosted-auth URL so the cookie set on /linkedin/callback
+# arrives in the same browser-driven navigation chain.
+
+@router.get("/linkedin/start-redirect")
+async def linkedin_start_redirect(
+    request: Request,
+    db: DbSession = Depends(get_db),
+):
+    dsn, api_key = _ensure_unipile_configured()
+
+    state_token = secrets.token_urlsafe(32)
+    db.add(AuthState(state_token=state_token, status="pending"))
+    db.commit()
+
+    base = _surplus_base_url(request)
+    expires = (_utcnow() + timedelta(hours=1)).isoformat().replace("+00:00", ".000Z")
+    body = {
+        "type": "create",
+        "providers": ["LINKEDIN"],
+        "api_url": dsn,
+        "expiresOn": expires,
+        "success_redirect_url": f"{base}/api/auth/linkedin/callback?state={state_token}",
+        "failure_redirect_url": f"{base}/?error=linkedin_auth_failed",
+        "notify_url": f"{base}/api/auth/linkedin/webhook",
+        "name": state_token,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                f"{dsn}/api/v1/hosted/accounts/link",
+                headers={"X-API-KEY": api_key, "Accept": "application/json"},
+                json=body,
+            )
+            data = r.json() if r.content else {}
+            if r.status_code >= 400 or not data.get("url"):
+                msg = data.get("message") or f"HTTP {r.status_code}"
+                return RedirectResponse(f"{base}/?error=linkedin_unipile_rejected", status_code=303)
+            return RedirectResponse(data["url"], status_code=303)
+    except httpx.HTTPError:
+        return RedirectResponse(f"{base}/?error=linkedin_unreachable", status_code=303)
+
+
 # ─── 2. Webhook: Unipile tells us a new account was created ────────
 
 async def _fetch_unipile_profile(account_id: str, dsn: str, api_key: str) -> dict:
