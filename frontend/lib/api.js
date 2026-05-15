@@ -60,6 +60,12 @@ export const api = {
   // 04 matching
   runMatch: (id) => request(`/events/${id}/match`, { method: "POST" }),
   getMatches: (id) => request(`/events/${id}/matches`),
+  // manual RSVP override — for demo / Railway testing without the webhook
+  markRsvp: (id, body) =>
+    request(`/events/${id}/rsvp`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   // 05 ROI
   getRoi: (id) => request(`/events/${id}/roi`),

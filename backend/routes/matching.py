@@ -1,6 +1,7 @@
 """routes/matching.py — stage 04. Build the symbiotic value graph + groups."""
 from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -12,6 +13,62 @@ router = APIRouter(prefix="/events", tags=["04 · matching"])
 
 def _confirmed(ev: models.Event) -> list[models.Prospect]:
     return [p for p in ev.prospects if p.status == "rsvp"]
+
+
+# --- manual RSVP override --------------------------------------------------
+# For demo/testing: flip prospect.status -> "rsvp" without round-tripping
+# through the LinkedIn webhook. Either bulk (all approved+contacted) or
+# specific ids. Idempotent: re-flipping an already-rsvp'd prospect is a no-op.
+
+class RsvpRequest(BaseModel):
+    all: bool = False
+    prospect_ids: list[int] = []
+
+
+class RsvpResponse(BaseModel):
+    event_id: int
+    flipped: int
+    already_rsvp: int
+    rsvp_total: int
+    prospect_ids: list[int]
+
+
+@router.post("/{event_id}/rsvp", response_model=RsvpResponse)
+def mark_rsvp(event_id: int, payload: RsvpRequest, db: Session = Depends(get_db)):
+    ev = db.get(models.Event, event_id)
+    if not ev:
+        raise HTTPException(404, "event not found")
+    if not payload.all and not payload.prospect_ids:
+        raise HTTPException(422, "pass either {all: true} or {prospect_ids: [...]}")
+
+    if payload.all:
+        targets = [p for p in ev.prospects
+                   if p.status in ("approved", "contacted", "rsvp")]
+    else:
+        idset = set(payload.prospect_ids)
+        targets = [p for p in ev.prospects if p.id in idset]
+        missing = idset - {p.id for p in targets}
+        if missing:
+            raise HTTPException(
+                404, f"prospects not in event {event_id}: {sorted(missing)}")
+
+    flipped, already = 0, 0
+    for p in targets:
+        if p.status == "rsvp":
+            already += 1
+        else:
+            p.status = "rsvp"
+            flipped += 1
+    db.commit()
+
+    rsvp_total = sum(1 for p in ev.prospects if p.status == "rsvp")
+    return RsvpResponse(
+        event_id=ev.id,
+        flipped=flipped,
+        already_rsvp=already,
+        rsvp_total=rsvp_total,
+        prospect_ids=[p.id for p in targets],
+    )
 
 
 @router.post("/{event_id}/match", response_model=schemas.MatchResult)

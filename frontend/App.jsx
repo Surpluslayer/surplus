@@ -399,6 +399,9 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
   // Use real backend prospects when /run has resolved; fall back to mock
   // so this component still renders if someone navigates directly to it.
   const useReal = !!runResult?.prospects;
+  // manual-RSVP overrides applied on top of /run results (declared before
+  // PROS so the override map can patch each prospect's status).
+  const [rsvpOverrides, setRsvpOverrides] = useState({});
   const PROS = useReal
     ? runResult.prospects.map((p) => ({
         id: p.id,
@@ -409,7 +412,7 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
         score: p.fit_score,
         gh: p.gh_stars,
         x: p.x_followers,
-        status: p.status,
+        status: rsvpOverrides[p.id] || p.status,
         reason: p.fit_reason,
         offers: p.offers,
         seeks: p.seeks,
@@ -454,6 +457,36 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
   const [editsById, setEditsById] = useState({});
   const [sendState, setSendState] = useState({});
   const [providerInfo, setProviderInfo] = useState(null);
+  const [rsvpBulkBusy, setRsvpBulkBusy] = useState(false);
+  const [rsvpRowBusy, setRsvpRowBusy] = useState({});
+
+  const markRsvpOne = async (pid) => {
+    if (!eventId || rsvpRowBusy[pid]) return;
+    setRsvpRowBusy((s) => ({ ...s, [pid]: true }));
+    try {
+      await api.markRsvp(eventId, { prospect_ids: [pid] });
+      setRsvpOverrides((s) => ({ ...s, [pid]: "rsvp" }));
+    } catch (e) {
+      onError && onError(`Manual RSVP failed: ${e.message}`);
+    } finally {
+      setRsvpRowBusy((s) => ({ ...s, [pid]: false }));
+    }
+  };
+
+  const markRsvpAll = async () => {
+    if (!eventId || rsvpBulkBusy) return;
+    setRsvpBulkBusy(true);
+    try {
+      const r = await api.markRsvp(eventId, { all: true });
+      const next = {};
+      for (const id of r.prospect_ids) next[id] = "rsvp";
+      setRsvpOverrides((s) => ({ ...s, ...next }));
+    } catch (e) {
+      onError && onError(`Manual RSVP failed: ${e.message}`);
+    } finally {
+      setRsvpBulkBusy(false);
+    }
+  };
 
   useEffect(() => {
     // Skip the preview fetch when the pool is empty — the backend 409s
@@ -610,6 +643,12 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
         <span className="agent-stat"><strong>{sentN}</strong> / {aboveT.length} sent</span>
         <span className="agent-stat"><strong>{rsvpN}</strong> RSVP'd</span>
         <span className="agent-stat"><strong>0</strong> manual touches</span>
+        {useReal && eventId && (
+          <button className="btn-reset" style={{marginLeft: "auto"}}
+                  disabled={rsvpBulkBusy} onClick={markRsvpAll}>
+            {rsvpBulkBusy ? "Marking…" : "Mark all as RSVP'd"}
+          </button>
+        )}
       </div>
 
       <div className="prospect-layout">
@@ -653,6 +692,19 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
               </div>
               <span className={`score-badge ${sel.score >= T ? "ok" : "no"}`}>{sel.score}</span>
             </div>
+            {useReal && eventId && (
+              <div className="pd-section">
+                {sel.status === "rsvp" ? (
+                  <span className="muted-text">✓ RSVP'd (manual)</span>
+                ) : (
+                  <button className="btn-reset"
+                          disabled={!!rsvpRowBusy[sel.id]}
+                          onClick={() => markRsvpOne(sel.id)}>
+                    {rsvpRowBusy[sel.id] ? "Marking…" : "Mark as RSVP'd"}
+                  </button>
+                )}
+              </div>
+            )}
             <div className="pd-section">
               <p className="pd-label">Fit reasoning</p>
               <p className="pd-reason">{sel.reason}</p>
@@ -798,6 +850,9 @@ function Matching({ profile, eventId, onError, onNext }) {
   const [matchResult, setMatchResult] = useState(null);
   const [matchError, setMatchError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [rsvpBusy, setRsvpBusy] = useState(false);
+  const [rsvpInfo, setRsvpInfo] = useState(null);
+  const [runTick, setRunTick] = useState(0);
 
   // Run /match (idempotent on the backend — re-running clears and re-builds)
   // on mount when we have a real event. Falls back to the client-side mock
@@ -817,7 +872,7 @@ function Matching({ profile, eventId, onError, onNext }) {
       } catch (e) {
         if (!cancelled) {
           if (e.status === 409) {
-            setMatchError("No RSVPs yet — re-run outreach so some prospects confirm before settling the room.");
+            setMatchError("No RSVPs yet — flip prospects to RSVP'd below, then retry.");
           } else if (e.status === 404) {
             setMatchError("Event not found — the backend may have redeployed and wiped the SQLite store. Restart from Intake.");
           } else {
@@ -828,7 +883,21 @@ function Matching({ profile, eventId, onError, onNext }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [eventId]);
+  }, [eventId, runTick]);
+
+  async function handleMarkAllRsvp() {
+    if (!eventId || rsvpBusy) return;
+    setRsvpBusy(true);
+    try {
+      const r = await api.markRsvp(eventId, { all: true });
+      setRsvpInfo(r);
+      setRunTick((t) => t + 1);
+    } catch (e) {
+      setMatchError(`Manual RSVP failed: ${e.message}`);
+    } finally {
+      setRsvpBusy(false);
+    }
+  }
 
   const useReal = !!matchResult;
   const groupWord = useReal ? matchResult.group_word : FORMAT_CONFIG[profile.format].group;
@@ -927,12 +996,25 @@ function Matching({ profile, eventId, onError, onNext }) {
     );
   }
   if (matchError) {
+    const canManualRsvp = !!eventId && matchError.startsWith("No RSVPs yet");
     return (
       <div className="stage">
         <header className="stage-head">
           <p className="eyebrow">Stage 04 — Symbiotic matching market</p>
           <h1>Can't build the room yet</h1>
           <p className="lede">{matchError}</p>
+          {canManualRsvp && (
+            <div style={{marginTop: 16, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap"}}>
+              <button className="btn-primary" disabled={rsvpBusy} onClick={handleMarkAllRsvp}>
+                {rsvpBusy ? "Marking…" : "Mark all approved + contacted as RSVP'd"}
+              </button>
+              {rsvpInfo && (
+                <span className="muted-text">
+                  flipped {rsvpInfo.flipped} · already {rsvpInfo.already_rsvp} · total RSVP'd {rsvpInfo.rsvp_total}
+                </span>
+              )}
+            </div>
+          )}
         </header>
       </div>
     );
