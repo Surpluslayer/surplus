@@ -1047,7 +1047,7 @@ function Matching({ profile, eventId, onError, onNext }) {
         <div className="graph-wrap">
           <svg viewBox="0 0 600 340" className="graph">
             {groups.map((g, gi) => {
-              const [cx, cy] = centerFor(gi);
+              const [cx, cy] = layoutGroupCenters(groups.length)[gi];
               return (
                 <g key={g}>
                   <circle cx={cx} cy={cy} r="86" className="hull" />
