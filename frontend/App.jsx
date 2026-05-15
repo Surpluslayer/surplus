@@ -5,6 +5,7 @@ import {
   CornerDownRight
 } from "lucide-react";
 import { api } from "./lib/api.js";
+import MatchingRadarGraph from "./components/MatchingRadarGraph.jsx";
 
 // ============================================================
 // Event ROI MVP — browser demo
@@ -1066,31 +1067,25 @@ function Matching({ profile, eventId, onError, onNext }) {
 
       <div className="match-layout">
         <div className="graph-wrap">
-          <svg viewBox="0 0 600 340" className="graph">
-            {groups.map((g, gi) => {
-              const [cx, cy] = layoutGroupCenters(groups.length)[gi];
-              return (
-                <g key={g}>
-                  <circle cx={cx} cy={cy} r="86" className="hull" />
-                  <text x={cx} y={cy - 98} className="hull-label">{groupWord} {g}</text>
-                </g>
-              );
-            })}
-            {edges.map((e, i) => {
-              const a = nodeById(e.a), b = nodeById(e.b);
-              return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-                className={`edge edge-${e.type} ${e.cross ? "edge-cross" : ""}`} />;
-            })}
-            {nodes.map((n) => (
-              <g key={n.id}>
-                <circle cx={n.x} cy={n.y} r="21" className={`node node-${SIDE_CLASS[n.side]}`} />
-                <text x={n.x} y={n.y + 1} className="node-init">
-                  {n.name.split(" ").map((w) => w[0]).join("")}
-                </text>
-                <text x={n.x} y={n.y + 35} className="node-name">{n.name.split(" ")[0]}</text>
-              </g>
-            ))}
-          </svg>
+          <MatchingRadarGraph
+            nodes={nodes}
+            edges={edges}
+            groups={groups}
+            groupWord={groupWord}
+            picked={picked}
+            onNodeClick={
+              useReal && eventId
+                ? (id) => {
+                    setPicked((cur) => {
+                      if (cur.includes(id)) return cur.filter((x) => x !== id);
+                      if (cur.length >= 2) return [cur[1], id];
+                      return [...cur, id];
+                    });
+                  }
+                : undefined
+            }
+            height={440}
+          />
           <div className="legend">
             <span><i className="lg-sym" /> complementary</span>
             <span><i className="lg-aff" /> similar</span>
@@ -1673,7 +1668,14 @@ const CSS = `
 .fr-pending { opacity:0.5; border-left-style:dashed; }
 .match-layout { display:grid; grid-template-columns:1.35fr 1fr; gap:16px; }
 .graph-wrap { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
-  padding:12px; box-shadow:var(--shadow-sm); }
+  padding:12px; box-shadow:var(--shadow-sm); position:relative; }
+.radar-graph-wrap { position:relative; width:100%; min-height:440px; }
+.radar-graph-canvas { display:block; width:100%; border-radius:12px; background:var(--panel-2); }
+.radar-graph-reset { position:absolute; top:10px; right:10px; z-index:2;
+  font-family:inherit; font-size:10px; font-weight:600; padding:6px 10px;
+  border-radius:999px; border:1px solid var(--line); background:var(--panel);
+  color:var(--ink-dim); cursor:pointer; }
+.radar-graph-reset:hover { color:var(--acc); border-color:var(--acc-light); }
 .graph { width:100%; height:auto; display:block; }
 .hull { fill:rgba(108,67,217,0.035); stroke:var(--line); stroke-dasharray:3 4; }
 .hull-label { fill:var(--ink-faint); font-size:9px; letter-spacing:0.1em; text-anchor:middle;
