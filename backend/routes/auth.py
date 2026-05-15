@@ -128,28 +128,11 @@ async def linkedin_start(
                 headers={"X-API-KEY": api_key, "Accept": "application/json"},
                 json=body,
             )
-            try:
-                data = r.json() if r.content else {}
-            except Exception:
-                data = {"_raw": r.text[:500]}
+            data = r.json() if r.content else {}
             if r.status_code >= 400:
-                # Surface the full Unipile response so we can debug 400s
-                detail = (
-                    data.get("message")
-                    or data.get("detail")
-                    or data.get("error")
-                    or data
-                    or f"HTTP {r.status_code}"
-                )
                 raise HTTPException(
                     status_code=502,
-                    detail={
-                        "where": "unipile /hosted/accounts/link",
-                        "status": r.status_code,
-                        "unipile_response": detail,
-                        "request_dsn": dsn,
-                        "request_body_keys": list(body.keys()),
-                    },
+                    detail=f"Unipile rejected hosted-auth request: {data.get('message') or r.status_code}",
                 )
             return JSONResponse({"url": data.get("url"), "state_token": state_token})
     except httpx.HTTPError as e:
