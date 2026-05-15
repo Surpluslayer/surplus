@@ -1347,40 +1347,23 @@ function UserMenu({ user, onLogout }) {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Auth gate — wraps the real app. While we check /api/auth/me:
-//   null  → still loading, show nothing (keeps SSR-clean)
-//   false → unauthenticated, show <SignIn />
-//   user  → authenticated, render the app, pass user down
+// App entry — no auth gate for now. Users land directly on the
+// product. The Sign-in-with-LinkedIn flow (SignIn.jsx + UserMenu
+// + /api/auth/* routes on the backend) is fully wired but not
+// surfaced as a wall; we'll bring it back as a "Connect LinkedIn"
+// button at the moment of send rather than a forced-signin gate.
+//
+// Anything kept around for the eventual rewiring:
+//   - SignIn.jsx                        — sign-in page component
+//   - backend/routes/auth.py            — hosted-auth + webhook + /me
+//   - backend/auth.py                   — session cookie + current_user
+//   - models.User / AuthState / Session — DB tables already migrated
+//   - api.me() / startLinkedinAuth() / logout()  — frontend wrappers
+//   - UserMenu component below          — header pill, just not mounted
+//   - get_provider_for_user(user)       — per-user Unipile factory
 // ──────────────────────────────────────────────────────────────
 export default function App() {
-  const [user, setUser] = useState(null); // null = loading, false = unauth, object = signed in
-
-  useEffect(() => {
-    let cancelled = false;
-    api.me()
-      .then((u) => { if (!cancelled) setUser(u); })
-      .catch((e) => {
-        if (cancelled) return;
-        if (e.status === 401) setUser(false);
-        else {
-          // Network / server error — surface a recoverable signed-out state
-          // rather than blocking the whole app. Worst case the user clicks
-          // "Sign in with LinkedIn" again.
-          console.warn("Auth check failed:", e);
-          setUser(false);
-        }
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  if (user === null) {
-    // Brief "checking session" placeholder — same body bg so there's no flash
-    return <div style={{ minHeight: "100vh", background: "#f6f7f9" }} />;
-  }
-  if (user === false) {
-    return <SignIn />;
-  }
-  return <SurplusApp user={user} onLogout={() => setUser(false)} />;
+  return <SurplusApp user={null} onLogout={() => {}} />;
 }
 
 function SurplusApp({ user, onLogout }) {
@@ -1448,7 +1431,8 @@ function SurplusApp({ user, onLogout }) {
             )}
           </div>
           <StageRail stage={stage} setStage={go} maxReached={maxReached} />
-          <UserMenu user={user} onLogout={onLogout} />
+          {/* UserMenu unmounted — auth not gated right now. Reintroduce when
+              "Connect LinkedIn" becomes a button at the moment of send. */}
         </header>
         {apiError && (
           <div className="api-error">{apiError}</div>
