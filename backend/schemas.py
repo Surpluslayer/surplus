@@ -23,7 +23,7 @@ class EventCreate(BaseModel):
     format: str = "Sit-down dinner"
     city: str = "San Francisco"
     goal: str = "Hiring pipeline"
-    budget: int = 12000
+    budget: int = 8000
 
 
 class EventOut(BaseModel):

@@ -6,6 +6,8 @@ const SIDE_COLORS = {
   Operates: { fill: "rgba(207,95,166,0.18)", stroke: "#cf5fa6" },
 };
 
+const NODE_R = 22;
+
 function initials(name) {
   return (name || "?")
     .split(" ")
@@ -15,19 +17,17 @@ function initials(name) {
     .toUpperCase();
 }
 
-/** Radar anchors: groups on spokes, members on rings within each sector. */
-function buildRadarAnchors(nodes, groups, w, h) {
-  const cx = w / 2;
-  const cy = h / 2;
-  const R = Math.min(w, h) * 0.38;
-  const groupRing = R * 0.55;
-  const memberRing = R * 0.28;
+/** One cluster per table/team — members on a ring, groups spread horizontally. */
+function buildGroupClusterLayout(nodes, groups, w, h) {
+  const padX = 56;
+  const padY = 52;
   const nG = Math.max(groups.length, 1);
+  const colW = (w - padX * 2) / nG;
 
   const byGroup = {};
   groups.forEach((g) => { byGroup[g] = []; });
   nodes.forEach((n) => {
-    const g = n.grp ?? n.group_id ?? 1;
+    const g = n.grp ?? n.group_id ?? groups[0];
     if (!byGroup[g]) byGroup[g] = [];
     byGroup[g].push(n);
   });
@@ -36,28 +36,77 @@ function buildRadarAnchors(nodes, groups, w, h) {
   const groupCenters = {};
 
   groups.forEach((g, gi) => {
-    const mid = -Math.PI / 2 + ((gi + 0.5) / nG) * Math.PI * 2;
-    const gcx = cx + Math.cos(mid) * groupRing;
-    const gcy = cy + Math.sin(mid) * groupRing;
-    groupCenters[g] = { x: gcx, y: gcy, angle: mid };
-
     const members = byGroup[g] || [];
+    const cx = padX + colW * (gi + 0.5);
+    const cy = h / 2;
+    const ringR = Math.max(64, 36 + members.length * 16);
+
+    groupCenters[g] = { x: cx, y: cy, radius: ringR };
+
+    if (members.length === 0) return;
+
     members.forEach((m, mi) => {
-      const spread = members.length === 1 ? 0 : 0.35;
-      const off = members.length === 1
-        ? 0
-        : (mi / (members.length - 1) - 0.5) * spread;
-      const ang = mid + off;
-      const r = memberRing * (0.85 + (mi % 3) * 0.08);
+      const ang = -Math.PI / 2 + (mi / members.length) * Math.PI * 2;
       anchors[m.id] = {
-        x: gcx + Math.cos(ang) * r,
-        y: gcy + Math.sin(ang) * r,
+        x: cx + Math.cos(ang) * ringR,
+        y: cy + Math.sin(ang) * ringR,
         groupId: g,
       };
     });
   });
 
-  return { anchors, groupCenters, cx, cy, R };
+  const xs = Object.values(anchors).map((a) => a.x);
+  const ys = Object.values(anchors).map((a) => a.y);
+  const bounds = xs.length
+    ? {
+        minX: Math.min(...xs) - 80,
+        maxX: Math.max(...xs) + 80,
+        minY: Math.min(...ys) - 80,
+        maxY: Math.max(...ys) + 80,
+      }
+    : { minX: padX, maxX: w - padX, minY: padY, maxY: h - padY };
+
+  return {
+    anchors,
+    groupCenters,
+    bounds,
+    cx: w / 2,
+    cy: h / 2,
+    R: Math.min(w, h) * 0.4,
+  };
+}
+
+/** Cut edge clutter: in-group symbiotic links + top cross-group pairs; more on hover/focus. */
+function selectVisibleEdges(edges, nodes, hoverId, picked) {
+  const focus = new Set(picked);
+  if (hoverId != null) focus.add(hoverId);
+
+  if (focus.size > 0) {
+    return edges.filter((e) => focus.has(e.a) || focus.has(e.b));
+  }
+
+  const withinSym = edges.filter((e) => e.type === "sym" && !e.cross);
+  const crossSym = edges
+    .filter((e) => e.type === "sym" && e.cross)
+    .sort((a, b) => (b.w || 0) - (a.w || 0))
+    .slice(0, Math.max(4, Math.min(8, Math.ceil(nodes.length / 2))));
+
+  return [...withinSym, ...crossSym];
+}
+
+function fitViewToBounds(bounds, w, h, padding = 40) {
+  const bw = bounds.maxX - bounds.minX;
+  const bh = bounds.maxY - bounds.minY;
+  if (bw <= 0 || bh <= 0) return { pan: { x: 0, y: 0 }, zoom: 1 };
+
+  const zx = (w - padding * 2) / bw;
+  const zy = (h - padding * 2) / bh;
+  const zoom = Math.min(1.35, Math.max(0.55, Math.min(zx, zy)));
+  const pan = {
+    x: (w - (bounds.minX + bounds.maxX) * zoom) / 2,
+    y: (h - (bounds.minY + bounds.maxY) * zoom) / 2,
+  };
+  return { pan, zoom };
 }
 
 export default function MatchingRadarGraph({
@@ -82,8 +131,13 @@ export default function MatchingRadarGraph({
   const dragMovedRef = useRef(false);
 
   const layout = useMemo(
-    () => buildRadarAnchors(nodes, groups, size.w, size.h),
+    () => buildGroupClusterLayout(nodes, groups, size.w, size.h),
     [nodes, groups, size.w, size.h]
+  );
+
+  const visibleEdges = useMemo(
+    () => selectVisibleEdges(edges, nodes, hoverId, picked),
+    [edges, nodes, hoverId, picked]
   );
 
   const nodeKey = useMemo(
@@ -91,7 +145,6 @@ export default function MatchingRadarGraph({
     [nodes]
   );
 
-  // Seed positions from radar anchors whenever the guest set changes.
   useEffect(() => {
     const next = {};
     nodes.forEach((n) => {
@@ -99,11 +152,11 @@ export default function MatchingRadarGraph({
       if (a) next[n.id] = { x: a.x, y: a.y };
     });
     setPositions(next);
-    setPan({ x: 0, y: 0 });
-    setZoom(1);
-  }, [nodeKey, layout.anchors, nodes]);
+    const fit = fitViewToBounds(layout.bounds, size.w, size.h);
+    setPan(fit.pan);
+    setZoom(fit.zoom);
+  }, [nodeKey, layout.anchors, layout.bounds, nodes, size.w, size.h]);
 
-  // Resize observer + initial measure
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
@@ -128,7 +181,6 @@ export default function MatchingRadarGraph({
     [positions, layout]
   );
 
-  // Gentle spring toward radar anchors when not dragging (only if dragged off-anchor).
   useEffect(() => {
     if (drag || loading || nodes.length === 0) return;
     let raf;
@@ -142,8 +194,8 @@ export default function MatchingRadarGraph({
           if (!a || !p) return;
           const dx = a.x - p.x;
           const dy = a.y - p.y;
-          if (Math.abs(dx) > 1.5 || Math.abs(dy) > 1.5) {
-            next[n.id] = { x: p.x + dx * 0.12, y: p.y + dy * 0.12 };
+          if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+            next[n.id] = { x: p.x + dx * 0.1, y: p.y + dy * 0.1 };
             moved = true;
           }
         });
@@ -160,10 +212,8 @@ export default function MatchingRadarGraph({
       const canvas = canvasRef.current;
       if (!canvas) return { x: 0, y: 0 };
       const rect = canvas.getBoundingClientRect();
-      const sx = clientX - rect.left;
-      const sy = clientY - rect.top;
-      const wx = (sx - pan.x) / zoom;
-      const wy = (sy - pan.y) / zoom;
+      const wx = (clientX - rect.left - pan.x) / zoom;
+      const wy = (clientY - rect.top - pan.y) / zoom;
       return { x: wx, y: wy };
     },
     [pan, zoom]
@@ -171,7 +221,6 @@ export default function MatchingRadarGraph({
 
   const hitNode = useCallback(
     (wx, wy) => {
-      const NODE_R = 22;
       for (let i = nodes.length - 1; i >= 0; i--) {
         const n = nodes[i];
         const p = getPos(n.id);
@@ -201,90 +250,61 @@ export default function MatchingRadarGraph({
     ctx.translate(pan.x, pan.y);
     ctx.scale(zoom, zoom);
 
-    const { cx, cy, R, groupCenters } = layout;
+    const { groupCenters } = layout;
 
-    // Radar grid — concentric rings
-    ctx.strokeStyle = "rgba(107, 70, 224, 0.12)";
-    ctx.lineWidth = 1;
-    for (let i = 1; i <= 4; i++) {
-      ctx.beginPath();
-      ctx.arc(cx, cy, (R * i) / 4, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    // Spokes per group
-    const nG = Math.max(groups.length, 1);
-    groups.forEach((g, gi) => {
-      const ang = -Math.PI / 2 + ((gi + 0.5) / nG) * Math.PI * 2;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(cx + Math.cos(ang) * R, cy + Math.sin(ang) * R);
-      ctx.strokeStyle = "rgba(107, 70, 224, 0.2)";
-      ctx.stroke();
-
+    groups.forEach((g) => {
       const gc = groupCenters[g];
-      if (gc) {
-        ctx.beginPath();
-        ctx.arc(gc.x, gc.y, 52, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(108, 67, 217, 0.04)";
-        ctx.strokeStyle = "rgba(107, 70, 224, 0.25)";
-        ctx.setLineDash([4, 4]);
-        ctx.fill();
-        ctx.stroke();
-        ctx.setLineDash([]);
+      if (!gc) return;
+      ctx.beginPath();
+      ctx.arc(gc.x, gc.y, gc.radius + 18, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(108, 67, 217, 0.05)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(107, 70, 224, 0.22)";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 5]);
+      ctx.stroke();
+      ctx.setLineDash([]);
 
-        ctx.fillStyle = "#9b96ac";
-        ctx.font = "600 10px 'Plus Jakarta Sans', system-ui, sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "bottom";
-        const lx = gc.x + Math.cos(gc.angle) * 62;
-        const ly = gc.y + Math.sin(gc.angle) * 62;
-        ctx.fillText(`${groupWord} ${g}`.toUpperCase(), lx, ly);
-      }
+      ctx.fillStyle = "#5f5b73";
+      ctx.font = "700 11px 'Plus Jakarta Sans', system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillText(`${groupWord} ${g}`, gc.x, gc.y - gc.radius - 24);
     });
 
-    // Edges (draw under nodes)
-    edges.forEach((e) => {
+    visibleEdges.forEach((e) => {
       const a = getPos(e.a);
       const b = getPos(e.b);
       if (!a || !b) return;
       const isSym = e.type === "sym";
-      const dim = e.cross;
       const hi =
         hoverId === e.a || hoverId === e.b ||
         picked.some((id) => id === e.a || id === e.b);
+
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
       if (isSym) {
-        ctx.strokeStyle = hi
-          ? "rgba(107, 70, 224, 0.75)"
-          : dim
-            ? "rgba(107, 70, 224, 0.12)"
-            : "rgba(107, 70, 224, 0.45)";
-        ctx.lineWidth = hi ? 2.5 : 2;
+        ctx.strokeStyle = hi ? "rgba(107, 70, 224, 0.85)" : "rgba(107, 70, 224, 0.5)";
+        ctx.lineWidth = hi ? 2.5 : 1.75;
       } else {
-        ctx.setLineDash([3, 4]);
-        ctx.strokeStyle = hi
-          ? "rgba(95, 91, 115, 0.55)"
-          : dim
-            ? "rgba(95, 91, 115, 0.1)"
-            : "rgba(95, 91, 115, 0.3)";
+        ctx.setLineDash([4, 5]);
+        ctx.strokeStyle = hi ? "rgba(95, 91, 115, 0.6)" : "rgba(95, 91, 115, 0.25)";
         ctx.lineWidth = 1;
       }
       ctx.stroke();
       ctx.setLineDash([]);
     });
 
-    // Nodes
     nodes.forEach((n) => {
       const p = getPos(n.id);
       const colors = SIDE_COLORS[n.side] || SIDE_COLORS.Builds;
       const isPicked = picked.some((id) => id === n.id);
       const isHover = hoverId === n.id;
+      const r = isPicked || isHover ? NODE_R + 3 : NODE_R;
 
       ctx.beginPath();
-      ctx.arc(p.x, p.y, isPicked || isHover ? 24 : 21, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
       ctx.fillStyle = colors.fill;
       ctx.fill();
       ctx.strokeStyle = isPicked ? "#6b46e0" : colors.stroke;
@@ -300,18 +320,22 @@ export default function MatchingRadarGraph({
       ctx.fillStyle = "#5f5b73";
       ctx.font = "500 9px 'Plus Jakarta Sans', system-ui, sans-serif";
       ctx.textBaseline = "top";
-      const first = (n.name || "").split(" ")[0];
-      ctx.fillText(first, p.x, p.y + 26);
+      ctx.fillText((n.name || "").split(" ")[0], p.x, p.y + r + 4);
     });
 
     ctx.restore();
 
-    // Hint overlay (screen space)
     ctx.fillStyle = "#9b96ac";
     ctx.font = "500 10px 'Plus Jakarta Sans', system-ui, sans-serif";
     ctx.textAlign = "left";
-    ctx.fillText("Drag guests · drag background to pan · scroll to zoom", 12, h - 10);
-  }, [size, pan, zoom, layout, groups, groupWord, edges, nodes, getPos, hoverId, picked]);
+    const hint = hoverId || picked.length
+      ? "Showing links for selected guest(s) · drag to rearrange · scroll to zoom"
+      : "Each ring is a group · solid lines = top complementary pairs · hover a guest for their links";
+    ctx.fillText(hint, 12, h - 10);
+  }, [
+    size, pan, zoom, layout, groups, groupWord, visibleEdges, nodes,
+    getPos, hoverId, picked,
+  ]);
 
   useEffect(() => {
     draw();
@@ -325,7 +349,7 @@ export default function MatchingRadarGraph({
     const node = hitNode(x, y);
     dragMovedRef.current = false;
     if (node) {
-      setDrag({ id: node.id, ox: x, oy: y });
+      setDrag({ id: node.id });
       return;
     }
     panDragRef.current = {
@@ -378,7 +402,7 @@ export default function MatchingRadarGraph({
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
     const factor = e.deltaY > 0 ? 0.92 : 1.08;
-    const nz = Math.min(2.5, Math.max(0.45, zoom * factor));
+    const nz = Math.min(2.2, Math.max(0.45, zoom * factor));
     const wx = (mx - pan.x) / zoom;
     const wy = (my - pan.y) / zoom;
     setZoom(nz);
@@ -386,9 +410,15 @@ export default function MatchingRadarGraph({
   };
 
   const resetView = () => {
-    setPan({ x: 0, y: 0 });
-    setZoom(1);
-    setPositions({});
+    const fit = fitViewToBounds(layout.bounds, size.w, size.h);
+    setPan(fit.pan);
+    setZoom(fit.zoom);
+    const next = {};
+    nodes.forEach((n) => {
+      const a = layout.anchors[n.id];
+      if (a) next[n.id] = { x: a.x, y: a.y };
+    });
+    setPositions(next);
   };
 
   return (

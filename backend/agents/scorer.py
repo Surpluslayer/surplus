@@ -20,7 +20,14 @@ from __future__ import annotations
 
 from .. import config
 
-_SENIORITY_RANK = {"Mid": 1, "Senior": 2, "Staff+": 3, "Leadership": 4}
+_SENIORITY_RANK = {
+    "New grad": 0,
+    "Junior": 1,
+    "Mid": 2,
+    "Senior": 3,
+    "Staff+": 4,
+    "Leadership": 5,
+}
 
 
 def score_prospect(p, event) -> tuple[int, str]:
@@ -41,8 +48,8 @@ def score_prospect(p, event) -> tuple[int, str]:
         reasons.append("real audience reach")
 
     # --- ICP match --------------------------------------------------------
-    want = _SENIORITY_RANK.get(event.seniority, 2)
-    have = _SENIORITY_RANK.get(p.seniority, 1)
+    want = _SENIORITY_RANK.get(event.seniority, 3)
+    have = _SENIORITY_RANK.get(p.seniority, 2)
     if have >= want:
         score += 16
         reasons.append(f"seniority meets the {event.seniority} target")

@@ -26,7 +26,7 @@ const STAGES = [
 
 const FORMATS = ["Sit-down dinner", "Hackathon", "Workshop", "Mixer", "Roundtable"];
 const GOALS = ["Hiring pipeline", "Fundraising", "Sales pipeline", "Product testing", "Community density"];
-const SENIORITY = ["Mid", "Senior", "Staff+", "Leadership"];
+const SENIORITY = ["New grad", "Junior", "Mid", "Senior", "Staff+", "Leadership"];
 const STAGES_CO = ["Pre-seed", "Seed", "Series A", "Series B+"];
 
 // ---- format config: matching topology -----------------------
@@ -382,6 +382,11 @@ function statusMeta(s) {
   return { label: s, cls: "" };
 }
 
+function prospectRowStatus(p, threshold) {
+  if (p.score >= threshold) return { label: "Approved", cls: "st-approved" };
+  return statusMeta(p.status);
+}
+
 function Prospects({ profile, runResult, eventId, onError, onNext }) {
   // Use real backend prospects when /run has resolved; fall back to mock
   // so this component still renders if someone navigates directly to it.
@@ -417,25 +422,8 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
   const [selected, setSelected] = useState(sorted[0]?.id ?? null);
   const sel = PROS.find((p) => p.id === selected) || sorted[0] || null;
 
-  // build the auto-outreach activity feed (interleaved rounds)
-  const feed = [];
-  aboveT.forEach((p) => feed.push({ t: "sent", p }));
-  aboveT.forEach((p) => feed.push({ t: "open", p }));
-  aboveT.forEach((p) => feed.push({ t: p.status === "rsvp" ? "rsvp" : "wait", p }));
-  const [revealed, setRevealed] = useState(0);
-  useEffect(() => {
-    if (revealed >= feed.length) return;
-    const t = setTimeout(() => setRevealed((r) => r + 1), revealed === 0 ? 250 : 360);
-    return () => clearTimeout(t);
-  }, [revealed, feed.length]);
-
-  const shown = feed.slice(0, revealed);
-  const sentN = shown.filter((f) => f.t === "sent").length;
-  const rsvpN = shown.filter((f) => f.t === "rsvp").length;
-  const otherRsvps = sel
-    ? PROS.filter((x) => x.status === "rsvp" && x.id !== sel.id)
-        .slice(0, 2).map((x) => x.name.split(" ")[0]).join(" and ")
-    : "";
+  const sentN = aboveT.length;
+  const rsvpN = PROS.filter((p) => p.status === "rsvp").length;
 
   // === backend-driven outreach review ===
   // previewById[prospect_id] = { note, message, payload, ... } from /outreach/preview
@@ -566,9 +554,6 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
     selEdits.message !== selPreview.message
   );
 
-  const feedLabel = { sent: "Sent", open: "Opened", rsvp: "Replied — RSVP", wait: "Opened — awaiting reply" };
-  const feedIcon = { sent: <Mail size={11} />, open: <Activity size={11} />, rsvp: <Check size={11} strokeWidth={3} />, wait: <Circle size={7} /> };
-
   // Empty state: prospecting completed but nothing passed the ICP gate.
   // Common cause is LLM mode dropping every candidate via judge_relevance,
   // or the LLM web_search calls erroring out. Render a useful explanation
@@ -634,9 +619,9 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
 
       <div className="prospect-layout">
         <div className="prospect-list">
-          <div className="list-head"><span>Candidate</span><span>Signal</span><span>Fit</span></div>
+          <div className="list-head"><span>Candidate</span><span>Signal</span><span>Status</span></div>
           {sorted.map((p) => {
-            const m = statusMeta(p.status);
+            const m = prospectRowStatus(p, T);
             return (
               <button key={p.id}
                 className={`prospect-row ${selected === p.id ? "sel" : ""} ${p.score < T ? "dim" : ""}`}
@@ -651,8 +636,7 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
                   <span className="sig"><GitBranch size={11} /> {fmtNum(p.gh)}</span>
                   <span className="sig"><Send size={11} /> {fmtNum(p.x)}</span>
                 </span>
-                <span className="pr-score">
-                  <span className={`score-num ${p.score >= T ? "ok" : "no"}`}>{p.score}</span>
+                <span className="pr-status">
                   <span className={`st-tag ${m.cls}`}>{m.label}</span>
                 </span>
               </button>
@@ -783,25 +767,6 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
                   <p className="muted-text">Loading composed messages…</p>
                 )}
               </div>
-            </div>
-          </aside>
-
-          <aside className="agent-feed">
-            <p className="pd-label">Live agent activity</p>
-            <div className="feed-scroll">
-              {shown.slice().reverse().map((f, i) => (
-                <div className={`feed-row fr-${f.t}`} key={revealed - i}>
-                  <span className="feed-icon">{feedIcon[f.t]}</span>
-                  <span className="feed-text">{feedLabel[f.t]}</span>
-                  <span className="feed-name">{f.p.name}</span>
-                </div>
-              ))}
-              {revealed < feed.length && (
-                <div className="feed-row fr-pending">
-                  <span className="feed-icon"><Circle size={7} /></span>
-                  <span className="feed-text">working…</span>
-                </div>
-              )}
             </div>
           </aside>
         </div>
@@ -1377,7 +1342,7 @@ function SurplusApp({ user, onLogout }) {
     format: "Sit-down dinner",
     city: "San Francisco",
     goal: "Hiring pipeline",
-    budget: 12000,
+    budget: 8000,
   });
   // backend-wired state — eventId comes from real /events POST; runResult is
   // the response from /run (prospects, counts, etc.). Both null until the
@@ -1602,11 +1567,10 @@ const CSS = `
 .pr-role { font-size:10px; color:var(--ink-faint); }
 .pr-signal { display:flex; gap:9px; }
 .sig { font-size:10px; color:var(--ink-dim); display:flex; align-items:center; gap:3px; }
-.pr-score { display:flex; flex-direction:column; align-items:flex-end; gap:4px; }
-.score-num { font-size:14px; font-weight:800; }
-.score-num.ok { color:var(--ok); } .score-num.no { color:var(--no); }
+.pr-status { display:flex; align-items:center; justify-content:flex-end; }
 .st-tag { font-size:8px; letter-spacing:0.03em; text-transform:uppercase; padding:3px 7px;
   border-radius:var(--r-pill); font-weight:700; }
+.st-approved { background:var(--ok-soft); color:var(--ok); }
 .st-rsvp { background:var(--ok-soft); color:var(--ok); }
 .st-contacted { background:#e7eefb; color:var(--hire); }
 .st-below { background:var(--no-soft); color:var(--no); }
