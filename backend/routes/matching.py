@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
+from ..auth import current_user, get_owned_event
 from ..db import get_db
 from ..agents.matcher import build_edges, form_groups
 
@@ -34,10 +35,13 @@ class RsvpResponse(BaseModel):
 
 
 @router.post("/{event_id}/rsvp", response_model=RsvpResponse)
-def mark_rsvp(event_id: int, payload: RsvpRequest, db: Session = Depends(get_db)):
-    ev = db.get(models.Event, event_id)
-    if not ev:
-        raise HTTPException(404, "event not found")
+def mark_rsvp(
+    event_id: int,
+    payload: RsvpRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    ev = get_owned_event(event_id, user, db)
     if not payload.all and not payload.prospect_ids:
         raise HTTPException(422, "pass either {all: true} or {prospect_ids: [...]}")
 
@@ -72,14 +76,16 @@ def mark_rsvp(event_id: int, payload: RsvpRequest, db: Session = Depends(get_db)
 
 
 @router.post("/{event_id}/match", response_model=schemas.MatchResult)
-def match(event_id: int, db: Session = Depends(get_db)):
+def match(
+    event_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
     """
     Score every pair of confirmed guests (symbiotic / affinity) and pack them
     into the format's groups, balancing market sides. Idempotent.
     """
-    ev = db.get(models.Event, event_id)
-    if not ev:
-        raise HTTPException(404, "event not found")
+    ev = get_owned_event(event_id, user, db)
 
     attending = _confirmed(ev)
     if not attending:
@@ -118,8 +124,12 @@ class ExplainResponse(BaseModel):
 
 
 @router.post("/{event_id}/pairs/explain", response_model=ExplainResponse)
-def explain_pair_endpoint(event_id: int, payload: ExplainRequest,
-                          db: Session = Depends(get_db)):
+def explain_pair_endpoint(
+    event_id: int,
+    payload: ExplainRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
     """On-demand LLM explanation for one pair.
 
     Uses the enriched profile data + structured component scores cached
@@ -129,9 +139,7 @@ def explain_pair_endpoint(event_id: int, payload: ExplainRequest,
     import asyncio
     from ..agents import matcher_lib, pair_explainer
 
-    ev = db.get(models.Event, event_id)
-    if not ev:
-        raise HTTPException(404, "event not found")
+    ev = get_owned_event(event_id, user, db)
 
     attending = _confirmed(ev)
     enriched = matcher_lib.get_cached_enriched(ev, attending)
@@ -165,11 +173,13 @@ def explain_pair_endpoint(event_id: int, payload: ExplainRequest,
 
 
 @router.get("/{event_id}/matches", response_model=schemas.MatchResult)
-def get_matches(event_id: int, db: Session = Depends(get_db)):
+def get_matches(
+    event_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
     """Read the stored value graph without recomputing it."""
-    ev = db.get(models.Event, event_id)
-    if not ev:
-        raise HTTPException(404, "event not found")
+    ev = get_owned_event(event_id, user, db)
     if not ev.edges:
         raise HTTPException(409, "matching has not been run for this event yet")
 

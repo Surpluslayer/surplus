@@ -20,7 +20,12 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..db import get_db
 from ..agents.outreach import compose
-from ..providers import get_provider, CanonicalEvent, LinkedInProvider
+from ..providers import (
+    get_provider,
+    get_provider_for_user,
+    CanonicalEvent,
+    LinkedInProvider,
+)
 
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -102,6 +107,35 @@ def _now():
     return datetime.now(timezone.utc)
 
 
+def _provider_for_prospect(
+    prospect: models.Prospect,
+    fallback: LinkedInProvider,
+) -> LinkedInProvider:
+    """Resolve which LinkedIn account should send on behalf of this prospect.
+
+    Webhooks have no session cookie (Unipile is server-to-server), so we
+    can't ask current_user. Instead we trace ownership through the data:
+
+        Prospect → Event → Event.user → that user's Unipile account_id
+
+    If the chain is intact AND that user has a LinkedIn connected (the
+    expected production case), we send from THEIR account. Otherwise we
+    fall back to the env-var operator account — this preserves behavior
+    for legacy events whose user_id was backfilled to the operator.
+    """
+    event = prospect.event
+    if event and event.user_id:
+        owner = event.user  # relationship loads the User
+        if owner and owner.unipile_account_id:
+            try:
+                return get_provider_for_user(owner)
+            except Exception:
+                # Owner exists but their connection is stale — fall through
+                # to the env-var fallback rather than failing the webhook.
+                pass
+    return fallback
+
+
 def _trigger_auto_dm(
     db: Session,
     provider: LinkedInProvider,
@@ -109,10 +143,14 @@ def _trigger_auto_dm(
 ) -> Optional[dict]:
     """
     For providers where the platform owns the sequence (Unipile), fire the
-    post-accept DM ourselves.
+    post-accept DM ourselves — from the OWNING USER'S LinkedIn, not the
+    env-var operator account.
     """
     if not provider.auto_dm_after_accept:
         return None
+
+    # Per-user routing: send from the user who owns this prospect's event.
+    routed_provider = _provider_for_prospect(prospect, fallback=provider)
 
     li_provider_id = prospect.linkedin_provider_id
     if not li_provider_id:
@@ -125,10 +163,10 @@ def _trigger_auto_dm(
     peers = [p.name for p in event.prospects if p.id != prospect.id and
              p.status in ("approved", "contacted", "rsvp")]
     msg = compose(prospect, event, peers=peers)
-    lead = provider.build_lead_payload(
+    lead = routed_provider.build_lead_payload(
         prospect, event, note=msg.note, message=msg.message
     )
-    res = provider.send_message(lead, linkedin_provider_id=li_provider_id)
+    res = routed_provider.send_message(lead, linkedin_provider_id=li_provider_id)
 
     db.add(models.OutreachLog(
         prospect_id=prospect.id,
