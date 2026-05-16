@@ -104,14 +104,24 @@ def _peer_names_for(target: models.Prospect, attending: list[models.Prospect]) -
     return [p.name for p in attending if p.id != target.id]
 
 
-def run_outreach_stage(db: Session, event: models.Event) -> list[ProviderResult]:
+def run_outreach_stage(
+    db: Session,
+    event: models.Event,
+    provider=None,
+) -> list[ProviderResult]:
     """
     Provider-backed outreach. Idempotent: wipes prior outreach logs + resets
     contacted/rsvp prospects back to 'approved' before re-running.
 
     Returns the per-prospect ProviderResult list (also stored in OutreachLog).
+
+    `provider` argument lets the caller pass a per-user provider (the
+    LinkedIn account of the signed-in user). If omitted, falls back to the
+    env-var operator account — used by the dry-run simulator and by callers
+    that don't have a user in scope (e.g. tests).
     """
-    provider = get_provider()
+    if provider is None:
+        provider = get_provider()
 
     # idempotent reset
     targets = [p for p in event.prospects
@@ -198,8 +208,9 @@ def run_outreach_stage(db: Session, event: models.Event) -> list[ProviderResult]
     return results
 
 
-async def run_pipeline(db: Session, event: models.Event):
-    """Facade — run /prospect then /outreach back-to-back."""
+async def run_pipeline(db: Session, event: models.Event, provider=None):
+    """Facade — run /prospect then /outreach back-to-back. Same provider=
+    fallthrough as run_outreach_stage."""
     await run_prospect(db, event)
-    run_outreach_stage(db, event)
+    run_outreach_stage(db, event, provider=provider)
     return list(event.prospects)

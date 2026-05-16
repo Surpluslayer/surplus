@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
+from ..auth import current_user, get_owned_event
 from ..db import get_db
 from ..agents.roi import settle
 
@@ -11,14 +12,16 @@ router = APIRouter(prefix="/events", tags=["05 · roi"])
 
 
 @router.get("/{event_id}/roi", response_model=schemas.RoiResult)
-def get_roi(event_id: int, db: Session = Depends(get_db)):
+def get_roi(
+    event_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
     """
     Per-guest conversion ledger + aggregate net ROI, settled against the event
     goal. Persists a Conversion row per guest so the ledger is queryable later.
     """
-    ev = db.get(models.Event, event_id)
-    if not ev:
-        raise HTTPException(404, "event not found")
+    ev = get_owned_event(event_id, user, db)
 
     attending = [p for p in ev.prospects if p.status == "rsvp"]
     if not attending:

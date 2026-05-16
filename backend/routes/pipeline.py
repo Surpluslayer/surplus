@@ -1,15 +1,26 @@
-"""routes/pipeline.py — stage 02-03. Prospecting and outreach, split."""
+"""routes/pipeline.py — stage 02-03. Prospecting and outreach, split.
+
+Multi-tenant: every route requires a signed-in user (via current_user dep)
+and resolves the event through get_owned_event (404s if the event isn't
+the user's). Send paths use get_provider_for_user(user) so DMs go from the
+signed-in user's connected LinkedIn — NOT the env-var operator account.
+
+The env-var operator account remains the fallback for webhook handlers
+(see routes/webhooks.py — webhooks have no session cookie, so they trace
+the owning user via Prospect → Event → User).
+"""
 from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
+from ..auth import current_user, get_owned_event
 from ..db import get_db
 from ..pipeline import run_prospect, run_outreach_stage, run_pipeline
 from ..agents.outreach import compose
 from ..agents.prospector import prospect as run_discovery
 from ..agents import llm
-from ..providers import get_provider
+from ..providers import get_provider_for_user
 
 router = APIRouter(prefix="/events", tags=["02-03 · pipeline"])
 
@@ -26,6 +37,7 @@ async def prospect_only(
     event_id: int,
     fresh: bool = False,
     db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
 ):
     """
     Stage 02 + 03a only: fan-out + score + threshold. No outreach.
@@ -38,32 +50,32 @@ async def prospect_only(
     pool for the same ICP, which makes iterating on UI / outreach copy
     essentially instant.
     """
-    ev = db.get(models.Event, event_id)
-    if not ev:
-        raise HTTPException(404, "event not found")
-
+    ev = get_owned_event(event_id, user, db)
     _wipe_prior_prospects(db, ev)
     prospects = await run_prospect(db, ev, force_fresh=fresh)
     return schemas.PipelineResult.build(ev, prospects)
 
 
 @router.post("/{event_id}/outreach", response_model=schemas.OutreachRunResult)
-def outreach_only(event_id: int, db: Session = Depends(get_db),
-                  confirm_live_batch: bool = False):
+def outreach_only(
+    event_id: int,
+    confirm_live_batch: bool = False,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
     """
     Stage 03b only: provider-backed outreach for everyone 'approved'.
 
     SAFETY: in LIVE mode this fires real LinkedIn invites to every approved
-    prospect at once. We require ?confirm_live_batch=true as an explicit
-    second-step opt-in to prevent the entire mock pool from getting blasted
-    by accident. DRY_RUN calls bypass the guard.
+    prospect at once, FROM THE SIGNED-IN USER'S LINKEDIN. We require
+    ?confirm_live_batch=true as an explicit second-step opt-in to prevent
+    the entire mock pool from getting blasted by accident. DRY_RUN calls
+    bypass the guard.
 
     Idempotent: wipes prior outreach logs and resets contacted/rsvp back
     to approved before re-running.
     """
-    ev = db.get(models.Event, event_id)
-    if not ev:
-        raise HTTPException(404, "event not found")
+    ev = get_owned_event(event_id, user, db)
     if not ev.prospects:
         raise HTTPException(409, "no prospects — call /prospect first")
     targets = [p for p in ev.prospects
@@ -72,7 +84,7 @@ def outreach_only(event_id: int, db: Session = Depends(get_db),
         raise HTTPException(409, "no approved prospects to contact — "
                                  "threshold may be too high for the pool")
 
-    provider = get_provider()
+    provider = get_provider_for_user(user)
     if not provider.dry_run and not confirm_live_batch:
         raise HTTPException(
             400,
@@ -81,13 +93,19 @@ def outreach_only(event_id: int, db: Session = Depends(get_db),
             f"or use POST /events/{ev.id}/prospects/<pid>/dm for one-at-a-time sends.",
         )
 
-    results = run_outreach_stage(db, ev)
+    # run_outreach_stage internally builds its own provider instance. To make
+    # it use the per-user one we pass it explicitly via the same call site.
+    results = run_outreach_stage(db, ev, provider=provider)
     return schemas.OutreachRunResult.build(ev, list(ev.prospects), results)
 
 
 @router.post("/{event_id}/run", response_model=schemas.PipelineResult)
-async def run(event_id: int, db: Session = Depends(get_db),
-              confirm_live_batch: bool = False):
+async def run(
+    event_id: int,
+    confirm_live_batch: bool = False,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
     """
     Convenience: /prospect + /outreach back-to-back. Idempotent.
 
@@ -95,11 +113,9 @@ async def run(event_id: int, db: Session = Depends(get_db),
     to every approved prospect at once. Pass ?confirm_live_batch=true to
     proceed, or use the per-prospect /dm endpoint for safer one-at-a-time.
     """
-    ev = db.get(models.Event, event_id)
-    if not ev:
-        raise HTTPException(404, "event not found")
+    ev = get_owned_event(event_id, user, db)
 
-    provider = get_provider()
+    provider = get_provider_for_user(user)
     if not provider.dry_run and not confirm_live_batch:
         raise HTTPException(
             400,
@@ -109,42 +125,38 @@ async def run(event_id: int, db: Session = Depends(get_db),
         )
 
     _wipe_prior_prospects(db, ev)
-    prospects = await run_pipeline(db, ev)
+    prospects = await run_pipeline(db, ev, provider=provider)
     return schemas.PipelineResult.build(ev, prospects)
 
 
 @router.get("/{event_id}/prospects", response_model=schemas.PipelineResult)
-def get_prospects(event_id: int, db: Session = Depends(get_db)):
+def get_prospects(
+    event_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
     """Read the resolved pool without re-running the pipeline."""
-    ev = db.get(models.Event, event_id)
-    if not ev:
-        raise HTTPException(404, "event not found")
+    ev = get_owned_event(event_id, user, db)
     if not ev.prospects:
         raise HTTPException(409, "pipeline has not been run for this event yet")
     return schemas.PipelineResult.build(ev, ev.prospects)
 
 
 @router.get("/{event_id}/prospect/preview", response_model=schemas.ProspectingPreview)
-async def prospect_preview(event_id: int, db: Session = Depends(get_db)):
+async def prospect_preview(
+    event_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
     """
     Run discovery + LLM ICP gate WITHOUT persisting anything.
-
-    In LLM mode (ANTHROPIC_API_KEY set), this fires real web_search calls
-    plus a relevance verdict per merged candidate. In mock mode it reads
-    the hand-curated prospect_pool.json. In both modes, every surfaced
-    candidate is run through compose() so the response shows the exact
-    LinkedIn connection note + post-accept DM that would land in their
-    inbox — proving the LLM-extracted profile fields (works_on, offers,
-    seeks) actually feed the outreach personalization.
 
     Read-only: no DB writes, no provider calls. Safe to hit before
     committing to /prospect.
     """
     from types import SimpleNamespace
 
-    ev = db.get(models.Event, event_id)
-    if not ev:
-        raise HTTPException(404, "event not found")
+    ev = get_owned_event(event_id, user, db)
 
     icp = {"role": ev.role, "seniority": ev.seniority, "co_stage": ev.co_stage}
     candidates = await run_discovery(icp)
@@ -152,9 +164,6 @@ async def prospect_preview(event_id: int, db: Session = Depends(get_db)):
     rows: list[schemas.ProspectingPreviewCandidate] = []
     all_names = [c["name"] for c in candidates]
     for c in candidates:
-        # compose() reads .name, .works_on, .offers — a SimpleNamespace is
-        # enough, we don't need an ORM row. peers come from the other
-        # surfaced candidates (the same logic the live pipeline uses).
         fake_prospect = SimpleNamespace(
             name=c["name"],
             works_on=c.get("works_on", "general"),
@@ -193,24 +202,26 @@ async def prospect_preview(event_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{event_id}/outreach/preview", response_model=schemas.OutreachPreview)
-def outreach_preview(event_id: int, db: Session = Depends(get_db)):
+def outreach_preview(
+    event_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
     """
     Show exactly what would be sent for each approved prospect, WITHOUT
     invoking the provider or mutating state.
 
-    For each approved prospect: composed note + message, eligibility flag,
-    and (if eligible) the full provider payload that would be POSTed.
+    Provider preview is built with a dry-run instance of the SAME provider
+    class as the real one, configured with the signed-in user's account_id.
     """
-    ev = db.get(models.Event, event_id)
-    if not ev:
-        raise HTTPException(404, "event not found")
+    ev = get_owned_event(event_id, user, db)
     if not ev.prospects:
         raise HTTPException(409, "no prospects — call /prospect first")
 
-    provider = get_provider()
+    provider = get_provider_for_user(user)
     targets = [p for p in ev.prospects
                if p.status in ("approved", "contacted", "rsvp")]
-    peers = targets  # composition reveal uses everyone passing the threshold
+    peers = targets
 
     rows: list[schemas.OutreachPreviewRow] = []
     for p in targets:
@@ -221,16 +232,16 @@ def outreach_preview(event_id: int, db: Session = Depends(get_db)):
             skip_reason = "no linkedin_url"
         msg = compose(p, ev, peers=[q.name for q in peers if q.id != p.id])
         lead = provider.build_lead_payload(p, ev, note=msg.note, message=msg.message)
-        # Provider-agnostic preview: dry-run is forced to true to guarantee no
-        # network call, and the payload that *would* be POSTed is captured on
-        # the ProviderResult. Works for any provider.
         payload = None
         if eligible:
-            # If the live provider isn't already in dry-run, use a throwaway
-            # dry-run instance of the SAME class for the preview.
             preview_provider = provider
             if not provider.dry_run:
-                preview_provider = type(provider)(dry_run=True)  # type: ignore[call-arg]
+                preview_provider = type(provider)(
+                    dsn=provider.dsn,
+                    api_key=provider.api_key,
+                    account_id=provider.account_id,
+                    dry_run=True,
+                )
             result = preview_provider.send_connection(lead)
             payload = result.payload
         rows.append(schemas.OutreachPreviewRow(
@@ -258,11 +269,16 @@ def outreach_preview(event_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{event_id}/prospects/{prospect_id}/invite")
-def send_connection_invite(event_id: int, prospect_id: int,
-                           override: schemas.OutreachOverride = schemas.OutreachOverride(),
-                           db: Session = Depends(get_db)):
+def send_connection_invite(
+    event_id: int,
+    prospect_id: int,
+    override: schemas.OutreachOverride = schemas.OutreachOverride(),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
     """
-    Send a LinkedIn connection request to ONE prospect.
+    Send a LinkedIn connection request to ONE prospect, FROM THE SIGNED-IN
+    USER'S LINKEDIN account.
 
     Accepts optional `note` and `message` in the request body — if provided,
     those override the agent-composed text. Lets the operator review/edit
@@ -270,16 +286,14 @@ def send_connection_invite(event_id: int, prospect_id: int,
     """
     import json as _json
     from datetime import datetime, timezone
-    ev = db.get(models.Event, event_id)
-    if not ev:
-        raise HTTPException(404, "event not found")
+    ev = get_owned_event(event_id, user, db)
     p = db.get(models.Prospect, prospect_id)
     if not p or p.event_id != event_id:
         raise HTTPException(404, "prospect not found on this event")
     if not p.linkedin_url:
         raise HTTPException(409, "prospect has no linkedin_url")
 
-    provider = get_provider()
+    provider = get_provider_for_user(user)
     peers = [q.name for q in ev.prospects if q.id != p.id and
              q.status in ("approved", "contacted", "rsvp")]
     msg = compose(p, ev, peers=peers)
@@ -321,33 +335,34 @@ def send_connection_invite(event_id: int, prospect_id: int,
 
 
 @router.post("/{event_id}/prospects/{prospect_id}/dm")
-def send_direct_message(event_id: int, prospect_id: int,
-                        override: schemas.OutreachOverride = schemas.OutreachOverride(),
-                        db: Session = Depends(get_db)):
+def send_direct_message(
+    event_id: int,
+    prospect_id: int,
+    override: schemas.OutreachOverride = schemas.OutreachOverride(),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
     """
-    Send a direct LinkedIn DM to ONE prospect, skipping the connection-invite
-    step. Use this when you're already connected to the recipient.
+    Send a direct LinkedIn DM to ONE prospect, FROM THE SIGNED-IN USER'S
+    LINKEDIN account. Skips the connection-invite step. Use when already
+    connected to the recipient.
 
     Accepts optional `message` in the request body to override the agent
-    composition (the `note` field is ignored here — connection requests
-    use that, DMs use `message`).
+    composition (the `note` field is ignored here).
     """
     import json as _json
     from datetime import datetime, timezone
-    ev = db.get(models.Event, event_id)
-    if not ev:
-        raise HTTPException(404, "event not found")
+    ev = get_owned_event(event_id, user, db)
     p = db.get(models.Prospect, prospect_id)
     if not p or p.event_id != event_id:
         raise HTTPException(404, "prospect not found on this event")
     if not p.linkedin_url:
         raise HTTPException(409, "prospect has no linkedin_url")
 
-    provider = get_provider()
+    provider = get_provider_for_user(user)
 
-    # Resolve & cache the linkedin provider id. We re-resolve when going
-    # live if the cached id is a leftover dry-run placeholder ("dry_li_..."),
-    # since those aren't valid Unipile ids.
+    # Resolve & cache the linkedin provider id. Re-resolve when going live if
+    # the cached id is a leftover dry-run placeholder.
     needs_resolve = (
         not p.linkedin_provider_id
         or (not provider.dry_run and p.linkedin_provider_id.startswith("dry_"))
@@ -397,13 +412,14 @@ def send_direct_message(event_id: int, prospect_id: int,
 
 
 @router.get("/{event_id}/outreach/log", response_model=schemas.OutreachLogResult)
-def outreach_log(event_id: int, db: Session = Depends(get_db)):
+def outreach_log(
+    event_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
     """
     Per-event outreach timeline. One entry per OutreachLog row, sorted by
     (prospect, ts). The dashboard renders this as the per-prospect funnel.
     """
-    ev = db.get(models.Event, event_id)
-    if not ev:
-        raise HTTPException(404, "event not found")
-
+    ev = get_owned_event(event_id, user, db)
     return schemas.OutreachLogResult.build(ev)

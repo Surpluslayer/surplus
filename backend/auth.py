@@ -109,3 +109,27 @@ def revoke_session(db: DbSession, token: str) -> None:
     if sess and sess.revoked_at is None:
         sess.revoked_at = _utcnow()
         db.commit()
+
+
+# ─── Access control ─────────────────────────────────────────────
+
+def get_owned_event(event_id: int, user: User, db: DbSession):
+    """Fetch an event by id, requiring `user` to be its owner.
+
+    Returns the Event row. Raises 404 in BOTH the not-found case AND the
+    not-owned case — deliberately the same status to avoid leaking the
+    existence of other users' events.
+
+    Use from any route handler that takes `event_id` from the URL:
+
+        ev = get_owned_event(event_id, user, db)
+
+    instead of the bare `db.get(Event, event_id)` pattern. After multi-tenant,
+    every event-scoped route MUST go through this helper or it leaks data
+    across users.
+    """
+    from .models import Event   # local import to avoid circular at module load
+    ev = db.query(Event).filter(Event.id == event_id, Event.user_id == user.id).first()
+    if not ev:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return ev

@@ -1441,10 +1441,46 @@ function UserMenu({ user, onLogout }) {
 //   - get_provider_for_user(user)       — per-user Unipile factory
 // ──────────────────────────────────────────────────────────────
 export default function App() {
-  return <SurplusApp user={null} onLogout={() => {}} />;
+  // On mount we fire /api/auth/me. Three terminal states:
+  //   user === null       — still loading (first paint)
+  //   user === undefined  — done loading, NOT signed in (treat as guest)
+  //   user is object      — signed in; UserMenu shows their info
+  // The app renders the SAME thing in guest vs signed-in mode — the only
+  // difference is the topbar pill. Routes that require auth will surface
+  // 401s when the user tries to use them (they can sign in then).
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.me()
+      .then((u) => { if (!cancelled) setUser(u); })
+      .catch((e) => {
+        if (!cancelled) setUser(undefined);  // not signed in, no error UX
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Brief paint-stable placeholder while we resolve auth
+  if (user === null) {
+    return <div style={{ minHeight: "100vh", background: "#f6f7f9" }} />;
+  }
+  return (
+    <SurplusApp
+      user={user || null}
+      onLogout={() => setUser(undefined)}
+      onSignIn={async () => {
+        try {
+          const r = await api.startLinkedinAuth();
+          if (r?.url) window.location.href = r.url;
+        } catch (e) {
+          alert("Could not start LinkedIn sign-in: " + e.message);
+        }
+      }}
+    />
+  );
 }
 
-function SurplusApp({ user, onLogout }) {
+function SurplusApp({ user, onLogout, onSignIn }) {
   const [stage, setStage] = useState(0);
   const [maxReached, setMaxReached] = useState(0);
   const [profile, setProfile] = useState({
@@ -1509,8 +1545,13 @@ function SurplusApp({ user, onLogout }) {
             )}
           </div>
           <StageRail stage={stage} setStage={go} maxReached={maxReached} />
-          {/* UserMenu unmounted — auth not gated right now. Reintroduce when
-              "Connect LinkedIn" becomes a button at the moment of send. */}
+          {user ? (
+            <UserMenu user={user} onLogout={onLogout} />
+          ) : (
+            <button className="topbar-signin" onClick={onSignIn} title="Sign in with LinkedIn">
+              Sign in with LinkedIn
+            </button>
+          )}
         </header>
         {apiError && (
           <div className="api-error">{apiError}</div>
@@ -1921,6 +1962,14 @@ const CSS = `
 
 /* ─── User menu in topbar ─────────────────────────────────── */
 .user-menu { position:relative; margin-left:auto; }
+.topbar-signin {
+  margin-left:auto;
+  padding:6px 14px; border-radius:var(--r-pill);
+  background:#0a66c2; color:white; border:0;
+  font-family:inherit; font-size:13px; font-weight:600;
+  cursor:pointer; transition:background 0.12s;
+}
+.topbar-signin:hover { background:#084e96; }
 .user-pill {
   display:inline-flex; align-items:center; gap:8px;
   padding:5px 12px 5px 5px;

@@ -27,6 +27,13 @@ class Event(Base):
     __tablename__ = "events"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Owner — every event belongs to exactly one signed-in user. Nullable for
+    # backwards compatibility with rows that pre-date multi-tenant; new rows
+    # always have it set by the events POST handler. Backfilled to the operator
+    # user on first migration via _migrate_event_user_id() in db.py.
+    user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id"), default=None, index=True
+    )
     # ICP
     role: Mapped[str] = mapped_column(String(200))
     seniority: Mapped[str] = mapped_column(String(40))
@@ -48,6 +55,7 @@ class Event(Base):
     edges: Mapped[list["MatchEdge"]] = relationship(
         back_populates="event", cascade="all, delete-orphan"
     )
+    user: Mapped[Optional["User"]] = relationship(foreign_keys=[user_id])
 
 
 class Prospect(Base):
