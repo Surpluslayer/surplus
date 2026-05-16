@@ -165,6 +165,36 @@ const Chip = ({ active, onClick, children }) => (
 const fmtK = (v) => v >= 1000 ? `$${(v / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })}k` : `$${v}`;
 const fmtNum = (n) => n > 999 ? (n / 1000).toFixed(1) + "k" : "" + n;
 
+// Browser-notification helper. Returns the granted permission string (or
+// "unsupported" when the API isn't there at all — e.g., insecure context).
+// Best-effort: never throws, never blocks. The Notification API only fires
+// on https / localhost, so this silently no-ops on http deploys.
+async function ensureNotifyPermission() {
+  if (typeof window === "undefined" || !("Notification" in window)) return "unsupported";
+  if (Notification.permission === "granted") return "granted";
+  if (Notification.permission === "denied") return "denied";
+  try {
+    return await Notification.requestPermission();
+  } catch {
+    return "default";
+  }
+}
+
+// Fire a device notification. Suppressed when the tab is already focused —
+// the in-app UI already conveys completion in that case.
+function notifyDevice(title, options = {}) {
+  if (typeof window === "undefined" || !("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+  if (typeof document !== "undefined" && document.visibilityState === "visible"
+      && document.hasFocus && document.hasFocus()) return;
+  try {
+    const n = new Notification(title, { icon: "/surplus-logo.png", ...options });
+    n.onclick = () => { try { window.focus(); n.close(); } catch {} };
+  } catch {
+    // Some browsers throw on iframe / insecure contexts — just swallow.
+  }
+}
+
 // ---- Stage 0: Intake ----------------------------------------
 function Intake({ profile, setProfile, onRun }) {
   const set = (k, v) => setProfile((p) => ({ ...p, [k]: v }));
@@ -277,6 +307,10 @@ function Pipeline({ profile, eventId, onResult, onError, onDone }) {
     return () => clearInterval(t);
   }, []);
 
+  // Ask once, on mount, before kicking the long-running call. The user just
+  // clicked "Run agent pipeline" so the permission prompt is contextual.
+  useEffect(() => { ensureNotifyPermission(); }, []);
+
   // Fire ONLY /prospect — no outreach. The next stage owns sending,
   // per-prospect with explicit clicks. This prevents the old "intake →
   // mass-send" footgun.
@@ -289,6 +323,13 @@ function Pipeline({ profile, eventId, onResult, onError, onDone }) {
         if (!cancelled) {
           onResult && onResult(result);
           setApiDone(true);
+          const found = result?.counts?.surfaced ?? result?.prospects?.length ?? 0;
+          notifyDevice("Prospecting complete", {
+            body: found
+              ? `${found} candidates surfaced. Ready for review.`
+              : "Pipeline finished. Open the tab to review.",
+            tag: `prospect-${eventId}`,
+          });
         }
       } catch (e) {
         if (!cancelled) {
@@ -302,6 +343,12 @@ function Pipeline({ profile, eventId, onResult, onError, onDone }) {
             onError && onError(`Prospecting failed: ${e.message}`);
           }
           setApiDone(true);
+          notifyDevice("Prospecting failed", {
+            body: e.status === 404
+              ? "Event not found — backend redeployed."
+              : `Pipeline error: ${e.message?.slice(0, 120) || "unknown"}`,
+            tag: `prospect-${eventId}`,
+          });
         }
       }
     })();
