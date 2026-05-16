@@ -9,6 +9,10 @@
 
 async function request(path, opts = {}) {
   const res = await fetch(path, {
+    // include cookies on every call — the surplus_session cookie carries
+    // the signed-in user. "same-origin" works in prod (FastAPI serves the
+    // SPA + API at one origin) and in dev (Vite proxies /api → :8000).
+    credentials: "same-origin",
     headers: { "content-type": "application/json", ...(opts.headers || {}) },
     ...opts,
   });
@@ -78,4 +82,11 @@ export const api = {
 
   // meta
   health: () => request("/api/health"),
+
+  // auth — Sign in with LinkedIn (via Unipile hosted-auth)
+  // me() returns the current user, or throws 401 (caller treats as signed-out)
+  me: () => request("/api/auth/me"),
+  // returns { url } — frontend sets window.location = url to begin the flow
+  startLinkedinAuth: () => request("/api/auth/linkedin/start", { method: "POST" }),
+  logout: () => request("/api/auth/logout", { method: "POST" }),
 };

@@ -148,3 +148,60 @@ class Conversion(Base):
     value: Mapped[int]
 
     prospect: Mapped["Prospect"] = relationship(back_populates="conversion")
+
+
+# ─── Identity ──────────────────────────────────────────────────────
+# Surplus auth = LinkedIn auth via Unipile's hosted flow. There's no
+# separate email/password layer. A User row is created the first time
+# someone successfully completes the Sign-in-with-LinkedIn flow; the
+# Unipile account_id is the durable link to their LinkedIn.
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Stable Unipile id — same across re-connects of the same LinkedIn account
+    unipile_account_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    # Profile data pulled from Unipile after auth (best-effort, refreshable)
+    email: Mapped[Optional[str]] = mapped_column(String(200), default=None, index=True)
+    name: Mapped[str] = mapped_column(String(120), default="")
+    headline: Mapped[Optional[str]] = mapped_column(String(200), default=None)
+    avatar_url: Mapped[Optional[str]] = mapped_column(String(400), default=None)
+    linkedin_public_id: Mapped[Optional[str]] = mapped_column(String(120), default=None)
+    linkedin_provider_id: Mapped[Optional[str]] = mapped_column(String(120), default=None)
+    # Lifecycle
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    last_login_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    # Connection health — flipped to "disconnected" if Unipile webhook fires
+    # CREDENTIALS / DISCONNECTED. Re-auth flips it back to "active".
+    linkedin_status: Mapped[str] = mapped_column(String(20), default="active")
+
+
+class AuthState(Base):
+    """Short-lived state token created when a user clicks Sign in with LinkedIn.
+
+    Bridges the race between Unipile's webhook (fires when account is created
+    on their side) and the user's browser landing on /api/auth/linkedin/callback.
+    Whichever arrives first writes; the second reads and completes the flow.
+    """
+    __tablename__ = "auth_states"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    state_token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), default=None)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | webhook_done | callback_done | failed
+    error: Mapped[Optional[str]] = mapped_column(String(400), default=None)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+
+
+class Session(Base):
+    __tablename__ = "sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    expires_at: Mapped[datetime]
+    last_seen_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(default=None)
