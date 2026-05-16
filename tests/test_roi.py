@@ -1,7 +1,7 @@
 """Tests for agents/roi.py — tier mapping, ledger pricing, net ROI math."""
 from types import SimpleNamespace
 
-from backend.agents.roi import tier_of, settle
+from backend.agents.roi import tier_of, settle, linkedin_outreach_stats
 
 
 def _p(pid, score, side="Builds"):
@@ -60,3 +60,70 @@ def test_ledger_sorted_by_value_desc():
     ledger, _ = settle(_event(), [_p(1, 60), _p(2, 95), _p(3, 85)])
     values = [r["value"] for r in ledger]
     assert values == sorted(values, reverse=True)
+
+
+def _log(channel, state):
+    return SimpleNamespace(channel=channel, state=state)
+
+
+def _prospect_with_outreach(logs):
+    return SimpleNamespace(outreach=logs)
+
+
+def test_linkedin_outreach_stats_empty_when_no_prospects():
+    stats = linkedin_outreach_stats(_event())
+    assert stats["li_invites_sent"] == 0
+    assert stats["li_invites_accepted"] == 0
+    assert stats["li_acceptance_rate_pct"] == 0
+    assert stats["li_response_rate_pct"] == 0
+
+
+def test_linkedin_outreach_stats_counts_and_rates():
+    # 4 invites sent, 3 accepted, 3 DMs sent, 2 replies.
+    prospects = [
+        _prospect_with_outreach([
+            _log("linkedin", "invite_sent"),
+            _log("linkedin", "invite_accepted"),
+            _log("linkedin", "message_sent"),
+            _log("linkedin", "message_replied"),
+        ]),
+        _prospect_with_outreach([
+            _log("linkedin", "invite_sent"),
+            _log("linkedin", "invite_accepted"),
+            _log("linkedin", "message_sent"),
+            _log("linkedin", "message_replied"),
+        ]),
+        _prospect_with_outreach([
+            _log("linkedin", "invite_sent"),
+            _log("linkedin", "invite_accepted"),
+            _log("linkedin", "message_sent"),
+        ]),
+        _prospect_with_outreach([_log("linkedin", "invite_sent")]),
+        # email channel must be ignored
+        _prospect_with_outreach([_log("email", "invite_sent")]),
+    ]
+    ev = SimpleNamespace(prospects=prospects)
+    stats = linkedin_outreach_stats(ev)
+    assert stats["li_invites_sent"] == 4
+    assert stats["li_invites_accepted"] == 3
+    assert stats["li_messages_sent"] == 3
+    assert stats["li_messages_replied"] == 2
+    assert stats["li_acceptance_rate_pct"] == 75
+    assert stats["li_response_rate_pct"] == round(2 / 3 * 100)
+
+
+def test_settle_merges_linkedin_stats_into_metrics():
+    # settle() should expose the LinkedIn rates alongside the ROI metrics.
+    ev = _event()
+    ev.prospects = [
+        _prospect_with_outreach([
+            _log("linkedin", "invite_sent"),
+            _log("linkedin", "invite_accepted"),
+            _log("linkedin", "message_sent"),
+            _log("linkedin", "message_replied"),
+        ]),
+    ]
+    _, metrics = settle(ev, [_p(1, 95)])
+    assert metrics["li_invites_sent"] == 1
+    assert metrics["li_acceptance_rate_pct"] == 100
+    assert metrics["li_response_rate_pct"] == 100

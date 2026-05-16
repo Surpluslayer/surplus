@@ -1217,6 +1217,21 @@ function ROI({ profile, onRestart }) {
     { k: "Converted", v: wonN, w: (wonN / invited) * 100 },
   ];
 
+  // LinkedIn outreach funnel — derived from the static prospect statuses.
+  // In the demo, the agent only invited prospects above THRESHOLD; those that
+  // ended up in `contacted` or `rsvp` accepted the connection request, and
+  // those in `rsvp` ultimately replied to the post-accept DM.
+  const liAboveT = PROSPECTS.filter((p) => p.score >= THRESHOLD);
+  const liInvitesSent = liAboveT.length;
+  const liInvitesAccepted = liAboveT.filter(
+    (p) => p.status === "contacted" || p.status === "rsvp"
+  ).length;
+  const liMessagesSent = liInvitesAccepted; // agent auto-DMs once a connection is accepted
+  const liMessagesReplied = liAboveT.filter((p) => p.status === "rsvp").length;
+  const pct = (num, den) => (den > 0 ? Math.round((num / den) * 100) : 0);
+  const liAcceptanceRate = pct(liInvitesAccepted, liInvitesSent);
+  const liResponseRate = pct(liMessagesReplied, liMessagesSent);
+
   return (
     <div className="stage">
       <header className="stage-head">
@@ -1240,6 +1255,53 @@ function ROI({ profile, onRestart }) {
             </div>
           ))}
           <div className="rf-foot">{wonN} of {attended} attendees converted to goal</div>
+        </div>
+      </div>
+
+      <div className="roi-li">
+        <div className="roi-li-head">
+          <span className="roi-li-title">LinkedIn outreach</span>
+          <span className="roi-li-sub">how the agent's invites + DMs performed</span>
+        </div>
+        <div className="roi-li-tiles">
+          <div className="roi-li-tile">
+            <span className="roi-li-k">Connection acceptance</span>
+            <span className="roi-li-v">{liAcceptanceRate}%</span>
+            <span className="roi-li-d">{liInvitesAccepted} of {liInvitesSent} invites accepted</span>
+          </div>
+          <div className="roi-li-tile">
+            <span className="roi-li-k">Response rate</span>
+            <span className="roi-li-v">{liResponseRate}%</span>
+            <span className="roi-li-d">{liMessagesReplied} of {liMessagesSent} post-accept DMs replied</span>
+          </div>
+        </div>
+        <div className="roi-li-steps">
+          <div className="rls-row">
+            <span className="rls-k">Invites sent</span>
+            <div className="rls-bar"><div className="rls-fill" style={{ width: "100%" }} /></div>
+            <span className="rls-v">{liInvitesSent}</span>
+          </div>
+          <div className="rls-row">
+            <span className="rls-k">Accepted</span>
+            <div className="rls-bar">
+              <div className="rls-fill" style={{ width: `${liInvitesSent ? (liInvitesAccepted / liInvitesSent) * 100 : 0}%` }} />
+            </div>
+            <span className="rls-v">{liInvitesAccepted}</span>
+          </div>
+          <div className="rls-row">
+            <span className="rls-k">DMs sent</span>
+            <div className="rls-bar">
+              <div className="rls-fill" style={{ width: `${liInvitesSent ? (liMessagesSent / liInvitesSent) * 100 : 0}%` }} />
+            </div>
+            <span className="rls-v">{liMessagesSent}</span>
+          </div>
+          <div className="rls-row">
+            <span className="rls-k">Replies</span>
+            <div className="rls-bar">
+              <div className="rls-fill" style={{ width: `${liInvitesSent ? (liMessagesReplied / liInvitesSent) * 100 : 0}%` }} />
+            </div>
+            <span className="rls-v">{liMessagesReplied}</span>
+          </div>
         </div>
       </div>
 
@@ -1696,6 +1758,26 @@ const CSS = `
   border-radius:var(--r-pill); }
 .rf-v { font-size:13px; color:var(--ink); width:32px; text-align:right; font-weight:800; }
 .rf-foot { font-size:10px; color:var(--ink-faint); margin-top:2px; }
+.roi-li { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
+  padding:18px 20px; margin-top:16px; box-shadow:var(--shadow-sm);
+  display:flex; flex-direction:column; gap:14px; }
+.roi-li-head { display:flex; align-items:baseline; gap:10px; }
+.roi-li-title { font-size:12px; font-weight:700; color:var(--ink); letter-spacing:0.02em; }
+.roi-li-sub { font-size:10px; color:var(--ink-faint); }
+.roi-li-tiles { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.roi-li-tile { background:var(--panel-3); border:1px solid var(--line-soft);
+  border-radius:var(--r-card); padding:14px 16px; display:flex; flex-direction:column; gap:4px; }
+.roi-li-k { font-size:10px; letter-spacing:0.05em; text-transform:uppercase;
+  color:var(--ink-dim); font-weight:700; }
+.roi-li-v { font-size:30px; font-weight:800; color:var(--acc); letter-spacing:-0.02em; line-height:1.05; }
+.roi-li-d { font-size:10px; color:var(--ink-faint); }
+.roi-li-steps { display:flex; flex-direction:column; gap:8px; }
+.rls-row { display:flex; align-items:center; gap:12px; }
+.rls-k { font-size:11px; color:var(--ink-dim); width:92px; font-weight:500; }
+.rls-bar { flex:1; height:12px; background:var(--panel-3); border-radius:var(--r-pill); overflow:hidden; }
+.rls-fill { height:100%; background:linear-gradient(90deg,var(--acc-light),var(--acc));
+  border-radius:var(--r-pill); }
+.rls-v { font-size:12px; color:var(--ink); width:32px; text-align:right; font-weight:800; }
 .ledger { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
   box-shadow:var(--shadow-sm); overflow:hidden; }
 .ledger-head { display:grid; grid-template-columns:1.6fr 0.7fr 1.6fr 0.8fr; gap:12px;
@@ -1721,7 +1803,7 @@ const CSS = `
 .ledger-total { font-size:17px; font-weight:800; color:var(--acc); letter-spacing:-0.01em; }
 @media (max-width:880px) {
   .form-grid, .pipe-sources { grid-template-columns:1fr; }
-  .prospect-layout, .roi-top { grid-template-columns:1fr; }
+  .prospect-layout, .roi-top, .roi-li-tiles { grid-template-columns:1fr; }
   .match-side { grid-template-columns:1fr; }
   .ledger-head, .ledger-row { grid-template-columns:1.4fr 1.4fr 0.7fr; }
   .ledger-head span:nth-child(2), .ledger-row > span:nth-child(2) { display:none; }
