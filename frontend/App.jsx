@@ -1551,8 +1551,8 @@ function SurplusApp({ user, onLogout, onSignIn }) {
           {user ? (
             <UserMenu user={user} onLogout={onLogout} />
           ) : (
-            <button className="topbar-signin" onClick={onSignIn} title="Sign in with LinkedIn">
-              Sign in with LinkedIn
+            <button className="topbar-signin" onClick={onSignIn} title="Try now with LinkedIn">
+              Try now with LinkedIn
             </button>
           )}
         </header>

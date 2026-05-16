@@ -102,7 +102,7 @@ export default function SignIn() {
           ) : (
             <>
               <LinkedInIcon size={18} />
-              <span>Sign in with LinkedIn</span>
+              <span>Try now with LinkedIn</span>
             </>
           )}
         </button>
