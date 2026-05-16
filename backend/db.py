@@ -52,14 +52,16 @@ def get_db():
 def init_db() -> None:
     """Create tables if they don't exist. Called on app startup.
 
-    Also runs lightweight in-place migrations for SQLite (no alembic):
-    - events.user_id   added when missing
+    Also runs lightweight in-place migrations (no alembic):
+    - events.user_id              added when missing
+    - users.pacer_next_send_at    added when missing
     - operator User row auto-created from UNIPILE_ACCOUNT_ID env var
     - existing events with NULL user_id backfilled to the operator user
     """
     from . import models  # noqa: F401  (import registers the models)
     Base.metadata.create_all(ENGINE)
     _migrate_event_user_id()
+    _migrate_pacer_next_send_at()
     _ensure_operator_user_and_backfill()
 
 
@@ -81,6 +83,24 @@ def _migrate_event_user_id() -> None:
         conn.execute(text("ALTER TABLE events ADD COLUMN user_id INTEGER"))
         # SQLite doesn't enforce FK in ALTER but ORM relationship still works
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_user_id ON events (user_id)"))
+
+
+def _migrate_pacer_next_send_at() -> None:
+    """Add users.pacer_next_send_at to legacy DBs that pre-date outreach
+    pacing. SQLAlchemy create_all only creates missing tables, not new
+    columns on existing ones. Same pattern as _migrate_event_user_id.
+    Works on both SQLite + Postgres."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "pacer_next_send_at" in cols:
+        return
+    with ENGINE.begin() as conn:
+        # TIMESTAMP works on Postgres + SQLite. SQLAlchemy stores Python
+        # datetime via the DateTime type which maps to TIMESTAMP on both.
+        conn.execute(text("ALTER TABLE users ADD COLUMN pacer_next_send_at TIMESTAMP"))
 
 
 def _ensure_operator_user_and_backfill() -> None:

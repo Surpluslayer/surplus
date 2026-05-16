@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..auth import current_user, get_owned_event
 from ..db import get_db
+from ..outreach_pacer import check_send_allowed, record_send
 from ..pipeline import run_prospect, run_outreach_stage, run_pipeline
 from ..agents.outreach import compose
 from ..agents.prospector import prospect as run_discovery
@@ -93,6 +94,31 @@ def outreach_only(
             f"or use POST /events/{ev.id}/prospects/<pid>/dm for one-at-a-time sends.",
         )
 
+    # Pacer pre-flight: would this batch blow the daily cap?
+    # NB: batch internals don't yet pace BETWEEN sends — they burst. Followup
+    # ticket: refactor run_outreach_stage to call check_send_allowed + sleep
+    # between sends so a 20-prospect batch takes ~100 min instead of 5 sec.
+    # For now we refuse over-cap batches at the door.
+    decision = check_send_allowed(user, db)
+    remaining = decision.daily_cap - decision.sends_today
+    if len(targets) > remaining:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "reason": "batch_would_exceed_daily_cap",
+                "batch_size": len(targets),
+                "sends_today": decision.sends_today,
+                "daily_cap": decision.daily_cap,
+                "remaining_today": max(0, remaining),
+                "hint": (
+                    f"Daily LinkedIn send cap is {decision.daily_cap}. "
+                    f"You've used {decision.sends_today} today, with {remaining} remaining. "
+                    f"This batch wants {len(targets)} sends. Either send to fewer prospects, "
+                    f"use per-prospect /invite for measured pacing, or come back tomorrow."
+                ),
+            },
+        )
+
     # run_outreach_stage internally builds its own provider instance. To make
     # it use the per-user one we pass it explicitly via the same call site.
     results = run_outreach_stage(db, ev, provider=provider)
@@ -122,6 +148,27 @@ async def run(
             "refusing to run the full pipeline in LIVE mode without "
             "?confirm_live_batch=true. This endpoint fires real LinkedIn "
             "invites for every approved prospect at once.",
+        )
+
+    # Pacer pre-flight: refuse if remaining daily quota is already 0. We can't
+    # know the exact batch size before prospecting runs, so this is a coarse
+    # check ("you have no sends left today"). The /outreach call inside the
+    # pipeline will catch over-cap batches at the door.
+    decision = check_send_allowed(user, db)
+    remaining = decision.daily_cap - decision.sends_today
+    if remaining <= 0:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "reason": "daily_cap_reached_before_pipeline_start",
+                "sends_today": decision.sends_today,
+                "daily_cap": decision.daily_cap,
+                "hint": (
+                    "You've used your full daily LinkedIn send quota. The "
+                    "pipeline would prospect successfully but fail to send. "
+                    "Run /prospect alone today and /outreach tomorrow."
+                ),
+            },
         )
 
     _wipe_prior_prospects(db, ev)
@@ -293,6 +340,27 @@ def send_connection_invite(
     if not p.linkedin_url:
         raise HTTPException(409, "prospect has no linkedin_url")
 
+    # Pacer: enforce daily cap + random gap between sends. 429 if blocked.
+    decision = check_send_allowed(user, db)
+    if not decision.allowed:
+        headers = {}
+        if decision.retry_after_seconds:
+            headers["Retry-After"] = str(decision.retry_after_seconds)
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "reason": decision.reason,
+                "sends_today": decision.sends_today,
+                "daily_cap": decision.daily_cap,
+                "retry_after_seconds": decision.retry_after_seconds,
+                "next_send_allowed_at": (
+                    decision.next_send_allowed_at.isoformat()
+                    if decision.next_send_allowed_at else None
+                ),
+            },
+            headers=headers,
+        )
+
     provider = get_provider_for_user(user)
     peers = [q.name for q in ev.prospects if q.id != p.id and
              q.status in ("approved", "contacted", "rsvp")]
@@ -319,6 +387,10 @@ def send_connection_invite(
     if not provider.dry_run and res.state == "invite_sent":
         p.status = "contacted"
     db.commit()
+
+    # Pacer: record the send so the next attempt waits 2-10 min.
+    # We record on dry-run too — keeps demo behavior consistent with live.
+    record_send(user, db)
 
     return {
         "prospect_id": p.id,
@@ -359,6 +431,27 @@ def send_direct_message(
     if not p.linkedin_url:
         raise HTTPException(409, "prospect has no linkedin_url")
 
+    # Pacer: enforce daily cap + random gap between sends. 429 if blocked.
+    decision = check_send_allowed(user, db)
+    if not decision.allowed:
+        headers = {}
+        if decision.retry_after_seconds:
+            headers["Retry-After"] = str(decision.retry_after_seconds)
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "reason": decision.reason,
+                "sends_today": decision.sends_today,
+                "daily_cap": decision.daily_cap,
+                "retry_after_seconds": decision.retry_after_seconds,
+                "next_send_allowed_at": (
+                    decision.next_send_allowed_at.isoformat()
+                    if decision.next_send_allowed_at else None
+                ),
+            },
+            headers=headers,
+        )
+
     provider = get_provider_for_user(user)
 
     # Resolve & cache the linkedin provider id. Re-resolve when going live if
@@ -396,6 +489,9 @@ def send_direct_message(
     if not provider.dry_run and res.state == "message_sent":
         p.status = "contacted"
     db.commit()
+
+    # Pacer: record the send so the next attempt waits 2-10 min.
+    record_send(user, db)
 
     return {
         "prospect_id": p.id,

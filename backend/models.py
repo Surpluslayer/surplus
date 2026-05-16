@@ -184,6 +184,12 @@ class User(Base):
     # CREDENTIALS / DISCONNECTED. Re-auth flips it back to "active".
     linkedin_status: Mapped[str] = mapped_column(String(20), default="active")
 
+    # Outreach pacing — earliest time the next LinkedIn send is allowed for
+    # this user. Updated atomically after each successful send to enforce
+    # 2-10 min random gaps between sends (prevents burst patterns that get
+    # LinkedIn accounts flagged). NULL means "no recent send, free to go now".
+    pacer_next_send_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+
 
 class AuthState(Base):
     """Short-lived state token created when a user clicks Sign in with LinkedIn.

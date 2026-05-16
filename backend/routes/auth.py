@@ -376,7 +376,19 @@ async def linkedin_callback(
     return response
 
 
-# ─── 4. /me: who is signed in? ────────────────────────────────────
+# ─── 4. /me: who is signed in? + /quota: outreach pacing state ────
+
+@router.get("/quota")
+def quota(
+    user: User = Depends(current_user),
+    db: DbSession = Depends(get_db),
+) -> JSONResponse:
+    """Current outreach pacing state for the signed-in user. UI reads this
+    on app mount + after each send to show 'X of N sends used today' and
+    'next available HH:MM:SS' indicators."""
+    from ..outreach_pacer import quota_snapshot
+    return JSONResponse(quota_snapshot(user, db))
+
 
 @router.get("/me")
 def me(user: User = Depends(current_user)) -> JSONResponse:

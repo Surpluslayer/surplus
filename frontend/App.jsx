@@ -593,9 +593,31 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
         },
       }));
     } catch (e) {
+      // 429 from the pacer: surface a clear "you hit the daily cap" or
+      // "wait until X" message instead of a cryptic HTTP error.
+      let friendly = e.message;
+      if (e.status === 429) {
+        // e.message contains the response body slice; try to extract
+        // the structured detail object so we can format it nicely.
+        const match = e.message.match(/\{.*\}/);
+        if (match) {
+          try {
+            const detail = JSON.parse(match[0]).detail || {};
+            if (detail.reason?.startsWith("daily_cap_reached")) {
+              friendly = `Daily LinkedIn send cap reached (${detail.daily_cap}). Resumes tomorrow — this prevents your account from being flagged.`;
+            } else if (detail.reason?.startsWith("too_soon_since_last_send")) {
+              const sec = detail.retry_after_seconds || 0;
+              const mins = Math.ceil(sec / 60);
+              friendly = `Next send available in ~${mins} min. Random gaps between sends keep your LinkedIn account safe.`;
+            } else if (detail.reason === "batch_would_exceed_daily_cap") {
+              friendly = detail.hint || "Batch exceeds daily cap.";
+            }
+          } catch (_) { /* fall through with raw message */ }
+        }
+      }
       setSendState((s) => ({
         ...s,
-        [prospectId]: { status: "failed", kind, error: e.message },
+        [prospectId]: { status: "failed", kind, error: friendly },
       }));
     }
   };
@@ -1385,6 +1407,45 @@ function ROI({ profile, onRestart }) {
 }
 
 // ---- root ---------------------------------------------------
+function QuotaPill() {
+  // Shows "5/20 today" — refetches every 60s + after a focus event so the
+  // user sees the counter tick up after they send something.
+  const [quota, setQuota] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const fetchIt = () => {
+      api.getQuota()
+        .then((q) => { if (!cancelled) setQuota(q); })
+        .catch(() => { if (!cancelled) setQuota(null); });
+    };
+    fetchIt();
+    const id = setInterval(fetchIt, 60_000);
+    window.addEventListener("focus", fetchIt);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      window.removeEventListener("focus", fetchIt);
+    };
+  }, []);
+  if (!quota) return null;
+  const tone =
+    !quota.can_send_now && quota.sends_today >= quota.daily_cap ? "blocked"
+    : !quota.can_send_now ? "waiting"
+    : "ok";
+  const label = `${quota.sends_today}/${quota.daily_cap} sends today`;
+  const hint =
+    tone === "blocked" ? "Daily LinkedIn send cap reached. Resumes tomorrow."
+    : tone === "waiting" && quota.next_send_allowed_at
+      ? `Next send available at ${new Date(quota.next_send_allowed_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`
+    : "Daily cap protects your LinkedIn account from being flagged.";
+  return (
+    <div className={`quota-pill quota-pill-${tone}`} title={hint}>
+      <span className="quota-dot"></span>
+      <span className="quota-label">{label}</span>
+    </div>
+  );
+}
+
 function UserMenu({ user, onLogout }) {
   const [open, setOpen] = useState(false);
   const handleLogout = async () => {
@@ -1548,6 +1609,7 @@ function SurplusApp({ user, onLogout, onSignIn }) {
             )}
           </div>
           <StageRail stage={stage} setStage={go} maxReached={maxReached} />
+          {user && <QuotaPill />}
           {user ? (
             <UserMenu user={user} onLogout={onLogout} />
           ) : (
@@ -1964,7 +2026,22 @@ const CSS = `
 }
 
 /* ─── User menu in topbar ─────────────────────────────────── */
-.user-menu { position:relative; margin-left:auto; }
+.quota-pill {
+  display:inline-flex; align-items:center; gap:7px;
+  margin-left:auto;
+  padding:5px 11px; border-radius:var(--r-pill);
+  background:var(--panel); border:1px solid var(--line);
+  font-family:inherit; font-size:12px; font-weight:500; color:var(--ink-dim);
+  white-space:nowrap;
+}
+.quota-pill + .user-menu { margin-left:8px; }
+.quota-dot { width:6px; height:6px; border-radius:50%; }
+.quota-pill-ok      .quota-dot { background:#10b981; }
+.quota-pill-waiting .quota-dot { background:#f59e0b; }
+.quota-pill-blocked { background:#fff5f5; border-color:#ffd6d6; color:#b03030; }
+.quota-pill-blocked .quota-dot { background:#ef4444; }
+
+.user-menu { position:relative; }
 .topbar-signin {
   margin-left:auto;
   padding:6px 14px; border-radius:var(--r-pill);

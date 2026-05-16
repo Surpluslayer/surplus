@@ -89,4 +89,7 @@ export const api = {
   // returns { url } — frontend sets window.location = url to begin the flow
   startLinkedinAuth: () => request("/api/auth/linkedin/start", { method: "POST" }),
   logout: () => request("/api/auth/logout", { method: "POST" }),
+  // returns { sends_today, daily_cap, next_send_allowed_at, can_send_now }
+  // UI uses this to show "5/20 today" pill + disable send button when capped.
+  getQuota: () => request("/api/auth/quota"),
 };
