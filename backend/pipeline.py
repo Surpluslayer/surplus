@@ -78,8 +78,14 @@ async def run_prospect(
     funnel_target = round(event.headcount / config.FUNNEL_CONVERSION)
     event.threshold = floating_threshold([p.fit_score for p in prospects], funnel_target)
 
+    # Threshold gating intentionally disabled — every discovered prospect is
+    # marked "approved" so the user can message anyone, regardless of fit
+    # score. The score + computed threshold are still surfaced in the UI for
+    # context (sort order, "above threshold" badge), they just don't block
+    # outreach. To re-enable the gate, restore:
+    #   p.status = "approved" if p.fit_score >= event.threshold else "below"
     for p in prospects:
-        p.status = "approved" if p.fit_score >= event.threshold else "below"
+        p.status = "approved"
 
     db.commit()
     return prospects
