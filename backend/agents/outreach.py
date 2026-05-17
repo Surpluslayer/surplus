@@ -157,24 +157,12 @@ def compose(
     return Message(note=note, message="\n".join(msg_lines).strip())
 
 
-def compose_followup(
-    prospect,
-    event,
-    peers: list[str] | None = None,
-    host_bio: str | None = None,
-) -> str:
-    """
-    Build the follow-up DM sent N hours after the first post-accept message
-    when the prospect hasn't replied.
-
-    Tone is intentionally lighter than the first DM — no re-pitch, no
-    "in case you missed it" (every recipient knows what that means). Just
-    a short, specific nudge that references the same framing and gives them
-    an easy out.
-    """
+def compose_followup(prospect, event) -> str:
+    """The follow-up DM sent N hours after the first post-accept message
+    when the prospect hasn't replied. Lighter touch than the first DM —
+    no re-pitch, explicit off-ramp."""
     first = (prospect.name or "there").split()[0]
     framing = _framing(event)
-
     lines = [
         f"Hey {first} — circling back on the {event.format.lower()}.",
         "",
@@ -184,11 +172,6 @@ def compose_followup(
         "If it's not the right fit or timing, totally fine — just let me know "
         "and I'll close the loop. Otherwise happy to share details.",
     ]
-    if host_bio:
-        # Insert host_bio between the recap and the "if not a fit" line so
-        # the social proof lands before the off-ramp.
-        lines.insert(3, "")
-        lines.insert(4, host_bio.strip())
     return "\n".join(lines).strip()
 
 

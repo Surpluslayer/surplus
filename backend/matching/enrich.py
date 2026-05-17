@@ -25,6 +25,7 @@ from typing import Any, Awaitable, Callable, Optional
 import httpx
 from anthropic import AsyncAnthropic
 
+from backend.jsonx import extract_json as _extract_json
 from backend.matching.schema import Person, EnrichedPerson
 from backend.matching.github import fetch_profile as github_fetch_profile
 from backend.matching.shared import cache as _cache
@@ -108,34 +109,6 @@ def _write_cache(person_id: str, data: dict[str, Any]) -> None:
 
 
 # ---- LLM call ----
-
-def _extract_json(text: str) -> Optional[dict[str, Any]]:
-    """Pull the first JSON object out of the model response, robust to stray prose."""
-    text = text.strip()
-    if not text:
-        return None
-    # If wrapped in ```json fences, strip them
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if fence:
-        try:
-            return json.loads(fence.group(1))
-        except json.JSONDecodeError:
-            pass
-    # Try plain parse
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    # Last resort: find the largest balanced-brace substring
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end > start:
-        try:
-            return json.loads(text[start : end + 1])
-        except json.JSONDecodeError:
-            return None
-    return None
-
 
 async def _call_claude(
     user_message: str,

@@ -161,9 +161,6 @@ class PendingReply(Base):
     final_text: Mapped[Optional[str]] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
     decided_at: Mapped[Optional[datetime]] = mapped_column(default=None)
-    decided_by_user_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("users.id"), default=None
-    )
 
     prospect: Mapped["Prospect"] = relationship()
 

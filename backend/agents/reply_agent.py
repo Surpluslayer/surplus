@@ -26,12 +26,12 @@ Classifications:
                   → ALWAYS queue
 """
 from __future__ import annotations
-import json
 import os
-import re
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
+
+from ..jsonx import extract_json
 
 
 # Classifications the orchestrator is willing to auto-send. Hard-coded
@@ -157,36 +157,6 @@ def _format_recipient_context(prospect) -> str:
     )
 
 
-def _extract_json(text: str) -> Optional[dict[str, Any]]:
-    """Pull the first JSON object out of the model response.
-
-    Identical strategy to matching/enrich.py — strip ```json fences first,
-    then try plain parse, then fall back to largest balanced-brace span.
-    Prefix the text with '{' before calling this if you prefilled.
-    """
-    text = (text or "").strip()
-    if not text:
-        return None
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if fence:
-        try:
-            return json.loads(fence.group(1))
-        except json.JSONDecodeError:
-            pass
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end > start:
-        try:
-            return json.loads(text[start : end + 1])
-        except json.JSONDecodeError:
-            return None
-    return None
-
-
 def _coerce_decision(parsed: Optional[dict[str, Any]], raw: str,
                      elapsed: float, error: Optional[str] = None) -> ReplyDecision:
     """Defensively turn whatever the model returned into a ReplyDecision.
@@ -270,7 +240,7 @@ def decide_reply(
     elapsed = round(time.time() - t0, 2)
     text_chunks = [b.text for b in resp.content if getattr(b, "type", "") == "text"]
     full_text = "{" + "\n".join(text_chunks)
-    parsed = _extract_json(full_text)
+    parsed = extract_json(full_text)
     return _coerce_decision(parsed, full_text, elapsed)
 
 

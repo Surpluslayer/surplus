@@ -65,6 +65,25 @@ def get_provider_for_user(user) -> LinkedInProvider:
     )
 
 
+def get_provider_for_prospect(prospect, fallback: LinkedInProvider) -> LinkedInProvider:
+    """Route a send through the owning user's LinkedIn account.
+
+    Webhooks are server-to-server (no session cookie), so the only way to
+    find the right account is to walk the data: Prospect → Event → User →
+    that user's Unipile account_id. If the chain is broken or the user's
+    LinkedIn connection is stale, fall back to the env-var operator account.
+    """
+    event = getattr(prospect, "event", None)
+    if event is not None and getattr(event, "user_id", None):
+        owner = getattr(event, "user", None)
+        if owner is not None and getattr(owner, "unipile_account_id", None):
+            try:
+                return get_provider_for_user(owner)
+            except Exception:
+                pass
+    return fallback
+
+
 def reset_provider_cache() -> None:
     """Test hook — clears the cached provider so env-var changes apply."""
     get_provider.cache_clear()
@@ -79,5 +98,6 @@ __all__ = [
     "UnipileProvider",
     "get_provider",
     "get_provider_for_user",
+    "get_provider_for_prospect",
     "reset_provider_cache",
 ]

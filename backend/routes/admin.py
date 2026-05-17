@@ -15,22 +15,22 @@ LinkedIn account (same per-user routing the webhook auto-DM uses).
 """
 from __future__ import annotations
 import hmac
-import json
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .. import config, models
-from ..agents.outreach import compose_followup
+from ..agents.sender import send_and_log
+from ..auth import _as_aware_utc
 from ..db import get_db
 from ..providers import (
     LinkedInProvider,
     get_provider,
-    get_provider_for_user,
+    get_provider_for_prospect,
 )
 
 
@@ -72,30 +72,23 @@ def _require_admin_token(x_admin_token: Optional[str] = Header(default=None)) ->
         raise HTTPException(404, "Not Found")
 
 
-def _aware(dt: datetime) -> datetime:
-    """Postgres returns naive datetimes; coerce to UTC-aware for comparison."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
 def _eligible_prospects(db: Session) -> list[models.Prospect]:
     """Find every prospect that's due for a follow-up right now.
 
-    Walks each prospect's outreach log once rather than building a fancy SQL
-    aggregate — there are at most a few thousand active prospects per event
-    and the JOIN+groupby version would be harder to reason about given the
-    legacy email-flavored states still in the table.
+    Eager-loads `outreach` so the per-prospect timeline scan doesn't trigger
+    one query per row. Legacy email-flavored states (sent/opened/replied)
+    coexist with the canonical LinkedIn states here, which is why we walk
+    the timeline in Python rather than write a SQL aggregate.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(
         hours=config.FOLLOWUP_DELAY_HOURS
     )
+    candidates = (db.query(models.Prospect)
+                    .filter(models.Prospect.status == "contacted")
+                    .options(selectinload(models.Prospect.outreach))
+                    .all())
 
     rows: list[models.Prospect] = []
-    candidates = db.query(models.Prospect).filter(
-        models.Prospect.status == "contacted"
-    ).all()
-
     for p in candidates:
         if not p.outreach:
             continue
@@ -104,7 +97,7 @@ def _eligible_prospects(db: Session) -> list[models.Prospect]:
         followup_count = 0
         for o in p.outreach:
             if o.state == "message_sent":
-                ts = _aware(o.ts)
+                ts = _as_aware_utc(o.ts)
                 if last_message_sent_ts is None or ts > last_message_sent_ts:
                     last_message_sent_ts = ts
             elif o.state == "message_replied":
@@ -116,30 +109,10 @@ def _eligible_prospects(db: Session) -> list[models.Prospect]:
             continue
         if followup_count >= config.FOLLOWUP_MAX_PER_PROSPECT:
             continue
-        if last_message_sent_ts is None:
-            continue
-        if last_message_sent_ts > cutoff:
+        if last_message_sent_ts is None or last_message_sent_ts > cutoff:
             continue
         rows.append(p)
     return rows
-
-
-def _provider_for_prospect(
-    prospect: models.Prospect,
-    fallback: LinkedInProvider,
-) -> LinkedInProvider:
-    """Route the send through the owning user's LinkedIn account. Mirrors the
-    logic in routes/webhooks.py:_provider_for_prospect — kept inline (small
-    function, two callsites) rather than extracted to avoid a circular import."""
-    event = prospect.event
-    if event and event.user_id:
-        owner = event.user
-        if owner and owner.unipile_account_id:
-            try:
-                return get_provider_for_user(owner)
-            except Exception:
-                pass
-    return fallback
 
 
 @router.post("/run-followups", status_code=200)
@@ -153,12 +126,12 @@ def run_followups(
     eligibility window won't shift inside an hour and follow-up rows would
     just exceed FOLLOWUP_MAX_PER_PROSPECT on the second run).
     """
+    from ..agents.outreach import compose_followup
     fallback_provider = get_provider()
     eligible = _eligible_prospects(db)
 
     sent: list[dict] = []
     failed: list[dict] = []
-    now = datetime.now(timezone.utc)
 
     for prospect in eligible:
         event = prospect.event
@@ -166,52 +139,26 @@ def run_followups(
             failed.append({"prospect_id": prospect.id, "error": "no event"})
             continue
 
-        provider = _provider_for_prospect(prospect, fallback_provider)
+        text = compose_followup(prospect, event)
 
-        # Find the linkedin_provider_id — same fallback chain webhook uses.
-        li_provider_id = prospect.linkedin_provider_id
-        if not li_provider_id:
-            for o in sorted(prospect.outreach, key=lambda o: o.ts, reverse=True):
-                if o.state in ("invite_sent", "dry_run_queued"):
-                    li_provider_id = o.provider_lead_id
-                    break
-
-        peers = [
-            p.name for p in event.prospects
-            if p.id != prospect.id and p.status in ("approved", "contacted", "rsvp")
-        ]
-        followup_text = compose_followup(prospect, event, peers=peers)
-
-        # Reuse build_lead_payload — note=followup_text fills the "short msg"
-        # slot too (we never read .note here); message is what send_message
-        # actually serializes into the Unipile chat POST.
-        lead = provider.build_lead_payload(
-            prospect, event, note=followup_text, message=followup_text
-        )
         try:
-            res = provider.send_message(lead, linkedin_provider_id=li_provider_id)
+            res = send_and_log(
+                db, prospect, text,
+                sent_state="follow_up_sent",
+                fallback_provider=fallback_provider,
+                commit=False,
+            )
         except Exception as exc:  # noqa: BLE001
-            failed.append({"prospect_id": prospect.id, "error": f"{type(exc).__name__}: {exc}"})
+            failed.append({"prospect_id": prospect.id,
+                           "error": f"{type(exc).__name__}: {exc}"})
             continue
 
         if res.error:
             failed.append({"prospect_id": prospect.id, "error": res.error})
             continue
 
-        db.add(models.OutreachLog(
-            prospect_id=prospect.id,
-            channel="linkedin",
-            state="follow_up_sent",
-            body=json.dumps(res.payload, default=str)[:8000],
-            ts=now,
-            provider=res.provider,
-            provider_lead_id=res.provider_lead_id,
-        ))
-        sent.append({
-            "prospect_id": prospect.id,
-            "state": res.state,
-            "dry_run": res.dry_run,
-        })
+        sent.append({"prospect_id": prospect.id, "state": res.state,
+                     "dry_run": res.dry_run})
 
     if sent:
         db.commit()
@@ -255,34 +202,21 @@ def list_pending_replies(
 
 
 def _send_pending(db: Session, pending: models.PendingReply, text: str) -> dict:
-    """Send the chosen text via the owning user's LinkedIn account."""
     prospect = pending.prospect
     if prospect is None or prospect.event is None:
         raise HTTPException(404, "Not Found")
-    provider = _provider_for_prospect(prospect, get_provider())
-    lead = provider.build_lead_payload(
-        prospect, prospect.event, note=text, message=text,
+    res = send_and_log(
+        db, prospect, text,
+        sent_state="message_sent",
+        fallback_provider=get_provider(),
+        commit=False,
     )
-    res = provider.send_message(
-        lead, linkedin_provider_id=prospect.linkedin_provider_id,
-    )
-    now = datetime.now(timezone.utc)
-    db.add(models.OutreachLog(
-        prospect_id=prospect.id, channel="linkedin",
-        state="message_sent" if not res.error else "failed",
-        body=text[:8000], ts=now,
-        provider=res.provider, provider_lead_id=res.provider_lead_id,
-    ))
     pending.status = "approved" if not res.error else "rejected"
     pending.final_text = text if not res.error else None
-    pending.decided_at = now
+    pending.decided_at = datetime.now(timezone.utc)
     db.commit()
-    return {
-        "id": pending.id,
-        "sent": not bool(res.error),
-        "dry_run": res.dry_run,
-        "error": res.error,
-    }
+    return {"id": pending.id, "sent": not bool(res.error),
+            "dry_run": res.dry_run, "error": res.error}
 
 
 @router.post("/pending-replies/{pending_id}/approve")
