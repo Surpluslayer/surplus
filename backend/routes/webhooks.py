@@ -20,6 +20,9 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..db import get_db
 from ..agents.outreach import compose
+from ..agents.reply_agent import (
+    ReplyDecision, ThreadMessage, decide_reply, should_auto_send,
+)
 from ..providers import (
     get_provider,
     get_provider_for_user,
@@ -210,6 +213,10 @@ async def _handle(request: Request, db: Session, provider: LinkedInProvider) -> 
     if applied and prospect is not None and canonical.state == "invite_accepted":
         auto_dm = _trigger_auto_dm(db, provider, prospect)
 
+    ai_reply = None
+    if applied and prospect is not None and canonical.state == "message_replied":
+        ai_reply = _handle_ai_reply(db, provider, prospect, canonical)
+
     return {
         "ok": True,
         "applied": applied,
@@ -218,4 +225,123 @@ async def _handle(request: Request, db: Session, provider: LinkedInProvider) -> 
         "prospect_id": prospect.id if prospect else None,
         "event_id": prospect.event_id if prospect else None,
         "auto_dm": auto_dm,
+        "ai_reply": ai_reply,
+    }
+
+
+def _last_chat_id(prospect: models.Prospect) -> Optional[str]:
+    """Find the provider's chat/conversation id from the most recent
+    message_sent log row — that's where send_message stamped it."""
+    for o in sorted(prospect.outreach, key=lambda o: o.ts, reverse=True):
+        if o.state == "message_sent" and o.provider_lead_id:
+            return o.provider_lead_id
+    return None
+
+
+def _handle_ai_reply(
+    db: Session,
+    provider: LinkedInProvider,
+    prospect: models.Prospect,
+    canonical: CanonicalEvent,
+) -> Optional[dict]:
+    """Run the AI reply agent on an inbound message.
+
+    Flow:
+      1. Fetch full thread from provider (dry-run returns a fixture)
+      2. Ask the agent to classify + draft
+      3. If classification is auto-sendable AND loop guard allows → send now
+      4. Otherwise → write a PendingReply row for operator approval
+
+    Returns a small dict for the webhook response body, or None if the
+    feature was skipped (e.g. provider has no fetch_thread).
+    """
+    event = prospect.event
+    if event is None:
+        return None
+
+    chat_id = _last_chat_id(prospect)
+    thread_raw = provider.fetch_thread(chat_id) if chat_id else []
+    # Always append the canonical event body — Unipile's fetch_thread may
+    # not have indexed the new message yet (eventual consistency).
+    if canonical.body:
+        thread_raw = list(thread_raw) + [
+            {"direction": "inbound", "text": canonical.body, "ts": ""}
+        ]
+    thread = [ThreadMessage(direction=m["direction"], text=m["text"], ts=m.get("ts"))
+              for m in thread_raw if m.get("text")]
+
+    host = event.user
+    decision = decide_reply(thread, event, prospect, host=host)
+
+    prior_auto = sum(
+        1 for o in prospect.outreach if o.state == "auto_reply_sent"
+    )
+
+    if should_auto_send(decision, prior_auto):
+        return _auto_send_reply(db, provider, prospect, decision)
+    return _queue_pending_reply(db, prospect, decision, canonical.body or "")
+
+
+def _auto_send_reply(
+    db: Session,
+    fallback_provider: LinkedInProvider,
+    prospect: models.Prospect,
+    decision: ReplyDecision,
+) -> dict:
+    """Send the agent's draft via the owning user's LinkedIn account."""
+    routed = _provider_for_prospect(prospect, fallback_provider)
+    li_provider_id = prospect.linkedin_provider_id
+
+    event = prospect.event
+    lead = routed.build_lead_payload(
+        prospect, event, note=decision.draft_text, message=decision.draft_text,
+    )
+    res = routed.send_message(lead, linkedin_provider_id=li_provider_id)
+
+    db.add(models.OutreachLog(
+        prospect_id=prospect.id, channel="linkedin",
+        state="auto_reply_sent" if not res.error else "failed",
+        body=decision.draft_text[:8000],
+        ts=_now(), provider=res.provider, provider_lead_id=res.provider_lead_id,
+    ))
+    # Also log the agent's decision for the audit trail — separate row so
+    # the draft + reasoning live alongside the send result.
+    db.add(models.PendingReply(
+        prospect_id=prospect.id,
+        inbound_body="(see most recent message_replied)",
+        classification=decision.classification,
+        draft_text=decision.draft_text,
+        reasoning=decision.reasoning,
+        status="auto_sent" if not res.error else "rejected",
+        final_text=decision.draft_text if not res.error else None,
+        decided_at=_now(),
+    ))
+    db.commit()
+    return {
+        "action": "auto_sent" if not res.error else "send_failed",
+        "classification": decision.classification,
+        "error": res.error,
+    }
+
+
+def _queue_pending_reply(
+    db: Session,
+    prospect: models.Prospect,
+    decision: ReplyDecision,
+    inbound_body: str,
+) -> dict:
+    """Write a PendingReply row so an operator can approve / edit / reject."""
+    db.add(models.PendingReply(
+        prospect_id=prospect.id,
+        inbound_body=inbound_body,
+        classification=decision.classification,
+        draft_text=decision.draft_text,
+        reasoning=decision.reasoning,
+        status="pending",
+    ))
+    db.commit()
+    return {
+        "action": "queued",
+        "classification": decision.classification,
+        "draft_chars": len(decision.draft_text),
     }

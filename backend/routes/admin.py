@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .. import config, models
@@ -31,6 +32,27 @@ from ..providers import (
     get_provider,
     get_provider_for_user,
 )
+
+
+class PendingReplyOut(BaseModel):
+    id: int
+    prospect_id: int
+    prospect_name: str
+    inbound_body: str
+    classification: str
+    draft_text: str
+    reasoning: str
+    status: str
+    created_at: datetime
+
+
+class ApproveBody(BaseModel):
+    """Optional edited text — when present, sent instead of the draft."""
+    edited_text: Optional[str] = None
+
+
+class RejectBody(BaseModel):
+    reason: Optional[str] = None
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -203,3 +225,94 @@ def run_followups(
         "results": sent,
         "errors": failed,
     }
+
+
+# ── Pending AI replies — list, approve, reject ──────────────────────────
+
+@router.get("/pending-replies", response_model=list[PendingReplyOut])
+def list_pending_replies(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """Return every PendingReply still awaiting a human decision."""
+    rows = (db.query(models.PendingReply)
+              .filter(models.PendingReply.status == "pending")
+              .order_by(models.PendingReply.created_at.asc())
+              .all())
+    return [
+        PendingReplyOut(
+            id=r.id,
+            prospect_id=r.prospect_id,
+            prospect_name=(r.prospect.name if r.prospect else ""),
+            inbound_body=r.inbound_body,
+            classification=r.classification,
+            draft_text=r.draft_text,
+            reasoning=r.reasoning,
+            status=r.status,
+            created_at=r.created_at,
+        ) for r in rows
+    ]
+
+
+def _send_pending(db: Session, pending: models.PendingReply, text: str) -> dict:
+    """Send the chosen text via the owning user's LinkedIn account."""
+    prospect = pending.prospect
+    if prospect is None or prospect.event is None:
+        raise HTTPException(404, "Not Found")
+    provider = _provider_for_prospect(prospect, get_provider())
+    lead = provider.build_lead_payload(
+        prospect, prospect.event, note=text, message=text,
+    )
+    res = provider.send_message(
+        lead, linkedin_provider_id=prospect.linkedin_provider_id,
+    )
+    now = datetime.now(timezone.utc)
+    db.add(models.OutreachLog(
+        prospect_id=prospect.id, channel="linkedin",
+        state="message_sent" if not res.error else "failed",
+        body=text[:8000], ts=now,
+        provider=res.provider, provider_lead_id=res.provider_lead_id,
+    ))
+    pending.status = "approved" if not res.error else "rejected"
+    pending.final_text = text if not res.error else None
+    pending.decided_at = now
+    db.commit()
+    return {
+        "id": pending.id,
+        "sent": not bool(res.error),
+        "dry_run": res.dry_run,
+        "error": res.error,
+    }
+
+
+@router.post("/pending-replies/{pending_id}/approve")
+def approve_pending_reply(
+    pending_id: int,
+    body: Optional[ApproveBody] = None,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    pending = db.get(models.PendingReply, pending_id)
+    if pending is None or pending.status != "pending":
+        raise HTTPException(404, "Not Found")
+    text = (body.edited_text if body and body.edited_text else pending.draft_text).strip()
+    if not text:
+        raise HTTPException(400, "empty reply text")
+    return _send_pending(db, pending, text)
+
+
+@router.post("/pending-replies/{pending_id}/reject")
+def reject_pending_reply(
+    pending_id: int,
+    body: Optional[RejectBody] = None,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    pending = db.get(models.PendingReply, pending_id)
+    if pending is None or pending.status != "pending":
+        raise HTTPException(404, "Not Found")
+    pending.status = "rejected"
+    pending.decided_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"id": pending.id, "status": "rejected",
+            "reason": (body.reason if body else None)}

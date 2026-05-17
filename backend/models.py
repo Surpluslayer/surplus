@@ -133,6 +133,41 @@ class OutreachLog(Base):
     prospect: Mapped["Prospect"] = relationship(back_populates="outreach")
 
 
+class PendingReply(Base):
+    """One AI-drafted reply waiting for a human decision.
+
+    The reply agent (agents/reply_agent.py) runs on every inbound LinkedIn
+    message and produces a `ReplyDecision`. When the classification isn't
+    in the auto-send allow-list (or the loop guard fires), the draft lands
+    here for an operator to approve / edit / reject via /admin/pending-replies.
+
+    classification : the agent's bucket — clarifying | commitment | off_topic
+                     | negative | ambiguous
+    draft_text     : what the agent wrote, exactly as the model produced it
+    reasoning      : the agent's own explanation; surfaced in the approval UI
+                     so the operator understands WHY this was drafted this way
+    status         : pending | approved | rejected | auto_sent (audit trail only)
+    final_text     : what was actually sent (may differ from draft after edit)
+    """
+    __tablename__ = "pending_replies"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    prospect_id: Mapped[int] = mapped_column(ForeignKey("prospects.id"), index=True)
+    inbound_body: Mapped[str] = mapped_column(Text, default="")
+    classification: Mapped[str] = mapped_column(String(30))
+    draft_text: Mapped[str] = mapped_column(Text)
+    reasoning: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    final_text: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+    decided_by_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id"), default=None
+    )
+
+    prospect: Mapped["Prospect"] = relationship()
+
+
 class MatchEdge(Base):
     __tablename__ = "match_edges"
 
