@@ -41,10 +41,17 @@ const FORMAT_CONFIG = {
   "Roundtable":      { group: "Seat",  topo: "single ring — seating order is the lever" },
 };
 
+// Multi-select helpers: profile.seniority/coStage/goal are arrays. These
+// turn them into readable phrases for the outreach templates without
+// requiring a single canonical value.
+const seniorityPhrase = (p) =>
+  (p.seniority || []).map((s) => s.toLowerCase()).join(" / ") || "senior";
+const primaryGoal = (p) => (p.goal && p.goal[0]) || "Hiring pipeline";
+
 // ---- goal config: outreach + conversion semantics -----------
 const GOAL_CONFIG = {
   "Hiring pipeline": {
-    outreach: (p) => `pulling together a ${p.headcount}-person ${p.format.toLowerCase()} in ${p.city} — ${p.seniority.toLowerCase()} infra engineers and the teams hiring them.`,
+    outreach: (p) => `pulling together a ${p.headcount}-person ${p.format.toLowerCase()} in ${p.city} — ${seniorityPhrase(p)} infra engineers and the teams hiring them.`,
     ledgerHead: "Hiring outcome",
     tiers: {
       high: { label: "Hired", state: "won", detail: "signed offer" },
@@ -54,7 +61,7 @@ const GOAL_CONFIG = {
     value: { won: 28000, partial: 8000, lost: 0 },
   },
   "Fundraising": {
-    outreach: (p) => `hosting a ${p.format.toLowerCase()} in ${p.city} — a tight room of founders raising and investors writing checks at ${p.coStage}.`,
+    outreach: (p) => `hosting a ${p.format.toLowerCase()} in ${p.city} — a tight room of founders raising and investors writing checks at ${(p.coStage || []).join(" / ") || "Seed"}.`,
     ledgerHead: "Raise outcome",
     tiers: {
       high: { label: "Term sheet", state: "won", detail: "in diligence" },
@@ -74,7 +81,7 @@ const GOAL_CONFIG = {
     value: { won: 54000, partial: 11000, lost: 0 },
   },
   "Product testing": {
-    outreach: (p) => `pulling together a ${p.format.toLowerCase()} in ${p.city} — hands-on ${p.seniority.toLowerCase()} infra engineers to stress-test an early build and tell us where it breaks.`,
+    outreach: (p) => `pulling together a ${p.format.toLowerCase()} in ${p.city} — hands-on ${seniorityPhrase(p)} infra engineers to stress-test an early build and tell us where it breaks.`,
     ledgerHead: "Testing outcome",
     tiers: {
       high: { label: "Active tester", state: "won", detail: "12 issues filed, weekly" },
@@ -84,7 +91,7 @@ const GOAL_CONFIG = {
     value: { won: 16000, partial: 4000, lost: 0 },
   },
   "Community density": {
-    outreach: (p) => `building a recurring ${p.format.toLowerCase()} in ${p.city} — the ${p.seniority.toLowerCase()} infra crowd, same room every month.`,
+    outreach: (p) => `building a recurring ${p.format.toLowerCase()} in ${p.city} — the ${seniorityPhrase(p)} infra crowd, same room every month.`,
     ledgerHead: "Community outcome",
     tiers: {
       high: { label: "Core member", state: "won", detail: "returning + bringing others" },
@@ -197,8 +204,20 @@ function notifyDevice(title, options = {}) {
 }
 
 // ---- Stage 0: Intake ----------------------------------------
+// Toggle a value in/out of an array. Keeps at least one entry — clicking
+// the last selected chip is a no-op (the backend rejects empty selections
+// and an empty intake screen looks broken).
+function toggleIn(arr, v) {
+  const cur = Array.isArray(arr) ? arr : [arr].filter(Boolean);
+  if (cur.includes(v)) {
+    return cur.length > 1 ? cur.filter((x) => x !== v) : cur;
+  }
+  return [...cur, v];
+}
+
 function Intake({ profile, setProfile, onRun }) {
   const set = (k, v) => setProfile((p) => ({ ...p, [k]: v }));
+  const toggle = (k, v) => setProfile((p) => ({ ...p, [k]: toggleIn(p[k], v) }));
   return (
     <div className="stage">
       <header className="stage-head">
@@ -211,16 +230,16 @@ function Intake({ profile, setProfile, onRun }) {
           <label>Target role</label>
           <input className="text-in" value={profile.role}
             onChange={(e) => set("role", e.target.value)} />
-          <label>Seniority</label>
+          <label>Seniority <span className="hint">— multi-select</span></label>
           <div className="chip-row">
             {SENIORITY.map((s) => (
-              <Chip key={s} active={profile.seniority === s} onClick={() => set("seniority", s)}>{s}</Chip>
+              <Chip key={s} active={profile.seniority.includes(s)} onClick={() => toggle("seniority", s)}>{s}</Chip>
             ))}
           </div>
-          <label>Company stage</label>
+          <label>Company stage <span className="hint">— multi-select</span></label>
           <div className="chip-row">
             {STAGES_CO.map((s) => (
-              <Chip key={s} active={profile.coStage === s} onClick={() => set("coStage", s)}>{s}</Chip>
+              <Chip key={s} active={profile.coStage.includes(s)} onClick={() => toggle("coStage", s)}>{s}</Chip>
             ))}
           </div>
         </section>
@@ -243,10 +262,10 @@ function Intake({ profile, setProfile, onRun }) {
 
         <section className="card">
           <h3><span className="card-num">C</span> Goal &amp; budget</h3>
-          <label>Primary objective <span className="hint">— defines "converted"</span></label>
+          <label>Primary objective <span className="hint">— multi-select; first selected drives ROI math</span></label>
           <div className="chip-row">
             {GOALS.map((g) => (
-              <Chip key={g} active={profile.goal === g} onClick={() => set("goal", g)}>{g}</Chip>
+              <Chip key={g} active={profile.goal.includes(g)} onClick={() => toggle("goal", g)}>{g}</Chip>
             ))}
           </div>
           <label>Budget — <strong>${profile.budget.toLocaleString()}</strong></label>
@@ -1244,7 +1263,7 @@ function Matching({ profile, eventId, onError, onNext }) {
 function tierOf(score) { return score >= 90 ? "high" : score >= 82 ? "mid" : "low"; }
 
 function ROI({ profile, onRestart }) {
-  const cfg = GOAL_CONFIG[profile.goal];
+  const cfg = GOAL_CONFIG[primaryGoal(profile)];
   const attending = PROSPECTS.filter((p) => p.status === "rsvp");
   const ledger = attending.map((p) => {
     const tier = cfg.tiers[tierOf(p.score)];
@@ -1288,7 +1307,7 @@ function ROI({ profile, onRestart }) {
 
       <div className="roi-top">
         <div className="roi-hero">
-          <span className="roi-hero-label">Net ROI · {profile.goal}</span>
+          <span className="roi-hero-label">Net ROI · {(profile.goal || []).join(" + ") || primaryGoal(profile)}</span>
           <span className="roi-hero-num">{(roi * 100).toFixed(0)}%</span>
           <span className="roi-hero-sub">
             {fmtK(valueGenerated)} verified value · ${profile.budget.toLocaleString()} spent
@@ -1488,12 +1507,12 @@ function SurplusApp({ user, onLogout, onSignIn }) {
   const [maxReached, setMaxReached] = useState(0);
   const [profile, setProfile] = useState({
     role: "Infrastructure / ML platform engineers",
-    seniority: "Staff+",
-    coStage: "Seed",
+    seniority: ["Staff+"],
+    coStage: ["Seed"],
     headcount: 40,
     format: "Sit-down dinner",
     city: "San Francisco",
-    goal: "Hiring pipeline",
+    goal: ["Hiring pipeline"],
     budget: 8000,
   });
   // backend-wired state — eventId comes from real /events POST; runResult is

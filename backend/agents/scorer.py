@@ -48,11 +48,17 @@ def score_prospect(p, event) -> tuple[int, str]:
         reasons.append("real audience reach")
 
     # --- ICP match --------------------------------------------------------
-    want = _SENIORITY_RANK.get(event.seniority, 3)
+    # event.seniority is CSV (multi-select). The match threshold is the
+    # LOWEST selected rank — "Senior or Staff+" means Senior is acceptable,
+    # anything above is too. Accepts legacy single-value strings unchanged.
+    selected = [s.strip() for s in (event.seniority or "").split(",") if s.strip()]
+    want_ranks = [_SENIORITY_RANK[s] for s in selected if s in _SENIORITY_RANK]
+    want = min(want_ranks) if want_ranks else 3
+    label = " / ".join(selected) if selected else "Senior"
     have = _SENIORITY_RANK.get(p.seniority, 2)
     if have >= want:
         score += 16
-        reasons.append(f"seniority meets the {event.seniority} target")
+        reasons.append(f"seniority meets the {label} target")
     elif have == want - 1:
         score += 6
         reasons.append("seniority just under target")

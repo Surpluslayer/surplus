@@ -23,7 +23,13 @@ def create_event(
 ):
     """Define the event mechanism. Returns the profile + derived funnel target.
     The event is auto-stamped with the signed-in user's id."""
-    ev = models.Event(**payload.model_dump(), user_id=user.id)
+    data = payload.model_dump()
+    # Multi-select fields arrive as lists; the Event columns are CSV strings.
+    for key in ("seniority", "co_stage", "goal"):
+        v = data.get(key)
+        if isinstance(v, list):
+            data[key] = ",".join(s.strip() for s in v if s and s.strip())
+    ev = models.Event(**data, user_id=user.id)
     db.add(ev)
     db.commit()
     db.refresh(ev)

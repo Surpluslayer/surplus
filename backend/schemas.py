@@ -14,27 +14,40 @@ from . import config
 
 
 # ── stage 01: intake ──────────────────────────────────────────────────────
+def _split_csv(v) -> list[str]:
+    """Split a CSV-stored multi-select column back into a list. Accepts None,
+    empty, or an already-list value (no-op) so callers don't need to care."""
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+    return [s.strip() for s in (v or "").split(",") if s.strip()]
+
+
 class EventCreate(BaseModel):
-    """Intake profile. Defaults match the demo so `POST /events {}` just works."""
+    """Intake profile. Defaults match the demo so `POST /events {}` just works.
+
+    `seniority`, `co_stage`, and `goal` are multi-select — the frontend sends
+    lists; storage is CSV-joined in the existing String columns to avoid a
+    schema migration.
+    """
     role: str = "Infrastructure / ML platform engineers"
-    seniority: str = "Staff+"
-    co_stage: str = "Seed"
+    seniority: list[str] = ["Staff+"]
+    co_stage: list[str] = ["Seed"]
     headcount: int = 40
     format: str = "Sit-down dinner"
     city: str = "San Francisco"
-    goal: str = "Hiring pipeline"
+    goal: list[str] = ["Hiring pipeline"]
     budget: int = 8000
 
 
 class EventOut(BaseModel):
     id: int
     role: str
-    seniority: str
-    co_stage: str
+    seniority: list[str]
+    co_stage: list[str]
     headcount: int
     format: str
     city: str
-    goal: str
+    goal: list[str]
     budget: int
     threshold: int
     funnel_target: int
@@ -44,8 +57,11 @@ class EventOut(BaseModel):
     @classmethod
     def of(cls, ev) -> "EventOut":
         return cls(
-            id=ev.id, role=ev.role, seniority=ev.seniority, co_stage=ev.co_stage,
-            headcount=ev.headcount, format=ev.format, city=ev.city, goal=ev.goal,
+            id=ev.id, role=ev.role,
+            seniority=_split_csv(ev.seniority),
+            co_stage=_split_csv(ev.co_stage),
+            headcount=ev.headcount, format=ev.format, city=ev.city,
+            goal=_split_csv(ev.goal),
             budget=ev.budget, threshold=ev.threshold,
             funnel_target=round(ev.headcount / config.FUNNEL_CONVERSION),
             cost_per_seat=round(ev.budget / ev.headcount) if ev.headcount else 0,

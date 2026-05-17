@@ -36,14 +36,17 @@ class Event(Base):
     )
     # ICP
     role: Mapped[str] = mapped_column(String(200))
-    seniority: Mapped[str] = mapped_column(String(40))
-    co_stage: Mapped[str] = mapped_column(String(40))
+    # seniority / co_stage / goal are multi-select on the frontend; stored
+    # CSV-joined ("Senior,Staff+") in these String columns so we don't need a
+    # migration. Widths bumped to fit the longest plausible CSV concatenation.
+    seniority: Mapped[str] = mapped_column(String(200))
+    co_stage: Mapped[str] = mapped_column(String(120))
     # event shape
     headcount: Mapped[int]
     format: Mapped[str] = mapped_column(String(40))
     city: Mapped[str] = mapped_column(String(80))
     # goal + budget
-    goal: Mapped[str] = mapped_column(String(60))
+    goal: Mapped[str] = mapped_column(String(300))
     budget: Mapped[int]
     # derived once the pipeline runs
     threshold: Mapped[int] = mapped_column(default=0)

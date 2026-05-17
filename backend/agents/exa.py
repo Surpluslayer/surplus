@@ -276,6 +276,32 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[di
 
 # ---- query construction --------------------------------------------------
 
+def _as_list(v) -> list[str]:
+    """Accept a list (frontend shape), a CSV string (storage shape), or empty.
+    Always returns a list of trimmed non-empty strings.
+    """
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+    if not v:
+        return []
+    return [s.strip() for s in str(v).split(",") if s.strip()]
+
+
+def _seniority_word(s: str) -> list[str]:
+    """One selected seniority chip -> the word(s) Exa should search for.
+    `Staff+` is expanded so the query catches Staff/Principal/Distinguished
+    titles, not just literal "staff".
+    """
+    sl = s.strip().rstrip("+").lower()
+    if not sl:
+        return []
+    if "leadership" in sl:
+        return ["senior leadership"]
+    if sl == "staff":
+        return ["staff", "principal", "distinguished"]
+    return [sl]
+
+
 def _build_query(source: str, icp: dict, city_cfg: Optional[dict] = None) -> str:
     """
     Compose a semantic query Exa can match. Reads like a description, not
@@ -283,10 +309,14 @@ def _build_query(source: str, icp: dict, city_cfg: Optional[dict] = None) -> str
     phrasing without articles. "Senior ML engineers at seed startups"
     pulls way more profiles than "LinkedIn profile of a Senior ML
     engineer working at a Seed-stage startup" (awkward "a + plural").
+
+    Seniority and co_stage are multi-select — emitted as OR-clauses
+    ("senior or staff or principal engineers at seed or series a startups")
+    so one Exa request covers all selected chips.
     """
     role = (icp.get("role") or "").strip()
-    seniority = (icp.get("seniority") or "").strip().rstrip("+")
-    co_stage = (icp.get("co_stage") or "").strip()
+    seniorities = _as_list(icp.get("seniority"))
+    co_stages = _as_list(icp.get("co_stage"))
     # Use the resolved canonical city phrase when available — "the san
     # francisco bay area" matches LinkedIn's literal location strings much
     # better than raw user input like "sf". Fall back to raw text for
@@ -297,15 +327,13 @@ def _build_query(source: str, icp: dict, city_cfg: Optional[dict] = None) -> str
     else:
         city = (icp.get("city") or "").strip()
 
-    # Seniority adjective: "Senior", "Staff", "Principal", "Mid", "Leadership"
-    # → folds Staff+ to "Staff" for natural reading.
-    seniority_word = ""
-    if seniority:
-        sl = seniority.lower()
-        if "leadership" in sl:
-            seniority_word = "senior leadership"
-        else:
-            seniority_word = seniority.lower()
+    # Dedupe while preserving order (Staff+ + Senior shouldn't double "senior")
+    sen_words: list[str] = []
+    for s in seniorities:
+        for w in _seniority_word(s):
+            if w not in sen_words:
+                sen_words.append(w)
+    seniority_word = " or ".join(sen_words)
 
     # Pluralize role for natural matching. Just append 's' if needed.
     role_phrase = role.lower() if role else "engineer"
@@ -317,9 +345,14 @@ def _build_query(source: str, icp: dict, city_cfg: Optional[dict] = None) -> str
     # Anchor by stage when present. Drop the article — "seed startups"
     # reads naturally; "a Seed-stage startup" introduces grammar friction
     # that hurts neural matching.
-    if co_stage:
-        stage_phrase = co_stage.lower().replace("-stage", "").strip()
-        base = f"{base} at {stage_phrase} startups"
+    if co_stages:
+        stage_phrases: list[str] = []
+        for st in co_stages:
+            p = st.lower().replace("-stage", "").strip()
+            if p and p not in stage_phrases:
+                stage_phrases.append(p)
+        if stage_phrases:
+            base = f"{base} at {' or '.join(stage_phrases)} startups"
 
     # Anchor by city when present. Exa's neural index matches against the
     # profile page text, where LinkedIn typically surfaces the location
