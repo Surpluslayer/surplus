@@ -282,6 +282,57 @@ class UnipileProvider(LinkedInProvider):
             linkedin_provider_id=provider_id,
         )
 
+    # ---- fetch_thread (for the AI reply agent) --------------------------
+
+    def fetch_thread(self, chat_id: str) -> list[dict]:
+        """Return the full message history for a chat as a list of dicts:
+
+            [{"direction": "outbound"|"inbound", "text": str, "ts": str}, ...]
+
+        Chronological order. Direction is from OUR perspective — "outbound"
+        is what we sent, "inbound" is the recipient.
+
+        Dry-run returns a 2-message fixture so the reply-agent harness can
+        be exercised end-to-end without Unipile.
+        """
+        if self._dry_run:
+            return [
+                {"direction": "outbound", "text": "[dry-run] our first DM", "ts": ""},
+                {"direction": "inbound",  "text": "[dry-run] their reply",  "ts": ""},
+            ]
+        if not chat_id:
+            return []
+        self._require_creds()
+        import httpx
+        url = f"{self.dsn}/api/v1/chats/{chat_id}/messages"
+        headers = {"X-API-KEY": self.api_key, "accept": "application/json"}
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                resp = client.get(url, headers=headers,
+                                  params={"account_id": self.account_id})
+        except Exception:
+            return []
+        if resp.status_code >= 400:
+            return []
+        try:
+            data = resp.json() if resp.text else {}
+        except Exception:
+            return []
+        items = data.get("items") or data.get("messages") or []
+        out: list[dict] = []
+        for it in items:
+            # Unipile shapes vary across endpoints; check a few likely keys.
+            text = (it.get("text") or it.get("body") or "").strip()
+            if not text:
+                continue
+            is_sender = bool(it.get("is_sender") or it.get("from_me"))
+            out.append({
+                "direction": "outbound" if is_sender else "inbound",
+                "text": text,
+                "ts": str(it.get("timestamp") or it.get("created_at") or ""),
+            })
+        return out
+
     # ---- HTTP plumbing (live mode only — never reached in dry-run) ------
 
     def _require_creds(self) -> None:

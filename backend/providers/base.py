@@ -167,6 +167,13 @@ class LinkedInProvider(abc.ABC):
             payload={"skipped": "provider does not require explicit send_message"},
         )
 
+    def fetch_thread(self, chat_id: str) -> list[dict]:
+        """Return chronological message history for one chat as a list of
+        ``{"direction": "outbound"|"inbound", "text": str, "ts": str}``
+        dicts. Default returns [] — providers that support the AI reply
+        agent must override (Unipile does)."""
+        return []
+
     @abc.abstractmethod
     def normalize_webhook(self, raw: dict) -> Optional[CanonicalEvent]:
         """
