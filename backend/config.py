@@ -11,6 +11,16 @@ ROI ledger re-prices itself; add a format and the matcher gets a new topology.
 FUNNEL_CONVERSION = 0.6   # good-fits needed per confirmed seat
 ABS_FLOOR = 55            # the floating threshold never drops below this fit score
 
+# --- follow-ups ------------------------------------------------------------
+# Wait this many hours after the first post-accept DM before sending the
+# follow-up. Tuned so a recipient gets ~2 weekday windows to reply before we
+# nudge — set lower for shorter ramps, higher for less aggressive sequences.
+FOLLOWUP_DELAY_HOURS = 48
+# Hard cap on how many follow-ups a single prospect can receive. Currently
+# only one is composed by compose_followup(); raise this AND extend the
+# template when a longer sequence is needed.
+FOLLOWUP_MAX_PER_PROSPECT = 1
+
 # --- format -> matching topology ------------------------------------------
 FORMAT_CONFIG = {
     "Sit-down dinner": {

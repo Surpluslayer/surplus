@@ -47,6 +47,33 @@ def _truncate_note(text: str, limit: int = NOTE_CHAR_LIMIT) -> str:
     return cut.rstrip() + "…"
 
 
+def _csv_first(v) -> str:
+    """Pick the first non-empty entry from a CSV-stored multi-select column.
+    Multi-select arrived after these templates existed; goal lookup needs a
+    single key, and the seniority/co_stage placeholders read better with one
+    value than a comma-joined string."""
+    if not v:
+        return ""
+    return next((s.strip() for s in str(v).split(",") if s.strip()), "")
+
+
+def _framing(event) -> str:
+    """Render the per-goal outreach framing for one event. Picks the first
+    goal when several are selected — keeps the demo coherent rather than
+    awkwardly stuffing two goals into one sentence."""
+    goal = _csv_first(event.goal) or "Hiring pipeline"
+    seniority = _csv_first(event.seniority).lower() or "senior"
+    co_stage = _csv_first(event.co_stage) or "Seed"
+    return config.goal_cfg(goal)["outreach"].format(
+        headcount=event.headcount,
+        format=event.format.lower(),
+        city=event.city,
+        seniority=seniority,
+        role=event.role.lower(),
+        co_stage=co_stage,
+    )
+
+
 def _peer_reveal(peers: list[str], n: int = 2, exclude_first_name: str | None = None) -> str:
     """' Theo and Nadia are already in.' (or empty string if no peers).
 
@@ -95,14 +122,7 @@ def compose(
     peers = peers or []
     first = (prospect.name or "there").split()[0]
     domain = (prospect.works_on or "your space").replace("-", " ")
-    framing = config.goal_cfg(event.goal)["outreach"].format(
-        headcount=event.headcount,
-        format=event.format.lower(),
-        city=event.city,
-        seniority=event.seniority.lower(),
-        role=event.role.lower(),
-        co_stage=event.co_stage,
-    )
+    framing = _framing(event)
     reveal = _peer_reveal(peers)
 
     # --- connection note: short, specific, no hard pitch --------------------
@@ -135,6 +155,41 @@ def compose(
     msg_lines.append("Worth a closer look? Happy to share details.")
 
     return Message(note=note, message="\n".join(msg_lines).strip())
+
+
+def compose_followup(
+    prospect,
+    event,
+    peers: list[str] | None = None,
+    host_bio: str | None = None,
+) -> str:
+    """
+    Build the follow-up DM sent N hours after the first post-accept message
+    when the prospect hasn't replied.
+
+    Tone is intentionally lighter than the first DM — no re-pitch, no
+    "in case you missed it" (every recipient knows what that means). Just
+    a short, specific nudge that references the same framing and gives them
+    an easy out.
+    """
+    first = (prospect.name or "there").split()[0]
+    framing = _framing(event)
+
+    lines = [
+        f"Hey {first} — circling back on the {event.format.lower()}.",
+        "",
+        f"Quick recap: {framing}. Seats are filling so wanted to make sure "
+        f"this didn't get lost.",
+        "",
+        "If it's not the right fit or timing, totally fine — just let me know "
+        "and I'll close the loop. Otherwise happy to share details.",
+    ]
+    if host_bio:
+        # Insert host_bio between the recap and the "if not a fit" line so
+        # the social proof lands before the off-ramp.
+        lines.insert(3, "")
+        lines.insert(4, host_bio.strip())
+    return "\n".join(lines).strip()
 
 
 def run_outreach(prospects, event, rng: random.Random | None = None):
