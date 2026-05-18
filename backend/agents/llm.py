@@ -263,6 +263,13 @@ def discover_candidates(source: str, icp: dict, max_candidates: int | None = Non
         out = exa.discover_via_exa(source, icp, max_candidates)
         if out:
             return out
+        # Scholar is Exa-only by design : Claude + web_search for
+        # researcher pages takes 60-90s and the results don't carry the
+        # name-slug we need to merge onto an existing LinkedIn record,
+        # so the fallback would just burn 30s of adapter-timeout for
+        # zero useful signal. Return empty and let the merge proceed.
+        if source == "scholar":
+            return []
         # Exa returned empty : fall through to Claude if we have it,
         # otherwise return the empty list.
         if not (_SDK_AVAILABLE and bool(_api_key())):

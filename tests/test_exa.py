@@ -423,7 +423,10 @@ def test_discover_via_exa_scholar_passes_multi_domain(monkeypatch):
         exa.discover_via_exa("scholar", {"role": "ml engineer"})
 
     body = fake_client.post.call_args.kwargs["json"]
-    assert body["category"] == "research paper"
+    # No `category` filter for scholar : Exa's "research paper" category
+    # surfaces PDFs / paper pages, not author profiles, which is what our
+    # parser needs.
+    assert "category" not in body
     assert "scholar.google.com" in body["includeDomains"]
     assert "semanticscholar.org" in body["includeDomains"]
     assert "arxiv.org" in body["includeDomains"]

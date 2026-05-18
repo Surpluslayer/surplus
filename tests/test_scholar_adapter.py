@@ -51,6 +51,28 @@ def test_prospect_merge_attaches_scholar_citations_to_linkedin_record():
     assert "scholar" in maya["sources"]
 
 
+def test_discover_candidates_scholar_skips_claude_fallback(monkeypatch):
+    """When Exa is configured and returns empty for scholar, we MUST NOT
+    fall through to Claude + web_search : that path costs 60-90s for
+    zero useful signal (Claude can't reliably emit name-slugs that
+    cross-merge onto LinkedIn records). Other sources still fall through
+    on Exa empty.
+    """
+    from unittest.mock import patch
+    from backend.agents import llm
+
+    monkeypatch.setenv("EXA_API_KEY", "exa-test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
+
+    with patch("backend.agents.exa.discover_via_exa", return_value=[]) as exa_call, \
+         patch.object(llm, "_client") as anthropic_client:
+        out = llm.discover_candidates("scholar", {"role": "ml engineer"})
+    assert out == []
+    exa_call.assert_called_once()
+    # Crucial: no Anthropic client touched.
+    anthropic_client.assert_not_called()
+
+
 def test_prospect_zero_citations_for_pool_without_scholar_footprint():
     """A candidate with no Scholar footprint should fall through with 0
     citations : the field defaults so downstream code never KeyErrors."""
