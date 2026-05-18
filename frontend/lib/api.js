@@ -47,6 +47,10 @@ export const api = {
 
   // per-prospect, one-at-a-time. Safer than the batch /outreach for live.
   // Pass {note, message} to override the agent-composed text before sending.
+  // Smart-routes server-side: cold prospects get a connection request, warm
+  // (already-connected) prospects get a direct DM. The response includes
+  // connection_status + path_taken so the caller can re-render the button
+  // label after the action.
   sendInvite: (eid, pid, override = {}) =>
     request(`/events/${eid}/prospects/${pid}/invite`, {
       method: "POST",
@@ -57,6 +61,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(override),
     }),
+  // Bulk-refresh connection_status for every "unknown" prospect on this
+  // event. Called once when the auto-outreach screen loads so button labels
+  // render correctly. Non-blocking, cheap (skips already-classified rows).
+  checkConnections: (eid) =>
+    request(`/events/${eid}/check-connections`, { method: "POST" }),
 
   // convenience — full pipeline in one call (BLOCKED in live without confirm)
   runPipeline: (id) => request(`/events/${id}/run`, { method: "POST" }),
