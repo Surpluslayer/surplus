@@ -329,6 +329,106 @@ def test_parse_result_keeps_matching_city_linkedin():
     assert cand["name"] == "Some One"
 
 
+def test_parse_scholar_result_google_scholar():
+    """Google Scholar profile URL : extract author user id + cited-by count."""
+    result = {
+        "url": "https://scholar.google.com/citations?user=ABCD1234&hl=en",
+        "title": "Priya Natarajan - Google Scholar",
+        "text": "Priya Natarajan\nML Platform Lead at Cohere\nCited by 1,240\n",
+    }
+    cand = exa._parse_result("scholar", result)
+    assert cand is not None
+    assert cand["name"] == "Priya Natarajan"
+    assert cand["identity"] == "priya-natarajan"  # name-slug for cross-source merge
+    assert cand["scholar_citations"] == 1240
+    assert "scholar.google.com" in cand["scholar_url"]
+
+
+def test_parse_scholar_result_semantic_scholar():
+    result = {
+        "url": "https://www.semanticscholar.org/author/Maya-Rodriguez/12345",
+        "title": "Maya Rodriguez | Semantic Scholar",
+        "text": "180 citations · h-index 7",
+    }
+    cand = exa._parse_result("scholar", result)
+    assert cand is not None
+    assert cand["name"] == "Maya Rodriguez"
+    assert cand["identity"] == "maya-rodriguez"
+    assert cand["scholar_citations"] == 180
+
+
+def test_parse_scholar_result_arxiv():
+    result = {
+        "url": "https://arxiv.org/a/wang_d_1.html",
+        "title": "Daniel Wang's arXiv author page",
+        "text": "Recent submissions...",
+    }
+    cand = exa._parse_result("scholar", result)
+    # No citation count visible in snippet → 0 (still emitted; merge step
+    # may attach to a stronger record)
+    assert cand is not None
+    assert cand["scholar_citations"] == 0
+
+
+def test_parse_scholar_result_skips_non_profile():
+    result = {
+        "url": "https://scholar.google.com/scholar?q=infra+engineer",
+        "title": "Search results - Google Scholar",
+        "text": "",
+    }
+    assert exa._parse_result("scholar", result) is None
+
+
+def test_parse_scholar_title_unicode_directional_marks():
+    """Scholar wraps names in invisible directional marks : strip them."""
+    name = exa._parse_scholar_title("‪Maya Rodriguez‬ - ‪Google Scholar‬")
+    assert name == "Maya Rodriguez"
+
+
+def test_extract_citations_picks_first_match():
+    assert exa._extract_citations("Cited by 1,234 · h-index 7") == 1234
+    assert exa._extract_citations("180 citations on Semantic Scholar") == 180
+    assert exa._extract_citations("no number here") == 0
+
+
+def test_name_slug_matches_pool_identities():
+    """Scholar's name-slug must be identical to the convention used in
+    discover_candidates and the mock pool, so the merge attaches signal
+    to the right LinkedIn record."""
+    assert exa._name_slug("Maya Rodriguez") == "maya-rodriguez"
+    assert exa._name_slug("Jiahui Jin") == "jiahui-jin"
+    assert exa._name_slug("O'Brien Marsh-Williams") == "o-brien-marsh-williams"
+
+
+def test_build_query_scholar_uses_research_phrasing():
+    q = exa._build_query("scholar", {
+        "role": "ML engineer",
+        "seniority": "Senior",
+        "co_stage": "Seed",
+    })
+    assert q.startswith("google scholar researcher")
+
+
+def test_discover_via_exa_scholar_passes_multi_domain(monkeypatch):
+    monkeypatch.setenv("EXA_API_KEY", "test-key")
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    fake_response.json.return_value = {"results": []}
+    fake_client = MagicMock()
+    fake_client.post.return_value = fake_response
+    fake_client.__enter__.return_value = fake_client
+    fake_client.__exit__.return_value = None
+
+    with patch("httpx.Client", return_value=fake_client):
+        exa.discover_via_exa("scholar", {"role": "ml engineer"})
+
+    body = fake_client.post.call_args.kwargs["json"]
+    assert body["category"] == "research paper"
+    assert "scholar.google.com" in body["includeDomains"]
+    assert "semanticscholar.org" in body["includeDomains"]
+    assert "arxiv.org" in body["includeDomains"]
+
+
 def test_parse_result_no_city_cfg_is_no_op():
     """Calling without city_cfg shouldn't filter anything."""
     nyc_result = {

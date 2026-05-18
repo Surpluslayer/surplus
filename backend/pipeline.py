@@ -63,6 +63,7 @@ async def run_prospect(
             seeks=r["seeks"],
             gh_stars=r["gh_stars"],
             x_followers=r["x_followers"],
+            scholar_citations=r["scholar_citations"],
             li_resolved=r["li_resolved"],
             linkedin_url=r.get("linkedin_url"),
             sources=r["sources"],

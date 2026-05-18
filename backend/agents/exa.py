@@ -39,6 +39,16 @@ def exa_available() -> bool:
 _LINKEDIN_RE = re.compile(r"linkedin\.com/in/([A-Za-z0-9_-]+)", re.I)
 _GITHUB_RE = re.compile(r"github\.com/([A-Za-z0-9_-]+)/?$", re.I)
 _X_RE = re.compile(r"(?:x|twitter)\.com/([A-Za-z0-9_]+)/?(?:$|\?)", re.I)
+# Scholar surfaces from three places. Google Scholar carries a stable
+# author id in `?user=<id>`; Semantic Scholar uses /author/<slug>/<id>;
+# arXiv author pages use /a/<id>. First capture group is the handle we
+# slugify into `identity`.
+_SCHOLAR_GOOGLE_RE = re.compile(r"scholar\.google\.com/citations\?[^\s]*user=([A-Za-z0-9_-]+)", re.I)
+_SCHOLAR_SEMANTIC_RE = re.compile(r"semanticscholar\.org/author/[^/]+/(\d+)", re.I)
+_SCHOLAR_ARXIV_RE = re.compile(r"arxiv\.org/a/([A-Za-z0-9_-]+)", re.I)
+# "Cited by 1,234" / "1234 citations" on Scholar / Semantic Scholar snippets.
+_CITED_BY_RE = re.compile(r"cited\s+by\s+([\d,]+)", re.I)
+_CITATIONS_RE = re.compile(r"([\d,]+)\s+citations?\b", re.I)
 
 # Title parsing : LinkedIn page titles follow a consistent format
 _LI_TITLE_RE = re.compile(r"^(.+?)\s*-\s*(.+?)\s*(?:\|\s*LinkedIn)?\s*$")
@@ -201,22 +211,30 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[di
     """
     if not exa_available():
         return []
-    if source not in ("linkedin", "github", "x"):
+    if source not in ("linkedin", "github", "x", "scholar"):
         return []
 
     city_cfg = _resolve_city(icp.get("city") or "")
     query = _build_query(source, icp, city_cfg)
-    domain = {
-        "linkedin": "linkedin.com",
-        "github": "github.com",
-        "x": "x.com",
-    }[source]
-    # Exa's canonical category labels for entity-type results
-    category = {
-        "linkedin": "linkedin profile",
-        "github": "github",
-        "x": "tweet",
-    }[source]
+    # Scholar covers three index sources : Google Scholar (primary, has the
+    # citation count), Semantic Scholar (richer metadata, broader coverage),
+    # and arXiv (preprints, useful for ML researchers). We pass all three so
+    # one Exa search reaches everywhere.
+    if source == "scholar":
+        domain = ["scholar.google.com", "semanticscholar.org", "arxiv.org"]
+        category = "research paper"
+    else:
+        domain = {
+            "linkedin": "linkedin.com",
+            "github": "github.com",
+            "x": "x.com",
+        }[source]
+        # Exa's canonical category labels for entity-type results
+        category = {
+            "linkedin": "linkedin profile",
+            "github": "github",
+            "x": "tweet",
+        }[source]
     body = {
         "query": query,
         "type": "neural",
@@ -227,7 +245,7 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[di
         # multiplier when city is set so the post-filter has headroom to
         # drop wrong-city results without starving max_candidates.
         "numResults": min(100, max(max_candidates * (5 if city_cfg else 3), 10)),
-        "includeDomains": [domain],
+        "includeDomains": domain if isinstance(domain, list) else [domain],
         "contents": {"text": True},
     }
     # Exa server-side hard filter : only return pages whose text contains
@@ -363,11 +381,14 @@ def _build_query(source: str, icp: dict, city_cfg: Optional[dict] = None) -> str
         base = f"{base} in {city.lower()}"
 
     # Source-specific prefix that anchors the platform without forcing
-    # singular grammar.
+    # singular grammar. Scholar drops the role-based phrasing in favor of
+    # research-domain phrasing ("researcher" reads more naturally than
+    # "engineer" on Scholar profile pages and matches the snippet text).
     prefix = {
         "linkedin": "linkedin profile",
         "github":   "github profile",
         "x":        "x / twitter profile",
+        "scholar":  "google scholar researcher",
     }[source]
 
     return f"{prefix} {base}".strip()
@@ -447,6 +468,9 @@ def _parse_result(source: str, r: dict, city_cfg: Optional[dict] = None) -> Opti
             "gh_stars": 0,
         }
 
+    if source == "scholar":
+        return _parse_scholar_result(url, title, text)
+
     # x / twitter
     m = _X_RE.search(url)
     if not m:
@@ -462,6 +486,97 @@ def _parse_result(source: str, r: dict, city_cfg: Optional[dict] = None) -> Opti
         "x_url": url,
         "x_followers": 0,
     }
+
+
+def _parse_scholar_result(url: str, title: str, text: str) -> Optional[dict]:
+    """Pick out the author identity, name, and citation count from a
+    Google Scholar / Semantic Scholar / arXiv search result.
+
+    We don't attempt to verify ICP fit here : the prospect merge handles
+    that by only attaching scholar_citations to identities that *also*
+    surfaced from another adapter (LinkedIn / GitHub / X). A pure-Scholar
+    candidate without a LinkedIn URL gets dropped by prospector.py.
+    """
+    handle = ""
+    m = _SCHOLAR_GOOGLE_RE.search(url)
+    if m:
+        handle = m.group(1)
+    if not handle:
+        m = _SCHOLAR_SEMANTIC_RE.search(url)
+        if m:
+            handle = f"ss-{m.group(1)}"
+    if not handle:
+        m = _SCHOLAR_ARXIV_RE.search(url)
+        if m:
+            handle = f"arxiv-{m.group(1)}"
+    if not handle:
+        return None
+
+    name = _parse_scholar_title(title)
+    if not name:
+        return None
+    if _looks_like_org(name):
+        return None
+    # Prefer a name-slug as `identity` so the merge can attach this signal
+    # to the LinkedIn/GitHub-anchored record for the same person. The
+    # platform handle is preserved on `scholar_url` for traceability.
+    identity = _name_slug(name) or handle
+
+    citations = _extract_citations(text) or _extract_citations(title)
+    return {
+        "identity": identity,
+        "name": name,
+        "scholar_url": url,
+        "scholar_citations": citations,
+    }
+
+
+def _name_slug(name: str) -> str:
+    """Lowercase-hyphenated name slug. Same convention the LLM is asked to
+    emit so cross-source merging matches across backends."""
+    if not name:
+        return ""
+    cleaned = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return cleaned
+
+
+def _parse_scholar_title(title: str) -> str:
+    """Pull a person's name out of a Scholar/SemanticScholar/arXiv title.
+
+    Common shapes:
+      "Maya Rodriguez - Google Scholar"
+      "‪Maya Rodriguez‬ - ‪Google Scholar‬"
+      "Maya Rodriguez | Semantic Scholar"
+      "Maya Rodriguez - arXiv.org"
+    """
+    if not title:
+        return ""
+    # Strip Unicode directional marks Scholar wraps names in
+    base = title.replace("‪", "").replace("‬", "").strip()
+    base = re.sub(r"\s*[-–|·]\s*(google scholar|semantic scholar|arxiv\.org|arxiv).*$",
+                  "", base, flags=re.I).strip()
+    if _looks_like_person_name(base):
+        return base
+    return ""
+
+
+def _extract_citations(text: str) -> int:
+    """Pull the highest plausible citation count from a Scholar snippet.
+
+    Snippets often carry several numbers : "Cited by 1,234 · h-index 12".
+    We take the first match of "Cited by" / "X citations"; if neither
+    appears, returns 0 (the candidate may still be useful if attached to
+    a stronger source).
+    """
+    if not text:
+        return 0
+    m = _CITED_BY_RE.search(text) or _CITATIONS_RE.search(text)
+    if not m:
+        return 0
+    try:
+        return int(m.group(1).replace(",", ""))
+    except ValueError:
+        return 0
 
 
 def _normalize_linkedin_url(url: str, handle: str) -> str:

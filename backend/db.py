@@ -61,6 +61,7 @@ def init_db() -> None:
     Base.metadata.create_all(ENGINE)
     _migrate_event_user_id()
     _migrate_prospect_connection_status()
+    _migrate_prospect_scholar_citations()
     _ensure_operator_user_and_backfill()
 
 
@@ -88,6 +89,27 @@ def _migrate_prospect_connection_status() -> None:
                 "ALTER TABLE prospects ADD COLUMN connection_checked_at "
                 "TIMESTAMP"
             ))
+
+
+def _migrate_prospect_scholar_citations() -> None:
+    """Add prospects.scholar_citations to legacy DBs.
+
+    The Scholar adapter attaches an approximate citation count to any
+    record whose identity matches across sources. Old rows just default
+    to 0 (no academic footprint visible) which is exactly what the scorer
+    treats as "no signal".
+    """
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "prospects" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("prospects")}
+    if "scholar_citations" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE prospects ADD COLUMN scholar_citations INTEGER DEFAULT 0"
+        ))
 
 
 def _migrate_event_user_id() -> None:

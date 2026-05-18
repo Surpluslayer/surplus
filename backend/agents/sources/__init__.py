@@ -3,7 +3,20 @@ from .base import SourceAdapter
 from .github import GitHubAdapter
 from .x import XAdapter
 from .linkedin import LinkedInAdapter
+from .scholar import ScholarAdapter
 
-ALL_ADAPTERS: list[SourceAdapter] = [GitHubAdapter(), XAdapter(), LinkedInAdapter()]
+ALL_ADAPTERS: list[SourceAdapter] = [
+    GitHubAdapter(),
+    XAdapter(),
+    LinkedInAdapter(),
+    ScholarAdapter(),
+]
 
-__all__ = ["SourceAdapter", "GitHubAdapter", "XAdapter", "LinkedInAdapter", "ALL_ADAPTERS"]
+__all__ = [
+    "SourceAdapter",
+    "GitHubAdapter",
+    "XAdapter",
+    "LinkedInAdapter",
+    "ScholarAdapter",
+    "ALL_ADAPTERS",
+]

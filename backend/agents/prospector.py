@@ -95,6 +95,7 @@ _DEFAULTS = {
     "seeks": "",
     "gh_stars": 0,
     "x_followers": 0,
+    "scholar_citations": 0,
 }
 
 

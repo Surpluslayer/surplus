@@ -47,6 +47,18 @@ def score_prospect(p, event) -> tuple[int, str]:
         score += 8
         reasons.append("real audience reach")
 
+    # Scholar / research footprint. A "bottom" source : never anchors the
+    # candidate, but corroborates technical depth when present. Uses getattr
+    # so older Prospect rows (and test fixtures without the field) still
+    # work : missing == no signal.
+    citations = getattr(p, "scholar_citations", 0) or 0
+    if citations >= 500:
+        score += 6
+        reasons.append("cited research footprint")
+    elif citations >= 50:
+        score += 3
+        reasons.append("published research")
+
     # --- ICP match --------------------------------------------------------
     # event.seniority is CSV (multi-select). The match threshold is the
     # LOWEST selected rank : "Senior or Staff+" means Senior is acceptable,

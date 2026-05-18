@@ -184,6 +184,7 @@ async def prospect_preview(
             seeks=c.get("seeks", ""),
             gh_stars=int(c.get("gh_stars") or 0),
             x_followers=int(c.get("x_followers") or 0),
+            scholar_citations=int(c.get("scholar_citations") or 0),
             li_resolved=bool(c.get("li_resolved", False)),
             linkedin_url=c.get("linkedin_url"),
             sources=c.get("sources", ""),
