@@ -8,9 +8,14 @@ the wire format is defined in exactly one place.
 from __future__ import annotations
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from . import config
+
+# Valid prospect source adapter keys. LinkedIn is mandatory (only source that
+# resolves a contact URL); the others are optional supplementary signal.
+ALLOWED_SOURCES = ("linkedin", "github", "x", "scholar")
+MAX_SOURCES = 3
 
 
 # ── stage 01: intake ──────────────────────────────────────────────────────
@@ -37,6 +42,33 @@ class EventCreate(BaseModel):
     city: str = "San Francisco"
     goal: list[str] = ["Hiring pipeline"]
     budget: int = 8000
+    # Which prospect adapters to fan out across. LinkedIn is always
+    # required : it's the only source that resolves a contact URL. Cap of
+    # MAX_SOURCES so wall-clock latency stays bounded (each adapter is a
+    # separate neural search).
+    enabled_sources: list[str] = ["linkedin", "github", "x"]
+
+    @field_validator("enabled_sources")
+    @classmethod
+    def _validate_sources(cls, v: list[str]) -> list[str]:
+        if not isinstance(v, list):
+            raise ValueError("enabled_sources must be a list")
+        cleaned: list[str] = []
+        for s in v:
+            key = str(s).strip().lower()
+            if not key:
+                continue
+            if key not in ALLOWED_SOURCES:
+                raise ValueError(
+                    f"unknown source {key!r}; allowed: {ALLOWED_SOURCES}"
+                )
+            if key not in cleaned:
+                cleaned.append(key)
+        if "linkedin" not in cleaned:
+            raise ValueError("linkedin is a required source")
+        if len(cleaned) > MAX_SOURCES:
+            raise ValueError(f"at most {MAX_SOURCES} sources allowed")
+        return cleaned
 
 
 class EventOut(BaseModel):
@@ -49,6 +81,7 @@ class EventOut(BaseModel):
     city: str
     goal: list[str]
     budget: int
+    enabled_sources: list[str]
     threshold: int
     funnel_target: int
     cost_per_seat: int
@@ -62,7 +95,9 @@ class EventOut(BaseModel):
             co_stage=_split_csv(ev.co_stage),
             headcount=ev.headcount, format=ev.format, city=ev.city,
             goal=_split_csv(ev.goal),
-            budget=ev.budget, threshold=ev.threshold,
+            budget=ev.budget,
+            enabled_sources=_split_csv(getattr(ev, "enabled_sources", "")) or list(ALLOWED_SOURCES[:3]),
+            threshold=ev.threshold,
             funnel_target=round(ev.headcount / config.FUNNEL_CONVERSION),
             cost_per_seat=round(ev.budget / ev.headcount) if ev.headcount else 0,
             created_at=ev.created_at,

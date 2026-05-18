@@ -29,6 +29,17 @@ const STAGES = [
 const FORMATS = ["Sit-down dinner", "Hackathon", "Workshop", "Mixer", "Roundtable"];
 const GOALS = ["Hiring pipeline", "Fundraising", "Sales pipeline", "Product testing", "Community density"];
 const SENIORITY = ["Student", "New grad", "Junior", "Senior", "Staff+", "Leadership"];
+// Prospect source adapters the operator can fan out across. LinkedIn is
+// always on (only adapter that resolves a contact URL); the others are
+// supplementary signal. Capped at MAX_SOURCES total so wall-clock latency
+// stays bounded : each adapter is a separate Exa neural search.
+const SOURCES = [
+  { key: "linkedin", label: "LinkedIn", note: "contact resolve (required)" },
+  { key: "github",   label: "GitHub",   note: "OSS signal" },
+  { key: "x",        label: "X",        note: "reach signal" },
+  { key: "scholar",  label: "Scholar",  note: "research signal" },
+];
+const MAX_SOURCES = 3;
 const STAGES_CO = ["Pre-seed", "Seed", "Series A", "Series B+"];
 
 // ---- format config: matching topology -----------------------
@@ -165,8 +176,15 @@ function StageRail({ stage, setStage, maxReached }) {
   );
 }
 
-const Chip = ({ active, onClick, children }) => (
-  <button className={`chip ${active ? "chip-on" : ""}`} onClick={onClick}>{children}</button>
+const Chip = ({ active, onClick, children, disabled, title }) => (
+  <button
+    className={`chip ${active ? "chip-on" : ""} ${disabled ? "chip-disabled" : ""}`}
+    onClick={disabled ? undefined : onClick}
+    disabled={!!disabled}
+    title={title}
+  >
+    {children}
+  </button>
 );
 
 // "Send invite" for cold prospects, "Send message" for warm. "Reach out" is
@@ -225,6 +243,19 @@ function toggleIn(arr, v) {
 function Intake({ profile, setProfile, onRun }) {
   const set = (k, v) => setProfile((p) => ({ ...p, [k]: v }));
   const toggle = (k, v) => setProfile((p) => ({ ...p, [k]: toggleIn(p[k], v) }));
+  // Source toggle is special : LinkedIn is locked-on (mandatory) and the
+  // total is capped at MAX_SOURCES so wall-clock latency stays bounded.
+  // Clicking a chip when the cap is hit is a no-op.
+  const toggleSource = (key) => setProfile((p) => {
+    if (key === "linkedin") return p;  // can't toggle off the mandatory one
+    const cur = Array.isArray(p.sources) ? p.sources : ["linkedin"];
+    if (cur.includes(key)) {
+      return { ...p, sources: cur.filter((s) => s !== key) };
+    }
+    if (cur.length >= MAX_SOURCES) return p;  // cap reached
+    return { ...p, sources: [...cur, key] };
+  });
+  const sourcesCount = (profile.sources || []).length;
   return (
     <div className="stage">
       <header className="stage-head">
@@ -248,6 +279,29 @@ function Intake({ profile, setProfile, onRun }) {
             {STAGES_CO.map((s) => (
               <Chip key={s} active={profile.coStage.includes(s)} onClick={() => toggle("coStage", s)}>{s}</Chip>
             ))}
+          </div>
+          <label>
+            Sources to scrape
+            <span className="hint"> : {sourcesCount}/{MAX_SOURCES} · LinkedIn required</span>
+          </label>
+          <div className="chip-row">
+            {SOURCES.map((s) => {
+              const active = (profile.sources || []).includes(s.key);
+              const locked = s.key === "linkedin";
+              const capReached = sourcesCount >= MAX_SOURCES;
+              const disabled = locked || (!active && capReached);
+              const title = locked
+                ? "LinkedIn is required : it's the only adapter that resolves a contact URL"
+                : (!active && capReached)
+                  ? `Cap reached (${MAX_SOURCES}). Deselect another source first.`
+                  : s.note;
+              return (
+                <Chip key={s.key} active={active} disabled={disabled} title={title}
+                      onClick={() => toggleSource(s.key)}>
+                  {s.label}{locked ? " ·" : ""}
+                </Chip>
+              );
+            })}
           </div>
         </section>
 
@@ -300,7 +354,7 @@ function Intake({ profile, setProfile, onRun }) {
 
 // ---- Stage 1: Pipeline --------------------------------------
 function Pipeline({ profile, eventId, onResult, onError, onDone }) {
-  const sources = [
+  const ALL_SOURCE_CARDS = [
     { key: "github", label: "GitHub adapter", image: pipeGithubIcon, note: "OSS signal · clean API" },
     { key: "x", label: "X adapter", image: pipeXIcon, note: "Reach signal · paid API" },
     { key: "linkedin", label: "LinkedIn adapter", image: pipeLinkedinIcon, note: "Contact resolve · provider" },
@@ -308,6 +362,13 @@ function Pipeline({ profile, eventId, onResult, onError, onDone }) {
     // bolts citation-count signal onto cross-source matches when present.
     { key: "scholar", label: "Scholar adapter", icon: GraduationCap, note: "Research signal · supplementary" },
   ];
+  // Render only the cards for adapters the operator selected on intake.
+  // Falls back to all four when profile.sources is missing so the screen
+  // never goes empty if the state hasn't loaded yet.
+  const selectedKeys = (profile.sources && profile.sources.length)
+    ? new Set(profile.sources)
+    : new Set(ALL_SOURCE_CARDS.map((s) => s.key));
+  const sources = ALL_SOURCE_CARDS.filter((s) => selectedKeys.has(s.key));
   const steps = ["Prospecting", "Fit scoring", "Auto-outreach"];
   const [progress, setProgress] = useState(0);
   const [apiDone, setApiDone] = useState(false);
@@ -402,7 +463,8 @@ function Pipeline({ profile, eventId, onResult, onError, onDone }) {
         <h1>Agents working the funnel</h1>
       </header>
 
-      <div className="pipe-sources">
+      <div className="pipe-sources"
+           style={{ gridTemplateColumns: `repeat(${Math.max(1, sources.length)}, 1fr)` }}>
         {sources.map((s, i) => {
           const Icon = s.icon;
           const local = Math.max(0, Math.min(100, progress * 1.05 - i * 14));
@@ -1617,6 +1679,7 @@ function SurplusApp({ user, onLogout, onSignIn }) {
     city: "San Francisco",
     goal: ["Hiring pipeline"],
     budget: 8000,
+    sources: ["linkedin", "github", "x"],
   });
   // backend-wired state : eventId comes from real /events POST; runResult is
   // the response from /run (prospects, counts, etc.). Both null until the
@@ -1648,6 +1711,7 @@ function SurplusApp({ user, onLogout, onSignIn }) {
         city: profile.city,
         goal: profile.goal,
         budget: profile.budget,
+        enabled_sources: profile.sources,
       });
       setEventId(ev.id);
       go(1);
@@ -1821,6 +1885,10 @@ const CSS = `
 .chip:hover { border-color:var(--acc-light); color:var(--acc); }
 .chip-on { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:600;
   box-shadow:0 3px 10px rgba(108,67,217,0.25); }
+.chip-disabled { cursor:not-allowed; opacity:0.6; }
+.chip-disabled:hover { border-color:var(--line); color:var(--ink-dim); }
+.chip-disabled.chip-on { opacity:0.85; }
+.chip-disabled.chip-on:hover { border-color:var(--acc); color:#fff; }
 .range-in { width:100%; accent-color:var(--acc); cursor:pointer; }
 .topo-inline { font-size:10.5px; color:var(--ink-faint); display:flex; align-items:center; gap:5px; }
 .derived { display:flex; gap:12px; margin-top:6px; padding-top:13px; border-top:1px dashed var(--line); }

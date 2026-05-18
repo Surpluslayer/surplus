@@ -75,14 +75,16 @@ def _judge_timeout() -> float:
         return 6.0
 
 
-def _icp_cache_key(icp: dict) -> str:
+def _icp_cache_key(icp: dict, adapters: list["SourceAdapter"] | None = None) -> str:
     # Only the fields the LLM / Exa search actually conditions on. Sorted for
     # stable bytes. `city` is included so a re-run with a different location
-    # doesn't return the previous city's cached pool.
-    return json.dumps(
-        {k: icp.get(k) for k in ("role", "seniority", "co_stage", "city")},
-        sort_keys=True,
-    )
+    # doesn't return the previous city's cached pool. Adapter set is folded
+    # in so toggling "scrape from X" on intake actually re-fans-out instead
+    # of returning the previous source-set's cached pool.
+    keys = {k: icp.get(k) for k in ("role", "seniority", "co_stage", "city")}
+    if adapters is not None:
+        keys["_adapters"] = sorted(a.key for a in adapters)
+    return json.dumps(keys, sort_keys=True)
 
 # fields a record may still be missing after the merge, and their defaults
 _DEFAULTS = {
@@ -145,8 +147,9 @@ async def prospect(
     AND delete any stale entry (so a one-off bad cache value can be
     cleared without restarting the process).
     """
+    adapters = adapters or ALL_ADAPTERS
     ttl = _cache_ttl()
-    cache_key = _icp_cache_key(icp)
+    cache_key = _icp_cache_key(icp, adapters)
     if force_fresh:
         _PROSPECT_CACHE.pop(cache_key, None)
     elif ttl:
@@ -155,8 +158,6 @@ async def prospect(
             age = int(time.time() - hit[0])
             print(f"  [prospect] cache HIT for {cache_key} ({age}s old, {len(hit[1])} candidates)")
             return copy.deepcopy(hit[1])
-
-    adapters = adapters or ALL_ADAPTERS
     timeout = _adapter_timeout()
 
     async def _bounded(adapter: SourceAdapter) -> list[dict]:

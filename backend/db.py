@@ -60,6 +60,7 @@ def init_db() -> None:
     from . import models  # noqa: F401  (import registers the models)
     Base.metadata.create_all(ENGINE)
     _migrate_event_user_id()
+    _migrate_event_enabled_sources()
     _migrate_prospect_connection_status()
     _migrate_prospect_scholar_citations()
     _ensure_operator_user_and_backfill()
@@ -109,6 +110,27 @@ def _migrate_prospect_scholar_citations() -> None:
     with ENGINE.begin() as conn:
         conn.execute(text(
             "ALTER TABLE prospects ADD COLUMN scholar_citations INTEGER DEFAULT 0"
+        ))
+
+
+def _migrate_event_enabled_sources() -> None:
+    """Add events.enabled_sources to legacy DBs.
+
+    Old rows get the previous default behavior (linkedin + github + x,
+    no scholar) so re-running /prospect on an existing event doesn't
+    silently change which adapters fan out.
+    """
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "events" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("events")}
+    if "enabled_sources" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE events ADD COLUMN enabled_sources VARCHAR(80) "
+            "DEFAULT 'linkedin,github,x'"
         ))
 
 

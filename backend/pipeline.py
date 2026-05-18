@@ -26,7 +26,22 @@ from . import models, config
 from .agents.prospector import prospect
 from .agents.scorer import score_prospect, floating_threshold
 from .agents.outreach import compose, run_outreach
+from .agents.sources import ALL_ADAPTERS
 from .providers import get_provider, ProviderResult
+
+
+def _adapters_for_event(event: models.Event):
+    """Filter the global adapter registry to only those the operator
+    selected on intake. LinkedIn is always included as a hard guarantee
+    (the schema validator should already enforce it, but we double-check
+    here so a malformed legacy row can't run a no-anchor pipeline)."""
+    enabled = {s.strip().lower()
+               for s in (event.enabled_sources or "").split(",")
+               if s.strip()}
+    if not enabled:
+        return list(ALL_ADAPTERS)
+    enabled.add("linkedin")
+    return [a for a in ALL_ADAPTERS if a.key in enabled]
 
 
 async def run_prospect(
@@ -47,7 +62,8 @@ async def run_prospect(
         "city": event.city,
     }
 
-    raw = await prospect(icp, force_fresh=force_fresh)
+    adapters = _adapters_for_event(event)
+    raw = await prospect(icp, adapters=adapters, force_fresh=force_fresh)
     prospects: list[models.Prospect] = []
     for r in raw:
         p = models.Prospect(

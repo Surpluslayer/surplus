@@ -48,6 +48,13 @@ class Event(Base):
     # goal + budget
     goal: Mapped[str] = mapped_column(String(300))
     budget: Mapped[int]
+    # which source adapters to fan out across when /prospect runs. CSV of
+    # adapter keys (e.g. "linkedin,github,scholar"). LinkedIn is mandatory
+    # because it's the only adapter that resolves a contact URL : without
+    # it the merge has nothing to anchor on and every record gets dropped.
+    # Capped at 3 entries to keep wall-clock latency bounded (each adapter
+    # is a separate Exa neural search).
+    enabled_sources: Mapped[str] = mapped_column(String(80), default="linkedin,github,x")
     # derived once the pipeline runs
     threshold: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)

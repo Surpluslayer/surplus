@@ -73,6 +73,19 @@ def test_discover_candidates_scholar_skips_claude_fallback(monkeypatch):
     anthropic_client.assert_not_called()
 
 
+def test_prospect_cache_key_includes_adapter_set():
+    """Toggling sources between runs against the same ICP must bust the
+    cache : otherwise turning Scholar on/off would silently no-op for
+    the cache TTL window."""
+    from backend.agents.prospector import _icp_cache_key
+    from backend.agents.sources import GitHubAdapter, LinkedInAdapter, ScholarAdapter
+
+    icp = {"role": "engineer", "seniority": "Senior", "co_stage": "Seed", "city": "SF"}
+    a = _icp_cache_key(icp, [LinkedInAdapter(), GitHubAdapter()])
+    b = _icp_cache_key(icp, [LinkedInAdapter(), GitHubAdapter(), ScholarAdapter()])
+    assert a != b
+
+
 def test_prospect_zero_citations_for_pool_without_scholar_footprint():
     """A candidate with no Scholar footprint should fall through with 0
     citations : the field defaults so downstream code never KeyErrors."""
