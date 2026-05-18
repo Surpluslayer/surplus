@@ -60,7 +60,34 @@ def init_db() -> None:
     from . import models  # noqa: F401  (import registers the models)
     Base.metadata.create_all(ENGINE)
     _migrate_event_user_id()
+    _migrate_prospect_connection_status()
     _ensure_operator_user_and_backfill()
+
+
+def _migrate_prospect_connection_status() -> None:
+    """Add prospects.connection_status + connection_checked_at to legacy DBs.
+
+    Same idea as _migrate_event_user_id — create_all doesn't ALTER existing
+    tables, so we hand-roll the additions. Both columns nullable / defaulted
+    so old rows just become "unknown" until the first Unipile relation
+    check stamps them.
+    """
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "prospects" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("prospects")}
+    with ENGINE.begin() as conn:
+        if "connection_status" not in cols:
+            conn.execute(text(
+                "ALTER TABLE prospects ADD COLUMN connection_status "
+                "VARCHAR(20) DEFAULT 'unknown'"
+            ))
+        if "connection_checked_at" not in cols:
+            conn.execute(text(
+                "ALTER TABLE prospects ADD COLUMN connection_checked_at "
+                "TIMESTAMP"
+            ))
 
 
 def _migrate_event_user_id() -> None:

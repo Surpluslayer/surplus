@@ -96,6 +96,9 @@ class ProspectOut(BaseModel):
     status: str
     above_threshold: bool
     group_id: int | None
+    # unknown | not_connected | connected. Drives the cold-vs-warm send
+    # routing and the dynamic button label on the auto-outreach screen.
+    connection_status: str
     outreach: list[OutreachOut]
 
     @classmethod
@@ -109,6 +112,7 @@ class ProspectOut(BaseModel):
             sources=p.sources, fit_score=p.fit_score, fit_reason=p.fit_reason,
             status=p.status, above_threshold=p.fit_score >= threshold,
             group_id=p.group_id,
+            connection_status=getattr(p, "connection_status", "unknown") or "unknown",
             outreach=[OutreachOut(state=o.state, body=o.body, ts=o.ts)
                       for o in sorted(p.outreach, key=lambda o: o.ts)],
         )

@@ -97,6 +97,13 @@ class Prospect(Base):
     status: Mapped[str] = mapped_column(String(20), default="surfaced")
     group_id: Mapped[Optional[int]] = mapped_column(default=None)
 
+    # LinkedIn connection state. Drives whether a "reach out" action sends a
+    # connection request (cold) or a direct DM (warm). Default "unknown"
+    # until the first Unipile relation check; flipped to "connected" by the
+    # invite_accepted webhook so subsequent actions take the warm path.
+    connection_status: Mapped[str] = mapped_column(String(20), default="unknown")
+    connection_checked_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+
     event: Mapped["Event"] = relationship(back_populates="prospects")
     outreach: Mapped[list["OutreachLog"]] = relationship(
         back_populates="prospect", cascade="all, delete-orphan"

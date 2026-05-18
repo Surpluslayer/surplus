@@ -104,6 +104,14 @@ def _apply_canonical_event(
         if not (prospect.status == "rsvp" and new_status == "contacted"):
             prospect.status = new_status
 
+    # invite_accepted means the recipient is now a 1st-degree connection,
+    # so future "reach out" actions on this prospect should take the warm
+    # path. Stamp connection_status here so we don't need another Unipile
+    # round-trip the next time the UI loads.
+    if ev.state == "invite_accepted":
+        prospect.connection_status = "connected"
+        prospect.connection_checked_at = datetime.now(timezone.utc)
+
     db.commit()
     return True, "applied", prospect
 
