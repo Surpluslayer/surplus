@@ -317,6 +317,11 @@ def _seniority_word(s: str) -> list[str]:
         return ["senior leadership"]
     if sl == "staff":
         return ["staff", "principal", "distinguished"]
+    if sl == "student":
+        # On LinkedIn / Scholar these surface variously as "student",
+        # "PhD student", or "graduate student" : casting the wider net
+        # catches all three.
+        return ["student", "phd student", "graduate student"]
     return [sl]
 
 
@@ -683,9 +688,9 @@ _SECTION_KEYWORDS = ("about", "experience", "education", "skills",
                      "licenses", "certifications", "languages")
 
 # Role-keyword → seniority bucket. The scorer (backend/agents/scorer.py)
-# expects one of: Mid / Senior / Staff+ / Leadership. Exa's structured
-# fields don't carry seniority, so we infer from the role + headline text.
-# Order matters : first match wins, most senior bucket first.
+# expects one of: Student / Mid / Senior / Staff+ / Leadership. Exa's
+# structured fields don't carry seniority, so we infer from the role +
+# headline text. Order matters : first match wins, most senior bucket first.
 _SENIORITY_HINTS: tuple[tuple[str, str], ...] = (
     ("Leadership", "founder"),
     ("Leadership", "ceo"),
@@ -711,6 +716,14 @@ _SENIORITY_HINTS: tuple[tuple[str, str], ...] = (
     ("Mid", "junior "),
     ("Mid", "associate "),
     ("Mid", "entry "),
+    # Student bucket : interns, PhDs, anyone still in school. The keyword
+    # is broad ("student" alone) but the more-senior matches above run
+    # first so a "Staff Engineer · part-time student" still resolves to
+    # Staff+, which is what we want.
+    ("Student", "phd student"),
+    ("Student", "graduate student"),
+    ("Student", "intern"),
+    ("Student", "student"),
 )
 
 

@@ -28,7 +28,7 @@ const STAGES = [
 
 const FORMATS = ["Sit-down dinner", "Hackathon", "Workshop", "Mixer", "Roundtable"];
 const GOALS = ["Hiring pipeline", "Fundraising", "Sales pipeline", "Product testing", "Community density"];
-const SENIORITY = ["New grad", "Junior", "Senior", "Staff+", "Leadership"];
+const SENIORITY = ["Student", "New grad", "Junior", "Senior", "Staff+", "Leadership"];
 const STAGES_CO = ["Pre-seed", "Seed", "Series A", "Series B+"];
 
 // ---- format config: matching topology -----------------------

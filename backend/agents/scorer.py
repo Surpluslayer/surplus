@@ -21,6 +21,10 @@ from __future__ import annotations
 from .. import config
 
 _SENIORITY_RANK = {
+    # Student sits just below New grad : someone still in school, often
+    # interning. Using -1 (instead of shifting everything up by one) keeps
+    # the existing fit-score thresholds stable for old events / cached pools.
+    "Student": -1,
     "New grad": 0,
     "Junior": 1,
     "Mid": 2,

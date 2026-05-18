@@ -73,6 +73,7 @@ _SIDE_TO_TICKET = {
 }
 
 _SENIORITY_TO_EXP = {
+    "Student":    "beginner",
     "New grad":   "beginner",
     "Junior":     "beginner",
     "Mid":        "intermediate",

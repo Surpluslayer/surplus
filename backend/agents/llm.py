@@ -149,7 +149,7 @@ _LINKEDIN_TOOL = {
             "name": {"type": "string"},
             "role": {"type": "string"},
             "company": {"type": "string"},
-            "seniority": {"type": "string", "enum": ["New grad", "Junior", "Senior", "Staff+", "Leadership"]},
+            "seniority": {"type": "string", "enum": ["Student", "New grad", "Junior", "Senior", "Staff+", "Leadership"]},
             "linkedin_url": {"type": "string"},
             "offers": {"type": "string", "description": "what this person can offer at the event (short phrase)"},
             "seeks": {"type": "string", "description": "what this person is looking for (short phrase)"},
