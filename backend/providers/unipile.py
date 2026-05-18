@@ -282,6 +282,55 @@ class UnipileProvider(LinkedInProvider):
             linkedin_provider_id=provider_id,
         )
 
+    # ---- is_relation (cold vs warm routing) ----------------------------
+
+    def is_relation(self, linkedin_url: str) -> bool:
+        """True when the operator's account is already connected to this
+        profile on LinkedIn. Drives the smart-routing of /invite — warm
+        prospects skip send_connection and go straight to send_message.
+
+        Dry-run returns False (everyone treated as cold) so tests + demos
+        exercise the full invite flow. Override by passing a real DSN.
+
+        Implementation: resolves the LinkedIn URL to a provider_id, then
+        checks whether that profile's relationship has been established
+        with the operator account. Unipile's `/users/{public_id}` response
+        includes a `relation` block when the user is a connection.
+        """
+        if self._dry_run:
+            return False
+        handle = _linkedin_handle(linkedin_url)
+        if not handle:
+            return False
+        # Missing creds → treat as cold (safer default than raising and
+        # crashing the caller's request).
+        if not (self.api_key and self.dsn and self.account_id):
+            return False
+        import httpx
+        url = f"{self.dsn}/api/v1/users/{handle}"
+        headers = {"X-API-KEY": self.api_key, "accept": "application/json"}
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.get(url, headers=headers,
+                                  params={"account_id": self.account_id})
+        except Exception:
+            return False
+        if resp.status_code >= 400:
+            return False
+        try:
+            data = resp.json() if resp.text else {}
+        except Exception:
+            return False
+        # Unipile surfaces the relationship under a few key names depending
+        # on endpoint version; check the most common ones. is_connection is
+        # boolean; network_distance is "DISTANCE_1" for direct connections.
+        if data.get("is_connection") is True:
+            return True
+        nd = data.get("network_distance") or (data.get("relation") or {}).get("network_distance")
+        if isinstance(nd, str) and nd.upper() in ("DISTANCE_1", "FIRST_DEGREE", "1"):
+            return True
+        return False
+
     # ---- fetch_thread (for the AI reply agent) --------------------------
 
     def fetch_thread(self, chat_id: str) -> list[dict]:

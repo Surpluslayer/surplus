@@ -174,6 +174,13 @@ class LinkedInProvider(abc.ABC):
         agent must override (Unipile does)."""
         return []
 
+    def is_relation(self, linkedin_url: str) -> bool:
+        """True if the operator's LinkedIn is already connected to this
+        profile (warm) — drives the cold vs warm send routing. Default
+        False (treat everyone as cold) so a provider without a relations
+        endpoint stays safe."""
+        return False
+
     @abc.abstractmethod
     def normalize_webhook(self, raw: dict) -> Optional[CanonicalEvent]:
         """
