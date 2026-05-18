@@ -48,6 +48,9 @@ class Event(Base):
     # goal + budget
     goal: Mapped[str] = mapped_column(String(300))
     budget: Mapped[int]
+    # which prospect sources to fan out across, CSV-joined. LinkedIn is
+    # always forced in by adapters_for() regardless of what's stored here.
+    sources: Mapped[str] = mapped_column(String(120), default="linkedin")
     # derived once the pipeline runs
     threshold: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)

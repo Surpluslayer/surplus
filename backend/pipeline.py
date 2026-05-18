@@ -47,7 +47,9 @@ async def run_prospect(
         "city": event.city,
     }
 
-    raw = await prospect(icp, force_fresh=force_fresh)
+    from .agents.sources import adapters_for
+    selected_adapters = adapters_for(getattr(event, "sources", None))
+    raw = await prospect(icp, adapters=selected_adapters, force_fresh=force_fresh)
     prospects: list[models.Prospect] = []
     for r in raw:
         p = models.Prospect(

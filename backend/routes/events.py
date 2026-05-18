@@ -25,10 +25,17 @@ def create_event(
     The event is auto-stamped with the signed-in user's id."""
     data = payload.model_dump()
     # Multi-select fields arrive as lists; the Event columns are CSV strings.
-    for key in ("seniority", "co_stage", "goal"):
+    for key in ("seniority", "co_stage", "goal", "sources"):
         v = data.get(key)
         if isinstance(v, list):
-            data[key] = ",".join(s.strip() for s in v if s and s.strip())
+            data[key] = ",".join(s.strip().lower() if key == "sources" else s.strip()
+                                 for s in v if s and s.strip())
+    # Always force LinkedIn into the stored sources (matches the runtime
+    # invariant in adapters_for) so the row is consistent even before the
+    # first prospecting run.
+    src = (data.get("sources") or "").strip()
+    if "linkedin" not in src.split(","):
+        data["sources"] = ("linkedin," + src).rstrip(",")
     ev = models.Event(**data, user_id=user.id)
     db.add(ev)
     db.commit()

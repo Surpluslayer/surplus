@@ -60,9 +60,27 @@ def init_db() -> None:
     from . import models  # noqa: F401  (import registers the models)
     Base.metadata.create_all(ENGINE)
     _migrate_event_user_id()
+    _migrate_event_sources()
     _migrate_prospect_connection_status()
     _migrate_prospect_scholar_citations()
     _ensure_operator_user_and_backfill()
+
+
+def _migrate_event_sources() -> None:
+    """Add events.sources to legacy DBs. Defaults to 'linkedin' so existing
+    events keep working (LinkedIn-only fan-out is the safe minimum)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "events" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("events")}
+    if "sources" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE events ADD COLUMN sources "
+            "VARCHAR(120) DEFAULT 'linkedin'"
+        ))
 
 
 def _migrate_prospect_connection_status() -> None:

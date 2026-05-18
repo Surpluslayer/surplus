@@ -31,6 +31,16 @@ const GOALS = ["Hiring pipeline", "Fundraising", "Sales pipeline", "Product test
 const SENIORITY = ["Student", "New grad", "Junior", "Senior", "Staff+", "Leadership"];
 const STAGES_CO = ["Pre-seed", "Seed", "Series A", "Series B+"];
 
+// Each prospect source has a backend adapter key (lower-case) and a label.
+// LinkedIn is locked-on : the backend forces it in regardless, but rendering
+// the lock indicator here saves the operator a wasted click.
+const SOURCES = [
+  { key: "linkedin", label: "LinkedIn", locked: true },
+  { key: "github",   label: "GitHub" },
+  { key: "x",        label: "X / Twitter" },
+  { key: "scholar",  label: "Scholar" },
+];
+
 // ---- format config: matching topology -----------------------
 const FORMAT_CONFIG = {
   "Sit-down dinner": { group: "Table", topo: "fixed seating : composition locked before doors open" },
@@ -247,6 +257,16 @@ function Intake({ profile, setProfile, onRun }) {
           <div className="chip-row">
             {STAGES_CO.map((s) => (
               <Chip key={s} active={profile.coStage.includes(s)} onClick={() => toggle("coStage", s)}>{s}</Chip>
+            ))}
+          </div>
+          <label>Sources <span className="hint">: more sources, longer search</span></label>
+          <div className="chip-row">
+            {SOURCES.map((src) => (
+              <Chip key={src.key}
+                    active={profile.sources.includes(src.key)}
+                    onClick={() => { if (!src.locked) toggle("sources", src.key); }}>
+                {src.locked ? "🔒 " : ""}{src.label}
+              </Chip>
             ))}
           </div>
         </section>
@@ -1617,6 +1637,7 @@ function SurplusApp({ user, onLogout, onSignIn }) {
     city: "San Francisco",
     goal: ["Hiring pipeline"],
     budget: 8000,
+    sources: ["linkedin"],
   });
   // backend-wired state : eventId comes from real /events POST; runResult is
   // the response from /run (prospects, counts, etc.). Both null until the
@@ -1648,6 +1669,7 @@ function SurplusApp({ user, onLogout, onSignIn }) {
         city: profile.city,
         goal: profile.goal,
         budget: profile.budget,
+        sources: profile.sources,
       });
       setEventId(ev.id);
       go(1);
