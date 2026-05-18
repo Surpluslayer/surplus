@@ -219,10 +219,14 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[di
     # Scholar covers three index sources : Google Scholar (primary, has the
     # citation count), Semantic Scholar (richer metadata, broader coverage),
     # and arXiv (preprints, useful for ML researchers). We pass all three so
-    # one Exa search reaches everywhere.
+    # one Exa search reaches everywhere. No `category` filter because Exa's
+    # "research paper" category surfaces PAPER pages (PDFs, /abs/<id>,
+    # /paper/<id>) which our parser discards; we want AUTHOR profile pages
+    # (?user=<id>, /author/<slug>/<id>, /a/<id>) so we let neural matching
+    # against the query phrasing do the scoping.
     if source == "scholar":
         domain = ["scholar.google.com", "semanticscholar.org", "arxiv.org"]
-        category = "research paper"
+        category = None
     else:
         domain = {
             "linkedin": "linkedin.com",
@@ -238,7 +242,6 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[di
     body = {
         "query": query,
         "type": "neural",
-        "category": category,
         # over-fetch : even with category filter, some results won't yield a
         # parseable handle (snippets, archives, etc.). Exa caps at 100 per
         # request so clamp there even when max_candidates is high. Bump the
@@ -248,6 +251,8 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[di
         "includeDomains": domain if isinstance(domain, list) else [domain],
         "contents": {"text": True},
     }
+    if category:
+        body["category"] = category
     # Exa server-side hard filter : only return pages whose text contains
     # this phrase. Massively cuts wrong-geo results before they hit our
     # parser. Only do this for LinkedIn since github/x profile pages rarely
