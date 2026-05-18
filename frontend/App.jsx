@@ -320,7 +320,10 @@ function Intake({ profile, setProfile, onRun }) {
 
 // ---- Stage 1: Pipeline --------------------------------------
 function Pipeline({ profile, eventId, onResult, onError, onDone }) {
-  const sources = [
+  // Render only the adapter cards the operator actually selected. Keeps the
+  // UI honest : if they picked LinkedIn-only, they should see one card, not
+  // four with idle progress bars.
+  const ALL_SOURCE_CARDS = [
     { key: "github", label: "GitHub adapter", image: pipeGithubIcon, note: "OSS signal · clean API" },
     { key: "x", label: "X adapter", image: pipeXIcon, note: "Reach signal · paid API" },
     { key: "linkedin", label: "LinkedIn adapter", image: pipeLinkedinIcon, note: "Contact resolve · provider" },
@@ -328,6 +331,10 @@ function Pipeline({ profile, eventId, onResult, onError, onDone }) {
     // bolts citation-count signal onto cross-source matches when present.
     { key: "scholar", label: "Scholar adapter", icon: GraduationCap, note: "Research signal · supplementary" },
   ];
+  const selectedSources = (profile.sources && profile.sources.length > 0)
+    ? profile.sources
+    : ["linkedin"];
+  const sources = ALL_SOURCE_CARDS.filter((s) => selectedSources.includes(s.key));
   const steps = ["Prospecting", "Fit scoring", "Auto-outreach"];
   const [progress, setProgress] = useState(0);
   const [apiDone, setApiDone] = useState(false);
