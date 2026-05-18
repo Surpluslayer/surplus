@@ -200,30 +200,39 @@ def _handle_ai_reply(
     Returns a small dict for the webhook response body, or None if the
     feature was skipped (e.g. provider has no fetch_thread).
     """
+    print(f"  [ai_reply] message_replied prospect_id={prospect.id} "
+          f"body={canonical.body[:100]!r}")
     event = prospect.event
     if event is None:
+        print(f"  [ai_reply] SKIP prospect_id={prospect.id} — no event linked")
         return None
 
     chat_id = _last_chat_id(prospect)
     thread_raw = provider.fetch_thread(chat_id) if chat_id else []
-    # Always append the canonical event body — Unipile's fetch_thread may
-    # not have indexed the new message yet (eventual consistency).
     if canonical.body:
         thread_raw = list(thread_raw) + [
             {"direction": "inbound", "text": canonical.body, "ts": ""}
         ]
     thread = [ThreadMessage(direction=m["direction"], text=m["text"], ts=m.get("ts"))
               for m in thread_raw if m.get("text")]
+    print(f"  [ai_reply] thread fetched: chat_id={chat_id} "
+          f"messages={len(thread)} (calling Claude...)")
 
     host = event.user
     decision = decide_reply(thread, event, prospect, host=host)
+    print(f"  [ai_reply] decision: classification={decision.classification} "
+          f"elapsed={decision.elapsed_s}s draft_chars={len(decision.draft_text)} "
+          f"error={decision.error}")
 
     prior_auto = sum(
         1 for o in prospect.outreach if o.state == "auto_reply_sent"
     )
 
     if should_auto_send(decision, prior_auto):
+        print(f"  [ai_reply] gate PASS → auto-sending")
         return _auto_send_reply(db, provider, prospect, decision)
+    print(f"  [ai_reply] gate BLOCK → queueing (class={decision.classification} "
+          f"prior_auto={prior_auto})")
     return _queue_pending_reply(db, prospect, decision, canonical.body or "")
 
 
@@ -242,6 +251,8 @@ def _auto_send_reply(
         db, prospect, decision.draft_text,
         sent_state="auto_reply_sent", fallback_provider=fallback_provider,
     )
+    print(f"  [ai_reply] send result: state={res.state} dry_run={res.dry_run} "
+          f"provider_lead_id={res.provider_lead_id} error={res.error}")
     return {
         "action": "auto_sent" if not res.error else "send_failed",
         "classification": decision.classification,
