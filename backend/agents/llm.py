@@ -179,7 +179,30 @@ _X_TOOL = {
     "strict": True,
 }
 
-_SOURCE_TOOL = {"github": _GITHUB_TOOL, "linkedin": _LINKEDIN_TOOL, "x": _X_TOOL}
+_SCHOLAR_TOOL = {
+    "name": "emit_candidate",
+    "description": "Emit one Scholar / research-sourced candidate.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "identity": {"type": "string"},
+            "name": {"type": "string"},
+            "scholar_url": {"type": "string", "description": "Google Scholar / Semantic Scholar / arXiv profile URL"},
+            "scholar_citations": {"type": "integer", "description": "approx total citations across published work"},
+            "evidence_url": {"type": "string"},
+        },
+        "required": ["identity", "name", "scholar_citations"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
+
+_SOURCE_TOOL = {
+    "github": _GITHUB_TOOL,
+    "linkedin": _LINKEDIN_TOOL,
+    "x": _X_TOOL,
+    "scholar": _SCHOLAR_TOOL,
+}
 
 _SOURCE_GUIDANCE = {
     "github": (
@@ -201,6 +224,15 @@ _SOURCE_GUIDANCE = {
         "Search X (twitter) for accounts with real reach matching the ICP. "
         "Use 'site:x.com <icp domain>' or 'site:twitter.com <icp domain>'. "
         "Extract follower counts only if visible on the page."
+    ),
+    "scholar": (
+        "Search academic sources for researchers whose published work aligns "
+        "with the ICP domain. Use queries like 'site:scholar.google.com "
+        "<icp domain>', 'site:semanticscholar.org <icp domain>', and "
+        "'site:arxiv.org <icp domain>'. Extract approximate total citation "
+        "count from the profile or top-paper snippets. Identity slug should "
+        "match the same person's slug across sources so the merge can attach "
+        "the citation signal to an existing LinkedIn / GitHub record."
     ),
 }
 

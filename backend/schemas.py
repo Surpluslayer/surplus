@@ -88,6 +88,7 @@ class ProspectOut(BaseModel):
     seeks: str
     gh_stars: int
     x_followers: int
+    scholar_citations: int
     li_resolved: bool
     linkedin_url: str | None
     sources: str
@@ -107,7 +108,9 @@ class ProspectOut(BaseModel):
             id=p.id, name=p.name, role=p.role, company=p.company,
             seniority=p.seniority, side=p.side, works_on=p.works_on,
             offers=p.offers, seeks=p.seeks, gh_stars=p.gh_stars,
-            x_followers=p.x_followers, li_resolved=p.li_resolved,
+            x_followers=p.x_followers,
+            scholar_citations=getattr(p, "scholar_citations", 0) or 0,
+            li_resolved=p.li_resolved,
             linkedin_url=p.linkedin_url,
             sources=p.sources, fit_score=p.fit_score, fit_reason=p.fit_reason,
             status=p.status, above_threshold=p.fit_score >= threshold,
@@ -205,6 +208,7 @@ class ProspectingPreviewCandidate(BaseModel):
     seeks: str
     gh_stars: int
     x_followers: int
+    scholar_citations: int = 0
     li_resolved: bool
     linkedin_url: str | None
     sources: str

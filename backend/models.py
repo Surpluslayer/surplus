@@ -82,6 +82,10 @@ class Prospect(Base):
     # raw source signal
     gh_stars: Mapped[int] = mapped_column(default=0)
     x_followers: Mapped[int] = mapped_column(default=0)
+    # academic / research signal. Bolted on by ScholarAdapter when an
+    # identity slug matches across sources; 0 when the person has no
+    # visible Scholar / Semantic Scholar / arXiv footprint.
+    scholar_citations: Mapped[int] = mapped_column(default=0)
     li_resolved: Mapped[bool] = mapped_column(default=False)
     linkedin_url: Mapped[Optional[str]] = mapped_column(String(200), default=None)
     # the provider's internal LinkedIn user ID. Resolved once on first

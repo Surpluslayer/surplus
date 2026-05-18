@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import {
   ArrowRight, Check, Circle, Activity, Send, Network, Target,
   GitBranch, BriefcaseBusiness, Zap, TrendingUp, RotateCw, Mail,
-  CornerDownRight, LogOut
+  CornerDownRight, LogOut, GraduationCap
 } from "lucide-react";
 import { api } from "./lib/api.js";
 import MatchingRadarGraph from "./components/MatchingRadarGraph.jsx";
@@ -107,7 +107,7 @@ const GOAL_CONFIG = {
 const PROSPECTS = [
   { id: 1, name: "Maya Rodriguez", role: "Staff Infra Engineer", company: "Lo91r (Seed)", side: "Builds",
     worksOn: "observability", offers: "Observability depth", seeks: "Staff-scope role",
-    gh: 2100, x: 4800, li: true, score: 94, status: "rsvp", grp: 1,
+    gh: 2100, x: 4800, scholar: 180, li: true, score: 94, status: "rsvp", grp: 1,
     reason: "Maintains a widely-used Rust tracing crate; recent posts signal active interest in eval tooling." },
   { id: 2, name: "Daniel Okafor", role: "Founding Engineer", company: "Vello (Series A)", side: "Builds",
     worksOn: "model-serving", offers: "Model-serving infra", seeks: "Founding-level scope",
@@ -115,7 +115,7 @@ const PROSPECTS = [
     reason: "Shipped a model-serving layer at a prior startup; clean ICP match on devtools and stage." },
   { id: 3, name: "Priya Natarajan", role: "ML Platform Lead", company: "Cohere", side: "Hires",
     worksOn: "ml-platform", offers: "Platform roles + mentorship", seeks: "Infra builders to hire",
-    gh: 1500, x: 9300, li: true, score: 88, status: "rsvp", grp: 1,
+    gh: 1500, x: 9300, scholar: 1240, li: true, score: 88, status: "rsvp", grp: 1,
     reason: "Leads a platform team with open headcount : high downstream value for the builder side of the room." },
   { id: 4, name: "Sam Whitfield", role: "Senior Backend Eng", company: "Ramp", side: "Builds",
     worksOn: "payments-infra", offers: "Payments-infra experience", seeks: "Senior scope",
@@ -304,6 +304,9 @@ function Pipeline({ profile, eventId, onResult, onError, onDone }) {
     { key: "github", label: "GitHub adapter", image: pipeGithubIcon, note: "OSS signal · clean API" },
     { key: "x", label: "X adapter", image: pipeXIcon, note: "Reach signal · paid API" },
     { key: "linkedin", label: "LinkedIn adapter", image: pipeLinkedinIcon, note: "Contact resolve · provider" },
+    // Bottom-of-stack source : never anchors a candidate on its own, but
+    // bolts citation-count signal onto cross-source matches when present.
+    { key: "scholar", label: "Scholar adapter", icon: GraduationCap, note: "Research signal · supplementary" },
   ];
   const steps = ["Prospecting", "Fit scoring", "Auto-outreach"];
   const [progress, setProgress] = useState(0);
@@ -488,6 +491,7 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
         score: p.fit_score,
         gh: p.gh_stars,
         x: p.x_followers,
+        scholar: p.scholar_citations || 0,
         status: rsvpOverrides[p.id] || p.status,
         reason: p.fit_reason,
         offers: p.offers,
@@ -749,6 +753,11 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
                 <span className="pr-signal">
                   <span className="sig"><GitBranch size={11} /> {fmtNum(p.gh)}</span>
                   <span className="sig"><Send size={11} /> {fmtNum(p.x)}</span>
+                  {p.scholar > 0 && (
+                    <span className="sig" title="Scholar citations">
+                      <GraduationCap size={11} /> {fmtNum(p.scholar)}
+                    </span>
+                  )}
                 </span>
                 <span className="pr-status">
                   <span className={`st-tag ${m.cls}`}>{m.label}</span>
@@ -1828,7 +1837,7 @@ const CSS = `
   box-shadow:0 6px 16px rgba(108,67,217,0.3); transition:all 0.16s; white-space:nowrap; }
 .btn-primary:hover { background:var(--acc-deep); transform:translateY(-1px);
   box-shadow:0 8px 20px rgba(108,67,217,0.38); }
-.pipe-sources { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+.pipe-sources { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
 .pipe-card { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
   padding:16px; box-shadow:var(--shadow-sm); }
 .pipe-card-top { display:flex; align-items:center; gap:11px; margin-bottom:13px; color:var(--ink-dim); }
