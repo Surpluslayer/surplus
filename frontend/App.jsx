@@ -237,13 +237,13 @@ function Intake({ profile, setProfile, onRun }) {
           <label>Target role</label>
           <input className="text-in" value={profile.role}
             onChange={(e) => set("role", e.target.value)} />
-          <label>Seniority <span className="hint">: multi-select</span></label>
+          <label>Seniority</label>
           <div className="chip-row">
             {SENIORITY.map((s) => (
               <Chip key={s} active={profile.seniority.includes(s)} onClick={() => toggle("seniority", s)}>{s}</Chip>
             ))}
           </div>
-          <label>Company stage <span className="hint">: multi-select</span></label>
+          <label>Company stage</label>
           <div className="chip-row">
             {STAGES_CO.map((s) => (
               <Chip key={s} active={profile.coStage.includes(s)} onClick={() => toggle("coStage", s)}>{s}</Chip>
@@ -256,7 +256,7 @@ function Intake({ profile, setProfile, onRun }) {
           <label>Headcount : <strong>{profile.headcount}</strong> guests</label>
           <input type="range" min="12" max="160" step="2" value={profile.headcount}
             onChange={(e) => set("headcount", +e.target.value)} className="range-in" />
-          <label>Format <span className="hint">: sets the matching topology</span></label>
+          <label>Format</label>
           <div className="chip-row">
             {FORMATS.map((f) => (
               <Chip key={f} active={profile.format === f} onClick={() => set("format", f)}>{f}</Chip>
@@ -269,7 +269,7 @@ function Intake({ profile, setProfile, onRun }) {
 
         <section className="card">
           <h3><span className="card-num">C</span> Goal &amp; budget</h3>
-          <label>Primary objective <span className="hint">: multi-select; first selected drives ROI math</span></label>
+          <label>Primary objective <span className="hint">: first selected drives ROI math</span></label>
           <div className="chip-row">
             {GOALS.map((g) => (
               <Chip key={g} active={profile.goal.includes(g)} onClick={() => toggle("goal", g)}>{g}</Chip>
