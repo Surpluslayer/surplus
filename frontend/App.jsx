@@ -170,6 +170,14 @@ const Chip = ({ active, onClick, children }) => (
   <button className={`chip ${active ? "chip-on" : ""}`} onClick={onClick}>{children}</button>
 );
 
+// "Send invite" for cold prospects, "Send message" for warm. "Reach out" is
+// the fallback before /check-connections finishes resolving the status.
+function actionLabel(connectionStatus, sending) {
+  if (connectionStatus === "connected") return sending ? "Sending message…" : "Send message";
+  if (connectionStatus === "not_connected") return sending ? "Sending invite…" : "Send invite";
+  return sending ? "Sending…" : "Reach out";
+}
+
 const fmtK = (v) => v >= 1000 ? `$${(v / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })}k` : `$${v}`;
 const fmtNum = (n) => n > 999 ? (n / 1000).toFixed(1) + "k" : "" + n;
 
@@ -467,6 +475,10 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
   // manual-RSVP overrides applied on top of /run results (declared before
   // PROS so the override map can patch each prospect's status).
   const [rsvpOverrides, setRsvpOverrides] = useState({});
+  // Live connection-status overrides — populated by /check-connections on
+  // mount and refreshed every time the operator clicks "send" (the server
+  // re-checks and returns the latest status in the response).
+  const [connectionStatusById, setConnectionStatusById] = useState({});
   const PROS = useReal
     ? runResult.prospects.map((p) => ({
         id: p.id,
@@ -483,6 +495,9 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
         seeks: p.seeks,
         worksOn: p.works_on,
         linkedinUrl: p.linkedin_url,
+        connectionStatus: connectionStatusById[p.id]
+          || p.connection_status
+          || "unknown",
       }))
     : PROSPECTS;
   const T = useReal ? runResult.event.threshold : THRESHOLD;
@@ -536,6 +551,29 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
       setRsvpBulkBusy(false);
     }
   };
+
+  // Non-blocking bulk check of every "unknown" prospect's connection
+  // status. Buttons render with the "Reach out" fallback label until this
+  // resolves (~2-5s typical), then swap to "Send invite" / "Send message".
+  useEffect(() => {
+    if (!eventId || PROS.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await api.checkConnections(eventId);
+        if (cancelled || !r?.results) return;
+        const next = {};
+        for (const row of r.results) {
+          next[row.prospect_id] = row.connection_status;
+        }
+        setConnectionStatusById((s) => ({ ...next, ...s }));  // don't clobber click-time updates
+      } catch {
+        // Silent — button just stays as "Reach out" and the server's smart
+        // routing still does the right thing at click time.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [eventId, PROS.length]);
 
   useEffect(() => {
     // Skip the preview fetch when the pool is empty — the backend 409s
@@ -592,20 +630,24 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
     }));
   };
 
-  const fire = async (kind, prospectId) => {
-    setSendState((s) => ({ ...s, [prospectId]: { status: "sending", kind } }));
+  const fire = async (prospectId) => {
+    setSendState((s) => ({ ...s, [prospectId]: { status: "sending" } }));
     try {
-      const fn = kind === "invite" ? api.sendInvite : api.sendDirectMessage;
       const edits = editsById[prospectId] || {};
-      const res = await fn(eventId, prospectId, {
+      const res = await api.sendInvite(eventId, prospectId, {
         note: edits.note,
         message: edits.message,
       });
+      // Server tells us which path it took ("cold" → invite, "warm" → DM)
+      // and the freshly-checked connection_status. Surface both.
+      if (res.connection_status) {
+        setConnectionStatusById((s) => ({ ...s, [prospectId]: res.connection_status }));
+      }
       setSendState((s) => ({
         ...s,
         [prospectId]: {
           status: res.error ? "failed" : "sent",
-          kind,
+          path_taken: res.path_taken,
           state: res.state,
           error: res.error,
           dry_run: res.dry_run,
@@ -614,7 +656,7 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
     } catch (e) {
       setSendState((s) => ({
         ...s,
-        [prospectId]: { status: "failed", kind, error: e.message },
+        [prospectId]: { status: "failed", error: e.message },
       }));
     }
   };
@@ -807,29 +849,23 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
                     <div className="send-row">
                       <button className="btn-send btn-send-invite"
                               disabled={!selPreview.eligible || selSend?.status === "sending"}
-                              onClick={() => fire("invite", sel.id)}>
-                        {selSend?.kind === "invite" && selSend.status === "sending"
-                          ? "Sending invite…"
-                          : <>Send invite <ArrowRight size={14} /></>}
-                      </button>
-                      <button className="btn-send btn-send-dm"
-                              disabled={!selPreview.eligible || selSend?.status === "sending"}
-                              onClick={() => fire("dm", sel.id)}>
-                        {selSend?.kind === "dm" && selSend.status === "sending"
-                          ? "Sending DM…"
-                          : <>Send DM (if connected) <ArrowRight size={14} /></>}
+                              onClick={() => fire(sel.id)}>
+                        {selSend?.status === "sending"
+                          ? actionLabel(sel.connectionStatus, true)
+                          : <>{actionLabel(sel.connectionStatus, false)} <ArrowRight size={14} /></>}
                       </button>
                     </div>
                     {selSend && selSend.status === "sent" && (
                       <div className="send-result ok">
-                        <Check size={11} strokeWidth={3} /> {selSend.kind === "invite" ? "Invite" : "DM"} sent
+                        <Check size={11} strokeWidth={3} />{" "}
+                        {selSend.path_taken === "warm" ? "Message" : "Invite"} sent
                         {selSend.dry_run && <span> · dry-run</span>}
                         {selSend.state && <span> · state: {selSend.state}</span>}
                       </div>
                     )}
                     {selSend && selSend.status === "failed" && (
                       <div className="send-result err">
-                        ⚠ {selSend.kind === "invite" ? "Invite" : "DM"} failed: {selSend.error}
+                        ⚠ Send failed: {selSend.error}
                       </div>
                     )}
                     {!selPreview.eligible && (
