@@ -22,6 +22,7 @@ backend/data/*.db
 # frontend
 frontend/node_modules/
 frontend/dist/
+frontend/*.code-workspace
 .claude/
 
 # matching library cache + outputs

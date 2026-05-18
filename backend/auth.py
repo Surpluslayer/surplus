@@ -8,7 +8,7 @@ identity in surplus. See routes/auth.py for the actual flow.
 This module owns:
   - Session token generation
   - Cookie read/write
-  - current_user / optional_user FastAPI dependencies
+  - current_user FastAPI dependency
 """
 from __future__ import annotations
 import secrets
@@ -91,15 +91,6 @@ def _load_user_by_session(db: DbSession, token: Optional[str]) -> Optional[User]
     sess.last_seen_at = _utcnow()
     db.commit()
     return db.query(User).filter(User.id == sess.user_id).first()
-
-
-def optional_user(
-    db: DbSession = Depends(get_db),
-    surplus_session: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE),
-) -> Optional[User]:
-    """Returns the signed-in User, or None. Use for routes that can be public
-    but behave differently when authed."""
-    return _load_user_by_session(db, surplus_session)
 
 
 def current_user(

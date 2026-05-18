@@ -11,7 +11,6 @@ dry_run / provider_lead_id for their own response shapes.
 """
 from __future__ import annotations
 from datetime import datetime, timezone
-from typing import Optional
 
 from .. import models
 from ..providers import LinkedInProvider, get_provider_for_prospect

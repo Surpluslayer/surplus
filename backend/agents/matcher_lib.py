@@ -55,11 +55,6 @@ def get_cached_matrix(event, attending: list) -> Optional[dict[str, Any]]:
     return entry.get("matrix") if entry else None
 
 
-def get_cached_rubric(event, attending: list) -> Optional[dict[str, Any]]:
-    entry = _MATRIX_CACHE.get(_cache_key(event, attending))
-    return entry.get("rubric") if entry else None
-
-
 def get_cached_enriched(event, attending: list) -> Optional[dict[str, Any]]:
     """{library_person_id ('prospect-N') -> EnrichedPerson}. None if cache miss."""
     entry = _MATRIX_CACHE.get(_cache_key(event, attending))

@@ -4,7 +4,7 @@ agents/llm.py — Claude-driven prospecting helpers.
 Three operations, all gated by ANTHROPIC_API_KEY:
 
   discover_candidates(source, icp)      web-search-driven discovery per source
-  judge_relevance(candidate, icp)       LLM gatekeeper — ICP match verdict
+  judge_relevance_batch(candidates, icp) LLM gatekeeper — ICP match verdict
 
 `llm_available()` returns True only when the SDK is installed AND a key is
 set in the environment. Callers must check it first and fall back to the
@@ -299,65 +299,6 @@ _RELEVANCE_SYSTEM = (
     "by a wide margin, obvious mismatch). Borderline candidates are kept — "
     "downstream scoring will sort them. Use the `emit_verdict` tool."
 )
-
-_VERDICT_TOOL = {
-    "name": "emit_verdict",
-    "description": "Emit the relevance verdict for one candidate.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "relevant": {"type": "boolean"},
-            "reason": {"type": "string", "description": "1-2 sentences, plain language"},
-            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
-        },
-        "required": ["relevant", "reason", "confidence"],
-        "additionalProperties": False,
-    },
-    "strict": True,
-}
-
-
-def judge_relevance(candidate: dict, icp: dict) -> tuple[bool, str]:
-    """
-    Run an LLM gatekeeper over a merged candidate record.
-
-    Returns (relevant, reason). Defaults to (False, "no verdict emitted")
-    if the call fails or the model produces no verdict — fail-closed so a
-    bad LLM call doesn't push junk into outreach.
-    """
-    user_msg = (
-        "Candidate:\n"
-        + json.dumps(candidate, indent=2, default=str)
-        + "\n\nICP:\n"
-        + json.dumps(icp, indent=2)
-    )
-    try:
-        response = _client().messages.create(
-            # Haiku 4.5 — see JUDGE_MODEL note. Binary classifier, doesn't
-            # need Opus, and Haiku is the lever that lets large pools not
-            # bury the per-minute token budget.
-            model=JUDGE_MODEL,
-            max_tokens=1024,
-            system=[{
-                "type": "text",
-                "text": _RELEVANCE_SYSTEM,
-                "cache_control": {"type": "ephemeral"},
-            }],
-            tools=[_VERDICT_TOOL],
-            tool_choice={"type": "tool", "name": "emit_verdict"},
-            messages=[{"role": "user", "content": user_msg}],
-        )
-    except Exception as exc:  # noqa: BLE001
-        cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
-        print(f"  [llm] judge_relevance failed: {type(exc).__name__}: {exc}"
-              + (f"  (cause: {type(cause).__name__}: {cause})" if cause else ""))
-        return False, f"verdict error: {exc}"
-
-    for block in response.content:
-        if getattr(block, "type", "") == "tool_use" and block.name == "emit_verdict":
-            return bool(block.input.get("relevant")), str(block.input.get("reason", ""))
-    return False, "no verdict emitted"
-
 
 _BATCH_VERDICT_TOOL = {
     "name": "emit_verdicts",
