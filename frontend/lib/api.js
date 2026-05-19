@@ -90,6 +90,13 @@ export const api = {
   getRoi: (id) => request(`/events/${id}/roi`),
 
   // 06 triage : Applicant Triage flow (Luma CSV -> scored applicants)
+  // Paste a public Luma event URL, server scrapes the page (JSON-LD + OG)
+  // and returns parsed metadata so the Configure form can auto-fill.
+  previewLumaEvent: (url) =>
+    request(`/events/triage/luma-preview`, {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
   getTriageConfig: (id) => request(`/events/${id}/triage/config`),
   setTriageConfig: (id, body) =>
     request(`/events/${id}/triage/config`, {

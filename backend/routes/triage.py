@@ -28,6 +28,7 @@ from .. import models
 from ..auth import current_user, get_owned_event
 from ..db import SessionLocal, get_db
 from ..triage.csv_parser import parse_csv_file
+from ..triage.luma import LumaEvent, LumaFetchError, fetch_luma_event
 from ..triage.rubric import synthesize_rubric
 from ..triage.score import evaluate_all
 
@@ -113,6 +114,28 @@ class EvaluationProgress(BaseModel):
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────
+
+
+class LumaPreviewBody(BaseModel):
+    url: str
+
+
+@router.post("/triage/luma-preview", response_model=LumaEvent)
+def preview_luma_event(
+    body: LumaPreviewBody,
+    user: models.User = Depends(current_user),
+):
+    """Fetch a public Luma event page and return parsed metadata so the
+    Configure form can auto-fill name / description / capacity / location.
+
+    Auth-gated (current_user) so anonymous traffic can't use us as a free
+    proxy. URL validated server-side to lu.ma / luma.com only — see
+    triage.luma._validate_luma_url for SSRF hardening."""
+    try:
+        return fetch_luma_event(body.url)
+    except LumaFetchError as exc:
+        raise HTTPException(400, str(exc))
+
 
 @router.post("/{event_id}/triage/config", response_model=TriageConfig)
 def set_triage_config(

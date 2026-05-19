@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   ArrowRight, Check, Upload, Search, Filter, ChevronRight,
-  Loader2, FileText, Sparkles, AlertCircle, ExternalLink,
+  Loader2, FileText, Sparkles, AlertCircle, ExternalLink, Link2,
 } from "lucide-react";
 import { api } from "./lib/api.js";
 
@@ -277,6 +277,44 @@ function ConfigStep({ user, eventId, setEventId, onNext }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
+  // Luma import : paste a lu.ma URL, server scrapes the public page,
+  // we pre-fill the form. Saves ~30s of retyping and gives the rubric
+  // synthesizer real event context.
+  const [lumaUrl, setLumaUrl] = useState("");
+  const [lumaLoading, setLumaLoading] = useState(false);
+  const [lumaError, setLumaError] = useState(null);
+  const [lumaImported, setLumaImported] = useState(null);
+
+  const handleLumaImport = async () => {
+    setLumaError(null);
+    const url = (lumaUrl || "").trim();
+    if (!url) {
+      setLumaError("Paste a Luma event URL (lu.ma/...).");
+      return;
+    }
+    setLumaLoading(true);
+    try {
+      const ev = await api.previewLumaEvent(url);
+      if (ev.name) setEventName(ev.name);
+      // Use the Luma description as a starting point for event_goal :
+      // the operator can tighten it before continuing.
+      if (ev.description) {
+        setEventGoal((prev) => prev || ev.description);
+      }
+      if (ev.capacity && !capacity) setCapacity(String(ev.capacity));
+      if (ev.location) {
+        setNotes((prev) =>
+          prev ? prev : `Location: ${ev.location}`
+        );
+      }
+      setLumaImported(ev);
+    } catch (err) {
+      setLumaError(err.message || "Could not import from Luma.");
+    } finally {
+      setLumaLoading(false);
+    }
+  };
+
   // If an eventId was already created (operator backed out and came back),
   // hydrate the form from the saved config.
   useEffect(() => {
@@ -351,6 +389,40 @@ function ConfigStep({ user, eventId, setEventId, onNext }) {
         <h1>Configure the event</h1>
         <p>Who's the sponsor, what do they want from the room, and who's the wrong fit.</p>
       </header>
+
+      <section className="triage-card triage-luma">
+        <h3><span className="triage-card-num"><Link2 size={14} /></span> Import from Luma <span className="triage-hint">: optional — we'll pre-fill name + description</span></h3>
+        <div className="triage-luma-row">
+          <input className="triage-in" value={lumaUrl}
+                 onChange={(e) => setLumaUrl(e.target.value)}
+                 placeholder="https://lu.ma/your-event"
+                 onKeyDown={(e) => {
+                   if (e.key === "Enter") { e.preventDefault(); handleLumaImport(); }
+                 }} />
+          <button type="button" className="triage-cta-secondary"
+                  disabled={lumaLoading || !lumaUrl.trim()}
+                  onClick={handleLumaImport}>
+            {lumaLoading ? (
+              <><Loader2 className="spin" size={14} /> Importing…</>
+            ) : (
+              <>Import <ArrowRight size={14} /></>
+            )}
+          </button>
+        </div>
+        {lumaError && (
+          <div className="triage-error" role="alert" style={{ marginTop: 8 }}>
+            <AlertCircle size={14} /> {lumaError}
+          </div>
+        )}
+        {lumaImported && !lumaError && (
+          <div className="triage-luma-ok">
+            <Check size={14} /> Imported "{lumaImported.name || "event"}"
+            {lumaImported.location ? ` · ${lumaImported.location}` : ""}
+            {lumaImported.capacity ? ` · cap ${lumaImported.capacity}` : ""}
+            . Review and tighten the fields below.
+          </div>
+        )}
+      </section>
 
       <div className="triage-grid">
         <section className="triage-card">
@@ -1009,6 +1081,23 @@ const TRIAGE_CSS = `
   margin:14px 0 0; border-radius:9px;
   background:var(--bad-soft); color:var(--bad); border:1px solid #f3d6dc;
   font-size:13px;
+}
+
+.triage-luma { margin-bottom:18px; }
+.triage-luma-row { display:flex; gap:8px; align-items:stretch; }
+.triage-luma-row .triage-in { flex:1; }
+.triage-cta-secondary {
+  display:inline-flex; align-items:center; gap:6px; padding:9px 14px;
+  border-radius:9px; border:1px solid var(--acc); background:var(--panel);
+  color:var(--acc); font-family:inherit; font-size:13px; font-weight:600;
+  cursor:pointer; transition:all 0.15s; white-space:nowrap;
+}
+.triage-cta-secondary:hover:not(:disabled) { background:var(--acc-soft); }
+.triage-cta-secondary:disabled { opacity:0.5; cursor:not-allowed; }
+.triage-luma-ok {
+  display:flex; align-items:center; gap:7px; padding:9px 12px; margin-top:10px;
+  border-radius:9px; background:var(--good-soft, #e9f7ef); color:var(--good, #137a3d);
+  border:1px solid #c9eedb; font-size:12.5px;
 }
 
 /* Upload */
