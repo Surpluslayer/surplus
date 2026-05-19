@@ -65,9 +65,15 @@ def fetch_url_snippet(url: str, max_chars: int = 1500) -> str:
                          "accept": "application/json"},
                 json={"urls": [url], "text": True},
             )
-    except Exception:
+    except Exception as exc:
+        print(f"  [exa.fetch_url_snippet] {url}: "
+              f"{type(exc).__name__}: {exc}")
         return ""
     if resp.status_code >= 400:
+        # Loud on auth / quota failures so a dead key doesn't quietly
+        # collapse enrichment for the whole event.
+        print(f"  [exa.fetch_url_snippet] {url}: "
+              f"HTTP {resp.status_code} : {resp.text[:160]}")
         return ""
     try:
         data = resp.json()
