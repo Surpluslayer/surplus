@@ -120,6 +120,14 @@ export const api = {
   },
   listTriageApplicants: (id) => request(`/events/${id}/triage/applicants`),
   getTriageProgress: (id) => request(`/events/${id}/triage/evaluations`),
+  // PR E : operator accept/maybe/reject decision per applicant
+  setTriageDecision: (eid, aid, body) =>
+    request(`/events/${eid}/triage/applicants/${aid}/decision`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  // PR E : download a CSV of all applicants + AI scores + operator decisions
+  triageExportUrl: (id) => `/events/${id}/triage/export.csv`,
 
   // meta
   health: () => request("/api/health"),

@@ -743,16 +743,29 @@ function ReviewStep({ eventId }) {
 
   return (
     <div className="triage-review">
-      <header className="triage-head">
-        <h1>Review queue</h1>
-        <p>
-          {applicants.length} applicants
-          {progress && progress.pending > 0 && (
-            <span className="triage-progress-inline">
-              · <Loader2 className="spin" size={12} /> scoring {progress.pending} more
-            </span>
-          )}
-        </p>
+      <header className="triage-head triage-head-row">
+        <div>
+          <h1>Review queue</h1>
+          <p>
+            {applicants.length} applicants
+            {progress && progress.pending > 0 && (
+              <span className="triage-progress-inline">
+                · <Loader2 className="spin" size={12} /> scoring {progress.pending} more
+              </span>
+            )}
+          </p>
+        </div>
+        {eventId && applicants.length > 0 && (
+          <a
+            className="triage-cta-secondary"
+            href={api.triageExportUrl(eventId)}
+            target="_blank"
+            rel="noopener noreferrer"
+            download
+          >
+            <FileText size={14} /> Export CSV
+          </a>
+        )}
       </header>
 
       <div className="triage-filterbar">
@@ -806,7 +819,16 @@ function ReviewStep({ eventId }) {
       </div>
 
       {selected && (
-        <ApplicantDrawer applicant={selected} onClose={() => setSelectedId(null)} />
+        <ApplicantDrawer
+          applicant={selected}
+          eventId={eventId}
+          onApplicantUpdated={(updated) => {
+            setApplicants((prev) =>
+              prev.map((a) => (a.id === updated.id ? updated : a))
+            );
+          }}
+          onClose={() => setSelectedId(null)}
+        />
       )}
     </div>
   );
@@ -850,8 +872,40 @@ function ScorePill({ v, muted }) {
   );
 }
 
-function ApplicantDrawer({ applicant, onClose }) {
+function ApplicantDrawer({ applicant, eventId, onApplicantUpdated, onClose }) {
   const ev = applicant.evaluation;
+  const decision = applicant.decision;
+  const [notes, setNotes] = useState(decision?.reviewer_notes || "");
+  const [savingDecision, setSavingDecision] = useState(null); // which button is in-flight
+  const [decisionError, setDecisionError] = useState(null);
+
+  useEffect(() => {
+    setNotes(applicant.decision?.reviewer_notes || "");
+  }, [applicant.id, applicant.decision?.reviewer_notes]);
+
+  const submitDecision = async (choice) => {
+    if (!eventId) return;
+    setDecisionError(null);
+    setSavingDecision(choice);
+    try {
+      const updated = await api.setTriageDecision(eventId, applicant.id, {
+        decision: choice,
+        notes: notes.trim(),
+      });
+      onApplicantUpdated && onApplicantUpdated(updated);
+    } catch (err) {
+      setDecisionError(err.message || "Could not save decision.");
+    } finally {
+      setSavingDecision(null);
+    }
+  };
+
+  const DECISION_BUTTONS = [
+    { key: "accept", label: "Accept" },
+    { key: "maybe",  label: "Maybe"  },
+    { key: "reject", label: "Reject" },
+  ];
+
   return (
     <div className="triage-drawer-backdrop" onClick={onClose}>
       <aside className="triage-drawer" onClick={(e) => e.stopPropagation()}>
@@ -877,6 +931,46 @@ function ApplicantDrawer({ applicant, onClose }) {
             )}
           </div>
         </header>
+
+        <section className="triage-decision">
+          <div className="triage-decision-row">
+            {DECISION_BUTTONS.map((b) => {
+              const active = decision?.human_decision === b.key;
+              return (
+                <button
+                  key={b.key}
+                  type="button"
+                  className={`triage-decision-btn dec-${b.key} ${active ? "on" : ""}`}
+                  disabled={savingDecision !== null}
+                  onClick={() => submitDecision(b.key)}
+                >
+                  {savingDecision === b.key ? (
+                    <Loader2 className="spin" size={14} />
+                  ) : (active ? <Check size={14} /> : null)}
+                  {b.label}
+                </button>
+              );
+            })}
+          </div>
+          <textarea
+            className="triage-decision-notes"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Notes for the cut list (optional)"
+            rows={2}
+          />
+          {decisionError && (
+            <div className="triage-error" role="alert" style={{ marginTop: 6 }}>
+              <AlertCircle size={14} /> {decisionError}
+            </div>
+          )}
+          {decision && !decisionError && (
+            <div className="triage-decision-meta">
+              Saved · system rec was{" "}
+              <strong>{decision.system_recommendation || "—"}</strong>
+            </div>
+          )}
+        </section>
 
         {ev ? (
           <>
@@ -1271,6 +1365,36 @@ const TRIAGE_CSS = `
 .triage-arch { font-size:12.5px; color:var(--ink-dim); text-transform:capitalize; }
 
 .triage-drawer-sec { margin-bottom:16px; }
+
+/* Decision bar : accept / maybe / reject + notes */
+.triage-head-row { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+.triage-head-row .triage-cta-secondary { margin-top:4px; text-decoration:none; }
+.triage-decision {
+  margin-bottom:18px; padding:14px; border-radius:10px;
+  background:#fafbfd; border:1px solid var(--line);
+}
+.triage-decision-row { display:flex; gap:8px; margin-bottom:10px; }
+.triage-decision-btn {
+  flex:1; display:inline-flex; align-items:center; justify-content:center; gap:6px;
+  padding:9px 14px; border-radius:9px; border:1px solid var(--line);
+  background:var(--panel); color:var(--ink-dim);
+  font-family:inherit; font-size:13px; font-weight:600;
+  cursor:pointer; transition:all 0.12s;
+}
+.triage-decision-btn:hover:not(:disabled) { transform:translateY(-1px); }
+.triage-decision-btn:disabled { opacity:0.5; cursor:not-allowed; }
+.triage-decision-btn.dec-accept.on { background:var(--ok-soft); color:var(--ok); border-color:#a8d9be; }
+.triage-decision-btn.dec-maybe.on  { background:var(--warn-soft); color:var(--warn); border-color:#e8d39a; }
+.triage-decision-btn.dec-reject.on { background:var(--bad-soft); color:var(--bad); border-color:#e7b8c0; }
+.triage-decision-notes {
+  width:100%; padding:8px 11px; border-radius:8px; border:1px solid var(--line);
+  font-family:inherit; font-size:12.5px; color:var(--ink); resize:vertical;
+  box-sizing:border-box; background:var(--panel);
+}
+.triage-decision-notes:focus { outline:none; border-color:var(--acc); }
+.triage-decision-meta {
+  margin-top:8px; font-size:11.5px; color:var(--ink-faint);
+}
 .triage-drawer-sec h3 {
   margin:0 0 7px; font-size:12px; text-transform:uppercase; letter-spacing:0.06em;
   color:var(--ink-faint); font-weight:600;
