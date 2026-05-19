@@ -80,30 +80,6 @@ def _framing(event) -> str:
     )
 
 
-def _peer_reveal(peers: list[str], n: int = 2, exclude_first_name: str | None = None) -> str:
-    """' Theo and Nadia are already in.' (or empty string if no peers).
-
-    `exclude_first_name` filters peers whose first name collides with the
-    target's, so a "Daniel" doesn't end up reading "Daniel is already in"
-    in their own outreach.
-    """
-    if not peers:
-        return ""
-    firsts = [p.split()[0] for p in peers if p.split()]
-    if exclude_first_name:
-        firsts = [f for f in firsts if f != exclude_first_name]
-    firsts = firsts[:n]
-    if not firsts:
-        return ""
-    if len(firsts) == 1:
-        names = firsts[0]
-    elif len(firsts) == 2:
-        names = f"{firsts[0]} and {firsts[1]}"
-    else:
-        names = ", ".join(firsts[:-1]) + f", and {firsts[-1]}"
-    return f" {names} are already in."
-
-
 _COMPOSE_MODEL = os.environ.get("OUTREACH_COMPOSE_MODEL", "claude-haiku-4-5-20251001")
 _COMPOSE_TIMEOUT_S = float(os.environ.get("OUTREACH_COMPOSE_TIMEOUT", "8"))
 _COMPOSE_MAX_TOKENS = 800
@@ -113,13 +89,14 @@ _COMPOSE_SYSTEM = """You are writing personalized LinkedIn outreach for an event
 
 You will produce two pieces:
   - note: the LinkedIn connection request note. MAX 280 characters (LinkedIn hard limit is 300; we leave headroom). Reference one specific thing about the recipient. End with a low-pressure question.
-  - message: the first DM sent right after the connection is accepted. 3-6 sentences. Recap the event framing, weave in their specific background (role, company, what they work on), name 1-2 confirmed peers if provided, end with a soft ask to share details.
+  - message: the first DM sent right after the connection is accepted. 3-6 sentences. Recap the event framing, weave in their specific background (role, company, what they work on), end with a soft ask to share details.
 
 GROUND RULES
   - Reference REAL things from the recipient's profile : their role, company, what they work on, what they offer. NEVER invent specifics (talks, projects, repos, articles) that aren't in the input.
   - Match LinkedIn DM tone: warm, direct, no buzzwords, no "I came across your profile" filler.
   - Don't use em-dashes (LinkedIn auto-mangles them). Colons or commas instead.
   - Don't say "as an AI", don't apologize for reaching out.
+  - Do NOT name other attendees / confirmed peers, even if you could. Keep it focused on the recipient and the event itself.
   - For the note: skip the greeting if you'd be over 280 chars; cut filler before content.
 
 OUTPUT FORMAT
@@ -131,10 +108,12 @@ Return ONLY a JSON object. No prose, no markdown fences. Schema:
 }"""
 
 
-def _compose_user_message(prospect, event, peers, host_bio, framing, reveal) -> str:
+def _compose_user_message(prospect, event, host_bio, framing) -> str:
     """Pack everything the model needs to ground its output. Only facts we
     actually have go in : if a field is empty we omit it so Claude doesn't
-    feel obligated to mention 'unknown'."""
+    feel obligated to mention 'unknown'. Peer names are deliberately NOT
+    passed in : the system prompt says not to drop names, and not having
+    them in context removes the temptation entirely."""
     parts = ["EVENT", f"Framing the host wants conveyed: {framing}"]
     if host_bio:
         parts += ["", "HOST BIO", host_bio.strip()]
@@ -152,19 +131,12 @@ def _compose_user_message(prospect, event, peers, host_bio, framing, reveal) -> 
     if getattr(prospect, "headline", None):
         parts.append(f"Headline: {prospect.headline}")
 
-    if peers:
-        peer_names = [p.split()[0] for p in peers[:3] if p.split()]
-        parts += ["", f"Already confirmed peers: {', '.join(peer_names)}"]
-    if reveal:
-        parts.append(f"Peer reveal sentence you can adapt: '{reveal.strip()}'")
-
-    parts.append("")
-    parts.append("Write the JSON now.")
+    parts += ["", "Write the JSON now."]
     return "\n".join(parts)
 
 
-def _compose_via_claude(prospect, event, peers, host_bio,
-                       framing, reveal) -> tuple[str, str] | None:
+def _compose_via_claude(prospect, event, host_bio,
+                       framing) -> tuple[str, str] | None:
     """One Haiku call. Returns (note, message) or None on any failure
     (network, parse, missing fields). Caller falls back to the template."""
     if not (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
@@ -183,8 +155,8 @@ def _compose_via_claude(prospect, event, peers, host_bio,
             }],
             messages=[
                 {"role": "user",
-                 "content": _compose_user_message(prospect, event, peers,
-                                                  host_bio, framing, reveal)},
+                 "content": _compose_user_message(prospect, event,
+                                                  host_bio, framing)},
                 # Prefill with "{" so Haiku stays in JSON mode.
                 {"role": "assistant", "content": "{"},
             ],
@@ -208,16 +180,16 @@ def _compose_via_claude(prospect, event, peers, host_bio,
     return note, message
 
 
-def _compose_template(prospect, host_bio, framing, reveal) -> Message:
-    """Deterministic fallback : the original template-based composition.
-    Used when Claude is unavailable or the call fails. Same shape as the
-    LLM path so callers don't care which produced the Message."""
+def _compose_template(prospect, host_bio, framing) -> Message:
+    """Deterministic fallback : the original template-based composition,
+    minus the peer-reveal line (kept aligned with the LLM path, which no
+    longer names peers either)."""
     first = (prospect.name or "there").split()[0]
     domain = (prospect.works_on or "your space").replace("-", " ")
 
     note_body = (
         f"Hi {first} : pulling together {framing}. "
-        f"Your {domain} work caught my eye.{reveal} "
+        f"Your {domain} work caught my eye. "
         f"Worth your time?"
     )
     note = _truncate_note(note_body)
@@ -233,8 +205,6 @@ def _compose_template(prospect, host_bio, framing, reveal) -> Message:
         msg_lines += ["",
             f"Given your {domain} background ({prospect.offers}), "
             f"there's a clear fit on this side of the room."]
-    if reveal:
-        msg_lines += ["", f"Confirmed so far: {reveal.strip()}"]
     msg_lines += ["", "Worth a closer look? Happy to share details."]
     return Message(note=note, message="\n".join(msg_lines).strip())
 
@@ -255,19 +225,19 @@ def compose(
     Set OUTREACH_COMPOSE_DISABLE=1 to skip the LLM entirely and always
     use the template (escape hatch for cost spikes / model issues).
     """
-    peers = peers or []
+    # `peers` is still accepted for callsite compatibility but intentionally
+    # ignored : neither path names other attendees anymore.
     framing = _framing(event)
-    reveal = _peer_reveal(peers)
 
     if (os.environ.get("OUTREACH_COMPOSE_DISABLE") or "").strip().lower() not in ("", "0", "false", "no"):
-        return _compose_template(prospect, host_bio, framing, reveal)
+        return _compose_template(prospect, host_bio, framing)
 
-    llm = _compose_via_claude(prospect, event, peers, host_bio, framing, reveal)
+    llm = _compose_via_claude(prospect, event, host_bio, framing)
     if llm is not None:
         note, message = llm
         # Hard-cap the note even if the model went over : LinkedIn rejects >300.
         return Message(note=_truncate_note(note), message=message)
-    return _compose_template(prospect, host_bio, framing, reveal)
+    return _compose_template(prospect, host_bio, framing)
 
 
 def compose_followup(prospect, event) -> str:

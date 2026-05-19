@@ -90,18 +90,27 @@ def test_truncates_note_when_llm_exceeds_limit(fake_event, fake_prospect, monkey
 # ── User-message builder shape ────────────────────────────────────────
 
 def test_compose_user_message_includes_recipient_facts(fake_event, fake_prospect):
-    """Pin that the model sees the recipient's grounding facts. Test
-    failures here mean the prompt drifted and personalization quality drops."""
+    """Pin that the model sees the recipient's grounding facts."""
     msg = outreach._compose_user_message(
-        fake_prospect, fake_event, peers=["Theo Lindqvist"], host_bio=None,
+        fake_prospect, fake_event, host_bio=None,
         framing="a 40-person sit-down dinner in San Francisco",
-        reveal=" Theo is already in.",
     )
     assert "Maya Rodriguez" in msg
     assert "Staff Infra Engineer" in msg
     assert "Lo91r" in msg
     assert "observability" in msg
-    assert "Theo" in msg
+
+
+def test_compose_user_message_does_not_mention_peers(fake_event, fake_prospect):
+    """Peer names are deliberately NOT in the prompt : the system prompt
+    tells the model not to drop names, and removing them from context
+    eliminates the temptation entirely."""
+    msg = outreach._compose_user_message(
+        fake_prospect, fake_event, host_bio=None,
+        framing="a 40-person sit-down dinner in San Francisco",
+    )
+    assert "Already confirmed" not in msg
+    assert "Peer reveal" not in msg
 
 
 def test_compose_user_message_omits_empty_optional_fields(fake_event):
@@ -110,9 +119,17 @@ def test_compose_user_message_omits_empty_optional_fields(fake_event):
     bare = SimpleNamespace(name="Sam", role="Engineer", company="Acme",
                            works_on=None, offers=None, headline=None)
     msg = outreach._compose_user_message(
-        bare, fake_event, peers=[], host_bio=None,
-        framing="a dinner", reveal="",
+        bare, fake_event, host_bio=None, framing="a dinner",
     )
     assert "What they work on" not in msg
     assert "Offers / strengths" not in msg
     assert "Headline" not in msg
+
+
+def test_template_fallback_does_not_name_peers(fake_event, fake_prospect, monkeypatch):
+    """Template path also has peer-reveal removed for consistency."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    msg = outreach.compose(fake_prospect, fake_event, peers=["Theo Lindqvist", "Alex Chen"])
+    assert "Theo" not in msg.note
+    assert "Alex" not in msg.note
+    assert "already in" not in msg.note.lower()
