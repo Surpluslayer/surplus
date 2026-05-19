@@ -37,11 +37,13 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session as DbSession
 
 from ..auth import (
+    LAST_ACCOUNT_COOKIE,
     SESSION_COOKIE,
     clear_session_cookie,
     create_session,
     current_user,
     revoke_session,
+    set_last_account_cookie,
     set_session_cookie,
 )
 from ..db import get_db
@@ -110,6 +112,63 @@ def _ensure_unipile_configured() -> tuple[str, str]:
 
 # ─── 1. Start: create hosted-auth link ─────────────────────────────
 
+def _create_body(dsn: str, expires: str, state_token: str, base: str,
+                 failure_url: str) -> dict:
+    """Full create body : providers, notify_url, name, both redirects."""
+    return {
+        "type": "create",
+        "providers": ["LINKEDIN"],
+        "api_url": dsn,
+        "expiresOn": expires,
+        "success_redirect_url": f"{base}/api/auth/linkedin/callback?state={state_token}",
+        "failure_redirect_url": failure_url,
+        "notify_url": f"{base}/api/auth/linkedin/webhook",
+        "name": state_token,
+    }
+
+
+def _reconnect_body(dsn: str, expires: str, state_token: str, base: str,
+                    failure_url: str, account_id: str) -> dict:
+    """Minimal reconnect body per Unipile docs : extra create-only fields
+    (providers / notify_url / name) cause Unipile to 4xx with
+    'linkedin_unipile_rejected'. Keep only what the docs example shows
+    plus the redirect URLs (so the browser comes back to us)."""
+    return {
+        "type": "reconnect",
+        "reconnect_account": account_id,
+        "api_url": dsn,
+        "expiresOn": expires,
+        "success_redirect_url": f"{base}/api/auth/linkedin/callback?state={state_token}",
+        "failure_redirect_url": failure_url,
+    }
+
+
+def _resolve_returning_user(request: Request, db: DbSession) -> Optional[User]:
+    """Look up the User whose Unipile account_id matches the cookie,
+    if any. Returns None on missing/stale cookie : caller falls back
+    to create."""
+    last_account = (request.cookies.get(LAST_ACCOUNT_COOKIE) or "").strip()
+    if not last_account:
+        return None
+    return db.query(User).filter(User.unipile_account_id == last_account).first()
+
+
+async def _post_hosted_link(dsn: str, api_key: str, body: dict) -> tuple[int, dict]:
+    """POST the body to Unipile, returning (status_code, response_json).
+    Caller decides how to handle 4xx vs success."""
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(
+            f"{dsn}/api/v1/hosted/accounts/link",
+            headers={"X-API-KEY": api_key, "Accept": "application/json"},
+            json=body,
+        )
+    try:
+        data = r.json() if r.content else {}
+    except Exception:
+        data = {"_raw": r.text[:500]}
+    return r.status_code, data
+
+
 @router.post("/linkedin/start")
 async def linkedin_start(
     request: Request,
@@ -118,57 +177,47 @@ async def linkedin_start(
     dsn, api_key = _ensure_unipile_configured()
 
     state_token = secrets.token_urlsafe(32)
-    db.add(AuthState(state_token=state_token, status="pending"))
-    db.commit()
+    auth_state = AuthState(state_token=state_token, status="pending")
+    db.add(auth_state)
+    db.flush()  # populate auth_state.id without committing yet
 
     base = _surplus_base_url(request)
     expires = _unipile_iso_timestamp(_utcnow() + timedelta(hours=1))
+    failure_url = f"{base}/signin?error=linkedin_auth_failed"
 
-    body = {
-        "type": "create",
-        "providers": ["LINKEDIN"],
-        "api_url": dsn,
-        "expiresOn": expires,
-        # Unipile redirects the user's browser here after the hosted flow.
-        # We pass the state_token in the URL so callback can correlate.
-        "success_redirect_url": f"{base}/api/auth/linkedin/callback?state={state_token}",
-        "failure_redirect_url": f"{base}/signin?error=linkedin_auth_failed",
-        # Webhook fires server-to-server with the new account_id.
-        "notify_url": f"{base}/api/auth/linkedin/webhook",
-        # The state_token is echoed back in the webhook payload as `name`.
-        "name": state_token,
-    }
+    # Same-browser returning user? Use reconnect (reuses their Unipile
+    # account, no new seat). Pre-fill AuthState.user_id so the callback
+    # doesn't need to wait for a webhook to correlate by state_token :
+    # the reconnect body strips `name`, so the webhook can't tag the
+    # state itself anyway.
+    returning = _resolve_returning_user(request, db)
+    if returning is not None:
+        auth_state.user_id = returning.id
+        db.commit()
+        body = _reconnect_body(dsn, expires, state_token, base,
+                               failure_url, returning.unipile_account_id)
+    else:
+        db.commit()
+        body = _create_body(dsn, expires, state_token, base, failure_url)
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.post(
-                f"{dsn}/api/v1/hosted/accounts/link",
-                headers={"X-API-KEY": api_key, "Accept": "application/json"},
-                json=body,
-            )
-            try:
-                data = r.json() if r.content else {}
-            except Exception:
-                data = {"_raw": r.text[:500]}
-            if r.status_code >= 400:
-                # Surface the full Unipile response so we can debug 400s
-                detail = (
-                    data.get("message")
-                    or data.get("detail")
-                    or data.get("error")
-                    or data
-                    or f"HTTP {r.status_code}"
-                )
-                raise HTTPException(
-                    status_code=502,
-                    detail={
-                        "where": "unipile /hosted/accounts/link",
-                        "status": r.status_code,
-                        "unipile_response": detail,
-                        "request_dsn": dsn,
-                        "request_body_keys": list(body.keys()),
-                    },
-                )
-            return JSONResponse({"url": data.get("url"), "state_token": state_token})
+        status, data = await _post_hosted_link(dsn, api_key, body)
+        # Reconnect can legitimately fail (account deleted on Unipile side,
+        # API change, etc.) : fall back to create so the user isn't locked out.
+        if status >= 400 and body["type"] == "reconnect":
+            print(f"  [auth] reconnect rejected ({status}); falling back to create")
+            auth_state.user_id = None  # un-prefill : webhook will resolve
+            db.commit()
+            body = _create_body(dsn, expires, state_token, base, failure_url)
+            status, data = await _post_hosted_link(dsn, api_key, body)
+        if status >= 400:
+            detail = (data.get("message") or data.get("detail")
+                      or data.get("error") or data or f"HTTP {status}")
+            raise HTTPException(status_code=502, detail={
+                "where": "unipile /hosted/accounts/link",
+                "status": status, "unipile_response": detail,
+                "request_dsn": dsn, "request_body_type": body["type"],
+            })
+        return JSONResponse({"url": data.get("url"), "state_token": state_token})
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"Could not reach Unipile: {e!r}")
 
@@ -188,33 +237,36 @@ async def linkedin_start_redirect(
     dsn, api_key = _ensure_unipile_configured()
 
     state_token = secrets.token_urlsafe(32)
-    db.add(AuthState(state_token=state_token, status="pending"))
-    db.commit()
+    auth_state = AuthState(state_token=state_token, status="pending")
+    db.add(auth_state)
+    db.flush()
 
     base = _surplus_base_url(request)
     expires = _unipile_iso_timestamp(_utcnow() + timedelta(hours=1))
-    body = {
-        "type": "create",
-        "providers": ["LINKEDIN"],
-        "api_url": dsn,
-        "expiresOn": expires,
-        "success_redirect_url": f"{base}/api/auth/linkedin/callback?state={state_token}",
-        "failure_redirect_url": f"{base}/?error=linkedin_auth_failed",
-        "notify_url": f"{base}/api/auth/linkedin/webhook",
-        "name": state_token,
-    }
+    failure_url = f"{base}/?error=linkedin_auth_failed"
+
+    returning = _resolve_returning_user(request, db)
+    if returning is not None:
+        auth_state.user_id = returning.id
+        db.commit()
+        body = _reconnect_body(dsn, expires, state_token, base,
+                               failure_url, returning.unipile_account_id)
+    else:
+        db.commit()
+        body = _create_body(dsn, expires, state_token, base, failure_url)
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.post(
-                f"{dsn}/api/v1/hosted/accounts/link",
-                headers={"X-API-KEY": api_key, "Accept": "application/json"},
-                json=body,
+        status, data = await _post_hosted_link(dsn, api_key, body)
+        if (status >= 400 or not data.get("url")) and body["type"] == "reconnect":
+            print(f"  [auth] reconnect rejected ({status}); falling back to create")
+            auth_state.user_id = None
+            db.commit()
+            body = _create_body(dsn, expires, state_token, base, failure_url)
+            status, data = await _post_hosted_link(dsn, api_key, body)
+        if status >= 400 or not data.get("url"):
+            return RedirectResponse(
+                f"{base}/?error=linkedin_unipile_rejected", status_code=303,
             )
-            data = r.json() if r.content else {}
-            if r.status_code >= 400 or not data.get("url"):
-                msg = data.get("message") or f"HTTP {r.status_code}"
-                return RedirectResponse(f"{base}/?error=linkedin_unipile_rejected", status_code=303)
-            return RedirectResponse(data["url"], status_code=303)
+        return RedirectResponse(data["url"], status_code=303)
     except httpx.HTTPError:
         return RedirectResponse(f"{base}/?error=linkedin_unreachable", status_code=303)
 
@@ -373,6 +425,10 @@ async def linkedin_callback(
 
     response = RedirectResponse(base_redirect, status_code=303)
     set_session_cookie(response, sess.session_token)
+    # Persist the account_id so the NEXT sign-in from this browser goes
+    # through type=reconnect : no new Unipile seat, usually no LinkedIn 2FA.
+    if user.unipile_account_id:
+        set_last_account_cookie(response, user.unipile_account_id)
     return response
 
 
