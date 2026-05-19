@@ -1601,15 +1601,18 @@ export default function App() {
     return <div style={{ minHeight: "100vh", background: "#f6f7f9" }} />;
   }
 
-  if (user && mode === "triage") {
+  if (mode === "triage") {
+    // Render TriageApp even when signed-out : it shows its own self-contained
+    // signup landing (no LinkedIn UI). Verci-type users never see outbound copy.
     return (
       <TriageApp
-        user={user}
+        user={user || null}
         onLogout={async () => {
           try { await api.logout(); } catch {}
           setUser(undefined);
         }}
         onSwitchMode={() => switchMode("outbound")}
+        onSignedIn={() => window.location.reload()}
       />
     );
   }
