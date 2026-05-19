@@ -272,7 +272,7 @@ function Intake({ profile, setProfile, onRun }) {
               <Chip key={src.key}
                     active={profile.sources.includes(src.key)}
                     onClick={() => { if (!src.locked) toggle("sources", src.key); }}>
-                {src.locked ? "🔒 " : ""}{src.label}
+                {src.label}
               </Chip>
             ))}
           </div>
