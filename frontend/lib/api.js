@@ -89,6 +89,31 @@ export const api = {
   // 05 ROI
   getRoi: (id) => request(`/events/${id}/roi`),
 
+  // 06 triage : Applicant Triage flow (Luma CSV -> scored applicants)
+  getTriageConfig: (id) => request(`/events/${id}/triage/config`),
+  setTriageConfig: (id, body) =>
+    request(`/events/${id}/triage/config`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  uploadTriageCsv: async (id, file) => {
+    // multipart/form-data : can't use the JSON-default request() helper.
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(`/events/${id}/triage/upload`, {
+      method: "POST", credentials: "same-origin", body: form,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      const err = new Error(`${res.status} ${res.statusText} — ${text.slice(0, 240)}`);
+      err.status = res.status;
+      throw err;
+    }
+    return res.json();
+  },
+  listTriageApplicants: (id) => request(`/events/${id}/triage/applicants`),
+  getTriageProgress: (id) => request(`/events/${id}/triage/evaluations`),
+
   // meta
   health: () => request("/api/health"),
 
