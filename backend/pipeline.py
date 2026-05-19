@@ -17,6 +17,7 @@ pipeline.py : stage 02-03 orchestrator, split into two halves.
     run_pipeline(db, event)        facade : does both, in order.
 """
 from __future__ import annotations
+import asyncio
 import json
 from datetime import datetime, timezone
 
@@ -92,6 +93,17 @@ async def run_prospect(
         p.status = "approved"
 
     db.commit()
+
+    # Kick off background compose for every prospect. By the time the
+    # operator clicks through to the auto-outreach screen, most messages
+    # are already in the per-(prospect, event) cache : the preview endpoint
+    # reads in <100ms instead of waiting for ~3-5s × N prospects.
+    # Fire-and-forget : prospecting returns immediately, compose runs on
+    # its own. The preview endpoint falls back to live compose for any
+    # cache miss, so a failed prefetch can't block outreach.
+    from .agents.outreach import prefetch_compose_all
+    asyncio.create_task(prefetch_compose_all(list(prospects), event))
+
     return prospects
 
 

@@ -12,6 +12,7 @@ agents/outreach.py : stage 03b, message composition + simulated funnel.
       RNG-seeded simulator used in DRY_RUN mode for demo continuity.
 """
 from __future__ import annotations
+import asyncio
 import os
 import random
 import time
@@ -20,6 +21,83 @@ from datetime import datetime, timedelta, timezone
 
 from .. import config
 from ..jsonx import extract_json
+
+
+# ---- compose result cache + prefetch -------------------------------------
+#
+# compose() is the slow path : ~3-5s per prospect (Haiku round-trip). The
+# preview endpoint asks for every prospect's note + DM, so a 40-prospect
+# event would block the UI for ~3 minutes if we composed sequentially on
+# screen load. Two layers of speedup:
+#
+#   1. prefetch_compose_all() kicks off background compose tasks the moment
+#      prospects are persisted (during prospecting). By the time the
+#      operator reaches the auto-outreach screen, the results are usually
+#      already in cache.
+#   2. The cache is keyed by (prospect_id, event_id) with a 1h TTL so a
+#      page refresh / nav-back / re-fetch reads instantly.
+#
+# Concurrency is capped via a semaphore to stay under Anthropic's per-key
+# rate limits. The whole thing is best-effort : if a compose fails, the
+# preview endpoint falls back to live compose() which has its own fallback
+# chain (template).
+
+_COMPOSE_CACHE: dict[tuple[int, int], tuple[float, "Message"]] = {}
+_COMPOSE_CACHE_TTL_S = 60 * 60  # 1h
+_COMPOSE_CONCURRENCY = 10
+
+
+def get_cached_compose(prospect_id: int, event_id: int) -> "Message | None":
+    """Return the cached composition for this (prospect, event) if fresh."""
+    entry = _COMPOSE_CACHE.get((prospect_id, event_id))
+    if entry is None:
+        return None
+    cached_at, msg = entry
+    if time.time() - cached_at > _COMPOSE_CACHE_TTL_S:
+        _COMPOSE_CACHE.pop((prospect_id, event_id), None)
+        return None
+    return msg
+
+
+def _store_compose(prospect_id: int, event_id: int, msg: "Message") -> None:
+    _COMPOSE_CACHE[(prospect_id, event_id)] = (time.time(), msg)
+
+
+def reset_compose_cache() -> None:
+    """Test hook : clears every cached entry. Production never calls this."""
+    _COMPOSE_CACHE.clear()
+
+
+async def prefetch_compose_all(prospects, event) -> None:
+    """Fire compose() for every prospect, in parallel, results land in the
+    per-(prospect, event) cache.
+
+    Designed to be launched as a background task right after prospects are
+    persisted: kicks off concurrent Claude calls while the operator is still
+    looking at the prospecting progress screen. By the time they reach the
+    auto-outreach screen, the cache is usually fully populated and the
+    preview endpoint reads in <100ms.
+
+    Best-effort: failures are swallowed (logged) so a single bad compose
+    doesn't break the rest. The preview endpoint falls back to live compose
+    for any cache miss it sees.
+    """
+    if not prospects:
+        return
+    sem = asyncio.Semaphore(_COMPOSE_CONCURRENCY)
+
+    async def _one(p):
+        async with sem:
+            try:
+                # compose() is sync (uses the sync Anthropic client). Run it
+                # in a thread so the gather can actually parallelize.
+                msg = await asyncio.to_thread(compose, p, event)
+                _store_compose(p.id, event.id, msg)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [prefetch_compose] {p.id} ({getattr(p, 'name', '?')}): "
+                      f"{type(exc).__name__}: {exc}")
+
+    await asyncio.gather(*[_one(p) for p in prospects], return_exceptions=True)
 
 
 # LinkedIn allows up to 300 chars in a connection note. We aim for 280 to
