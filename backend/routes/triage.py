@@ -20,7 +20,11 @@ import json
 from datetime import datetime, timezone
 from typing import Optional
 
+import csv
+import io
+
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -85,6 +89,14 @@ class EvaluationOut(BaseModel):
     model_version: str
 
 
+class DecisionOut(BaseModel):
+    """Operator's accept/maybe/reject decision on an applicant, if any."""
+    human_decision: str
+    reviewer_notes: str
+    system_recommendation: str
+    reviewed_at: datetime
+
+
 class ApplicantOut(BaseModel):
     """One applicant row as returned by GET /applicants."""
     id: int
@@ -96,6 +108,7 @@ class ApplicantOut(BaseModel):
     linkedin_url: Optional[str]
     raw_application_data: dict
     evaluation: Optional[EvaluationOut]
+    decision: Optional[DecisionOut]
     created_at: datetime
 
 
@@ -312,6 +325,112 @@ def get_evaluation_progress(
     )
 
 
+_VALID_DECISIONS = {"accept", "maybe", "reject", "needs_review"}
+
+
+class DecisionBody(BaseModel):
+    decision: str
+    notes: Optional[str] = ""
+
+
+@router.post(
+    "/{event_id}/triage/applicants/{applicant_id}/decision",
+    response_model=ApplicantOut,
+)
+def set_decision(
+    event_id: int,
+    applicant_id: int,
+    body: DecisionBody,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Upsert the operator's accept/maybe/reject decision for an applicant.
+    Records the system_recommendation snapshot at decision time so we can
+    measure override rate later."""
+    ev = get_owned_event(event_id, user, db)
+    decision = (body.decision or "").strip().lower()
+    if decision not in _VALID_DECISIONS:
+        raise HTTPException(
+            400, f"decision must be one of {sorted(_VALID_DECISIONS)}, got {decision!r}",
+        )
+    applicant = db.get(models.Applicant, applicant_id)
+    if applicant is None or applicant.event_id != ev.id:
+        raise HTTPException(404, "applicant not found on this event")
+
+    system_rec = applicant.evaluation.recommendation if applicant.evaluation else ""
+    now = datetime.now(timezone.utc)
+    if applicant.decision is None:
+        applicant.decision = models.ReviewDecision(
+            applicant_id=applicant.id,
+            event_id=ev.id,
+            system_recommendation=system_rec,
+            human_decision=decision,
+            reviewer_notes=(body.notes or "").strip(),
+            reviewed_at=now,
+        )
+        db.add(applicant.decision)
+    else:
+        applicant.decision.human_decision = decision
+        applicant.decision.reviewer_notes = (body.notes or "").strip()
+        applicant.decision.system_recommendation = system_rec
+        applicant.decision.reviewed_at = now
+    db.commit()
+    db.refresh(applicant)
+    return _applicant_out(applicant)
+
+
+@router.get("/{event_id}/triage/export.csv")
+def export_decisions_csv(
+    event_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Stream a CSV of all applicants with AI scores + operator decisions,
+    suitable for re-importing into Luma (or just sharing the cut list with
+    the sponsor). Includes both raw applicant fields and the audit trail :
+    system_recommendation, human_decision, reviewer_notes, reviewed_at."""
+    ev = get_owned_event(event_id, user, db)
+    rows = sorted(
+        ev.applicants,
+        key=lambda a: (
+            -(a.evaluation.fit_score if a.evaluation else -1),
+            a.created_at,
+        ),
+    )
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "applicant_id", "name", "email", "role", "company",
+        "linkedin_url", "website",
+        "fit_score", "confidence_score", "system_recommendation", "archetype",
+        "one_sentence_summary",
+        "human_decision", "reviewer_notes", "reviewed_at",
+    ])
+    for a in rows:
+        e = a.evaluation
+        d = a.decision
+        writer.writerow([
+            a.id, a.name, a.email or "", a.role or "", a.company or "",
+            a.linkedin_url or "", a.website or "",
+            (e.fit_score if e else ""),
+            (e.confidence_score if e else ""),
+            (e.recommendation if e else ""),
+            (e.archetype if e else ""),
+            (e.one_sentence_summary if e else ""),
+            (d.human_decision if d else ""),
+            (d.reviewer_notes if d else ""),
+            (d.reviewed_at.isoformat() if d else ""),
+        ])
+    buf.seek(0)
+    filename = f"triage-event-{ev.id}-decisions.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"content-disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 def _applicant_out(a: models.Applicant) -> ApplicantOut:
     try:
         raw = json.loads(a.raw_application_data or "{}")
@@ -351,10 +470,21 @@ def _applicant_out(a: models.Applicant) -> ApplicantOut:
             model_version=ev.model_version,
         )
 
+    decision: Optional[DecisionOut] = None
+    if a.decision is not None:
+        d = a.decision
+        decision = DecisionOut(
+            human_decision=d.human_decision,
+            reviewer_notes=d.reviewer_notes or "",
+            system_recommendation=d.system_recommendation or "",
+            reviewed_at=d.reviewed_at,
+        )
+
     return ApplicantOut(
         id=a.id, name=a.name, email=a.email, role=a.role, company=a.company,
         website=a.website, linkedin_url=a.linkedin_url,
         raw_application_data=raw,
         evaluation=evaluation,
+        decision=decision,
         created_at=a.created_at,
     )
