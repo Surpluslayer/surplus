@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import TriageApp from "./TriageApp.jsx";
 import {
   ArrowRight, Check, Circle, Activity, Send, Network, Target,
   GitBranch, BriefcaseBusiness, Zap, TrendingUp, RotateCw, Mail,
@@ -1565,29 +1566,54 @@ function UserMenu({ user, onLogout }) {
 //   - get_provider_for_user(user)       : per-user Unipile factory
 // ──────────────────────────────────────────────────────────────
 export default function App() {
-  // On mount we fire /api/auth/me. Three terminal states:
-  //   user === null       : still loading (first paint)
-  //   user === undefined  : done loading, NOT signed in (treat as guest)
-  //   user is object      : signed in; UserMenu shows their info
-  // The app renders the SAME thing in guest vs signed-in mode : the only
-  // difference is the topbar pill. Routes that require auth will surface
-  // 401s when the user tries to use them (they can sign in then).
   const [user, setUser] = useState(null);
+  // Persist the mode in localStorage so a refresh / new tab returns the
+  // operator to where they were. Triage-only users (no Unipile) effectively
+  // always want triage mode; the LinkedIn-connected operator might toggle.
+  const [mode, setMode] = useState(() => {
+    try { return localStorage.getItem("surplus_mode") || "outbound"; }
+    catch { return "outbound"; }
+  });
 
   useEffect(() => {
     let cancelled = false;
     api.me()
-      .then((u) => { if (!cancelled) setUser(u); })
-      .catch((e) => {
-        if (!cancelled) setUser(undefined);  // not signed in, no error UX
-      });
+      .then((u) => {
+        if (cancelled) return;
+        setUser(u);
+        // A user with no Unipile connection (signed up via skip-LinkedIn)
+        // can only really use triage : default them there.
+        if (u && !u.unipile_account_id) {
+          setMode("triage");
+          try { localStorage.setItem("surplus_mode", "triage"); } catch {}
+        }
+      })
+      .catch(() => { if (!cancelled) setUser(undefined); });
     return () => { cancelled = true; };
   }, []);
 
-  // Brief paint-stable placeholder while we resolve auth
+  const switchMode = (next) => {
+    setMode(next);
+    try { localStorage.setItem("surplus_mode", next); } catch {}
+  };
+
   if (user === null) {
     return <div style={{ minHeight: "100vh", background: "#f6f7f9" }} />;
   }
+
+  if (user && mode === "triage") {
+    return (
+      <TriageApp
+        user={user}
+        onLogout={async () => {
+          try { await api.logout(); } catch {}
+          setUser(undefined);
+        }}
+        onSwitchMode={() => switchMode("outbound")}
+      />
+    );
+  }
+
   return (
     <SurplusApp
       user={user || null}
@@ -1600,6 +1626,7 @@ export default function App() {
           alert("Could not start LinkedIn sign-in: " + e.message);
         }
       }}
+      onSwitchToTriage={() => switchMode("triage")}
     />
   );
 }
@@ -1742,7 +1769,7 @@ function SignInModal({ open, onClose, onSignIn }) {
   );
 }
 
-function SurplusApp({ user, onLogout, onSignIn }) {
+function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
   const [stage, setStage] = useState(0);
   const [maxReached, setMaxReached] = useState(0);
   const [profile, setProfile] = useState({
@@ -1822,13 +1849,16 @@ function SurplusApp({ user, onLogout, onSignIn }) {
             )}
           </div>
           <StageRail stage={stage} setStage={go} maxReached={maxReached} />
+          {onSwitchToTriage && (
+            <button className="topbar-mode-switch"
+                    onClick={onSwitchToTriage}
+                    title="Switch to Applicant Triage (review Luma applicants)">
+              Triage mode
+            </button>
+          )}
           {user ? (
             <UserMenu user={user} onLogout={onLogout} />
           ) : (
-            // Open the modal instead of going straight to LinkedIn : the
-            // modal surfaces both the LinkedIn path AND the skip-LinkedIn
-            // triage-only signup. Direct-to-LinkedIn hid the skip option
-            // entirely on the intake page.
             <button className="topbar-signin"
                     onClick={() => setSignInModalOpen(true)}
                     title="Sign in">
@@ -2331,6 +2361,13 @@ const CSS = `
   cursor:pointer; transition:background 0.12s;
 }
 .topbar-signin:hover { background:#084e96; }
+.topbar-mode-switch {
+  padding:6px 12px; background:transparent; border:1px solid var(--line);
+  border-radius:999px; font-family:inherit; font-size:11.5px;
+  color:var(--ink-dim); cursor:pointer; transition:all 0.15s;
+  margin-right:6px;
+}
+.topbar-mode-switch:hover { color:var(--acc); border-color:var(--acc); background:var(--acc-soft); }
 .user-pill {
   display:inline-flex; align-items:center; gap:8px;
   padding:5px 12px 5px 5px;
