@@ -42,7 +42,7 @@ const REC_META = {
   needs_review:  { color: "rec-needs",    label: "Needs Review" },
 };
 
-export default function TriageApp({ user, onLogout, onSwitchMode }) {
+export default function TriageApp({ user, onLogout, onSwitchMode, onSignedIn }) {
   const [eventId, setEventId] = useState(null);
   const [stage, setStage] = useState("config");
   const [maxReached, setMaxReached] = useState(0);
@@ -52,6 +52,14 @@ export default function TriageApp({ user, onLogout, onSwitchMode }) {
     setStage(s);
     setMaxReached((m) => Math.max(m, idx));
   };
+
+  // Triage is a completely separate experience : if the user isn't signed in,
+  // show the triage-specific signup screen (name + email, no LinkedIn pitch)
+  // instead of dropping them into the outbound app. Verci-type users never
+  // need to see LinkedIn at all.
+  if (!user) {
+    return <TriageLanding onSwitchMode={onSwitchMode} onSignedIn={onSignedIn} />;
+  }
 
   return (
     <div className="triage-root">
@@ -113,6 +121,99 @@ export default function TriageApp({ user, onLogout, onSwitchMode }) {
             <ReviewStep eventId={eventId} />
           )}
         </main>
+      </div>
+    </div>
+  );
+}
+
+
+// ─── Triage landing : signup for not-signed-in users ─────────
+//
+// Self-contained signup form. No LinkedIn pitch, no outbound copy.
+// A user lands here from clicking "Triage mode" while signed-out.
+// On success, calls onSignedIn() so the parent App can re-fetch /me.
+
+function TriageLanding({ onSwitchMode, onSignedIn }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      await api.triageSignup({ name: name.trim(), email: email.trim() });
+      // Reload so App's useEffect refetches /me and lands us in TriageApp
+      // with the new user. window.location.reload() is the simplest, no
+      // need for a callback dance to refresh upstream state.
+      if (onSignedIn) onSignedIn();
+      else window.location.reload();
+    } catch (err) {
+      setBusy(false);
+      setError(err.message || "Could not create your account.");
+    }
+  };
+
+  return (
+    <div className="triage-landing">
+      <style>{TRIAGE_CSS}</style>
+      <div className="triage-landing-card">
+        <div className="triage-landing-brand">
+          <img className="triage-logo" src="/surplus-logo.png" alt="" />
+          <span className="triage-name">surplus</span>
+          <span className="triage-mode-tag">Applicant Triage</span>
+        </div>
+
+        <h1 className="triage-landing-h1">
+          Review Luma applicants in <em>minutes</em>, not hours.
+        </h1>
+        <p className="triage-landing-sub">
+          Upload your Luma CSV, tell us about the event and sponsor, and get
+          accept / maybe / reject recommendations with fit + confidence scores
+          for every applicant. No LinkedIn required.
+        </p>
+
+        <form onSubmit={handleSubmit} className="triage-landing-form">
+          <label>Your name</label>
+          <input className="triage-in" value={name} required
+                 onChange={(e) => setName(e.target.value)}
+                 placeholder="Verci Ops" autoFocus />
+          <label>Email</label>
+          <input className="triage-in" type="email" value={email} required
+                 onChange={(e) => setEmail(e.target.value)}
+                 placeholder="ops@verci.com" />
+
+          {error && (
+            <div className="triage-error" role="alert">
+              <AlertCircle size={14} /> {error}
+            </div>
+          )}
+
+          <button type="submit" className="triage-cta triage-landing-cta"
+                  disabled={busy || !name.trim() || !email.trim()}>
+            {busy ? (
+              <><Loader2 className="spin" size={16} /> Creating your account…</>
+            ) : (
+              <>Get started <ArrowRight size={16} /></>
+            )}
+          </button>
+        </form>
+
+        <ul className="triage-landing-bullets">
+          <li>Sponsor-aware scoring : photography founders ranked below B2B AI even if both "use Stripe"</li>
+          <li>Fit + confidence as separate scores : you know when to trust the recommendation</li>
+          <li>Every score cites evidence from the actual application + LinkedIn</li>
+          <li>Export the reviewed CSV back to Luma when you're done</li>
+        </ul>
+
+        {onSwitchMode && (
+          <button className="triage-landing-secondary" type="button"
+                  onClick={onSwitchMode}>
+            Looking for outbound prospecting? Sign in with LinkedIn →
+          </button>
+        )}
       </div>
     </div>
   );
@@ -1062,4 +1163,57 @@ const TRIAGE_CSS = `
 }
 .spin { animation:tr-spin 0.8s linear infinite; }
 @keyframes tr-spin { to { transform:rotate(360deg); } }
+
+/* Landing (signed-out triage signup) */
+.triage-landing {
+  min-height:100vh; background:var(--bg);
+  display:flex; align-items:center; justify-content:center; padding:32px;
+}
+.triage-landing-card {
+  width:100%; max-width:520px; background:var(--panel);
+  border:1px solid var(--line); border-radius:16px;
+  padding:36px 36px 32px; box-shadow:var(--shadow-md);
+}
+.triage-landing-brand { display:flex; align-items:center; gap:10px; margin-bottom:24px; }
+.triage-landing-h1 {
+  font-family:'Playfair Display',Georgia,serif; font-weight:600;
+  font-size:32px; line-height:1.18; letter-spacing:-0.015em;
+  margin:0 0 12px;
+}
+.triage-landing-h1 em { color:var(--acc); font-style:italic; }
+.triage-landing-sub {
+  font-size:14px; line-height:1.6; color:var(--ink-dim);
+  margin:0 0 24px;
+}
+.triage-landing-form { display:flex; flex-direction:column; gap:6px; }
+.triage-landing-form label {
+  font-size:11px; text-transform:uppercase; letter-spacing:0.06em;
+  color:var(--ink-faint); font-weight:600; margin-top:8px;
+}
+.triage-landing-form label:first-of-type { margin-top:0; }
+.triage-landing-cta {
+  width:100%; justify-content:center; margin-top:14px;
+}
+.triage-landing-bullets {
+  list-style:none; padding:0; margin:24px 0 0;
+  display:flex; flex-direction:column; gap:7px;
+}
+.triage-landing-bullets li {
+  position:relative; padding-left:18px;
+  font-size:12.5px; color:var(--ink-faint); line-height:1.5;
+}
+.triage-landing-bullets li::before {
+  content:""; position:absolute; left:0; top:8px;
+  width:5px; height:5px; border-radius:50%; background:var(--acc);
+}
+.triage-landing-secondary {
+  width:100%; margin-top:18px; padding:9px 14px;
+  background:transparent; border:1px dashed var(--line);
+  border-radius:10px; color:var(--ink-faint);
+  font-family:inherit; font-size:12.5px; cursor:pointer;
+  transition:all 0.15s;
+}
+.triage-landing-secondary:hover {
+  color:var(--ink-dim); border-color:var(--ink-faint);
+}
 `;
