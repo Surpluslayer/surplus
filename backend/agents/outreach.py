@@ -3,17 +3,23 @@ agents/outreach.py : stage 03b, message composition + simulated funnel.
 
   compose(prospect, event, peers=?, host_bio=?) -> Message
       Produces the LinkedIn connection note (≤280 chars) and the longer
-      post-accept DM. host_bio param is reserved for the eventual LLM swap.
+      post-accept DM. Calls Claude (Haiku) to write a personalized message
+      using prospect signal (role, company, works_on, offers, headline).
+      Falls back to the deterministic template on any LLM failure so the
+      pipeline can't be broken by a model outage.
 
   run_outreach(prospects, event, rng=?) -> [(prospect, events, status)]
       RNG-seeded simulator used in DRY_RUN mode for demo continuity.
 """
 from __future__ import annotations
+import os
 import random
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from .. import config
+from ..jsonx import extract_json
 
 
 # LinkedIn allows up to 300 chars in a connection note. We aim for 280 to
@@ -98,34 +104,117 @@ def _peer_reveal(peers: list[str], n: int = 2, exclude_first_name: str | None = 
     return f" {names} are already in."
 
 
-def compose(
-    prospect,
-    event,
-    peers: list[str] | None = None,
-    host_bio: str | None = None,
-) -> Message:
-    """
-    Build the connection note + follow-up message for a prospect.
+_COMPOSE_MODEL = os.environ.get("OUTREACH_COMPOSE_MODEL", "claude-haiku-4-5-20251001")
+_COMPOSE_TIMEOUT_S = float(os.environ.get("OUTREACH_COMPOSE_TIMEOUT", "8"))
+_COMPOSE_MAX_TOKENS = 800
 
-    Parameters
-    ----------
-    prospect : the Prospect ORM row (or any object with the same attrs)
-    event    : the Event ORM row
-    peers    : confirmed peer names (for the composition reveal)
-    host_bio : optional host's blurb : used by the longer follow-up when
-               available. Accepted now so the LLM upgrade is a no-churn swap.
 
-    Returns
-    -------
-    Message(note, message)
-    """
-    peers = peers or []
+_COMPOSE_SYSTEM = """You are writing personalized LinkedIn outreach for an event invitation.
+
+You will produce two pieces:
+  - note: the LinkedIn connection request note. MAX 280 characters (LinkedIn hard limit is 300; we leave headroom). Reference one specific thing about the recipient. End with a low-pressure question.
+  - message: the first DM sent right after the connection is accepted. 3-6 sentences. Recap the event framing, weave in their specific background (role, company, what they work on), name 1-2 confirmed peers if provided, end with a soft ask to share details.
+
+GROUND RULES
+  - Reference REAL things from the recipient's profile : their role, company, what they work on, what they offer. NEVER invent specifics (talks, projects, repos, articles) that aren't in the input.
+  - Match LinkedIn DM tone: warm, direct, no buzzwords, no "I came across your profile" filler.
+  - Don't use em-dashes (LinkedIn auto-mangles them). Colons or commas instead.
+  - Don't say "as an AI", don't apologize for reaching out.
+  - For the note: skip the greeting if you'd be over 280 chars; cut filler before content.
+
+OUTPUT FORMAT
+Return ONLY a JSON object. No prose, no markdown fences. Schema:
+
+{
+  "note": "string, ≤280 chars",
+  "message": "string"
+}"""
+
+
+def _compose_user_message(prospect, event, peers, host_bio, framing, reveal) -> str:
+    """Pack everything the model needs to ground its output. Only facts we
+    actually have go in : if a field is empty we omit it so Claude doesn't
+    feel obligated to mention 'unknown'."""
+    parts = ["EVENT", f"Framing the host wants conveyed: {framing}"]
+    if host_bio:
+        parts += ["", "HOST BIO", host_bio.strip()]
+    if event.format:
+        parts.append(f"Format: {event.format}")
+    if event.city:
+        parts.append(f"City: {event.city}")
+
+    parts += ["", "RECIPIENT", f"Name: {prospect.name}",
+              f"Role: {prospect.role}", f"Company: {prospect.company}"]
+    if getattr(prospect, "works_on", None):
+        parts.append(f"What they work on: {prospect.works_on}")
+    if getattr(prospect, "offers", None):
+        parts.append(f"Offers / strengths: {prospect.offers}")
+    if getattr(prospect, "headline", None):
+        parts.append(f"Headline: {prospect.headline}")
+
+    if peers:
+        peer_names = [p.split()[0] for p in peers[:3] if p.split()]
+        parts += ["", f"Already confirmed peers: {', '.join(peer_names)}"]
+    if reveal:
+        parts.append(f"Peer reveal sentence you can adapt: '{reveal.strip()}'")
+
+    parts.append("")
+    parts.append("Write the JSON now.")
+    return "\n".join(parts)
+
+
+def _compose_via_claude(prospect, event, peers, host_bio,
+                       framing, reveal) -> tuple[str, str] | None:
+    """One Haiku call. Returns (note, message) or None on any failure
+    (network, parse, missing fields). Caller falls back to the template."""
+    if not (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
+        return None
+    try:
+        from anthropic import Anthropic
+        client = Anthropic()
+        t0 = time.time()
+        resp = client.messages.create(
+            model=_COMPOSE_MODEL,
+            max_tokens=_COMPOSE_MAX_TOKENS,
+            timeout=_COMPOSE_TIMEOUT_S,
+            system=[{
+                "type": "text", "text": _COMPOSE_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[
+                {"role": "user",
+                 "content": _compose_user_message(prospect, event, peers,
+                                                  host_bio, framing, reveal)},
+                # Prefill with "{" so Haiku stays in JSON mode.
+                {"role": "assistant", "content": "{"},
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [compose] Claude failed: {type(exc).__name__}: {exc}")
+        return None
+
+    text_chunks = [b.text for b in resp.content if getattr(b, "type", "") == "text"]
+    full = "{" + "\n".join(text_chunks)
+    parsed = extract_json(full)
+    if not parsed:
+        print(f"  [compose] couldn't parse JSON from Claude output ({len(full)} chars)")
+        return None
+    note = (parsed.get("note") or "").strip()
+    message = (parsed.get("message") or "").strip()
+    if not note or not message:
+        return None
+    print(f"  [compose] personalized for {prospect.name} in "
+          f"{time.time() - t0:.1f}s (note: {len(note)}c, msg: {len(message)}c)")
+    return note, message
+
+
+def _compose_template(prospect, host_bio, framing, reveal) -> Message:
+    """Deterministic fallback : the original template-based composition.
+    Used when Claude is unavailable or the call fails. Same shape as the
+    LLM path so callers don't care which produced the Message."""
     first = (prospect.name or "there").split()[0]
     domain = (prospect.works_on or "your space").replace("-", " ")
-    framing = _framing(event)
-    reveal = _peer_reveal(peers)
 
-    # --- connection note: short, specific, no hard pitch --------------------
     note_body = (
         f"Hi {first} : pulling together {framing}. "
         f"Your {domain} work caught my eye.{reveal} "
@@ -133,28 +222,52 @@ def compose(
     )
     note = _truncate_note(note_body)
 
-    # --- post-accept first message: longer, can pitch a bit -----------------
     msg_lines = [
         f"Thanks for connecting, {first}.",
         "",
         f"Quick context: we're putting together {framing}.",
     ]
     if host_bio:
-        msg_lines.append("")
-        msg_lines.append(host_bio.strip())
+        msg_lines += ["", host_bio.strip()]
     if prospect.offers:
-        msg_lines.append("")
-        msg_lines.append(
+        msg_lines += ["",
             f"Given your {domain} background ({prospect.offers}), "
-            f"there's a clear fit on this side of the room."
-        )
+            f"there's a clear fit on this side of the room."]
     if reveal:
-        msg_lines.append("")
-        msg_lines.append(f"Confirmed so far: {reveal.strip()}")
-    msg_lines.append("")
-    msg_lines.append("Worth a closer look? Happy to share details.")
-
+        msg_lines += ["", f"Confirmed so far: {reveal.strip()}"]
+    msg_lines += ["", "Worth a closer look? Happy to share details."]
     return Message(note=note, message="\n".join(msg_lines).strip())
+
+
+def compose(
+    prospect,
+    event,
+    peers: list[str] | None = None,
+    host_bio: str | None = None,
+) -> Message:
+    """Build the connection note + post-accept DM for a prospect.
+
+    Calls Claude (Haiku) to write personalized copy that references the
+    recipient's actual role / company / works_on. Falls back to the
+    deterministic template on any LLM failure so a model outage can't
+    block the outreach pipeline.
+
+    Set OUTREACH_COMPOSE_DISABLE=1 to skip the LLM entirely and always
+    use the template (escape hatch for cost spikes / model issues).
+    """
+    peers = peers or []
+    framing = _framing(event)
+    reveal = _peer_reveal(peers)
+
+    if (os.environ.get("OUTREACH_COMPOSE_DISABLE") or "").strip().lower() not in ("", "0", "false", "no"):
+        return _compose_template(prospect, host_bio, framing, reveal)
+
+    llm = _compose_via_claude(prospect, event, peers, host_bio, framing, reveal)
+    if llm is not None:
+        note, message = llm
+        # Hard-cap the note even if the model went over : LinkedIn rejects >300.
+        return Message(note=_truncate_note(note), message=message)
+    return _compose_template(prospect, host_bio, framing, reveal)
 
 
 def compose_followup(prospect, event) -> str:
