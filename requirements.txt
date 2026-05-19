@@ -5,6 +5,10 @@ pydantic==2.9.2
 pytest==8.3.3
 httpx==0.27.2
 anthropic==0.42.0
+# python-multipart: required by FastAPI for File/UploadFile (multipart form
+# parsing). Triage uses it for the Luma CSV upload endpoint. App crashes at
+# import time without it.
+python-multipart==0.0.12
 numpy>=1.26
 # psycopg2-binary: SQLAlchemy's Postgres driver. Required when DATABASE_URL
 # is set (Railway production). Local dev falls back to SQLite and doesn't
