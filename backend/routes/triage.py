@@ -287,6 +287,27 @@ async def _evaluate_event_async(event_id: int) -> None:
         bg_db.close()
 
 
+@router.post("/{event_id}/triage/re-evaluate")
+def re_evaluate(
+    event_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Re-run rubric synth + per-applicant scoring for this event. Useful
+    when the first pass failed (e.g. a model API hiccup) and the operator
+    wants to retry without re-uploading the CSV.
+
+    Clears the rubric cache so a stale 'default rubric' from a failed run
+    doesn't get reused."""
+    ev = get_owned_event(event_id, user, db)
+    from ..triage.rubric import _RUBRIC_CACHE
+    _RUBRIC_CACHE.clear()
+    background_tasks.add_task(_evaluate_event_async, ev.id)
+    return {"event_id": ev.id, "re_evaluation_started": True,
+            "applicant_count": len(ev.applicants)}
+
+
 @router.get("/{event_id}/triage/applicants", response_model=list[ApplicantOut])
 def list_applicants(
     event_id: int,

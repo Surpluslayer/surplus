@@ -205,14 +205,16 @@ def score_applicant(applicant: models.Applicant, rubric: Rubric,
                      "cache_control": {"type": "ephemeral"}}],
             messages=[
                 {"role": "user", "content": user_msg},
-                {"role": "assistant", "content": "{"},
             ],
         )
     except Exception as exc:  # noqa: BLE001
         return _coerce(None, "", error=f"{type(exc).__name__}: {exc}")
 
+    # Claude 4.x dropped support for assistant-message prefill, so we no
+    # longer seed the response with "{". extract_json tolerates preamble
+    # and pulls the first complete JSON object from the text.
     text_chunks = [b.text for b in resp.content if getattr(b, "type", "") == "text"]
-    full = "{" + "\n".join(text_chunks)
+    full = "\n".join(text_chunks)
     parsed = extract_json(full)
     return _coerce(parsed, full)
 

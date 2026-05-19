@@ -344,9 +344,6 @@ def suggest_triage_config(event: LumaEvent) -> TriageSuggestion:
             system=_SUGGEST_SYSTEM,
             messages=[
                 {"role": "user", "content": user_msg},
-                # JSON-mode prefill : seeds the response with "{" so the model
-                # immediately commits to JSON instead of preamble.
-                {"role": "assistant", "content": "{"},
             ],
         )
     except Exception as exc:  # noqa: BLE001
@@ -354,9 +351,11 @@ def suggest_triage_config(event: LumaEvent) -> TriageSuggestion:
               f"{type(exc).__name__}: {exc}")
         return TriageSuggestion()
 
+    # Claude 4.x dropped assistant-message prefill; extract_json scans for
+    # the first JSON object in the model's natural output.
     text_chunks = [b.text for b in resp.content
                    if getattr(b, "type", "") == "text"]
-    full = "{" + "\n".join(text_chunks)
+    full = "\n".join(text_chunks)
     parsed = extract_json(full) or {}
 
     def _str_list(v) -> list[str]:

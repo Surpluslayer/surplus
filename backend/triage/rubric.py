@@ -224,7 +224,6 @@ def synthesize_rubric(event_id: int, triage_config_json: str,
                      "cache_control": {"type": "ephemeral"}}],
             messages=[
                 {"role": "user", "content": user_msg},
-                {"role": "assistant", "content": "{"},
             ],
         )
     except Exception as exc:  # noqa: BLE001
@@ -233,8 +232,10 @@ def synthesize_rubric(event_id: int, triage_config_json: str,
         _RUBRIC_CACHE[key] = (now, rubric)
         return rubric
 
+    # Claude 4.x dropped assistant-message prefill. extract_json finds the
+    # first complete JSON object in whatever preamble Sonnet emits.
     text_chunks = [b.text for b in resp.content if getattr(b, "type", "") == "text"]
-    full = "{" + "\n".join(text_chunks)
+    full = "\n".join(text_chunks)
     parsed = extract_json(full)
     if not parsed or not isinstance(parsed.get("dimensions"), list):
         print(f"  [triage.rubric] couldn't parse JSON from Sonnet output")
