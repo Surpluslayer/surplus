@@ -393,12 +393,11 @@ def _build_query(source: str, icp: dict, city_cfg: Optional[dict] = None) -> str
         if clauses:
             base = f"{base} at {' or '.join(clauses)}"
 
-    # Anchor by years of experience when present : Exa surfaces YOE in
-    # LinkedIn snippets as "8 years experience" / "10+ years" so the natural
-    # phrasing matches the actual page text.
-    yoe_buckets = _as_list(icp.get("yoe"))
-    if yoe_buckets:
-        base = f"{base} with {' or '.join(yoe_buckets)} years experience"
+    # NB: YOE was woven into the query here in PR #46. Reverted because
+    # LinkedIn profiles rarely have "6-10 years experience" written literally
+    # on the page, so the clause was over-constraining and surfacing wrong
+    # people. yoe is still stored on Event for display + downstream use;
+    # just not in the Exa query for now.
 
     # Anchor by city when present. Exa's neural index matches against the
     # profile page text, where LinkedIn typically surfaces the location
