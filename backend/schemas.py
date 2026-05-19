@@ -40,6 +40,8 @@ class EventCreate(BaseModel):
     # Which prospect sources to fan out across (LinkedIn always forced in
     # server-side by adapters_for(); see backend/agents/sources/__init__.py).
     sources: list[str] = ["linkedin"]
+    # Years-of-experience buckets. Empty list == no preference.
+    yoe: list[str] = []
 
 
 class EventOut(BaseModel):
@@ -53,6 +55,7 @@ class EventOut(BaseModel):
     goal: list[str]
     budget: int
     sources: list[str]
+    yoe: list[str]
     threshold: int
     funnel_target: int
     cost_per_seat: int
@@ -68,6 +71,7 @@ class EventOut(BaseModel):
             goal=_split_csv(ev.goal),
             budget=ev.budget,
             sources=_split_csv(getattr(ev, "sources", None)) or ["linkedin"],
+            yoe=_split_csv(getattr(ev, "yoe", None)),
             threshold=ev.threshold,
             funnel_target=round(ev.headcount / config.FUNNEL_CONVERSION),
             cost_per_seat=round(ev.budget / ev.headcount) if ev.headcount else 0,

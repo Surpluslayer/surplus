@@ -50,29 +50,29 @@ def _cache_ttl() -> int:
 def _adapter_timeout() -> float:
     """Per-adapter wall-clock cap on discovery search.
 
-    30s default : Exa neural search typically completes in 2-5s, so 30s
-    is generous headroom. Historical context: this was 120s when the
-    pipeline used Anthropic's web_search_20260209 (consistently 60-90s
-    per call). Exa is faster by an order of magnitude, so the old cap
-    was just dead latency on every failure path.
+    10s default : Exa neural search typically completes in 0.5-3s. 30s used
+    to be the headroom for Anthropic's web_search (60-90s common). With Exa,
+    anything past 10s is a hung adapter and we'd rather fall through with
+    that source empty than make the whole pipeline wait.
     """
     try:
-        return max(5.0, float(os.environ.get("PROSPECTING_ADAPTER_TIMEOUT", "30")))
+        return max(5.0, float(os.environ.get("PROSPECTING_ADAPTER_TIMEOUT", "10")))
     except ValueError:
-        return 30.0
+        return 10.0
 
 
 def _judge_timeout() -> float:
     """Wall-clock cap for the batched judge call.
 
-    Fail-open on timeout (keep all candidates). 6s default is tuned for
-    Haiku 4.5 batched calls : anything slower than that is rate-limiting
-    or a backend hiccup and we'd rather take the noisier pool than wait.
+    Fail-open on timeout (keep all candidates). 4s default tuned to actually
+    complete on Haiku 4.5 with the reduced max_tokens budget in llm.py.
+    Was 6s; lowered because the call routinely timed out before that and we
+    just paid the latency for nothing.
     """
     try:
-        return max(2.0, float(os.environ.get("PROSPECTING_JUDGE_TIMEOUT", "6")))
+        return max(2.0, float(os.environ.get("PROSPECTING_JUDGE_TIMEOUT", "4")))
     except ValueError:
-        return 6.0
+        return 4.0
 
 
 def _icp_cache_key(icp: dict) -> str:
@@ -215,11 +215,18 @@ async def prospect(
               f"with no LinkedIn URL: {dropped_no_linkedin[:5]}"
               f"{'…' if len(dropped_no_linkedin) > 5 else ''}")
 
-    if llm.llm_available() and out:
+    # The judge step's main job is filtering out cross-source noise (e.g.
+    # a GitHub-anchored record that turned out to be the wrong person on
+    # LinkedIn). With a single adapter selected, there's no cross-source
+    # ambiguity and the judge mostly just adds latency. Skip it.
+    single_source = len(adapters) <= 1
+    if llm.llm_available() and out and not single_source:
         judge_start = time.time()
         out = await _judge_all(out, icp)
         print(f"  [prospect] judge step took {time.time() - judge_start:.1f}s  "
               f"({len(out)} survived)")
+    elif single_source:
+        print(f"  [prospect] judge step skipped (single source: {adapters[0].key})")
 
     # Only cache non-empty results : caching an empty pool would lock in
     # a transient LLM blip for the full TTL and give the operator a

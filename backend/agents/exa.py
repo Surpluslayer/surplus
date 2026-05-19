@@ -372,15 +372,33 @@ def _build_query(source: str, icp: dict, city_cfg: Optional[dict] = None) -> str
 
     # Anchor by stage when present. Drop the article : "seed startups"
     # reads naturally; "a Seed-stage startup" introduces grammar friction
-    # that hurts neural matching.
+    # that hurts neural matching. "Enterprise" sounds wrong as "enterprise
+    # startups", so route it to "enterprise companies".
     if co_stages:
-        stage_phrases: list[str] = []
+        startup_phrases: list[str] = []
+        enterprise = False
         for st in co_stages:
             p = st.lower().replace("-stage", "").strip()
-            if p and p not in stage_phrases:
-                stage_phrases.append(p)
-        if stage_phrases:
-            base = f"{base} at {' or '.join(stage_phrases)} startups"
+            if not p:
+                continue
+            if p == "enterprise":
+                enterprise = True
+            elif p not in startup_phrases:
+                startup_phrases.append(p)
+        clauses: list[str] = []
+        if startup_phrases:
+            clauses.append(f"{' or '.join(startup_phrases)} startups")
+        if enterprise:
+            clauses.append("enterprise companies")
+        if clauses:
+            base = f"{base} at {' or '.join(clauses)}"
+
+    # Anchor by years of experience when present : Exa surfaces YOE in
+    # LinkedIn snippets as "8 years experience" / "10+ years" so the natural
+    # phrasing matches the actual page text.
+    yoe_buckets = _as_list(icp.get("yoe"))
+    if yoe_buckets:
+        base = f"{base} with {' or '.join(yoe_buckets)} years experience"
 
     # Anchor by city when present. Exa's neural index matches against the
     # profile page text, where LinkedIn typically surfaces the location

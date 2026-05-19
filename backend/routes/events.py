@@ -25,7 +25,7 @@ def create_event(
     The event is auto-stamped with the signed-in user's id."""
     data = payload.model_dump()
     # Multi-select fields arrive as lists; the Event columns are CSV strings.
-    for key in ("seniority", "co_stage", "goal", "sources"):
+    for key in ("seniority", "co_stage", "goal", "sources", "yoe"):
         v = data.get(key)
         if isinstance(v, list):
             data[key] = ",".join(s.strip().lower() if key == "sources" else s.strip()

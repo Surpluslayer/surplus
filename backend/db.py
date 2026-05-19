@@ -61,9 +61,25 @@ def init_db() -> None:
     Base.metadata.create_all(ENGINE)
     _migrate_event_user_id()
     _migrate_event_sources()
+    _migrate_event_yoe()
     _migrate_prospect_connection_status()
     _migrate_prospect_scholar_citations()
     _ensure_operator_user_and_backfill()
+
+
+def _migrate_event_yoe() -> None:
+    """Add events.yoe to legacy DBs. Empty string == 'no preference'."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "events" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("events")}
+    if "yoe" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE events ADD COLUMN yoe VARCHAR(80) DEFAULT ''"
+        ))
 
 
 def _migrate_event_sources() -> None:

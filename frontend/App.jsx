@@ -29,7 +29,8 @@ const STAGES = [
 const FORMATS = ["Sit-down dinner", "Hackathon", "Workshop", "Mixer", "Roundtable"];
 const GOALS = ["Hiring pipeline", "Fundraising", "Sales pipeline", "Product testing", "Community density"];
 const SENIORITY = ["Student", "New grad", "Junior", "Senior", "Staff+", "Leadership"];
-const STAGES_CO = ["Pre-seed", "Seed", "Series A", "Series B+"];
+const STAGES_CO = ["Pre-seed", "Seed", "Series A", "Series B+", "Enterprise"];
+const YOE = ["0-2", "3-5", "6-10", "10+"];
 
 // Each prospect source has a backend adapter key (lower-case) and a label.
 // LinkedIn is locked-on : the backend forces it in regardless, but rendering
@@ -257,6 +258,12 @@ function Intake({ profile, setProfile, onRun }) {
           <div className="chip-row">
             {STAGES_CO.map((s) => (
               <Chip key={s} active={profile.coStage.includes(s)} onClick={() => toggle("coStage", s)}>{s}</Chip>
+            ))}
+          </div>
+          <label>Years of experience</label>
+          <div className="chip-row">
+            {YOE.map((y) => (
+              <Chip key={y} active={profile.yoe.includes(y)} onClick={() => toggle("yoe", y)}>{y}</Chip>
             ))}
           </div>
           <label>Sources <span className="hint">: more sources, longer search</span></label>
@@ -1639,6 +1646,7 @@ function SurplusApp({ user, onLogout, onSignIn }) {
     role: "Infrastructure / ML platform engineers",
     seniority: ["Staff+"],
     coStage: ["Seed"],
+    yoe: ["6-10"],
     headcount: 40,
     format: "Sit-down dinner",
     city: "San Francisco",
@@ -1671,6 +1679,7 @@ function SurplusApp({ user, onLogout, onSignIn }) {
         role: profile.role,
         seniority: profile.seniority,
         co_stage: profile.coStage,
+        yoe: profile.yoe,
         headcount: profile.headcount,
         format: profile.format,
         city: profile.city,

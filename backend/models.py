@@ -51,6 +51,9 @@ class Event(Base):
     # which prospect sources to fan out across, CSV-joined. LinkedIn is
     # always forced in by adapters_for() regardless of what's stored here.
     sources: Mapped[str] = mapped_column(String(120), default="linkedin")
+    # Years-of-experience buckets, CSV-joined ("3-5,6-10"). Empty string ==
+    # "no preference" (skip the YOE clause in the Exa query).
+    yoe: Mapped[str] = mapped_column(String(80), default="")
     # derived once the pipeline runs
     threshold: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)

@@ -45,6 +45,7 @@ async def run_prospect(
         "seniority": event.seniority,
         "co_stage": event.co_stage,
         "city": event.city,
+        "yoe": getattr(event, "yoe", "") or "",
     }
 
     from .agents.sources import adapters_for

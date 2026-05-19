@@ -392,7 +392,12 @@ def judge_relevance_batch(candidates: list[dict], icp: dict) -> dict[str, tuple[
     try:
         response = _client().messages.create(
             model=JUDGE_MODEL,
-            max_tokens=4096,
+            # 1500 tokens fits ~50 binary verdicts with one-sentence reasons.
+            # Was 4096 : the larger budget made Haiku generate longer
+            # reasons, blew past the prospector's wall-clock cap, and we
+            # silently fell through to "keep all". Tightening it speeds up
+            # the call without changing the verdicts themselves.
+            max_tokens=1500,
             system=[{
                 "type": "text",
                 "text": _RELEVANCE_SYSTEM,
