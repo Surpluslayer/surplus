@@ -1860,19 +1860,26 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
           <StageRail stage={stage} setStage={go} maxReached={maxReached} />
           {onSwitchToTriage && (
             <button className="topbar-mode-switch"
-                    onClick={() => {
-                      if (!user) {
-                        // Signed-out users : open the signin modal. Triage
-                        // mode only renders when there's a user, so switching
-                        // mode without a session is a no-op.
-                        setSignInModalOpen(true);
-                      } else {
+                    onClick={async () => {
+                      if (user) {
                         onSwitchToTriage();
+                        return;
+                      }
+                      // Signed-out : mint an anonymous session and drop the
+                      // user straight into the triage flow. No form, no
+                      // signup, no LinkedIn. Email can be attached later
+                      // if they want to recover the event across browsers.
+                      try {
+                        localStorage.setItem("surplus_mode", "triage");
+                      } catch {}
+                      try {
+                        await api.triageQuickStart();
+                        window.location.reload();
+                      } catch (e) {
+                        alert("Could not start a triage session: " + (e.message || e));
                       }
                     }}
-                    title={user
-                      ? "Switch to Applicant Triage (review Luma applicants)"
-                      : "Sign in to use Applicant Triage"}>
+                    title="Switch to Applicant Triage (review Luma applicants)">
               Triage mode
             </button>
           )}

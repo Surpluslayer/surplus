@@ -6,14 +6,16 @@ Verifies:
   - new User row gets unipile_account_id=NULL
   - existing email returns the existing User (no duplicate row)
   - bad email / empty name → 400
-  - session cookie is set on the response
+  - session cookie is set on the RETURNED response (not a dep-injected one;
+    FastAPI gotcha where dep-Response cookies are dropped if you return a
+    different Response instance)
   - existing User rows with LinkedIn aren't affected
 
 Patterns mirrors test_followups.py : exercise the route function directly
 to avoid the FastAPI app import (Python 3.9 / str | None evaluation issue).
 """
 from __future__ import annotations
-from unittest.mock import MagicMock
+import json
 
 import pytest
 from fastapi import HTTPException
@@ -42,19 +44,9 @@ def _body(name="Daniel", email="daniel@example.com"):
     return TriageSignupBody(name=name, email=email)
 
 
-def _response():
-    """Minimal FastAPI Response stub : signup just calls set_cookie."""
-    resp = MagicMock()
-    resp.set_cookie = MagicMock()
-    return resp
-
-
 def test_signup_creates_user_with_null_unipile_account(db):
     from backend.routes.auth import triage_signup
-    resp = _response()
-    result = triage_signup(_body(), resp, db)
-    # JSONResponse body is bytes; pull from .body via json
-    import json
+    result = triage_signup(_body(), db)
     payload = json.loads(result.body)
     assert payload["ok"] is True
     assert payload["mode"] == "triage_only"
@@ -67,16 +59,15 @@ def test_signup_creates_user_with_null_unipile_account(db):
 
 def test_signup_normalizes_email_lowercase(db):
     from backend.routes.auth import triage_signup
-    triage_signup(_body(email="Daniel@Example.COM"), _response(), db)
+    triage_signup(_body(email="Daniel@Example.COM"), db)
     user = db.query(models.User).filter_by(email="daniel@example.com").first()
     assert user is not None
 
 
 def test_signup_returns_existing_user_for_same_email(db):
     from backend.routes.auth import triage_signup
-    triage_signup(_body(name="Daniel"), _response(), db)
-    # Second signup with same email : should reuse the User row.
-    triage_signup(_body(name="Different Name"), _response(), db)
+    triage_signup(_body(name="Daniel"), db)
+    triage_signup(_body(name="Different Name"), db)
     users = db.query(models.User).filter_by(email="daniel@example.com").all()
     assert len(users) == 1
 
@@ -84,25 +75,61 @@ def test_signup_returns_existing_user_for_same_email(db):
 def test_signup_rejects_empty_name(db):
     from backend.routes.auth import triage_signup
     with pytest.raises(HTTPException) as exc:
-        triage_signup(_body(name=""), _response(), db)
+        triage_signup(_body(name=""), db)
     assert exc.value.status_code == 400
 
 
 def test_signup_rejects_invalid_email(db):
     from backend.routes.auth import triage_signup
     with pytest.raises(HTTPException) as exc:
-        triage_signup(_body(email="not-an-email"), _response(), db)
+        triage_signup(_body(email="not-an-email"), db)
     assert exc.value.status_code == 400
 
 
-def test_signup_sets_session_cookie(db):
+def test_signup_sets_session_cookie_on_returned_response(db):
+    """Regression : we used to set the cookie on a dep-injected Response
+    parameter and then return a different JSONResponse, so the cookie
+    silently dropped. Now the cookie has to land on result.headers."""
     from backend.routes.auth import triage_signup
-    resp = _response()
-    triage_signup(_body(), resp, db)
-    resp.set_cookie.assert_called_once()
-    # Verify the cookie name is the surplus session cookie
-    call = resp.set_cookie.call_args
-    assert call.kwargs.get("key") == "surplus_session"
+    result = triage_signup(_body(), db)
+    # FastAPI JSONResponse carries Set-Cookie via raw_headers
+    cookie_headers = [
+        v.decode() for k, v in result.raw_headers
+        if k.decode().lower() == "set-cookie"
+    ]
+    assert any("surplus_session=" in c for c in cookie_headers), \
+        f"no session cookie set on response : raw_headers={result.raw_headers}"
+
+
+def test_quick_start_mints_anonymous_user_and_session(db):
+    """Triage quick-start : no body, just creates a User + session."""
+    from backend.routes.auth import triage_quick_start
+    result = triage_quick_start(db)
+    payload = json.loads(result.body)
+    assert payload["ok"] is True
+    assert payload["mode"] == "triage_only"
+    # Anonymous user has no Unipile connection : App.jsx auto-routes to triage
+    user = db.query(models.User).filter_by(id=payload["user_id"]).first()
+    assert user is not None
+    assert user.unipile_account_id is None
+    assert user.email.startswith("triage-")
+    # Cookie set on the returned response (FastAPI gotcha pinned earlier)
+    cookie_headers = [
+        v.decode() for k, v in result.raw_headers
+        if k.decode().lower() == "set-cookie"
+    ]
+    assert any("surplus_session=" in c for c in cookie_headers)
+
+
+def test_quick_start_creates_separate_users_per_call(db):
+    """Two clicks on 'Triage mode' from different visitors must mint
+    distinct User rows : the email-tag suffix avoids the unique constraint."""
+    from backend.routes.auth import triage_quick_start
+    r1 = triage_quick_start(db)
+    r2 = triage_quick_start(db)
+    p1 = json.loads(r1.body)
+    p2 = json.loads(r2.body)
+    assert p1["user_id"] != p2["user_id"]
 
 
 def test_signup_does_not_touch_existing_linkedin_user(db):
@@ -113,11 +140,9 @@ def test_signup_does_not_touch_existing_linkedin_user(db):
     db.add(existing)
     db.commit()
     from backend.routes.auth import triage_signup
-    triage_signup(_body(email="new@example.com"), _response(), db)
-    # Existing user untouched
+    triage_signup(_body(email="new@example.com"), db)
     refreshed = db.query(models.User).filter_by(
         unipile_account_id="acct-abc").first()
     assert refreshed.email == "existing@example.com"
-    # New user created with NULL unipile_account_id
     new_user = db.query(models.User).filter_by(email="new@example.com").first()
     assert new_user.unipile_account_id is None

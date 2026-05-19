@@ -433,6 +433,36 @@ async def linkedin_callback(
     return response
 
 
+# ─── 3c. Triage quick-start : zero-friction anonymous session ─────
+#
+# For demos / first-time users who just want to upload a CSV and see
+# results. No email, no LinkedIn, no form. Click 'Triage mode' button,
+# this endpoint mints a User row + session, and the operator lands
+# straight in the triage flow. They can attach an email later if they
+# want to recover the data across browsers.
+
+@router.post("/triage/quick-start")
+def triage_quick_start(db: DbSession = Depends(get_db)) -> JSONResponse:
+    """Create an anonymous User row + session cookie. Caller reloads and
+    lands in TriageApp (App.jsx routes there for users with no
+    unipile_account_id)."""
+    # Random suffix in email so the unique constraint doesn't collide if
+    # the same browser hits this twice. Email lives in our DB only,
+    # nothing's ever sent to it.
+    tag = secrets.token_hex(6)
+    user = User(
+        name="Triage user",
+        email=f"triage-{tag}@anonymous.surplus",
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    sess = create_session(db, user)
+    resp = JSONResponse({"ok": True, "user_id": user.id, "mode": "triage_only"})
+    set_session_cookie(resp, sess.session_token)
+    return resp
+
+
 # ─── 3b. Triage-only signup (no LinkedIn / no Unipile) ─────────────
 #
 # Customers who only want to use Applicant Triage (review Luma applicants)
@@ -449,7 +479,6 @@ class TriageSignupBody(BaseModel):
 @router.post("/triage/signup")
 def triage_signup(
     body: TriageSignupBody,
-    response: Response,
     db: DbSession = Depends(get_db),
 ) -> JSONResponse:
     """Create a User row + session for someone who only wants triage.
@@ -475,14 +504,18 @@ def triage_signup(
         db.refresh(user)
 
     sess = create_session(db, user)
-    set_session_cookie(response, sess.session_token)
-    return JSONResponse({
+    # Cookie has to be set on the SAME response we return : FastAPI gotcha
+    # where setting headers/cookies on a dependency-injected Response is
+    # ignored when the handler returns a different Response instance.
+    resp = JSONResponse({
         "ok": True,
         "user_id": user.id,
         "name": user.name,
         "email": user.email,
         "mode": "triage_only",
     })
+    set_session_cookie(resp, sess.session_token)
+    return resp
 
 
 # ─── 4. /me: who is signed in? ────────────────────────────────────
