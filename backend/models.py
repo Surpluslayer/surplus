@@ -45,6 +45,10 @@ class Event(Base):
     headcount: Mapped[int]
     format: Mapped[str] = mapped_column(String(40))
     city: Mapped[str] = mapped_column(String(80))
+    # ISO-8601 date string (YYYY-MM-DD) for the event itself. Stored as
+    # a string so the frontend's <input type="date"> value round-trips
+    # untouched and we don't have to deal with TZ. Empty when unset.
+    event_date: Mapped[str] = mapped_column(String(20), default="")
     # goal + budget
     goal: Mapped[str] = mapped_column(String(300))
     budget: Mapped[int]

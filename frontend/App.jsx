@@ -293,6 +293,9 @@ function Intake({ profile, setProfile, onRun }) {
           <p className="topo-inline"><CornerDownRight size={11} /> {FORMAT_CONFIG[profile.format].topo}</p>
           <label>City</label>
           <input className="text-in" value={profile.city} onChange={(e) => set("city", e.target.value)} />
+          <label>Date</label>
+          <input type="date" className="text-in" value={profile.eventDate}
+            onChange={(e) => set("eventDate", e.target.value)} />
         </section>
 
         <section className="card">
@@ -1783,6 +1786,7 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
     headcount: 40,
     format: "Sit-down dinner",
     city: "San Francisco",
+    eventDate: "",
     goal: ["Hiring pipeline"],
     budget: 8000,
     sources: ["linkedin"],
@@ -1816,6 +1820,7 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
         headcount: profile.headcount,
         format: profile.format,
         city: profile.city,
+        event_date: profile.eventDate,
         goal: profile.goal,
         budget: profile.budget,
         sources: profile.sources,
