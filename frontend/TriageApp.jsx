@@ -53,13 +53,10 @@ export default function TriageApp({ user, onLogout, onSwitchMode, onSignedIn }) 
     setMaxReached((m) => Math.max(m, idx));
   };
 
-  // Triage is a completely separate experience : if the user isn't signed in,
-  // show the triage-specific signup screen (name + email, no LinkedIn pitch)
-  // instead of dropping them into the outbound app. Verci-type users never
-  // need to see LinkedIn at all.
-  if (!user) {
-    return <TriageLanding onSwitchMode={onSwitchMode} onSignedIn={onSignedIn} />;
-  }
+  // Signed-out triage users are sent back to the SurplusApp entry where the
+  // signin modal lives. App.jsx's mode-switch is gated on `user` so we
+  // shouldn't normally see this branch; defensive fallback.
+  if (!user) return null;
 
   return (
     <div className="triage-root">
@@ -133,21 +130,46 @@ export default function TriageApp({ user, onLogout, onSwitchMode, onSignedIn }) 
 // A user lands here from clicking "Triage mode" while signed-out.
 // On success, calls onSignedIn() so the parent App can re-fetch /me.
 
-function TriageLanding({ onSwitchMode, onSignedIn }) {
+// LinkedIn brand glyph for the primary signin button. Inline SVG so we don't
+// need to import another icon library.
+function LinkedInMark({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M20.45 20.45h-3.55v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.13 1.45-2.13 2.94v5.67H9.37V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.38-1.85 3.61 0 4.28 2.38 4.28 5.47v6.27ZM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13ZM7.12 20.45H3.56V9h3.56v11.45ZM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0Z"/>
+    </svg>
+  );
+}
+
+
+function TriageLanding({ onSignedIn }) {
+  const [showSkipForm, setShowSkipForm] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
+  const [liBusy, setLiBusy] = useState(false);
   const [error, setError] = useState(null);
 
-  const handleSubmit = async (e) => {
+  const handleLinkedInSignin = async () => {
+    setError(null);
+    setLiBusy(true);
+    try {
+      const r = await api.startLinkedinAuth();
+      if (!r?.url) throw new Error("Backend didn't return a hosted-auth URL");
+      // Top-level navigation : surplus_last_account cookie + session cookie
+      // are set during the callback redirect, not a fetch.
+      window.location.href = r.url;
+    } catch (err) {
+      setLiBusy(false);
+      setError(err.message || "Could not start LinkedIn sign-in.");
+    }
+  };
+
+  const handleSkipSubmit = async (e) => {
     e.preventDefault();
     setError(null);
     setBusy(true);
     try {
       await api.triageSignup({ name: name.trim(), email: email.trim() });
-      // Reload so App's useEffect refetches /me and lands us in TriageApp
-      // with the new user. window.location.reload() is the simplest, no
-      // need for a callback dance to refresh upstream state.
       if (onSignedIn) onSignedIn();
       else window.location.reload();
     } catch (err) {
@@ -172,34 +194,60 @@ function TriageLanding({ onSwitchMode, onSignedIn }) {
         <p className="triage-landing-sub">
           Upload your Luma CSV, tell us about the event and sponsor, and get
           accept / maybe / reject recommendations with fit + confidence scores
-          for every applicant. No LinkedIn required.
+          for every applicant.
         </p>
 
-        <form onSubmit={handleSubmit} className="triage-landing-form">
-          <label>Your name</label>
-          <input className="triage-in" value={name} required
-                 onChange={(e) => setName(e.target.value)}
-                 placeholder="Verci Ops" autoFocus />
-          <label>Email</label>
-          <input className="triage-in" type="email" value={email} required
-                 onChange={(e) => setEmail(e.target.value)}
-                 placeholder="ops@verci.com" />
-
-          {error && (
-            <div className="triage-error" role="alert">
-              <AlertCircle size={14} /> {error}
-            </div>
+        {/* Primary path : Sign in with LinkedIn. Most operators have a
+            LinkedIn already + want their existing connection to be the
+            identity for follow-up communications later. */}
+        <button type="button"
+                className="triage-li-cta"
+                onClick={handleLinkedInSignin}
+                disabled={liBusy}>
+          {liBusy ? (
+            <><Loader2 className="spin" size={16} /> Redirecting to LinkedIn…</>
+          ) : (
+            <><LinkedInMark size={16} /> <span>Sign in with LinkedIn</span></>
           )}
+        </button>
 
-          <button type="submit" className="triage-cta triage-landing-cta"
-                  disabled={busy || !name.trim() || !email.trim()}>
-            {busy ? (
-              <><Loader2 className="spin" size={16} /> Creating your account…</>
-            ) : (
-              <>Get started <ArrowRight size={16} /></>
-            )}
+        {error && (
+          <div className="triage-error" style={{ marginTop: 12 }} role="alert">
+            <AlertCircle size={14} /> {error}
+          </div>
+        )}
+
+        <div className="triage-landing-divider"><span>or</span></div>
+
+        {!showSkipForm ? (
+          <button type="button" className="triage-landing-secondary"
+                  onClick={() => setShowSkipForm(true)}>
+            Don't have / want to connect LinkedIn? Sign up with email →
           </button>
-        </form>
+        ) : (
+          <form onSubmit={handleSkipSubmit} className="triage-landing-form">
+            <label>Your name</label>
+            <input className="triage-in" value={name} required autoFocus
+                   onChange={(e) => setName(e.target.value)}
+                   placeholder="Verci Ops" />
+            <label>Email</label>
+            <input className="triage-in" type="email" value={email} required
+                   onChange={(e) => setEmail(e.target.value)}
+                   placeholder="ops@verci.com" />
+            <button type="submit" className="triage-cta triage-landing-cta"
+                    disabled={busy || !name.trim() || !email.trim()}>
+              {busy ? (
+                <><Loader2 className="spin" size={16} /> Creating your account…</>
+              ) : (
+                <>Get started <ArrowRight size={16} /></>
+              )}
+            </button>
+            <button type="button" className="triage-landing-cancel"
+                    onClick={() => setShowSkipForm(false)}>
+              Cancel
+            </button>
+          </form>
+        )}
 
         <ul className="triage-landing-bullets">
           <li>Sponsor-aware scoring : photography founders ranked below B2B AI even if both "use Stripe"</li>
@@ -207,13 +255,6 @@ function TriageLanding({ onSwitchMode, onSignedIn }) {
           <li>Every score cites evidence from the actual application + LinkedIn</li>
           <li>Export the reviewed CSV back to Luma when you're done</li>
         </ul>
-
-        {onSwitchMode && (
-          <button className="triage-landing-secondary" type="button"
-                  onClick={onSwitchMode}>
-            Looking for outbound prospecting? Sign in with LinkedIn →
-          </button>
-        )}
       </div>
     </div>
   );
@@ -833,7 +874,7 @@ function DimBar({ label, v }) {
 
 
 const TRIAGE_CSS = `
-.triage-root {
+.triage-root, .triage-landing {
   --bg:#f5f6fa; --panel:#fff; --line:#e5e8ef;
   --ink:#1a1825; --ink-dim:#5b596b; --ink-faint:#9a96aa;
   --acc:#6b46e0; --acc-deep:#5836c6; --acc-soft:#ede9fb;
@@ -844,8 +885,9 @@ const TRIAGE_CSS = `
   --shadow:0 4px 16px rgba(15,15,30,0.05);
   --shadow-md:0 8px 24px rgba(15,15,30,0.08);
   font-family:'Plus Jakarta Sans',system-ui,-apple-system,sans-serif;
-  background:var(--bg); color:var(--ink); min-height:100vh;
+  color:var(--ink);
 }
+.triage-root { background:var(--bg); min-height:100vh; }
 .triage-frame { max-width:1320px; margin:0 auto; padding:16px 24px 64px; }
 .triage-topbar {
   display:flex; align-items:center; justify-content:space-between;
@@ -1216,4 +1258,32 @@ const TRIAGE_CSS = `
 .triage-landing-secondary:hover {
   color:var(--ink-dim); border-color:var(--ink-faint);
 }
+.triage-li-cta {
+  display:inline-flex; align-items:center; justify-content:center; gap:10px;
+  width:100%; padding:13px 22px; border-radius:999px; border:0;
+  background:var(--li); color:#fff; font-family:inherit;
+  font-weight:600; font-size:14.5px; cursor:pointer;
+  transition:all 0.15s;
+  box-shadow:0 2px 6px rgba(10,102,194,0.25);
+}
+.triage-li-cta:hover:not(:disabled) {
+  background:var(--li-deep);
+  box-shadow:0 6px 14px rgba(10,102,194,0.3);
+  transform:translateY(-1px);
+}
+.triage-li-cta:disabled { opacity:0.7; cursor:wait; }
+.triage-landing-divider {
+  display:flex; align-items:center; gap:12px; margin:18px 0 14px;
+  color:var(--ink-faint); font-size:11px; text-transform:uppercase;
+  letter-spacing:0.08em;
+}
+.triage-landing-divider::before, .triage-landing-divider::after {
+  content:""; flex:1; height:1px; background:var(--line);
+}
+.triage-landing-cancel {
+  margin-top:6px; background:none; border:0; padding:6px;
+  color:var(--ink-faint); font-family:inherit; font-size:12px;
+  cursor:pointer; text-decoration:underline;
+}
+.triage-landing-cancel:hover { color:var(--ink-dim); }
 `;

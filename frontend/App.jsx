@@ -1604,18 +1604,19 @@ export default function App() {
     return <div style={{ minHeight: "100vh", background: "#f6f7f9" }} />;
   }
 
-  if (mode === "triage") {
-    // Render TriageApp even when signed-out : it shows its own self-contained
-    // signup landing (no LinkedIn UI). Verci-type users never see outbound copy.
+  // Triage mode renders only when the user is actually signed in. Signed-out
+  // users see SurplusApp as the universal entry; clicking 'Triage mode' in its
+  // topbar sets localStorage and opens the signin modal. After auth, mode is
+  // already 'triage', so they land in TriageApp on reload.
+  if (mode === "triage" && user) {
     return (
       <TriageApp
-        user={user || null}
+        user={user}
         onLogout={async () => {
           try { await api.logout(); } catch {}
           setUser(undefined);
         }}
         onSwitchMode={() => switchMode("outbound")}
-        onSignedIn={() => window.location.reload()}
       />
     );
   }
