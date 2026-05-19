@@ -114,18 +114,12 @@ def _ensure_unipile_configured() -> tuple[str, str]:
 
 def _build_hosted_auth_body(request: Request, db: DbSession, state_token: str,
                             base: str, dsn: str) -> dict:
-    """Construct the /hosted/accounts/link body.
-
-    Currently always type=create : the type=reconnect path I attempted in
-    PR #52 sent a wrong field name and Unipile 4xx'd, blocking sign-in.
-    Disabled until I verify the correct reconnect API shape against
-    Unipile's docs. The surplus_last_account cookie is still SET on
-    successful callback so when reconnect is re-enabled it'll work for
-    everyone who signed in during this interim window.
-    """
+    """Construct the /hosted/accounts/link body, picking type=reconnect when
+    the browser has a `surplus_last_account` cookie pointing at a known User.
+    Falls back to type=create for first-time signups + cross-browser cases
+    (where the cookie isn't there)."""
     expires = _unipile_iso_timestamp(_utcnow() + timedelta(hours=1))
-    return {
-        "type": "create",
+    common: dict = {
         "providers": ["LINKEDIN"],
         "api_url": dsn,
         "expiresOn": expires,
@@ -134,6 +128,14 @@ def _build_hosted_auth_body(request: Request, db: DbSession, state_token: str,
         "notify_url": f"{base}/api/auth/linkedin/webhook",
         "name": state_token,
     }
+    last_account = (request.cookies.get(LAST_ACCOUNT_COOKIE) or "").strip()
+    if last_account:
+        existing = db.query(User).filter(User.unipile_account_id == last_account).first()
+        if existing:
+            # Returning user on the same browser : refresh the existing
+            # account rather than minting a fresh one (avoids burning a seat).
+            return {"type": "reconnect", "reconnect_account": last_account, **common}
+    return {"type": "create", **common}
 
 
 @router.post("/linkedin/start")
