@@ -49,6 +49,9 @@ class Event(Base):
     # a string so the frontend's <input type="date"> value round-trips
     # untouched and we don't have to deal with TZ. Empty when unset.
     event_date: Mapped[str] = mapped_column(String(20), default="")
+    # Operator-supplied display name (e.g. "Founders Dinner · April"). Empty
+    # when unset; the topbar falls back to "event #<id> · live" in that case.
+    event_name: Mapped[str] = mapped_column(String(160), default="")
     # goal + budget
     goal: Mapped[str] = mapped_column(String(300))
     budget: Mapped[int]

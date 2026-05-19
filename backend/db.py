@@ -68,7 +68,22 @@ def init_db() -> None:
     _migrate_user_unipile_account_id_nullable()
     _migrate_event_triage_config()
     _migrate_event_event_date()
+    _migrate_event_event_name()
     _ensure_operator_user_and_backfill()
+
+
+def _migrate_event_event_name() -> None:
+    """Add events.event_name (VARCHAR(160), default '') for the operator-
+    supplied display name. Empty string for existing rows means 'unnamed'."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "events" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("events")}
+    if "event_name" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text("ALTER TABLE events ADD COLUMN event_name VARCHAR(160) DEFAULT ''"))
 
 
 def _migrate_event_event_date() -> None:

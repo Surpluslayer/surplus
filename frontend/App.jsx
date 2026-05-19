@@ -295,6 +295,10 @@ function Intake({ profile, setProfile, onRun }) {
           <label>Date</label>
           <input type="date" className="text-in" value={profile.eventDate}
             onChange={(e) => set("eventDate", e.target.value)} />
+          <label>Event name</label>
+          <input className="text-in" value={profile.eventName}
+            placeholder="e.g. Founders Dinner · April"
+            onChange={(e) => set("eventName", e.target.value)} />
         </section>
 
         <section className="card">
@@ -1757,6 +1761,7 @@ function SurplusApp({ user, onLogout, onSignIn }) {
     format: "Sit-down dinner",
     city: "San Francisco",
     eventDate: "",
+    eventName: "",
     goal: ["Hiring pipeline"],
     budget: 8000,
     sources: ["linkedin"],
@@ -1791,6 +1796,7 @@ function SurplusApp({ user, onLogout, onSignIn }) {
         format: profile.format,
         city: profile.city,
         event_date: profile.eventDate,
+        event_name: profile.eventName,
         goal: profile.goal,
         budget: profile.budget,
         sources: profile.sources,
@@ -1820,9 +1826,12 @@ function SurplusApp({ user, onLogout, onSignIn }) {
             <div className="brand-text">
               <span className="brand-name">surplus</span>
             </div>
-            {eventId && (
-              <span className="live-badge" title="connected to backend">
-                event #{eventId} · live
+            {(profile.eventName?.trim() || eventId) && (
+              <span className="live-badge"
+                    title={eventId ? "connected to backend" : "event name"}>
+                {profile.eventName?.trim()
+                  ? profile.eventName.trim()
+                  : `event #${eventId} · live`}
               </span>
             )}
           </div>
