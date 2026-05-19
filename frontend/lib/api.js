@@ -79,6 +79,21 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  // Sponsor CRUD : sponsors are added inline on the Matching screen, not
+  // at intake. POST creates one, PATCH edits, DELETE removes. After any
+  // mutation, the frontend re-calls runMatch to refresh SponsorMatch rows.
+  listSponsors: (eid) => request(`/events/${eid}/sponsors`),
+  createSponsor: (eid, body) =>
+    request(`/events/${eid}/sponsors`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
+  updateSponsor: (eid, sid, body) =>
+    request(`/events/${eid}/sponsors/${sid}`, {
+      method: "PATCH", body: JSON.stringify(body),
+    }),
+  deleteSponsor: (eid, sid) =>
+    request(`/events/${eid}/sponsors/${sid}`, { method: "DELETE" }),
+
   // on-demand LLM justification for a single pair.
   // `kind` defaults to "prospect" on both sides; pass "sponsor" for a
   // sponsor↔attendee explanation (uses the SAME endpoint + popover).

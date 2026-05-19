@@ -237,36 +237,6 @@ function toggleIn(arr, v) {
 function Intake({ profile, setProfile, onRun }) {
   const set = (k, v) => setProfile((p) => ({ ...p, [k]: v }));
   const toggle = (k, v) => setProfile((p) => ({ ...p, [k]: toggleIn(p[k], v) }));
-
-  // Sponsor row helpers. Sponsors live as a list on profile so they
-  // round-trip through the same /events POST as the rest of intake.
-  const addSponsor = () => setProfile((p) => ({
-    ...p,
-    sponsors: [...(p.sponsors || []), {
-      name: "", tier: "",
-      buyer_profile: {
-        target_role: "", seniority: "",
-        company_stage: "", industry: "", intent: "buying",
-      },
-    }],
-  }));
-  const removeSponsor = (idx) => setProfile((p) => ({
-    ...p,
-    sponsors: (p.sponsors || []).filter((_, i) => i !== idx),
-  }));
-  const updateSponsor = (idx, key, value) => setProfile((p) => ({
-    ...p,
-    sponsors: (p.sponsors || []).map((s, i) =>
-      i === idx ? { ...s, [key]: value } : s),
-  }));
-  const updateSponsorBuyer = (idx, key, value) => setProfile((p) => ({
-    ...p,
-    sponsors: (p.sponsors || []).map((s, i) =>
-      i === idx
-        ? { ...s, buyer_profile: { ...s.buyer_profile, [key]: value } }
-        : s),
-  }));
-
   return (
     <div className="stage">
       <header className="stage-head">
@@ -355,51 +325,6 @@ function Intake({ profile, setProfile, onRun }) {
           </div>
         </section>
 
-        <section className="card">
-          <h3><span className="card-num">D</span> Sponsors <span className="hint">: optional</span></h3>
-          <p className="muted-text" style={{marginTop: -4, marginBottom: 10, fontSize: 12}}>
-            Add one row per sponsor. Their buyer profile (role / seniority / stage
-            / industry) is scored against every attendee using the existing
-            matcher : if any sponsor is set, the matching screen shows a
-            "Sponsor matches" section above Top pairs.
-          </p>
-          {(profile.sponsors || []).map((s, idx) => (
-            <div key={idx} className="sponsor-row">
-              <div className="sponsor-row-head">
-                <input className="text-in"
-                       placeholder="Sponsor name (e.g. Cohere)"
-                       value={s.name}
-                       onChange={(e) => updateSponsor(idx, "name", e.target.value)} />
-                <input className="text-in sponsor-tier"
-                       placeholder="Tier (gold / silver / …)"
-                       value={s.tier}
-                       onChange={(e) => updateSponsor(idx, "tier", e.target.value)} />
-                <button className="btn-reset sponsor-remove"
-                        onClick={() => removeSponsor(idx)}
-                        title="Remove sponsor">×</button>
-              </div>
-              <div className="sponsor-row-buyer">
-                <input className="text-in"
-                       placeholder="Target role"
-                       value={s.buyer_profile.target_role}
-                       onChange={(e) => updateSponsorBuyer(idx, "target_role", e.target.value)} />
-                <input className="text-in"
-                       placeholder="Seniority"
-                       value={s.buyer_profile.seniority}
-                       onChange={(e) => updateSponsorBuyer(idx, "seniority", e.target.value)} />
-                <input className="text-in"
-                       placeholder="Company stage"
-                       value={s.buyer_profile.company_stage}
-                       onChange={(e) => updateSponsorBuyer(idx, "company_stage", e.target.value)} />
-                <input className="text-in"
-                       placeholder="Industry"
-                       value={s.buyer_profile.industry}
-                       onChange={(e) => updateSponsorBuyer(idx, "industry", e.target.value)} />
-              </div>
-            </div>
-          ))}
-          <button className="btn-reset" onClick={addSponsor}>+ Add sponsor</button>
-        </section>
       </div>
 
       <div className="stage-foot">
@@ -1060,6 +985,207 @@ function layoutGroupCenters(n) {
 }
 
 
+// SponsorBar : the inline "+ Add sponsor" row + chip list at the top
+// of the Matching screen. Owns its own sponsors state via the
+// /sponsors CRUD API. After any create / patch / delete the bar fires
+// onChanged() so the parent re-runs /match : the SPONSOR MATCHES
+// section below uses the freshly-computed SponsorMatch rows.
+function SponsorBar({ eventId, onChanged }) {
+  const [sponsors, setSponsors] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  // editingId: number | "new" | null
+  //   number : edit existing sponsor by id
+  //   "new"  : show blank inline form to add a sponsor
+  //   null   : just show the chip row + "+ Add sponsor"
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState(blankSponsorForm());
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!eventId) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const rows = await api.listSponsors(eventId);
+        if (!cancelled) setSponsors(rows);
+      } catch (e) {
+        if (!cancelled) setError(e.message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [eventId]);
+
+  const refresh = async () => {
+    try {
+      const rows = await api.listSponsors(eventId);
+      setSponsors(rows);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const startAdd = () => {
+    setForm(blankSponsorForm());
+    setEditingId("new");
+  };
+
+  const startEdit = (s) => {
+    setForm({
+      name: s.name || "",
+      tier: s.tier || "",
+      buyer_profile: {
+        target_role: s.buyer_profile?.target_role || "",
+        seniority: s.buyer_profile?.seniority || "",
+        company_stage: s.buyer_profile?.company_stage || "",
+        industry: s.buyer_profile?.industry || "",
+        intent: s.buyer_profile?.intent || "buying",
+      },
+    });
+    setEditingId(s.id);
+  };
+
+  const cancel = () => {
+    setEditingId(null);
+    setForm(blankSponsorForm());
+  };
+
+  const save = async () => {
+    if (!form.name.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const body = {
+        name: form.name.trim(),
+        tier: form.tier.trim(),
+        buyer_profile: form.buyer_profile,
+      };
+      if (editingId === "new") {
+        await api.createSponsor(eventId, body);
+      } else {
+        await api.updateSponsor(eventId, editingId, body);
+      }
+      await refresh();
+      cancel();
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (sid) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.deleteSponsor(eventId, sid);
+      await refresh();
+      if (editingId === sid) cancel();
+      onChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="sponsor-bar">
+      <div className="sponsor-bar-row">
+        {sponsors.map((s) => (
+          <button key={s.id}
+                  className={`sponsor-chip ${editingId === s.id ? "active" : ""}`}
+                  onClick={() => editingId === s.id ? cancel() : startEdit(s)}
+                  title="Edit sponsor">
+            {s.name}
+            {s.tier && <span className="sponsor-chip-tier">{s.tier}</span>}
+          </button>
+        ))}
+        {editingId !== "new" && (
+          <button className="sponsor-add-btn" onClick={startAdd}>
+            + Add sponsor
+          </button>
+        )}
+        {loading && <span className="muted-text" style={{fontSize: 11}}>loading…</span>}
+      </div>
+      {editingId !== null && (
+        <div className="sponsor-form">
+          <div className="sponsor-form-head">
+            <input className="text-in"
+                   placeholder="Sponsor name (e.g. Cohere)"
+                   value={form.name}
+                   onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+            <input className="text-in sponsor-tier"
+                   placeholder="Tier"
+                   value={form.tier}
+                   onChange={(e) => setForm((f) => ({ ...f, tier: e.target.value }))} />
+          </div>
+          <div className="sponsor-form-buyer">
+            <input className="text-in"
+                   placeholder="Target role"
+                   value={form.buyer_profile.target_role}
+                   onChange={(e) => setForm((f) => ({
+                     ...f, buyer_profile: { ...f.buyer_profile, target_role: e.target.value },
+                   }))} />
+            <input className="text-in"
+                   placeholder="Seniority"
+                   value={form.buyer_profile.seniority}
+                   onChange={(e) => setForm((f) => ({
+                     ...f, buyer_profile: { ...f.buyer_profile, seniority: e.target.value },
+                   }))} />
+            <input className="text-in"
+                   placeholder="Company stage"
+                   value={form.buyer_profile.company_stage}
+                   onChange={(e) => setForm((f) => ({
+                     ...f, buyer_profile: { ...f.buyer_profile, company_stage: e.target.value },
+                   }))} />
+            <input className="text-in"
+                   placeholder="Industry"
+                   value={form.buyer_profile.industry}
+                   onChange={(e) => setForm((f) => ({
+                     ...f, buyer_profile: { ...f.buyer_profile, industry: e.target.value },
+                   }))} />
+          </div>
+          <div className="sponsor-form-actions">
+            <button className="btn-primary" onClick={save} disabled={busy || !form.name.trim()}>
+              {editingId === "new" ? "Add sponsor" : "Save"}
+            </button>
+            <button className="btn-reset" onClick={cancel} disabled={busy}>Cancel</button>
+            {editingId !== "new" && (
+              <button className="btn-reset sponsor-form-delete"
+                      onClick={() => remove(editingId)}
+                      disabled={busy}>
+                Remove
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {error && (
+        <div className="muted-text" style={{color: "#c33", fontSize: 12, marginTop: 6}}>
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function blankSponsorForm() {
+  return {
+    name: "", tier: "",
+    buyer_profile: {
+      target_role: "", seniority: "",
+      company_stage: "", industry: "", intent: "buying",
+    },
+  };
+}
+
+
 function Matching({ profile, eventId, onError, onNext }) {
   const [matchResult, setMatchResult] = useState(null);
   const [matchError, setMatchError] = useState(null);
@@ -1288,6 +1414,17 @@ function Matching({ profile, eventId, onError, onNext }) {
       <header className="stage-head">
         <h1>Guest list as a value graph</h1>
       </header>
+
+      {/* Sponsors get added inline here, above the value graph. If none
+          have been added the bar is just the "+ Add sponsor" affordance;
+          the moment one is added, the SPONSOR MATCHES section below
+          renders alongside the existing Top pairs / Compare panels. */}
+      {useReal && eventId && (
+        <SponsorBar
+          eventId={eventId}
+          onChanged={() => setRunTick((t) => t + 1)}
+        />
+      )}
 
       <div className="match-layout">
         <div className="graph-wrap graph-wrap--main">
@@ -1562,7 +1699,7 @@ function Matching({ profile, eventId, onError, onNext }) {
 // ---- Stage 4: ROI ledger ------------------------------------
 function tierOf(score) { return score >= 90 ? "high" : score >= 82 ? "mid" : "low"; }
 
-function ROI({ profile, onRestart }) {
+function ROI({ profile, eventId, onRestart }) {
   const cfg = GOAL_CONFIG[primaryGoal(profile)];
   const attending = PROSPECTS.filter((p) => p.status === "rsvp");
   const ledger = attending.map((p) => {
@@ -1570,11 +1707,25 @@ function ROI({ profile, onRestart }) {
     return { ...p, ...tier, value: cfg.value[tier.state] };
   });
 
-  // Sponsor column : only renders when the operator declared sponsors at
-  // intake. Attribution mirrors the backend heuristic (best-token-match
-  // on target_role vs role / works_on / offers). One extra column, no
-  // toggle, no separate view.
-  const sponsors = (profile.sponsors || []).filter((s) => (s.name || "").trim());
+  // Sponsor column : only renders when the event carries ≥1 sponsor.
+  // Fetched from the same /sponsors endpoint the Matching screen uses,
+  // so adding a sponsor inline on Matching makes the ROI column light up
+  // without re-running intake. Attribution mirrors the backend heuristic
+  // (best-token-match on target_role vs role / works_on / offers).
+  const [sponsors, setSponsors] = useState([]);
+  useEffect(() => {
+    if (!eventId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await api.listSponsors(eventId);
+        if (!cancelled) setSponsors(rows || []);
+      } catch (_e) {
+        // Silent : the column just doesn't render if we can't fetch.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [eventId]);
   const hasSponsors = sponsors.length > 0;
   const sponsorFor = (guest) => {
     if (!hasSponsors) return "";
@@ -1938,7 +2089,6 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
     goal: ["Hiring pipeline"],
     budget: 8000,
     sources: ["linkedin"],
-    sponsors: [],
   });
   // backend-wired state : eventId comes from real /events POST; runResult is
   // the response from /run (prospects, counts, etc.). Both null until the
@@ -1974,14 +2124,6 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
         goal: profile.goal,
         budget: profile.budget,
         sources: profile.sources,
-        // Send any non-empty sponsor rows : the backend skips blank names.
-        sponsors: (profile.sponsors || [])
-          .filter((s) => (s.name || "").trim())
-          .map((s) => ({
-            name: s.name.trim(),
-            tier: (s.tier || "").trim(),
-            buyer_profile: s.buyer_profile,
-          })),
       });
       setEventId(ev.id);
       go(1);
@@ -2073,7 +2215,7 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
           {stage === 3 && <Matching profile={profile} eventId={eventId}
                                      onError={reportError}
                                      onNext={() => go(4)} />}
-          {stage === 4 && <ROI profile={profile} onRestart={restart} />}
+          {stage === 4 && <ROI profile={profile} eventId={eventId} onRestart={restart} />}
         </main>
       </div>
     </div>
@@ -2536,17 +2678,36 @@ const CSS = `
   grid-template-columns:1.6fr 0.7fr 1.6fr 1.0fr 0.8fr;
 }
 .led-sponsor { font-size:11.5px; color:var(--ink); font-weight:600; }
-/* Sponsor-row controls on the intake screen */
-.sponsor-row { border:1px solid var(--line); border-radius:var(--r-panel);
-  padding:10px 12px; margin-bottom:10px; background:var(--panel-2); }
-.sponsor-row-head { display:flex; gap:8px; margin-bottom:8px; align-items:center; }
-.sponsor-row-head .text-in { margin:0; flex:1; }
-.sponsor-tier { max-width:140px; }
-.sponsor-remove { color:var(--no); font-size:18px; line-height:1;
-  padding:4px 10px; border-radius:var(--r-pill); }
-.sponsor-row-buyer { display:grid; grid-template-columns:repeat(2, 1fr);
+/* Sponsor bar : the inline "+ Add sponsor" + chip row that sits above
+   the value graph on the Matching screen. Low-weight UI by design : a
+   chip-row with an Add button, not a card. */
+.sponsor-bar { margin:0 0 14px; }
+.sponsor-bar-row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.sponsor-chip { border:1px solid var(--line); background:var(--panel-2);
+  color:var(--ink); border-radius:var(--r-pill); padding:5px 11px;
+  font-size:12px; font-weight:600; cursor:pointer; display:inline-flex;
+  align-items:center; gap:6px; }
+.sponsor-chip:hover { border-color:var(--acc-light); color:var(--acc); }
+.sponsor-chip.active { background:var(--acc); border-color:var(--acc); color:#fff; }
+.sponsor-chip.active .sponsor-chip-tier { background:rgba(255,255,255,0.18); color:#fff; }
+.sponsor-chip-tier { font-size:9px; text-transform:uppercase; letter-spacing:0.04em;
+  font-weight:700; padding:1px 6px; border-radius:var(--r-pill);
+  background:var(--acc-soft); color:var(--acc); }
+.sponsor-add-btn { border:1px dashed var(--line); background:transparent;
+  color:var(--ink-dim); border-radius:var(--r-pill); padding:5px 11px;
+  font-size:12px; cursor:pointer; font-weight:600; }
+.sponsor-add-btn:hover { border-color:var(--acc); color:var(--acc); }
+.sponsor-form { margin-top:10px; padding:12px; background:var(--panel-2);
+  border:1px solid var(--line); border-radius:var(--r-panel); }
+.sponsor-form-head { display:flex; gap:8px; margin-bottom:8px; }
+.sponsor-form-head .text-in { margin:0; flex:1; }
+.sponsor-form .sponsor-tier { max-width:140px; }
+.sponsor-form-buyer { display:grid; grid-template-columns:repeat(2, 1fr);
   gap:8px; }
-.sponsor-row-buyer .text-in { margin:0; }
+.sponsor-form-buyer .text-in { margin:0; }
+.sponsor-form-actions { display:flex; gap:8px; margin-top:10px; align-items:center; }
+.sponsor-form-actions .btn-primary { padding:6px 14px; font-size:12px; }
+.sponsor-form-delete { color:var(--no); }
 /* Sponsor match block on the matching screen */
 .sponsor-match-block { margin-bottom:10px; }
 .sponsor-match-block:last-child { margin-bottom:0; }
