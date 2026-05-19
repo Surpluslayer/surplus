@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   ArrowRight, Check, Circle, Activity, Send, Network, Target,
   GitBranch, BriefcaseBusiness, Zap, TrendingUp, RotateCw, Mail,
@@ -419,13 +419,26 @@ function Pipeline({ profile, eventId, onResult, onError, onDone }) {
     return () => { cancelled = true; };
   }, [eventId, onResult, onError]);
 
-  // only advance when BOTH the cosmetic timer and the real API finished
+  // Advance once both the API and the cosmetic bar are done.
+  //
+  // The ref-latch prevents the prior bug where this useEffect's dependency
+  // on `onDone` (passed as an inline arrow from the parent) re-created the
+  // effect on every parent render, clearing the 650ms timeout before it
+  // could fire and leaving the user stuck on this screen forever.
+  const advancedRef = useRef(false);
+  // Keep a stable reference to onDone so we can call it from a one-shot
+  // timeout that doesn't need to live in the deps array.
+  const onDoneRef = useRef(onDone);
+  useEffect(() => { onDoneRef.current = onDone; }, [onDone]);
+
   useEffect(() => {
+    if (advancedRef.current) return;
     if (progress >= 100 && apiDone) {
-      const t = setTimeout(onDone, 650);
+      advancedRef.current = true;
+      const t = setTimeout(() => onDoneRef.current && onDoneRef.current(), 650);
       return () => clearTimeout(t);
     }
-  }, [progress, apiDone, onDone]);
+  }, [progress, apiDone]);
 
   const funnelTarget = Math.round(profile.headcount / 0.6);
   const found = Math.round((progress / 100) * funnelTarget * 1.4);
@@ -463,7 +476,10 @@ function Pipeline({ profile, eventId, onResult, onError, onDone }) {
       <div className="pipe-steps">
         {steps.map((st, i) => {
           const active = progress > i * 30;
-          const complete = progress > (i + 1) * 30 + 10;
+          // Final step's threshold can't be > 100 (progress caps at 100),
+          // so cap at 99 to actually trigger when progress reaches 100.
+          const completeAt = Math.min(99, (i + 1) * 30 + 10);
+          const complete = progress > completeAt;
           return (
             <div key={st} className={`pipe-step ${active ? "on" : ""} ${complete ? "complete" : ""}`}>
               <span className="pipe-step-dot">{complete ? <Check size={12} strokeWidth={3} /> : <Circle size={8} />}</span>
