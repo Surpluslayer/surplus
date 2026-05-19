@@ -116,11 +116,12 @@ def test_multi_source_still_runs_judge(monkeypatch):
 
 # ── Defaults that the speedup PR changed ───────────────────────────────
 
-def test_adapter_timeout_default_is_ten_seconds():
-    """Was 30s when X was broken and Anthropic web_search was the slow path.
-    Now Exa is fast everywhere, so 10s is plenty."""
+def test_adapter_timeout_default_is_thirty_seconds():
+    """Restored to 30s after reverting the speed changes that degraded
+    search quality. Exa typically responds in 2-5s; the extra headroom
+    just guards against transient hangs."""
     os.environ.pop("PROSPECTING_ADAPTER_TIMEOUT", None)
-    assert prospector._adapter_timeout() == 10.0
+    assert prospector._adapter_timeout() == 30.0
 
 
 def test_judge_timeout_default_is_six_seconds():

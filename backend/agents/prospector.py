@@ -50,15 +50,16 @@ def _cache_ttl() -> int:
 def _adapter_timeout() -> float:
     """Per-adapter wall-clock cap on discovery search.
 
-    10s default : Exa neural search typically completes in 0.5-3s. 30s used
-    to be the headroom for Anthropic's web_search (60-90s common). With Exa,
-    anything past 10s is a hung adapter and we'd rather fall through with
-    that source empty than make the whole pipeline wait.
+    30s default : Exa neural search typically completes in 2-5s, so 30s
+    is generous headroom. Historical context: this was 120s when the
+    pipeline used Anthropic's web_search_20260209 (consistently 60-90s
+    per call). Exa is faster by an order of magnitude, so the old cap
+    was just dead latency on every failure path.
     """
     try:
-        return max(5.0, float(os.environ.get("PROSPECTING_ADAPTER_TIMEOUT", "10")))
+        return max(5.0, float(os.environ.get("PROSPECTING_ADAPTER_TIMEOUT", "30")))
     except ValueError:
-        return 10.0
+        return 30.0
 
 
 def _judge_timeout() -> float:
