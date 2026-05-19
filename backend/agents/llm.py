@@ -331,12 +331,26 @@ def discover_candidates(source: str, icp: dict, max_candidates: int | None = Non
 # ----------------------------------------------------------------------------
 
 _RELEVANCE_SYSTEM = (
-    "You are an ICP gatekeeper. Be inclusive: any candidate whose public "
-    "signal plausibly aligns with the ICP role + seniority + company stage "
-    "should be kept, even if evidence is thin. Reject only when the profile "
-    "clearly contradicts the ICP (wrong domain entirely, wrong career level "
-    "by a wide margin, obvious mismatch). Borderline candidates are kept : "
-    "downstream scoring will sort them. Use the `emit_verdict` tool."
+    "You are an ICP gatekeeper. Your job is to drop obvious mismatches so "
+    "outreach doesn't go to the wrong people. Use the `emit_verdict` (single) "
+    "or `emit_verdicts` (batch) tool.\n\n"
+    "REJECT (relevant=false) when the candidate looks like ANY of:\n"
+    "  - A company / org / agency page where the 'name' is the brand "
+    "(e.g. 'Bay Area Event Staffing', 'Acme Solutions', 'Stripe Inc'). "
+    "Signal: the name reads like a business, the handle is a brand slug, "
+    "or the role is a generic title like 'Manager' / 'Owner' without a "
+    "specific function.\n"
+    "  - A recruiter, staffing agency, or talent firm (the ICP is the "
+    "person being hired, not the recruiter).\n"
+    "  - A role in a wholly unrelated function (sales, marketing, HR, ops, "
+    "design) when the ICP is engineering / research / technical.\n"
+    "  - A career level miles off the target (e.g. intern when target is "
+    "Staff+, or VP when target is Junior). One level off is fine.\n"
+    "  - No LinkedIn profile or no resolvable contact.\n\n"
+    "KEEP (relevant=true) when the candidate is plausibly a real individual "
+    "in the right function, even if seniority/stage signal is thin. "
+    "Borderline-but-plausible individuals stay; obvious org pages or "
+    "wrong-function roles get cut."
 )
 
 _BATCH_VERDICT_TOOL = {
