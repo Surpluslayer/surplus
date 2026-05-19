@@ -35,6 +35,8 @@ class EventCreate(BaseModel):
     headcount: int = 40
     format: str = "Sit-down dinner"
     city: str = "San Francisco"
+    # YYYY-MM-DD; empty when unset.
+    event_date: str = ""
     goal: list[str] = ["Hiring pipeline"]
     budget: int = 8000
     # Which prospect sources to fan out across (LinkedIn always forced in
@@ -52,6 +54,7 @@ class EventOut(BaseModel):
     headcount: int
     format: str
     city: str
+    event_date: str
     goal: list[str]
     budget: int
     sources: list[str]
@@ -68,6 +71,7 @@ class EventOut(BaseModel):
             seniority=_split_csv(ev.seniority),
             co_stage=_split_csv(ev.co_stage),
             headcount=ev.headcount, format=ev.format, city=ev.city,
+            event_date=getattr(ev, "event_date", "") or "",
             goal=_split_csv(ev.goal),
             budget=ev.budget,
             sources=_split_csv(getattr(ev, "sources", None)) or ["linkedin"],

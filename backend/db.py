@@ -67,7 +67,22 @@ def init_db() -> None:
     _migrate_user_voice_examples()
     _migrate_user_unipile_account_id_nullable()
     _migrate_event_triage_config()
+    _migrate_event_event_date()
     _ensure_operator_user_and_backfill()
+
+
+def _migrate_event_event_date() -> None:
+    """Add events.event_date (VARCHAR(20), default '') for the intake-form
+    date field. Empty string for existing rows means 'date not yet set'."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "events" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("events")}
+    if "event_date" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text("ALTER TABLE events ADD COLUMN event_date VARCHAR(20) DEFAULT ''"))
 
 
 def _migrate_event_triage_config() -> None:
