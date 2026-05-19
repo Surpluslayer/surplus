@@ -224,6 +224,11 @@ def outreach_preview(
                if p.status in ("approved", "contacted", "rsvp")]
     peers = targets
 
+    # The prefetch kicked off by run_prospect usually has the cache fully
+    # populated by the time we get here. Cache hits return in <100ms;
+    # misses fall through to live compose (slower but still works).
+    from ..agents.outreach import get_cached_compose
+
     rows: list[schemas.OutreachPreviewRow] = []
     for p in targets:
         eligible = True
@@ -231,7 +236,9 @@ def outreach_preview(
         if not p.linkedin_url:
             eligible = False
             skip_reason = "no linkedin_url"
-        msg = compose(p, ev, peers=[q.name for q in peers if q.id != p.id])
+        msg = get_cached_compose(p.id, ev.id) or compose(
+            p, ev, peers=[q.name for q in peers if q.id != p.id],
+        )
         lead = provider.build_lead_payload(p, ev, note=msg.note, message=msg.message)
         payload = None
         if eligible:
