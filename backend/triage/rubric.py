@@ -1,0 +1,253 @@
+"""
+triage/rubric.py : per-event scoring rubric synthesis.
+
+Sonnet reads the operator's triage_config (sponsor, goal, ideal profile,
+hard filters, nice-to-haves, anti-fit examples) plus a summary of the
+applicant pool, and emits a JSON rubric that the per-applicant scorer
+applies deterministically.
+
+Why bother synthesizing instead of using a fixed rubric :
+  - The 'photography founder uses Stripe' problem is event-specific.
+    Vanilla relevance scoring would pass them. A sponsor-aware rubric
+    written FOR Stripe x ElevenLabs encodes the right anti-fit guidance.
+  - Different sponsors care about different things. JPMorgan dinners want
+    later-stage applicants who need a bank; Stripe cafes want earlier
+    builders shipping at scale.
+  - Cached per event: synth runs once, applies to all N applicants.
+"""
+from __future__ import annotations
+import hashlib
+import json
+import os
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+from ..jsonx import extract_json
+
+
+RUBRIC_MODEL = os.environ.get("TRIAGE_RUBRIC_MODEL", "claude-sonnet-4-6")
+RUBRIC_MAX_TOKENS = 2500
+RUBRIC_CACHE_TTL_S = 60 * 60 * 6  # 6h : refresh if the operator edits config
+
+
+@dataclass
+class Rubric:
+    dimensions: list[dict]    # [{name, weight, rubric}, ...]
+    hard_gates: list[str]
+    notes: str = ""
+    error: Optional[str] = None
+    model_version: str = ""
+
+    def weights(self) -> dict[str, float]:
+        """Normalized weight dict the recommend module expects."""
+        total = sum(float(d.get("weight") or 0) for d in self.dimensions) or 1.0
+        return {
+            d["name"]: float(d.get("weight") or 0) / total
+            for d in self.dimensions if d.get("name")
+        }
+
+    def as_json(self) -> str:
+        return json.dumps({
+            "dimensions": self.dimensions,
+            "hard_gates": self.hard_gates,
+            "notes": self.notes,
+            "model_version": self.model_version,
+        })
+
+
+# Module-level cache : (event_id, config_hash) -> (cached_at, Rubric).
+_RUBRIC_CACHE: dict[tuple[int, str], tuple[float, Rubric]] = {}
+
+
+def reset_rubric_cache() -> None:
+    _RUBRIC_CACHE.clear()
+
+
+def _config_hash(triage_config_json: str) -> str:
+    """Stable fingerprint of the config so cache invalidates on edit."""
+    return hashlib.sha256((triage_config_json or "").encode("utf-8")).hexdigest()[:16]
+
+
+_DIMENSION_NAMES: tuple[str, ...] = (
+    "sponsor_fit", "event_fit", "role_relevance", "company_relevance",
+    "stage_relevance", "seriousness_legitimacy", "room_value", "application_quality",
+)
+
+
+_RUBRIC_SYSTEM = """You synthesize a scoring rubric for an event sponsor's applicant triage.
+
+The host has shared:
+  - sponsor identity + what they're sponsoring
+  - the event goal + format
+  - an 'ideal attendee' description
+  - hard filters (drop the applicant if these aren't met)
+  - nice-to-have signals
+  - anti-fit examples (categories of applicant the host does NOT want)
+
+Your job: produce a JSON rubric covering EXACTLY these 8 dimensions, each
+with a weight (0-1, sum to 1.0) and a 'rubric' field that tells the
+per-applicant scorer how to score that dimension 0-100.
+
+  sponsor_fit             : Is this applicant valuable for the SPONSOR?
+                            Could they buy, use, invest in, partner with,
+                            or generate referrals for the sponsor at MEANINGFUL SCALE?
+                            Anti-fit examples should score AT MOST 30 here.
+  event_fit               : Are they appropriate for the event format?
+                            Dinners stricter than cafes; cafes stricter than mixers.
+  role_relevance          : Founder, operator, engineer, creator, investor,
+                            researcher, etc. Match against host's ideal.
+  company_relevance       : Right kind of company? Startup vs agency vs service
+                            business vs creator vs research lab. Encode the
+                            distinction the sponsor cares about.
+  stage_relevance         : Pre-revenue / early-stage / scaling / enterprise.
+                            Some events want 'too early'; others want 'too late'.
+  seriousness_legitimacy  : Real and substantial vs overstating or thin?
+                            Do public claims match private application answers?
+  room_value              : Would this person make the room BETTER for the
+                            other attendees + the sponsor? (Network density,
+                            specific expertise, follow-up generation.)
+  application_quality     : Did they fill it in thoughtfully?
+                            Did their answers match the event goal?
+
+KEY RULES
+  - The rubric for sponsor_fit MUST encode the anti-fit examples explicitly :
+    'An applicant matching <anti_fit_example> scores AT MOST 30.'
+  - The rubric for stage_relevance MUST take a clear position on what stage
+    is correct for THIS event (not 'any').
+  - Weights should reflect what matters MOST for this specific event:
+    sponsor_fit + role_relevance are typically heaviest for sponsored events.
+  - Weights should sum to 1.0 (or very close : we normalize).
+  - hard_gates : 0-3 short statements like 'Must be in NYC' that, if violated,
+    cap the overall score at 30 regardless of dimension scores.
+  - notes : 1-2 sentences for the human reviewer about how to interpret edge
+    cases, especially borderline applicants.
+
+OUTPUT FORMAT
+Return ONLY JSON. No prose, no markdown fences. Schema:
+
+{
+  "dimensions": [
+    { "name": "sponsor_fit", "weight": 0.30,
+      "rubric": "Score 0-100. ..." },
+    ...8 dimensions...
+  ],
+  "hard_gates": ["...", "..."],
+  "notes": "..."
+}"""
+
+
+def _build_user_message(triage_config: dict, pool_summary: dict) -> str:
+    parts = ["TRIAGE CONFIG", json.dumps(triage_config, indent=2),
+             "", "APPLICANT POOL SUMMARY",
+             json.dumps(pool_summary, indent=2),
+             "", "Generate the rubric JSON now."]
+    return "\n".join(parts)
+
+
+def _summarize_pool(applicants: list) -> dict:
+    """Light stats about who actually applied : helps the rubric calibrate
+    to the real pool rather than a hypothetical one."""
+    if not applicants:
+        return {"total": 0, "with_linkedin": 0, "with_company": 0,
+                "top_roles": [], "top_companies": []}
+    role_counts: dict[str, int] = {}
+    company_counts: dict[str, int] = {}
+    with_linkedin = 0
+    with_company = 0
+    for a in applicants:
+        r = (getattr(a, "role", None) or "").strip().lower()
+        c = (getattr(a, "company", None) or "").strip().lower()
+        if r: role_counts[r] = role_counts.get(r, 0) + 1
+        if c: company_counts[c] = company_counts.get(c, 0) + 1
+        if (getattr(a, "linkedin_url", None) or "").strip(): with_linkedin += 1
+        if c: with_company += 1
+    top_n = lambda d: [k for k, _ in sorted(d.items(), key=lambda kv: -kv[1])[:10]]
+    return {
+        "total": len(applicants),
+        "with_linkedin": with_linkedin,
+        "with_company": with_company,
+        "top_roles": top_n(role_counts),
+        "top_companies": top_n(company_counts),
+    }
+
+
+def _default_rubric(error: str = "") -> Rubric:
+    """Fallback when synthesis fails. Equal weights, generic rubric text.
+    Better than no scoring at all."""
+    dims = [
+        {"name": n, "weight": round(1.0 / len(_DIMENSION_NAMES), 4),
+         "rubric": f"Score {n} 0-100 based on the applicant's fit."}
+        for n in _DIMENSION_NAMES
+    ]
+    return Rubric(dimensions=dims, hard_gates=[],
+                  notes="Default rubric (synthesis failed or skipped).",
+                  error=error, model_version="default-v1")
+
+
+def synthesize_rubric(event_id: int, triage_config_json: str,
+                     applicants: list) -> Rubric:
+    """Run rubric synthesis for this event. Cached by (event_id, config_hash).
+
+    Falls back to a generic equal-weight rubric on any failure so the
+    scoring pipeline always has something to apply. Synthesis failures
+    are logged + recorded on Rubric.error.
+    """
+    cfg_hash = _config_hash(triage_config_json)
+    key = (event_id, cfg_hash)
+    now = time.time()
+    hit = _RUBRIC_CACHE.get(key)
+    if hit and now - hit[0] < RUBRIC_CACHE_TTL_S:
+        return hit[1]
+
+    try:
+        triage_config = json.loads(triage_config_json) if triage_config_json else {}
+    except json.JSONDecodeError:
+        triage_config = {}
+
+    if not (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
+        rubric = _default_rubric(error="ANTHROPIC_API_KEY unset")
+        _RUBRIC_CACHE[key] = (now, rubric)
+        return rubric
+
+    pool_summary = _summarize_pool(applicants)
+    user_msg = _build_user_message(triage_config, pool_summary)
+
+    try:
+        from anthropic import Anthropic
+        client = Anthropic()
+        resp = client.messages.create(
+            model=RUBRIC_MODEL,
+            max_tokens=RUBRIC_MAX_TOKENS,
+            timeout=30,
+            system=[{"type": "text", "text": _RUBRIC_SYSTEM,
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[
+                {"role": "user", "content": user_msg},
+                {"role": "assistant", "content": "{"},
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [triage.rubric] Sonnet failed: {type(exc).__name__}: {exc}")
+        rubric = _default_rubric(error=f"{type(exc).__name__}: {exc}")
+        _RUBRIC_CACHE[key] = (now, rubric)
+        return rubric
+
+    text_chunks = [b.text for b in resp.content if getattr(b, "type", "") == "text"]
+    full = "{" + "\n".join(text_chunks)
+    parsed = extract_json(full)
+    if not parsed or not isinstance(parsed.get("dimensions"), list):
+        print(f"  [triage.rubric] couldn't parse JSON from Sonnet output")
+        rubric = _default_rubric(error="couldn't parse rubric JSON")
+        _RUBRIC_CACHE[key] = (now, rubric)
+        return rubric
+
+    dims = [d for d in parsed["dimensions"] if d.get("name") in _DIMENSION_NAMES]
+    rubric = Rubric(
+        dimensions=dims,
+        hard_gates=[str(g) for g in (parsed.get("hard_gates") or []) if g],
+        notes=str(parsed.get("notes") or ""),
+        model_version=RUBRIC_MODEL,
+    )
+    _RUBRIC_CACHE[key] = (now, rubric)
+    return rubric

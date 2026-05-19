@@ -23,6 +23,7 @@ prospect just won't get the signal bonus.
 from __future__ import annotations
 import os
 import re
+import time
 from typing import Optional
 
 
@@ -33,6 +34,62 @@ def _api_key() -> str:
 
 def exa_available() -> bool:
     return bool(_api_key())
+
+
+def fetch_url_snippet(url: str, max_chars: int = 1500) -> str:
+    """Fetch a URL's page text via Exa's /contents endpoint.
+
+    Used by triage enrichment to pull a LinkedIn profile snippet or a
+    company website description. Returns the page text (truncated to
+    max_chars) or an empty string on any failure : enrichment is
+    best-effort, never blocks scoring.
+
+    Caches in process for 1h to avoid re-fetching the same LinkedIn URL
+    when the same applicant gets re-evaluated.
+    """
+    if not url or not exa_available():
+        return ""
+    # Module-level cache : OK to share across requests.
+    cache = _url_snippet_cache()
+    now = time.time()
+    hit = cache.get(url)
+    if hit and now - hit[0] < 3600:
+        return hit[1][:max_chars]
+    try:
+        import httpx
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(
+                "https://api.exa.ai/contents",
+                headers={"x-api-key": _api_key(),
+                         "content-type": "application/json",
+                         "accept": "application/json"},
+                json={"urls": [url], "text": True},
+            )
+    except Exception:
+        return ""
+    if resp.status_code >= 400:
+        return ""
+    try:
+        data = resp.json()
+    except Exception:
+        return ""
+    results = data.get("results") or []
+    if not results:
+        return ""
+    text = (results[0].get("text") or "").strip()
+    cache[url] = (now, text)
+    return text[:max_chars]
+
+
+def _url_snippet_cache() -> dict:
+    """Module-level singleton dict. Lazy-init to avoid a top-level mutable
+    that some test patterns find confusing."""
+    global _URL_SNIPPET_CACHE  # noqa: PLW0603
+    try:
+        return _URL_SNIPPET_CACHE
+    except NameError:
+        _URL_SNIPPET_CACHE = {}
+        return _URL_SNIPPET_CACHE
 
 
 # Extract the handle from each platform's profile URL

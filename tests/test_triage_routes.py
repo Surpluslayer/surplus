@@ -101,6 +101,16 @@ def test_get_config_returns_empty_on_corrupted_json(db, user_and_event):
 
 # ── upload ─────────────────────────────────────────────────────────────
 
+def _bg_tasks():
+    """A real BackgroundTasks instance whose add_task is a no-op for tests :
+    we don't want the route to actually fire the Anthropic-backed evaluator
+    in unit tests."""
+    from fastapi import BackgroundTasks
+    bt = BackgroundTasks()
+    bt.add_task = lambda *args, **kwargs: None  # type: ignore
+    return bt
+
+
 def test_upload_persists_applicants(db, user_and_event):
     from backend.routes.triage import upload_applicants
     user, ev = user_and_event
@@ -109,9 +119,10 @@ def test_upload_persists_applicants(db, user_and_event):
         "Maya,m@x.com,Staff Infra,Lo91r,https://linkedin.com/in/maya,no\n"
         "Theo,t@x.com,Distrib Sys,Fly.io,https://linkedin.com/in/theo,yes\n"
     )
-    result = upload_applicants(ev.id, _upload_file(csv), db, user)
+    result = upload_applicants(ev.id, _bg_tasks(), _upload_file(csv), db, user)
     assert result.parsed == 2
     assert result.inserted == 2
+    assert result.evaluation_started is True
     db.refresh(ev)
     assert len(ev.applicants) == 2
     maya = next(a for a in ev.applicants if a.name == "Maya")
@@ -124,19 +135,16 @@ def test_upload_persists_applicants(db, user_and_event):
 def test_upload_rejects_non_csv_content_type(db, user_and_event):
     from backend.routes.triage import upload_applicants
     user, ev = user_and_event
-    # Send a PNG-ish content-type to make sure we 400
     bad_file = UploadFile(
         filename="not-a-csv.png", file=io.BytesIO(b"not csv"),
         headers={"content-type": "image/png"},
     )
     with pytest.raises(HTTPException) as exc:
-        upload_applicants(ev.id, bad_file, db, user)
+        upload_applicants(ev.id, _bg_tasks(), bad_file, db, user)
     assert exc.value.status_code == 400
 
 
 def test_upload_accepts_csv_extension_even_with_octet_stream(db, user_and_event):
-    """Browsers sometimes send application/octet-stream for CSVs;
-    accept it as long as the filename ends in .csv."""
     from backend.routes.triage import upload_applicants
     user, ev = user_and_event
     csv = "Name,Email\nMaya,m@x.com\n"
@@ -144,19 +152,79 @@ def test_upload_accepts_csv_extension_even_with_octet_stream(db, user_and_event)
         filename="applicants.csv", file=io.BytesIO(csv.encode()),
         headers={"content-type": "application/octet-stream"},
     )
-    result = upload_applicants(ev.id, f, db, user)
+    result = upload_applicants(ev.id, _bg_tasks(), f, db, user)
     assert result.inserted == 1
+
+
+def test_upload_with_zero_rows_does_not_start_evaluation(db, user_and_event):
+    """Empty CSV : don't kick off a useless background scoring run."""
+    from backend.routes.triage import upload_applicants
+    user, ev = user_and_event
+    result = upload_applicants(ev.id, _bg_tasks(),
+                               _upload_file("Name,Email\n"), db, user)
+    assert result.inserted == 0
+    assert result.evaluation_started is False
 
 
 # ── list ───────────────────────────────────────────────────────────────
 
-def test_list_applicants_returns_sorted_by_created_at(db, user_and_event):
+def test_list_applicants_returns_sorted_by_fit_score_when_evaluated(db, user_and_event):
+    """When evaluations exist, accepts surface first. Without evaluations,
+    falls back to created_at order so newly-uploaded CSVs render predictably."""
     from backend.routes.triage import upload_applicants, list_applicants
+    from backend import models
     user, ev = user_and_event
-    csv = "Name,Email\nFirst,1@x.com\nSecond,2@x.com\nThird,3@x.com\n"
-    upload_applicants(ev.id, _upload_file(csv), db, user)
+    csv = "Name,Email\nAlpha,a@x.com\nBeta,b@x.com\nGamma,c@x.com\n"
+    upload_applicants(ev.id, _bg_tasks(), _upload_file(csv), db, user)
+    # No evaluations yet : falls back to created_at order (== CSV order).
     listed = list_applicants(ev.id, db, user)
-    assert [a.name for a in listed] == ["First", "Second", "Third"]
-    # Spot-check ApplicantOut shape
-    assert listed[0].raw_application_data == {}
-    assert listed[0].email == "1@x.com"
+    assert [a.name for a in listed] == ["Alpha", "Beta", "Gamma"]
+
+    # Now add evaluations with different fit scores. Order should flip.
+    by_name = {a.name: a for a in ev.applicants}
+    db.add(models.ApplicantEvaluation(
+        applicant_id=by_name["Beta"].id, event_id=ev.id,
+        fit_score=90, recommendation="accept",
+    ))
+    db.add(models.ApplicantEvaluation(
+        applicant_id=by_name["Gamma"].id, event_id=ev.id,
+        fit_score=70, recommendation="maybe",
+    ))
+    db.add(models.ApplicantEvaluation(
+        applicant_id=by_name["Alpha"].id, event_id=ev.id,
+        fit_score=30, recommendation="reject",
+    ))
+    db.commit()
+    listed = list_applicants(ev.id, db, user)
+    assert [a.name for a in listed] == ["Beta", "Gamma", "Alpha"]
+    # And the evaluation field is populated
+    assert listed[0].evaluation is not None
+    assert listed[0].evaluation.fit_score == 90
+    assert listed[0].evaluation.recommendation == "accept"
+
+
+# ── progress polling ───────────────────────────────────────────────────
+
+def test_evaluation_progress_reports_pending_count(db, user_and_event):
+    from backend.routes.triage import (
+        upload_applicants, get_evaluation_progress,
+    )
+    from backend import models
+    user, ev = user_and_event
+    csv = "Name,Email\nA,1@x.com\nB,2@x.com\nC,3@x.com\n"
+    upload_applicants(ev.id, _bg_tasks(), _upload_file(csv), db, user)
+
+    progress = get_evaluation_progress(ev.id, db, user)
+    assert progress.total_applicants == 3
+    assert progress.scored == 0
+    assert progress.pending == 3
+
+    # Score one : pending should go down.
+    a = ev.applicants[0]
+    db.add(models.ApplicantEvaluation(
+        applicant_id=a.id, event_id=ev.id, fit_score=80, recommendation="accept",
+    ))
+    db.commit()
+    progress = get_evaluation_progress(ev.id, db, user)
+    assert progress.scored == 1
+    assert progress.pending == 2
