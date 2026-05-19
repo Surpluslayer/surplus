@@ -281,7 +281,7 @@ function Intake({ profile, setProfile, onRun }) {
         <section className="card">
           <h3><span className="card-num">B</span> Event shape</h3>
           <label>Headcount : <strong>{profile.headcount}</strong> guests</label>
-          <input type="range" min="12" max="160" step="2" value={profile.headcount}
+          <input type="range" min="0" max="160" step="2" value={profile.headcount}
             onChange={(e) => set("headcount", +e.target.value)} className="range-in" />
           <label>Format</label>
           <div className="chip-row">
@@ -303,7 +303,7 @@ function Intake({ profile, setProfile, onRun }) {
             ))}
           </div>
           <label>Budget : <strong>${profile.budget.toLocaleString()}</strong></label>
-          <input type="range" min="2000" max="40000" step="500" value={profile.budget}
+          <input type="range" min="0" max="40000" step="500" value={profile.budget}
             onChange={(e) => set("budget", +e.target.value)} className="range-in" />
           <div className="derived">
             <div>
