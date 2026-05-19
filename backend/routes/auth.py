@@ -37,11 +37,13 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session as DbSession
 
 from ..auth import (
+    LAST_ACCOUNT_COOKIE,
     SESSION_COOKIE,
     clear_session_cookie,
     create_session,
     current_user,
     revoke_session,
+    set_last_account_cookie,
     set_session_cookie,
 )
 from ..db import get_db
@@ -110,6 +112,32 @@ def _ensure_unipile_configured() -> tuple[str, str]:
 
 # ─── 1. Start: create hosted-auth link ─────────────────────────────
 
+def _build_hosted_auth_body(request: Request, db: DbSession, state_token: str,
+                            base: str, dsn: str) -> dict:
+    """Construct the /hosted/accounts/link body, picking type=reconnect when
+    the browser has a `surplus_last_account` cookie pointing at a known User.
+    Falls back to type=create for first-time signups + cross-browser cases
+    (where the cookie isn't there)."""
+    expires = _unipile_iso_timestamp(_utcnow() + timedelta(hours=1))
+    common: dict = {
+        "providers": ["LINKEDIN"],
+        "api_url": dsn,
+        "expiresOn": expires,
+        "success_redirect_url": f"{base}/api/auth/linkedin/callback?state={state_token}",
+        "failure_redirect_url": f"{base}/signin?error=linkedin_auth_failed",
+        "notify_url": f"{base}/api/auth/linkedin/webhook",
+        "name": state_token,
+    }
+    last_account = (request.cookies.get(LAST_ACCOUNT_COOKIE) or "").strip()
+    if last_account:
+        existing = db.query(User).filter(User.unipile_account_id == last_account).first()
+        if existing:
+            # Returning user on the same browser : refresh the existing
+            # account rather than minting a fresh one (avoids burning a seat).
+            return {"type": "reconnect", "reconnect_account": last_account, **common}
+    return {"type": "create", **common}
+
+
 @router.post("/linkedin/start")
 async def linkedin_start(
     request: Request,
@@ -122,22 +150,7 @@ async def linkedin_start(
     db.commit()
 
     base = _surplus_base_url(request)
-    expires = _unipile_iso_timestamp(_utcnow() + timedelta(hours=1))
-
-    body = {
-        "type": "create",
-        "providers": ["LINKEDIN"],
-        "api_url": dsn,
-        "expiresOn": expires,
-        # Unipile redirects the user's browser here after the hosted flow.
-        # We pass the state_token in the URL so callback can correlate.
-        "success_redirect_url": f"{base}/api/auth/linkedin/callback?state={state_token}",
-        "failure_redirect_url": f"{base}/signin?error=linkedin_auth_failed",
-        # Webhook fires server-to-server with the new account_id.
-        "notify_url": f"{base}/api/auth/linkedin/webhook",
-        # The state_token is echoed back in the webhook payload as `name`.
-        "name": state_token,
-    }
+    body = _build_hosted_auth_body(request, db, state_token, base, dsn)
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post(
@@ -192,17 +205,9 @@ async def linkedin_start_redirect(
     db.commit()
 
     base = _surplus_base_url(request)
-    expires = _unipile_iso_timestamp(_utcnow() + timedelta(hours=1))
-    body = {
-        "type": "create",
-        "providers": ["LINKEDIN"],
-        "api_url": dsn,
-        "expiresOn": expires,
-        "success_redirect_url": f"{base}/api/auth/linkedin/callback?state={state_token}",
-        "failure_redirect_url": f"{base}/?error=linkedin_auth_failed",
-        "notify_url": f"{base}/api/auth/linkedin/webhook",
-        "name": state_token,
-    }
+    body = _build_hosted_auth_body(request, db, state_token, base, dsn)
+    # start-redirect uses a different failure URL (landing page, not /signin)
+    body["failure_redirect_url"] = f"{base}/?error=linkedin_auth_failed"
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post(
@@ -373,6 +378,11 @@ async def linkedin_callback(
 
     response = RedirectResponse(base_redirect, status_code=303)
     set_session_cookie(response, sess.session_token)
+    # Persist the account_id so the NEXT sign-in from this browser hits
+    # type="reconnect" instead of "create" : no duplicate Unipile seat,
+    # and usually no LinkedIn 2FA either (Unipile reuses the live session).
+    if user.unipile_account_id:
+        set_last_account_cookie(response, user.unipile_account_id)
     return response
 
 
