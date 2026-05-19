@@ -25,14 +25,6 @@ from .models import Session, User
 SESSION_COOKIE = "surplus_session"
 SESSION_TTL_DAYS = 30
 
-# Long-lived cookie that remembers which Unipile account this browser was
-# last signed in with. Read on /linkedin/start so we can call Unipile with
-# type="reconnect" instead of type="create", avoiding a duplicate billed
-# account every time the user re-signs in from the same browser. Outlasts
-# the session cookie so an expired session still gets a frictionless return.
-LAST_ACCOUNT_COOKIE = "surplus_last_account"
-LAST_ACCOUNT_TTL_DAYS = 365
-
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -72,22 +64,6 @@ def set_session_cookie(response: Response, session_token: str) -> None:
 
 def clear_session_cookie(response: Response) -> None:
     response.delete_cookie(key=SESSION_COOKIE, path="/")
-
-
-def set_last_account_cookie(response: Response, account_id: str) -> None:
-    """Persist the Unipile account_id so subsequent sign-ins from this
-    browser can call type='reconnect' instead of type='create'. Lax
-    SameSite so the Unipile-hosted-auth → /linkedin/callback redirect
-    carries it."""
-    response.set_cookie(
-        key=LAST_ACCOUNT_COOKIE,
-        value=account_id,
-        max_age=LAST_ACCOUNT_TTL_DAYS * 24 * 60 * 60,
-        httponly=True,
-        secure=True,
-        samesite="lax",
-        path="/",
-    )
 
 
 def _as_aware_utc(dt: Optional[datetime]) -> Optional[datetime]:
