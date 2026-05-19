@@ -343,3 +343,144 @@ def test_roi_ledger_omits_sponsor_when_event_has_none(db, user_and_event):
     p = _make_prospect(db, ev)
     ledger, _ = roi_agent.settle(ev, [p])
     assert ledger[0]["sponsor"] == ""
+
+
+# ── sponsor CRUD endpoints ─────────────────────────────────────────────
+
+def test_create_sponsor_endpoint_persists(db, user_and_event):
+    from backend.routes.matching import create_sponsor, SponsorCreate
+    user, ev = user_and_event
+    body = SponsorCreate(
+        name="Cohere", tier="gold",
+        buyer_profile=schemas.SponsorBuyerProfile(
+            target_role="ML platform engineer", seniority="Senior",
+            industry="ml-platform",
+        ),
+    )
+    out = create_sponsor(ev.id, body, db, user)
+    assert out.name == "Cohere"
+    assert out.buyer_profile.target_role == "ML platform engineer"
+    rows = db.query(models.Sponsor).filter(
+        models.Sponsor.event_id == ev.id
+    ).all()
+    assert len(rows) == 1
+
+
+def test_create_sponsor_rejects_blank_name(db, user_and_event):
+    from backend.routes.matching import create_sponsor, SponsorCreate
+    user, ev = user_and_event
+    with pytest.raises(Exception) as exc:
+        create_sponsor(ev.id, SponsorCreate(name="  "), db, user)
+    assert getattr(exc.value, "status_code", 0) == 422
+
+
+def test_list_sponsors_returns_creation_order(db, user_and_event):
+    from backend.routes.matching import create_sponsor, list_sponsors, SponsorCreate
+    user, ev = user_and_event
+    create_sponsor(ev.id, SponsorCreate(name="A"), db, user)
+    create_sponsor(ev.id, SponsorCreate(name="B"), db, user)
+    rows = list_sponsors(ev.id, db, user)
+    assert [s.name for s in rows] == ["A", "B"]
+
+
+def test_update_sponsor_patches_fields(db, user_and_event):
+    from backend.routes.matching import (
+        create_sponsor, update_sponsor, SponsorCreate, SponsorUpdate,
+    )
+    user, ev = user_and_event
+    created = create_sponsor(
+        ev.id, SponsorCreate(name="Cohere", tier="silver"), db, user,
+    )
+    out = update_sponsor(
+        ev.id, created.id,
+        SponsorUpdate(tier="gold",
+                       buyer_profile=schemas.SponsorBuyerProfile(
+                           target_role="ML engineer", industry="ml-platform")),
+        db, user,
+    )
+    assert out.tier == "gold"
+    assert out.buyer_profile.target_role == "ML engineer"
+    assert out.name == "Cohere"  # name unchanged
+
+
+def test_update_sponsor_wipes_cached_matches(db, user_and_event, monkeypatch):
+    from backend.routes.matching import (
+        create_sponsor, update_sponsor, match as match_route,
+        SponsorCreate, SponsorUpdate,
+    )
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    user, ev = user_and_event
+    _make_prospect(db, ev, name="A", role="Senior ML platform engineer",
+                   works_on="ml-platform")
+    _make_prospect(db, ev, name="B", side="Hires",
+                   offers="hires", seeks="ml infra", works_on="ml-platform")
+    sponsor = create_sponsor(
+        ev.id, SponsorCreate(
+            name="Cohere",
+            buyer_profile=schemas.SponsorBuyerProfile(
+                target_role="ML platform engineer", seniority="Senior",
+                industry="ml-platform"),
+        ),
+        db, user,
+    )
+    db.refresh(ev)
+    match_route(ev.id, db=db, user=user)
+    assert db.query(models.SponsorMatch).count() > 0
+    # PATCH should clear the cached matches
+    update_sponsor(
+        ev.id, sponsor.id,
+        SponsorUpdate(buyer_profile=schemas.SponsorBuyerProfile(
+            target_role="marketer", industry="brand")),
+        db, user,
+    )
+    assert db.query(models.SponsorMatch).count() == 0
+
+
+def test_delete_sponsor_cascades_matches(db, user_and_event, monkeypatch):
+    from backend.routes.matching import (
+        create_sponsor, delete_sponsor, match as match_route, SponsorCreate,
+    )
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    user, ev = user_and_event
+    _make_prospect(db, ev, name="A", role="Senior ML platform engineer",
+                   works_on="ml-platform")
+    _make_prospect(db, ev, name="B", side="Hires",
+                   offers="hires", seeks="ml infra", works_on="ml-platform")
+    sponsor = create_sponsor(
+        ev.id, SponsorCreate(
+            name="Cohere",
+            buyer_profile=schemas.SponsorBuyerProfile(
+                target_role="ML platform engineer", seniority="Senior",
+                industry="ml-platform"),
+        ),
+        db, user,
+    )
+    db.refresh(ev)
+    match_route(ev.id, db=db, user=user)
+    assert db.query(models.SponsorMatch).count() > 0
+    delete_sponsor(ev.id, sponsor.id, db, user)
+    assert db.query(models.SponsorMatch).count() == 0
+    assert db.query(models.Sponsor).count() == 0
+
+
+def test_cannot_touch_another_users_sponsor(db, user_and_event):
+    """The owned-event check covers sponsor access too : a different
+    user can't read / patch / delete a sponsor on someone else's event."""
+    from backend.routes.matching import (
+        create_sponsor, update_sponsor, delete_sponsor, list_sponsors,
+        SponsorCreate, SponsorUpdate,
+    )
+    user, ev = user_and_event
+    sponsor = create_sponsor(
+        ev.id, SponsorCreate(name="Cohere"), db, user,
+    )
+    intruder = models.User(name="Mallory", unipile_account_id=None)
+    db.add(intruder); db.commit()
+    # list / patch / delete should all 404 via get_owned_event
+    with pytest.raises(Exception) as exc:
+        list_sponsors(ev.id, db, intruder)
+    assert getattr(exc.value, "status_code", 0) == 404
+    with pytest.raises(Exception):
+        update_sponsor(ev.id, sponsor.id, SponsorUpdate(tier="x"), db, intruder)
+    with pytest.raises(Exception):
+        delete_sponsor(ev.id, sponsor.id, db, intruder)

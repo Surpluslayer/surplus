@@ -1,5 +1,6 @@
 """routes/matching.py : stage 04. Build the symbiotic value graph + groups."""
 from __future__ import annotations
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -405,3 +406,120 @@ def _load_persisted_sponsor_matches(db: Session, ev: models.Event) -> list[dict]
             "matches": match_rows,
         })
     return payload
+
+
+# ─── Sponsor CRUD ──────────────────────────────────────────────────────
+# Sponsors are added on the Matching screen, not at Intake. Three endpoints:
+# POST creates one, PATCH edits one, DELETE removes one. Each mutation
+# wipes the cached sponsor_match rows for that sponsor so the next
+# /match call (or the optional re-score below) rebuilds them.
+#
+# We deliberately DO NOT auto-trigger a full /match recompute here :
+# the caller decides when to refetch. Frontend posts a sponsor then
+# re-calls /match in the same flow.
+
+
+class SponsorCreate(BaseModel):
+    name: str
+    tier: str = ""
+    buyer_profile: schemas.SponsorBuyerProfile = schemas.SponsorBuyerProfile()
+
+
+class SponsorUpdate(BaseModel):
+    """All fields optional : PATCH semantics. Send only what changed."""
+    name: str | None = None
+    tier: str | None = None
+    buyer_profile: schemas.SponsorBuyerProfile | None = None
+
+
+@router.get("/{event_id}/sponsors", response_model=list[schemas.SponsorOut])
+def list_sponsors(
+    event_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Every sponsor on this event, in creation order."""
+    ev = get_owned_event(event_id, user, db)
+    rows = sorted(ev.sponsors or [], key=lambda s: s.id)
+    return [schemas.SponsorOut.of(s) for s in rows]
+
+
+@router.post("/{event_id}/sponsors", response_model=schemas.SponsorOut,
+             status_code=201)
+def create_sponsor(
+    event_id: int,
+    body: SponsorCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Add a sponsor to an existing event. Triggers no recompute by
+    itself : the caller re-runs /match to refresh SponsorMatch rows."""
+    ev = get_owned_event(event_id, user, db)
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(422, "sponsor name is required")
+    sponsor = models.Sponsor(
+        event_id=ev.id,
+        name=name,
+        tier=(body.tier or "").strip(),
+        buyer_profile=json.dumps(body.buyer_profile.model_dump()),
+    )
+    db.add(sponsor)
+    db.commit()
+    db.refresh(sponsor)
+    return schemas.SponsorOut.of(sponsor)
+
+
+def _get_owned_sponsor(db: Session, event_id: int, sponsor_id: int,
+                        user: models.User) -> models.Sponsor:
+    ev = get_owned_event(event_id, user, db)
+    sponsor = db.get(models.Sponsor, sponsor_id)
+    if sponsor is None or sponsor.event_id != ev.id:
+        raise HTTPException(404, "sponsor not on this event")
+    return sponsor
+
+
+@router.patch("/{event_id}/sponsors/{sponsor_id}",
+              response_model=schemas.SponsorOut)
+def update_sponsor(
+    event_id: int,
+    sponsor_id: int,
+    body: SponsorUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Edit a sponsor in place. Wipes the sponsor's existing
+    SponsorMatch rows so a stale buyer_profile can't linger as match
+    rationale : the next /match call rebuilds them."""
+    sponsor = _get_owned_sponsor(db, event_id, sponsor_id, user)
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(422, "sponsor name cannot be empty")
+        sponsor.name = name
+    if body.tier is not None:
+        sponsor.tier = body.tier.strip()
+    if body.buyer_profile is not None:
+        sponsor.buyer_profile = json.dumps(body.buyer_profile.model_dump())
+    # Wipe cached matches for this sponsor : the next /match recomputes.
+    db.query(models.SponsorMatch).filter(
+        models.SponsorMatch.sponsor_id == sponsor.id
+    ).delete(synchronize_session="fetch")
+    db.commit()
+    db.refresh(sponsor)
+    return schemas.SponsorOut.of(sponsor)
+
+
+@router.delete("/{event_id}/sponsors/{sponsor_id}", status_code=204)
+def delete_sponsor(
+    event_id: int,
+    sponsor_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Remove one sponsor. Cascade clears its SponsorMatch rows via
+    the relationship's `cascade='all, delete-orphan'`."""
+    sponsor = _get_owned_sponsor(db, event_id, sponsor_id, user)
+    db.delete(sponsor)
+    db.commit()
+    return None
