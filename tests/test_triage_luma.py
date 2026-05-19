@@ -12,9 +12,12 @@ import json
 import pytest
 
 from backend.triage.luma import (
+    LumaEvent,
     LumaFetchError,
+    TriageSuggestion,
     fetch_luma_event,
     parse_luma_html,
+    suggest_triage_config,
     _validate_luma_url,
 )
 
@@ -181,3 +184,22 @@ def test_fetch_raises_when_no_metadata():
         status_code=200, text="<html><head></head><body>nope</body></html>"))
     with pytest.raises(LumaFetchError):
         fetch_luma_event("https://lu.ma/private", client=client)
+
+
+# ── Claude-suggestion fallback ────────────────────────────────────────
+
+def test_suggest_returns_empty_without_description():
+    """No description -> no Claude call -> empty TriageSuggestion."""
+    ev = LumaEvent(url="https://lu.ma/x", name="No desc")
+    sug = suggest_triage_config(ev)
+    assert sug == TriageSuggestion()
+
+
+def test_suggest_returns_empty_without_api_key(monkeypatch):
+    """No ANTHROPIC_API_KEY -> degrade gracefully to empty suggestions
+    so the import still works in dev / when the key rotates."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    ev = LumaEvent(url="https://lu.ma/x", name="X",
+                   description="A founders dinner in NYC.")
+    sug = suggest_triage_config(ev)
+    assert sug == TriageSuggestion()

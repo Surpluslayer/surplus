@@ -294,18 +294,33 @@ function ConfigStep({ user, eventId, setEventId, onNext }) {
     }
     setLumaLoading(true);
     try {
-      const ev = await api.previewLumaEvent(url);
+      const res = await api.previewLumaEvent(url);
+      const ev = res.event || {};
+      const sug = res.suggestions || {};
+      // ── Direct fields from the Luma page ────────────────────────────
       if (ev.name) setEventName(ev.name);
-      // Use the Luma description as a starting point for event_goal :
-      // the operator can tighten it before continuing.
       if (ev.description) {
         setEventGoal((prev) => prev || ev.description);
       }
       if (ev.capacity && !capacity) setCapacity(String(ev.capacity));
       if (ev.location) {
-        setNotes((prev) =>
-          prev ? prev : `Location: ${ev.location}`
-        );
+        setNotes((prev) => prev ? prev : `Location: ${ev.location}`);
+      }
+      // ── Claude-inferred fields (don't overwrite operator typing) ────
+      if (sug.sponsor_name) {
+        setSponsorName((prev) => prev || sug.sponsor_name);
+      }
+      if (sug.ideal_attendee_profile) {
+        setIdealProfile((prev) => prev || sug.ideal_attendee_profile);
+      }
+      if (Array.isArray(sug.hard_filters) && sug.hard_filters.length) {
+        setHardFilters((prev) => prev || sug.hard_filters.join("\n"));
+      }
+      if (Array.isArray(sug.anti_fit_examples) && sug.anti_fit_examples.length) {
+        setAntiFit((prev) => prev || sug.anti_fit_examples.join("\n"));
+      }
+      if (Array.isArray(sug.nice_to_have_signals) && sug.nice_to_have_signals.length) {
+        setNiceToHave((prev) => prev || sug.nice_to_have_signals.join("\n"));
       }
       setLumaImported(ev);
     } catch (err) {
@@ -419,7 +434,8 @@ function ConfigStep({ user, eventId, setEventId, onNext }) {
             <Check size={14} /> Imported "{lumaImported.name || "event"}"
             {lumaImported.location ? ` · ${lumaImported.location}` : ""}
             {lumaImported.capacity ? ` · cap ${lumaImported.capacity}` : ""}
-            . Review and tighten the fields below.
+            . We also proposed sponsor / ideal-profile / anti-fit from the
+            description — review and tighten the fields below before continuing.
           </div>
         )}
       </section>
@@ -431,7 +447,7 @@ function ConfigStep({ user, eventId, setEventId, onNext }) {
           <label>Event name <span className="triage-hint">: just for your reference</span></label>
           <input className="triage-in" value={eventName}
                  onChange={(e) => setEventName(e.target.value)}
-                 placeholder="Stripe x ElevenLabs cafe, March" />
+                 placeholder="Event name" />
 
           <label>Event type</label>
           <div className="triage-chips">
@@ -445,12 +461,12 @@ function ConfigStep({ user, eventId, setEventId, onNext }) {
           <label>Sponsor / partner name</label>
           <input className="triage-in" value={sponsorName}
                  onChange={(e) => setSponsorName(e.target.value)}
-                 placeholder="Stripe x ElevenLabs" />
+                 placeholder="Sponsor or partner" />
 
           <label>Capacity <span className="triage-hint">: optional</span></label>
           <input className="triage-in" value={capacity} type="number" min="1"
                  onChange={(e) => setCapacity(e.target.value)}
-                 placeholder="30" />
+                 placeholder="" />
         </section>
 
         <section className="triage-card">
@@ -459,17 +475,17 @@ function ConfigStep({ user, eventId, setEventId, onNext }) {
           <label>Event goal <span className="triage-hint">: what should this room produce for the sponsor?</span></label>
           <textarea className="triage-ta" value={eventGoal} rows={3}
                     onChange={(e) => setEventGoal(e.target.value)}
-                    placeholder="Builders shipping high-transaction consumer AI products. The sponsor wants founders they could realistically sell to, partner with, or invest in." />
+                    placeholder="What should this room produce for the sponsor?" />
 
           <label>Ideal attendee profile</label>
           <textarea className="triage-ta" value={idealProfile} rows={3}
                     onChange={(e) => setIdealProfile(e.target.value)}
-                    placeholder="Founders with real revenue products, not agencies. B2B SaaS, consumer AI, or marketplace operators." />
+                    placeholder="Who is the right attendee?" />
 
           <label>Hard filters <span className="triage-hint">: one per line. Violations cap the score.</span></label>
           <textarea className="triage-ta" value={hardFilters} rows={3}
                     onChange={(e) => setHardFilters(e.target.value)}
-                    placeholder="Must be in NYC&#10;Must have a real product (not just an idea)" />
+                    placeholder="One filter per line" />
         </section>
 
         <section className="triage-card">
@@ -478,17 +494,17 @@ function ConfigStep({ user, eventId, setEventId, onNext }) {
           <label>Anti-fit examples <span className="triage-hint">: categories the sponsor does NOT want</span></label>
           <textarea className="triage-ta" value={antiFit} rows={4}
                     onChange={(e) => setAntiFit(e.target.value)}
-                    placeholder="Photography businesses&#10;Hobby / lifestyle creators&#10;Service agencies using Stripe for client billing" />
+                    placeholder="One per line" />
 
           <label>Nice-to-have signals <span className="triage-hint">: bonus points if applicants show these</span></label>
           <textarea className="triage-ta" value={niceToHave} rows={3}
                     onChange={(e) => setNiceToHave(e.target.value)}
-                    placeholder="High monthly transaction volume&#10;Real product users (not just signups)&#10;Hiring or fundraising actively" />
+                    placeholder="One per line" />
 
           <label>Notes for reviewers <span className="triage-hint">: optional</span></label>
           <textarea className="triage-ta" value={notes} rows={2}
                     onChange={(e) => setNotes(e.target.value)}
-                    placeholder="If unsure on stage-relevance, lean accept. We have flex on capacity." />
+                    placeholder="" />
         </section>
       </div>
 

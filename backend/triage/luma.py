@@ -20,12 +20,15 @@ adding beautifulsoup just for this.
 """
 from __future__ import annotations
 import json
+import os
 import re
 from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel
+
+from ..jsonx import extract_json
 
 
 LUMA_HOSTS = {"lu.ma", "www.lu.ma", "luma.com", "www.luma.com"}
@@ -47,6 +50,18 @@ class LumaEvent(BaseModel):
     cover_image_url: Optional[str] = None
     host_name: Optional[str] = None
     capacity: Optional[int] = None
+
+
+class TriageSuggestion(BaseModel):
+    """Claude-proposed defaults for fields the Luma page can't tell us
+    directly (sponsor, ideal-attendee, anti-fit, etc). Operator reviews
+    + edits before saving — these are starting points, not authoritative.
+    Empty lists / None mean 'couldn't infer, fill in manually'."""
+    sponsor_name: Optional[str] = None
+    ideal_attendee_profile: Optional[str] = None
+    hard_filters: list[str] = []
+    anti_fit_examples: list[str] = []
+    nice_to_have_signals: list[str] = []
 
 
 class LumaFetchError(Exception):
@@ -262,3 +277,105 @@ def fetch_luma_event(url: str, *, client: Optional[httpx.Client] = None) -> Luma
     finally:
         if owned:
             client.close()
+
+
+# ── Claude-inferred triage suggestions ─────────────────────────────────
+
+_SUGGEST_MODEL = "claude-haiku-4-5-20251001"
+_SUGGEST_MAX_TOKENS = 800
+_SUGGEST_TIMEOUT_S = 20
+
+_SUGGEST_SYSTEM = """You read a public event description and propose triage \
+criteria the event operator can use to filter applicants. You return JSON only.
+
+Rules:
+- Be conservative. If the description is too vague to infer a field, return \
+null (for scalars) or an empty list. Don't fabricate.
+- ideal_attendee_profile : 1–2 sentences naming the kind of person the event \
+is actually for, based on what the description says (not what would be nice).
+- hard_filters : disqualifying conditions implied by the description (location \
+requirement, application gate, etc). One short clause each.
+- anti_fit_examples : categories of applicant the event is clearly NOT for, \
+based on phrasing in the description. One short clause each.
+- nice_to_have_signals : positive indicators the event explicitly values \
+(stage, traction, role, etc). One short clause each.
+- sponsor_name : the brand(s) hosting / co-hosting if obvious from the title \
+or description; null otherwise.
+
+Schema:
+{
+  "sponsor_name": string | null,
+  "ideal_attendee_profile": string | null,
+  "hard_filters": string[],
+  "anti_fit_examples": string[],
+  "nice_to_have_signals": string[]
+}"""
+
+
+def suggest_triage_config(event: LumaEvent) -> TriageSuggestion:
+    """Feed the Luma description into Haiku and return proposed triage
+    criteria. Best-effort : on API failure / bad JSON / missing key, returns
+    an empty TriageSuggestion so the operator still gets the import and can
+    fill the fields manually."""
+    if not event.description:
+        return TriageSuggestion()
+    if not (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
+        return TriageSuggestion()
+
+    parts = []
+    if event.name:
+        parts.append(f"Event title: {event.name}")
+    if event.host_name:
+        parts.append(f"Host: {event.host_name}")
+    if event.location:
+        parts.append(f"Location: {event.location}")
+    parts.append("")
+    parts.append("Description:")
+    parts.append(event.description)
+    user_msg = "\n".join(parts)
+
+    try:
+        from anthropic import Anthropic
+        client = Anthropic()
+        resp = client.messages.create(
+            model=_SUGGEST_MODEL,
+            max_tokens=_SUGGEST_MAX_TOKENS,
+            timeout=_SUGGEST_TIMEOUT_S,
+            system=_SUGGEST_SYSTEM,
+            messages=[
+                {"role": "user", "content": user_msg},
+                # JSON-mode prefill : seeds the response with "{" so the model
+                # immediately commits to JSON instead of preamble.
+                {"role": "assistant", "content": "{"},
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [triage.luma.suggest] Haiku failed: "
+              f"{type(exc).__name__}: {exc}")
+        return TriageSuggestion()
+
+    text_chunks = [b.text for b in resp.content
+                   if getattr(b, "type", "") == "text"]
+    full = "{" + "\n".join(text_chunks)
+    parsed = extract_json(full) or {}
+
+    def _str_list(v) -> list[str]:
+        if not isinstance(v, list):
+            return []
+        out = []
+        for item in v:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+        return out
+
+    sponsor = parsed.get("sponsor_name")
+    ideal = parsed.get("ideal_attendee_profile")
+    return TriageSuggestion(
+        sponsor_name=(sponsor.strip() if isinstance(sponsor, str)
+                      and sponsor.strip() else None),
+        ideal_attendee_profile=(ideal.strip() if isinstance(ideal, str)
+                                and ideal.strip() else None),
+        hard_filters=_str_list(parsed.get("hard_filters")),
+        anti_fit_examples=_str_list(parsed.get("anti_fit_examples")),
+        nice_to_have_signals=_str_list(parsed.get("nice_to_have_signals")),
+    )

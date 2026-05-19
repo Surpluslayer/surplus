@@ -28,7 +28,10 @@ from .. import models
 from ..auth import current_user, get_owned_event
 from ..db import SessionLocal, get_db
 from ..triage.csv_parser import parse_csv_file
-from ..triage.luma import LumaEvent, LumaFetchError, fetch_luma_event
+from ..triage.luma import (
+    LumaEvent, LumaFetchError, TriageSuggestion,
+    fetch_luma_event, suggest_triage_config,
+)
 from ..triage.rubric import synthesize_rubric
 from ..triage.score import evaluate_all
 
@@ -120,21 +123,36 @@ class LumaPreviewBody(BaseModel):
     url: str
 
 
-@router.post("/triage/luma-preview", response_model=LumaEvent)
+class LumaPreviewResponse(BaseModel):
+    """Combined : the parsed page + Claude-inferred suggestions for fields
+    the page doesn't carry (sponsor, ideal-attendee, anti-fit, etc).
+
+    Frontend should use `event` to fill name/description/capacity directly,
+    and use `suggestions` to pre-fill the operator-judgment fields — with
+    the expectation that the operator reviews + tightens before saving."""
+    event: LumaEvent
+    suggestions: TriageSuggestion
+
+
+@router.post("/triage/luma-preview", response_model=LumaPreviewResponse)
 def preview_luma_event(
     body: LumaPreviewBody,
     user: models.User = Depends(current_user),
 ):
-    """Fetch a public Luma event page and return parsed metadata so the
-    Configure form can auto-fill name / description / capacity / location.
+    """Fetch a public Luma event page and return parsed metadata + Claude-
+    inferred triage suggestions so the Configure form can auto-fill.
 
     Auth-gated (current_user) so anonymous traffic can't use us as a free
     proxy. URL validated server-side to lu.ma / luma.com only — see
-    triage.luma._validate_luma_url for SSRF hardening."""
+    triage.luma._validate_luma_url for SSRF hardening. Suggestion call is
+    best-effort : on Anthropic failure we still return the parsed event
+    with empty suggestions instead of 500-ing."""
     try:
-        return fetch_luma_event(body.url)
+        event = fetch_luma_event(body.url)
     except LumaFetchError as exc:
         raise HTTPException(400, str(exc))
+    suggestions = suggest_triage_config(event)
+    return LumaPreviewResponse(event=event, suggestions=suggestions)
 
 
 @router.post("/{event_id}/triage/config", response_model=TriageConfig)
