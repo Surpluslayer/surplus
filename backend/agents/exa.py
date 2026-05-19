@@ -441,7 +441,7 @@ def _parse_result(source: str, r: dict, city_cfg: Optional[dict] = None) -> Opti
         # Filter out org/company pages that snuck through (the category
         # filter helps but isn't bulletproof : e.g., "UCD Sociology",
         # "Supreme Incubator" came back for a Senior+ engineer query).
-        if _looks_like_org(name):
+        if _looks_like_org(name) or _looks_like_org_handle(handle):
             return None
         # Belt-and-suspenders geo filter. includeText already drops most
         # wrong-city results at Exa, but Exa's text-match is fuzzy enough
@@ -684,8 +684,21 @@ _ORG_HINTS = (
     "labs", "studio", "agency", "consulting", "group", "associates",
     "council", "society", "association", "institute", "foundation",
     "academy", "team", "company", "corporation", "limited", "ltd",
-    "inc", "llc", " co.", "events", "office",
+    "inc", "llc", " co.", "events", "event ", " event", "office",
+    # staffing / recruiting / vendor categories that were slipping past
+    # the previous list. "Bay Area Event Staffing" is the canonical
+    # example : company-page LinkedIn slug with a plausible-looking "name".
+    "staffing", "recruiting", "recruiter", "talent ", " talent",
+    "headhunt", "search firm", "services", "solutions", "media",
+    "magazine", "news ", " news", "podcast",
 )
+
+
+# Lowercase, no-separator handles that suggest a company-slug rather than a
+# person. "bayareaeventstaffing", "stripeinc", etc. People generally use
+# their name or initials and these are usually <20 chars; longer all-word
+# handles without separators are almost always brands.
+_ORG_HANDLE_RE = re.compile(r"^[a-z]{18,}$")
 
 
 def _looks_like_org(name: str) -> bool:
@@ -694,6 +707,15 @@ def _looks_like_org(name: str) -> bool:
         return False
     lower = name.lower()
     return any(h in lower for h in _ORG_HINTS)
+
+
+def _looks_like_org_handle(handle: str) -> bool:
+    """True when the LinkedIn handle pattern looks like a company slug
+    rather than a person. Catches the cases _looks_like_org misses when
+    the name parses cleanly but the handle is obviously a brand."""
+    if not handle:
+        return False
+    return bool(_ORG_HANDLE_RE.match(handle.lower()))
 
 
 _HEADER_RE = re.compile(r"^#+\s+")
