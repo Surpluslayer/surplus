@@ -1621,6 +1621,13 @@ function LinkedInMark({ size = 18 }) {
 
 function SignInModal({ open, onClose, onSignIn }) {
   const [busy, setBusy] = useState(false);
+  // Triage-only signup path : for customers who don't need LinkedIn outreach
+  // (e.g. Verci reviewing Luma applicants). No Unipile connection, no 2FA.
+  const [showTriage, setShowTriage] = useState(false);
+  const [triageName, setTriageName] = useState("");
+  const [triageEmail, setTriageEmail] = useState("");
+  const [triageBusy, setTriageBusy] = useState(false);
+  const [triageError, setTriageError] = useState(null);
   if (!open) return null;
 
   const handleSignIn = async () => {
@@ -1629,6 +1636,24 @@ function SignInModal({ open, onClose, onSignIn }) {
       await onSignIn();
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleTriageSignup = async (e) => {
+    e.preventDefault();
+    setTriageError(null);
+    setTriageBusy(true);
+    try {
+      await api.triageSignup({
+        name: triageName.trim(),
+        email: triageEmail.trim(),
+      });
+      // Session cookie is set on the response. Refresh so the app picks up
+      // the new auth state and closes the modal.
+      window.location.reload();
+    } catch (err) {
+      setTriageBusy(false);
+      setTriageError(err.message || "Could not create your account.");
     }
   };
 
@@ -1655,6 +1680,60 @@ function SignInModal({ open, onClose, onSignIn }) {
           <LinkedInMark size={18} />
           <span>{busy ? "Redirecting…" : "Sign in with LinkedIn"}</span>
         </button>
+
+        <div className="signin-modal-divider"><span>or</span></div>
+
+        {!showTriage ? (
+          <button
+            type="button"
+            className="signin-modal-secondary"
+            onClick={() => setShowTriage(true)}
+          >
+            Just reviewing applicants? Skip LinkedIn →
+          </button>
+        ) : (
+          <form className="signin-modal-triage" onSubmit={handleTriageSignup}>
+            <p className="signin-modal-triage-hint">
+              For Applicant Triage only. You can connect LinkedIn later if
+              you want outbound prospecting too.
+            </p>
+            {triageError && (
+              <div className="signin-modal-err" role="alert">{triageError}</div>
+            )}
+            <input
+              type="text"
+              placeholder="Your name"
+              value={triageName}
+              onChange={(e) => setTriageName(e.target.value)}
+              required
+              autoFocus
+              className="signin-modal-input"
+            />
+            <input
+              type="email"
+              placeholder="you@example.com"
+              value={triageEmail}
+              onChange={(e) => setTriageEmail(e.target.value)}
+              required
+              className="signin-modal-input"
+            />
+            <button
+              type="submit"
+              className="signin-modal-triage-cta"
+              disabled={triageBusy || !triageName.trim() || !triageEmail.trim()}
+            >
+              {triageBusy ? "Creating account…" : "Create triage-only account"}
+            </button>
+            <button
+              type="button"
+              className="signin-modal-cancel"
+              onClick={() => setShowTriage(false)}
+            >
+              Cancel
+            </button>
+          </form>
+        )}
+
         <button type="button" className="signin-modal-dismiss" onClick={onClose}>
           Not now
         </button>
@@ -1840,6 +1919,54 @@ const CSS = `
   font-family:inherit; font-size:12px; cursor:pointer; padding:6px 10px;
 }
 .signin-modal-dismiss:hover { color:var(--ink-dim); }
+.signin-modal-divider {
+  display:flex; align-items:center; gap:10px; margin:18px 0 12px;
+  color:var(--ink-faint); font-size:10.5px; text-transform:uppercase;
+  letter-spacing:0.08em;
+}
+.signin-modal-divider::before, .signin-modal-divider::after {
+  content:""; flex:1; height:1px; background:var(--line);
+}
+.signin-modal-secondary {
+  display:block; width:100%; padding:10px 14px; border-radius:10px;
+  background:transparent; color:var(--ink-dim); border:1px dashed var(--line);
+  font-family:inherit; font-size:12.5px; cursor:pointer; text-align:center;
+  transition:background 0.15s, color 0.15s, border-color 0.15s;
+}
+.signin-modal-secondary:hover {
+  background:var(--acc-soft); color:var(--acc); border-color:var(--acc);
+}
+.signin-modal-triage { display:flex; flex-direction:column; gap:8px; text-align:left; }
+.signin-modal-triage-hint {
+  font-size:11.5px; color:var(--ink-faint); line-height:1.5; margin:0;
+  text-align:center;
+}
+.signin-modal-input {
+  width:100%; padding:10px 12px; border-radius:10px;
+  border:1px solid var(--line); background:var(--panel);
+  font-family:inherit; font-size:13.5px; color:var(--ink);
+  box-sizing:border-box;
+}
+.signin-modal-input:focus { outline:none; border-color:var(--acc); }
+.signin-modal-triage-cta {
+  width:100%; padding:11px 16px; border-radius:var(--r-pill); border:0;
+  background:var(--acc); color:white; font-family:inherit; font-weight:600;
+  font-size:13px; cursor:pointer; transition:background 0.15s;
+  margin-top:4px;
+}
+.signin-modal-triage-cta:hover:not(:disabled) { background:var(--acc-deep); }
+.signin-modal-triage-cta:disabled { opacity:0.6; cursor:not-allowed; }
+.signin-modal-cancel {
+  background:none; border:0; padding:6px; cursor:pointer;
+  font-family:inherit; font-size:11.5px; color:var(--ink-faint);
+  text-align:center; text-decoration:underline;
+}
+.signin-modal-cancel:hover { color:var(--ink-dim); }
+.signin-modal-err {
+  padding:9px 11px; background:#fff5f5; color:#b03030;
+  border:1px solid #ffd6d6; border-radius:8px;
+  font-size:12px; line-height:1.4;
+}
 .rail { display:flex; gap:5px; flex-wrap:wrap; }
 .rail-item { display:flex; align-items:center; gap:7px; background:transparent;
   border:1px solid transparent; color:var(--ink-faint); padding:7px 12px; cursor:pointer;
