@@ -1825,8 +1825,14 @@ function SurplusApp({ user, onLogout, onSignIn }) {
           {user ? (
             <UserMenu user={user} onLogout={onLogout} />
           ) : (
-            <button className="topbar-signin" onClick={onSignIn} title="Sign in with LinkedIn">
-              Sign in with LinkedIn
+            // Open the modal instead of going straight to LinkedIn : the
+            // modal surfaces both the LinkedIn path AND the skip-LinkedIn
+            // triage-only signup. Direct-to-LinkedIn hid the skip option
+            // entirely on the intake page.
+            <button className="topbar-signin"
+                    onClick={() => setSignInModalOpen(true)}
+                    title="Sign in">
+              Sign in
             </button>
           )}
         </header>
