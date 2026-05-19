@@ -64,6 +64,7 @@ def test_cookie_pointing_at_unknown_account_falls_back_to_create(db):
     assert body["type"] == "create"
 
 
+@pytest.mark.skip(reason="reconnect path disabled until correct Unipile API shape is verified")
 def test_cookie_pointing_at_existing_user_uses_reconnect(db):
     """Happy path : returning user on same browser, cookie matches a User
     row in our DB, so the hosted-auth call is reconnect (not create)."""
@@ -82,6 +83,7 @@ def test_cookie_pointing_at_existing_user_uses_reconnect(db):
     assert body["reconnect_account"] == "acct-abc"
 
 
+@pytest.mark.skip(reason="reconnect path disabled until correct Unipile API shape is verified")
 def test_reconnect_preserves_common_fields(db):
     """Reconnect must still carry the same redirect / webhook URLs as
     create : we'd never see the response otherwise."""
