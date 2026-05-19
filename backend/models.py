@@ -235,6 +235,12 @@ class User(Base):
     # Connection health : flipped to "disconnected" if Unipile webhook fires
     # CREDENTIALS / DISCONNECTED. Re-auth flips it back to "active".
     linkedin_status: Mapped[str] = mapped_column(String(20), default="active")
+    # Operator-curated outreach exemplars used as style guides when Claude
+    # composes personalized notes/DMs for their events. JSON-encoded list
+    # of strings (each = one past outreach message). Empty / unset means
+    # compose falls back to the env-var defaults or just generic personalized
+    # output. Set via POST /admin/voice-examples.
+    voice_examples: Mapped[str] = mapped_column(Text, default="")
 
 
 class AuthState(Base):

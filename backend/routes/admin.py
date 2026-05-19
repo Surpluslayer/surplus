@@ -55,6 +55,12 @@ class RejectBody(BaseModel):
     reason: Optional[str] = None
 
 
+class VoiceExamplesBody(BaseModel):
+    """Operator's curated outreach exemplars used as voice-matching style
+    guides. List of strings, each is one past outreach message."""
+    examples: list[str]
+
+
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
@@ -250,3 +256,79 @@ def reject_pending_reply(
     db.commit()
     return {"id": pending.id, "status": "rejected",
             "reason": (body.reason if body else None)}
+
+
+# ── Voice-matching examples : per-operator style guide ──────────────────
+#
+# These get injected into compose()'s system prompt as <style_examples>
+# so Claude mirrors the operator's voice when writing outreach. Stored
+# JSON-encoded on User.voice_examples. Resolution order in compose() is:
+# event.user.voice_examples → OPERATOR_VOICE_EXAMPLES env var → none.
+
+
+def _operator_user(db: Session) -> Optional[models.User]:
+    """Look up the User whose unipile_account_id matches the env var."""
+    account_id = (os.environ.get("UNIPILE_ACCOUNT_ID") or "").strip()
+    if not account_id:
+        return None
+    return db.query(models.User).filter(
+        models.User.unipile_account_id == account_id
+    ).first()
+
+
+@router.get("/voice-examples")
+def get_voice_examples(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """Return the operator's current voice-matching examples + which source
+    they're coming from (DB row vs env-var fallback)."""
+    import json as _json
+    user = _operator_user(db)
+    db_raw = (user.voice_examples if user else "") or ""
+    env_raw = (os.environ.get("OPERATOR_VOICE_EXAMPLES") or "").strip()
+
+    examples: list[str] = []
+    source = "none"
+    if db_raw.strip():
+        try:
+            parsed = _json.loads(db_raw)
+            if isinstance(parsed, list):
+                examples = [str(s).strip() for s in parsed if str(s).strip()]
+                source = "user_row"
+        except _json.JSONDecodeError:
+            pass
+    elif env_raw:
+        try:
+            parsed = _json.loads(env_raw)
+            if isinstance(parsed, list):
+                examples = [str(s).strip() for s in parsed if str(s).strip()]
+                source = "env_var"
+        except _json.JSONDecodeError:
+            pass
+    return {
+        "source": source,
+        "count": len(examples),
+        "examples": examples,
+    }
+
+
+@router.post("/voice-examples")
+def set_voice_examples(
+    body: VoiceExamplesBody,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """Set the operator's voice-matching examples. Persists to the operator
+    User row (User.voice_examples) as JSON-encoded list."""
+    import json as _json
+    user = _operator_user(db)
+    if user is None:
+        raise HTTPException(404, "operator User row not found")
+    cleaned = [s.strip() for s in body.examples if s and s.strip()]
+    user.voice_examples = _json.dumps(cleaned)
+    db.commit()
+    # Bust the compose cache so subsequent composes pick up the new voice
+    from ..agents.outreach import reset_compose_cache
+    reset_compose_cache()
+    return {"saved": len(cleaned), "examples": cleaned}

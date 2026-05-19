@@ -177,6 +177,16 @@ GROUND RULES
   - Do NOT name other attendees / confirmed peers, even if you could. Keep it focused on the recipient and the event itself.
   - For the note: skip the greeting if you'd be over 280 chars; cut filler before content.
 
+VOICE MATCHING
+If the user message includes a `<style_examples>` block, those are real past
+outreach messages the host has written. Mirror their:
+  - sentence rhythm and length
+  - vocabulary choices (avoid words they don't use)
+  - opener style (e.g. "Hi <name>," vs "Hey <name>:" vs "Quick one for you,")
+  - closer style (e.g. "Worth a chat?" vs "Open to it?" vs "Let me know.")
+Do NOT copy specific facts from the examples (different recipient, different
+event). Match the *voice*, not the content.
+
 OUTPUT FORMAT
 Return ONLY a JSON object. No prose, no markdown fences. Schema:
 
@@ -186,13 +196,57 @@ Return ONLY a JSON object. No prose, no markdown fences. Schema:
 }"""
 
 
-def _compose_user_message(prospect, event, host_bio, framing) -> str:
+def _get_voice_examples(event) -> list[str]:
+    """Resolve the voice-matching examples for this event's host.
+
+    Order of preference:
+      1. event.user.voice_examples (JSON list of strings on the User row)
+      2. OPERATOR_VOICE_EXAMPLES env var (JSON list of strings) : fallback
+         for events created by the env-var operator before per-user examples
+         existed
+      3. [] : no style guide, compose falls back to generic personalization
+
+    Bad JSON in either source is silently treated as empty so a typo
+    can't break outreach. We cap at 8 examples to keep input tokens bounded.
+    """
+    import json
+    raw = ""
+    user = getattr(event, "user", None)
+    if user is not None:
+        raw = getattr(user, "voice_examples", "") or ""
+    if not raw.strip():
+        raw = (os.environ.get("OPERATOR_VOICE_EXAMPLES") or "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    examples = [str(s).strip() for s in parsed if str(s).strip()]
+    return examples[:8]
+
+
+def _compose_user_message(prospect, event, host_bio, framing,
+                         voice_examples: list[str] | None = None) -> str:
     """Pack everything the model needs to ground its output. Only facts we
     actually have go in : if a field is empty we omit it so Claude doesn't
     feel obligated to mention 'unknown'. Peer names are deliberately NOT
     passed in : the system prompt says not to drop names, and not having
     them in context removes the temptation entirely."""
-    parts = ["EVENT", f"Framing the host wants conveyed: {framing}"]
+    parts: list[str] = []
+
+    # Voice examples go FIRST so they prime the model's tone before the
+    # event/recipient context arrives.
+    if voice_examples:
+        parts.append("<style_examples>")
+        parts.append("Past outreach messages from this host. Match their voice, not the content:")
+        for i, ex in enumerate(voice_examples, 1):
+            parts.append(f"---\nExample {i}:\n{ex.strip()}")
+        parts += ["---", "</style_examples>", ""]
+
+    parts += ["EVENT", f"Framing the host wants conveyed: {framing}"]
     if host_bio:
         parts += ["", "HOST BIO", host_bio.strip()]
     if event.format:
@@ -234,7 +288,8 @@ def _compose_via_claude(prospect, event, host_bio,
             messages=[
                 {"role": "user",
                  "content": _compose_user_message(prospect, event,
-                                                  host_bio, framing)},
+                                                  host_bio, framing,
+                                                  voice_examples=_get_voice_examples(event))},
                 # Prefill with "{" so Haiku stays in JSON mode.
                 {"role": "assistant", "content": "{"},
             ],

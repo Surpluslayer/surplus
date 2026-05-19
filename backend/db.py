@@ -64,7 +64,23 @@ def init_db() -> None:
     _migrate_event_yoe()
     _migrate_prospect_connection_status()
     _migrate_prospect_scholar_citations()
+    _migrate_user_voice_examples()
     _ensure_operator_user_and_backfill()
+
+
+def _migrate_user_voice_examples() -> None:
+    """Add users.voice_examples (TEXT, default '') for the voice-matching
+    feature. Old User rows get an empty string, which compose() treats as
+    'no per-user examples, fall through to env var.'"""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "voice_examples" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN voice_examples TEXT DEFAULT ''"))
 
 
 def _migrate_event_yoe() -> None:
