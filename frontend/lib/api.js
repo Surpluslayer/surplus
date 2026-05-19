@@ -97,5 +97,14 @@ export const api = {
   me: () => request("/api/auth/me"),
   // returns { url } : frontend sets window.location = url to begin the flow
   startLinkedinAuth: () => request("/api/auth/linkedin/start", { method: "POST" }),
+  // Triage-only signup : no LinkedIn / Unipile required. Creates a User
+  // row + session for someone who only wants to review applicants.
+  // Outbound features grey out / show "Connect LinkedIn" until they
+  // optionally connect later.
+  triageSignup: ({ name, email }) =>
+    request("/api/auth/triage/signup", {
+      method: "POST",
+      body: JSON.stringify({ name, email }),
+    }),
   logout: () => request("/api/auth/logout", { method: "POST" }),
 };

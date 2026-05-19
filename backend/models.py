@@ -221,7 +221,13 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     # Stable Unipile id : same across re-connects of the same LinkedIn account
-    unipile_account_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    # NULL for users who signed up via the triage-only path (no LinkedIn /
+    # Unipile connection). Those users can use Applicant Triage features but
+    # not outbound LinkedIn outreach until they connect later. Existing
+    # rows from before this change all have values set.
+    unipile_account_id: Mapped[Optional[str]] = mapped_column(
+        String(80), unique=True, index=True, default=None,
+    )
     # Profile data pulled from Unipile after auth (best-effort, refreshable)
     email: Mapped[Optional[str]] = mapped_column(String(200), default=None, index=True)
     name: Mapped[str] = mapped_column(String(120), default="")

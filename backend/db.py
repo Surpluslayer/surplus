@@ -65,7 +65,33 @@ def init_db() -> None:
     _migrate_prospect_connection_status()
     _migrate_prospect_scholar_citations()
     _migrate_user_voice_examples()
+    _migrate_user_unipile_account_id_nullable()
     _ensure_operator_user_and_backfill()
+
+
+def _migrate_user_unipile_account_id_nullable() -> None:
+    """Drop the NOT NULL constraint on users.unipile_account_id so triage-only
+    users (no LinkedIn / Unipile connection) can have a User row. SQLite is
+    permissive enough that older rows are unaffected; Postgres needs the
+    explicit ALTER."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    dialect = ENGINE.dialect.name
+    # SQLite stores column nullability differently and won't accept the
+    # Postgres-style ALTER; create_all already allows NULL there because we
+    # changed the Mapped[] annotation. So this is Postgres-only.
+    if dialect != "postgresql":
+        return
+    cols = insp.get_columns("users")
+    target = next((c for c in cols if c["name"] == "unipile_account_id"), None)
+    if target is None or target.get("nullable") is True:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE users ALTER COLUMN unipile_account_id DROP NOT NULL"
+        ))
 
 
 def _migrate_user_voice_examples() -> None:

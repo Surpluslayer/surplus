@@ -34,6 +34,7 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session as DbSession
 
 from ..auth import (
@@ -430,6 +431,58 @@ async def linkedin_callback(
     if user.unipile_account_id:
         set_last_account_cookie(response, user.unipile_account_id)
     return response
+
+
+# ─── 3b. Triage-only signup (no LinkedIn / no Unipile) ─────────────
+#
+# Customers who only want to use Applicant Triage (review Luma applicants)
+# don't need LinkedIn outreach. Forcing them through Unipile auth would be
+# pointless friction and a billed seat we don't need to spend. They get a
+# User row with unipile_account_id=NULL : full app access except outbound
+# LinkedIn features, which gate on having a Unipile connection.
+
+class TriageSignupBody(BaseModel):
+    name: str
+    email: str
+
+
+@router.post("/triage/signup")
+def triage_signup(
+    body: TriageSignupBody,
+    response: Response,
+    db: DbSession = Depends(get_db),
+) -> JSONResponse:
+    """Create a User row + session for someone who only wants triage.
+
+    No email verification : trust scales later. This endpoint is intended
+    for self-serve signup from the public sign-in screen, not for the
+    operator's main flow (which still goes through LinkedIn).
+
+    Existing email → returns the existing User + a fresh session, so a
+    second signup attempt doesn't crash on the unique-ish email constraint.
+    """
+    name = (body.name or "").strip()
+    email = (body.email or "").strip().lower()
+    if not name or not email or "@" not in email:
+        raise HTTPException(400, "name and a valid email are required")
+
+    # Reuse existing User row if email matches : prevents accidental dupes.
+    user = db.query(User).filter(User.email == email).first()
+    if user is None:
+        user = User(name=name, email=email)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    sess = create_session(db, user)
+    set_session_cookie(response, sess.session_token)
+    return JSONResponse({
+        "ok": True,
+        "user_id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "mode": "triage_only",
+    })
 
 
 # ─── 4. /me: who is signed in? ────────────────────────────────────

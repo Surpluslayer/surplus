@@ -31,6 +31,13 @@ const ERROR_MESSAGES = {
 export default function SignIn() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  // Triage-only signup state. The LinkedIn flow is the primary path; this
+  // is the secondary "I just want to review applicants" path that doesn't
+  // need a Unipile connection.
+  const [showTriageForm, setShowTriageForm] = useState(false);
+  const [triageName, setTriageName] = useState("");
+  const [triageEmail, setTriageEmail] = useState("");
+  const [triageBusy, setTriageBusy] = useState(false);
 
   // Pick up error code from the redirect URL after a failed flow
   useEffect(() => {
@@ -61,6 +68,20 @@ export default function SignIn() {
         ? "LinkedIn auth isn't configured on this server yet. Reach out to the operator."
         : e.message || "Could not start sign-in.";
       setError(detail);
+    }
+  };
+
+  const handleTriageSignup = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setTriageBusy(true);
+    try {
+      await api.triageSignup({ name: triageName.trim(), email: triageEmail.trim() });
+      // Session cookie is set on the response. Drop into the app.
+      window.location.href = "/";
+    } catch (err) {
+      setTriageBusy(false);
+      setError(err.message || "Could not create your account.");
     }
   };
 
@@ -112,6 +133,63 @@ export default function SignIn() {
           <li>Your credentials never touch surplus.</li>
           <li>Disconnect any time from Settings.</li>
         </ul>
+
+        <div className="signin-divider"><span>or</span></div>
+
+        {!showTriageForm ? (
+          <button
+            type="button"
+            className="signin-secondary"
+            onClick={() => setShowTriageForm(true)}
+          >
+            Just want to review applicants? Skip LinkedIn →
+          </button>
+        ) : (
+          <form className="signin-triage" onSubmit={handleTriageSignup}>
+            <p className="signin-triage-hint">
+              For Applicant Triage only. You can connect LinkedIn later if you
+              decide to use outbound prospecting too.
+            </p>
+            <input
+              type="text"
+              placeholder="Your name"
+              value={triageName}
+              onChange={(e) => setTriageName(e.target.value)}
+              required
+              autoFocus
+              className="signin-input"
+            />
+            <input
+              type="email"
+              placeholder="you@example.com"
+              value={triageEmail}
+              onChange={(e) => setTriageEmail(e.target.value)}
+              required
+              className="signin-input"
+            />
+            <button
+              type="submit"
+              className="signin-cta signin-cta-triage"
+              disabled={triageBusy || !triageName.trim() || !triageEmail.trim()}
+            >
+              {triageBusy ? (
+                <>
+                  <Loader2 className="spin" size={18} />
+                  <span>Creating your account…</span>
+                </>
+              ) : (
+                <span>Create triage-only account</span>
+              )}
+            </button>
+            <button
+              type="button"
+              className="signin-cancel"
+              onClick={() => setShowTriageForm(false)}
+            >
+              Cancel
+            </button>
+          </form>
+        )}
       </div>
     </div>
   );
@@ -184,4 +262,41 @@ const SIGNIN_CSS = `
 }
 .spin { animation:signin-spin 0.8s linear infinite; }
 @keyframes signin-spin { to { transform:rotate(360deg); } }
+.signin-divider {
+  display:flex; align-items:center; gap:12px; margin:24px 0 16px;
+  color:var(--ink-faint); font-size:12px; text-transform:uppercase;
+  letter-spacing:0.08em;
+}
+.signin-divider::before, .signin-divider::after {
+  content:""; flex:1; height:1px; background:var(--line);
+}
+.signin-secondary {
+  display:block; width:100%; padding:11px 14px; border-radius:10px;
+  background:transparent; color:var(--ink-dim); border:1px dashed var(--line);
+  font-family:inherit; font-size:13.5px; cursor:pointer;
+  transition:background 0.15s, color 0.15s, border-color 0.15s;
+}
+.signin-secondary:hover { background:var(--acc-soft); color:var(--acc-deep); border-color:var(--acc); }
+.signin-triage { display:flex; flex-direction:column; gap:10px; }
+.signin-triage-hint {
+  font-size:12.5px; color:var(--ink-faint); line-height:1.5;
+  margin:0 0 4px;
+}
+.signin-input {
+  width:100%; padding:11px 14px; border-radius:10px;
+  border:1px solid var(--line); background:var(--panel);
+  font-family:inherit; font-size:14px; color:var(--ink);
+}
+.signin-input:focus { outline:none; border-color:var(--acc); }
+.signin-cta-triage { background:var(--acc); box-shadow:0 1px 2px rgba(107,70,224,0.25); }
+.signin-cta-triage:hover:not(:disabled) {
+  background:var(--acc-deep);
+  box-shadow:0 4px 12px rgba(107,70,224,0.3);
+}
+.signin-cancel {
+  background:none; border:0; padding:8px; cursor:pointer;
+  font-family:inherit; font-size:12.5px; color:var(--ink-faint);
+  text-decoration:underline;
+}
+.signin-cancel:hover { color:var(--ink-dim); }
 `;
