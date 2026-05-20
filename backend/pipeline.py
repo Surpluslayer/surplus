@@ -101,8 +101,23 @@ async def run_prospect(
     # Fire-and-forget : prospecting returns immediately, compose runs on
     # its own. The preview endpoint falls back to live compose for any
     # cache miss, so a failed prefetch can't block outreach.
+    #
+    # IMPORTANT : resolve event.user.voice_examples HERE, while the request
+    # session is still open. The background task runs after FastAPI closes
+    # the session, so any ORM relationship lookup from inside the task
+    # raises DetachedInstanceError. We pass the raw JSON string in so the
+    # compose call doesn't need to lazy-load anything.
     from .agents.outreach import prefetch_compose_all
-    asyncio.create_task(prefetch_compose_all(list(prospects), event))
+    voice_examples_raw = ""
+    try:
+        if event.user is not None:
+            voice_examples_raw = event.user.voice_examples or ""
+    except Exception:  # noqa: BLE001
+        voice_examples_raw = ""
+    asyncio.create_task(prefetch_compose_all(
+        list(prospects), event,
+        voice_examples_raw=voice_examples_raw,
+    ))
 
     return prospects
 

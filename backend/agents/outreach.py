@@ -68,7 +68,8 @@ def reset_compose_cache() -> None:
     _COMPOSE_CACHE.clear()
 
 
-async def prefetch_compose_all(prospects, event) -> None:
+async def prefetch_compose_all(prospects, event,
+                              voice_examples_raw: str | None = None) -> None:
     """Fire compose() for every prospect, in parallel, results land in the
     per-(prospect, event) cache.
 
@@ -81,6 +82,12 @@ async def prefetch_compose_all(prospects, event) -> None:
     Best-effort: failures are swallowed (logged) so a single bad compose
     doesn't break the rest. The preview endpoint falls back to live compose
     for any cache miss it sees.
+
+    `voice_examples_raw` : the caller (pipeline.py) pre-resolves
+    `event.user.voice_examples` while its DB session is still open and
+    passes the raw JSON string in. The background task can't do this
+    lookup itself because the session is closed by then —
+    `event.user` would raise DetachedInstanceError and crash compose().
     """
     if not prospects:
         return
@@ -91,7 +98,10 @@ async def prefetch_compose_all(prospects, event) -> None:
             try:
                 # compose() is sync (uses the sync Anthropic client). Run it
                 # in a thread so the gather can actually parallelize.
-                msg = await asyncio.to_thread(compose, p, event)
+                msg = await asyncio.to_thread(
+                    compose, p, event,
+                    None, None, voice_examples_raw,
+                )
                 _store_compose(p.id, event.id, msg)
             except Exception as exc:  # noqa: BLE001
                 print(f"  [prefetch_compose] {p.id} ({getattr(p, 'name', '?')}): "
@@ -196,24 +206,37 @@ Return ONLY a JSON object. No prose, no markdown fences. Schema:
 }"""
 
 
-def _get_voice_examples(event) -> list[str]:
+def _get_voice_examples(event, voice_examples_raw: str | None = None) -> list[str]:
     """Resolve the voice-matching examples for this event's host.
 
     Order of preference:
-      1. event.user.voice_examples (JSON list of strings on the User row)
-      2. OPERATOR_VOICE_EXAMPLES env var (JSON list of strings) : fallback
-         for events created by the env-var operator before per-user examples
-         existed
-      3. [] : no style guide, compose falls back to generic personalization
+      1. voice_examples_raw param (caller pre-resolved while DB session
+         was still open : used by the background prefetch path which runs
+         after the request session closes)
+      2. event.user.voice_examples (JSON list of strings on the User row)
+      3. OPERATOR_VOICE_EXAMPLES env var (JSON list of strings) : fallback
+         for events created by the env-var operator before per-user
+         examples existed
+      4. [] : no style guide, compose falls back to generic personalization
 
-    Bad JSON in either source is silently treated as empty so a typo
-    can't break outreach. We cap at 8 examples to keep input tokens bounded.
+    Bad JSON in any source is silently treated as empty so a typo can't
+    break outreach. We cap at 8 examples to keep input tokens bounded.
+
+    Defensive try/except : SQLAlchemy raises DetachedInstanceError when
+    you access a relationship on an Event whose session has been closed
+    (happens in prefetch_compose_all's background task, since the request
+    session is gone by the time the task runs). Fall back to env var
+    instead of crashing the whole compose() call.
     """
     import json
-    raw = ""
-    user = getattr(event, "user", None)
-    if user is not None:
-        raw = getattr(user, "voice_examples", "") or ""
+    raw = (voice_examples_raw or "").strip()
+    if not raw:
+        try:
+            user = getattr(event, "user", None)
+            if user is not None:
+                raw = getattr(user, "voice_examples", "") or ""
+        except Exception:  # noqa: BLE001 - DetachedInstanceError + friends
+            raw = ""
     if not raw.strip():
         raw = (os.environ.get("OPERATOR_VOICE_EXAMPLES") or "").strip()
     if not raw:
@@ -267,8 +290,8 @@ def _compose_user_message(prospect, event, host_bio, framing,
     return "\n".join(parts)
 
 
-def _compose_via_claude(prospect, event, host_bio,
-                       framing) -> tuple[str, str] | None:
+def _compose_via_claude(prospect, event, host_bio, framing,
+                       voice_examples_raw: str | None = None) -> tuple[str, str] | None:
     """One Haiku call. Returns (note, message) or None on any failure
     (network, parse, missing fields). Caller falls back to the template."""
     if not (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
@@ -289,7 +312,7 @@ def _compose_via_claude(prospect, event, host_bio,
                 {"role": "user",
                  "content": _compose_user_message(prospect, event,
                                                   host_bio, framing,
-                                                  voice_examples=_get_voice_examples(event))},
+                                                  voice_examples=_get_voice_examples(event, voice_examples_raw))},
                 # Prefill with "{" so Haiku stays in JSON mode.
                 {"role": "assistant", "content": "{"},
             ],
@@ -347,6 +370,7 @@ def compose(
     event,
     peers: list[str] | None = None,
     host_bio: str | None = None,
+    voice_examples_raw: str | None = None,
 ) -> Message:
     """Build the connection note + post-accept DM for a prospect.
 
@@ -357,6 +381,13 @@ def compose(
 
     Set OUTREACH_COMPOSE_DISABLE=1 to skip the LLM entirely and always
     use the template (escape hatch for cost spikes / model issues).
+
+    `voice_examples_raw` : optional pre-resolved JSON string of voice
+    examples. The synchronous /outreach/preview path leaves this None
+    and lets _get_voice_examples fetch event.user.voice_examples live
+    (session is open). The background prefetch_compose_all path passes
+    the value in because by the time the task runs, the request session
+    is closed and event.user would raise DetachedInstanceError.
     """
     # `peers` is still accepted for callsite compatibility but intentionally
     # ignored : neither path names other attendees anymore.
@@ -365,7 +396,8 @@ def compose(
     if (os.environ.get("OUTREACH_COMPOSE_DISABLE") or "").strip().lower() not in ("", "0", "false", "no"):
         return _compose_template(prospect, host_bio, framing)
 
-    llm = _compose_via_claude(prospect, event, host_bio, framing)
+    llm = _compose_via_claude(prospect, event, host_bio, framing,
+                              voice_examples_raw=voice_examples_raw)
     if llm is not None:
         note, message = llm
         # Hard-cap the note even if the model went over : LinkedIn rejects >300.
