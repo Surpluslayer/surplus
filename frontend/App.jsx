@@ -2282,8 +2282,20 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage,
     // the SQLite store, so our cached eventId points at a row that no
     // longer exists. Auto-recover : clear the cached id and bounce
     // back to Intake instead of leaving the operator stuck on a
-    // Prospecting screen that 404s every poll.
-    if (err?.status === 404 && eventId) {
+    // Prospecting / Auto-outreach screen that 404s every poll.
+    //
+    // Some catch blocks pass an Error object (err.status === 404), others
+    // hand-roll a string message ("This event no longer exists on the
+    // server.", "Event not found : ..."). Match both shapes.
+    const errStatus = err?.status;
+    const errText = (typeof err === "string" ? err : err?.message || "").toLowerCase();
+    const looksLike404 = errStatus === 404
+      || errText.includes("event not found")
+      || errText.includes("no longer exists on the server")
+      || errText.includes("backend most likely redeployed")
+      || errText.includes("backend probably redeployed")
+      || errText.includes("wiped its ephemeral");
+    if (looksLike404 && eventId) {
       setEventId(null);
       setRunResult(null);
       go(0);
