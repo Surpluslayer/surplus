@@ -2215,16 +2215,8 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage,
   // If we already have an eventId (e.g. user toggled here from Triage with
   // the same event), skip Intake and land them on Prospecting. Otherwise
   // start at the beginning of the funnel.
-  // Only auto-resume into Prospecting (stage 1) if the user is actually
-  // signed in. Otherwise an unauthenticated visit to a session with a
-  // stale `surplus_event_id` in localStorage would dump the visitor on
-  // a stage-1 screen that fires /events/{id}/* calls in a loop, all
-  // 401ing, and pop a sign-in modal on top of it.
-  // Land them on Intake first ; once they sign in they can navigate
-  // forward in the rail.
-  const _shouldResume = !!(initialEventId && user);
-  const [stage, setStage] = useState(_shouldResume ? 1 : 0);
-  const [maxReached, setMaxReached] = useState(_shouldResume ? 1 : 0);
+  const [stage, setStage] = useState(initialEventId ? 1 : 0);
+  const [maxReached, setMaxReached] = useState(initialEventId ? 1 : 0);
   const [profile, setProfile] = useState({
     role: "Infrastructure / ML platform engineers",
     seniority: ["Staff+"],
