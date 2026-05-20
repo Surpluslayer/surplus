@@ -73,16 +73,42 @@ def _unipile_api_key() -> Optional[str]:
     return (os.environ.get("UNIPILE_API_KEY", "") or "").strip() or None
 
 
+# Production origin hosts that sit behind www.surpluslayer.com via the
+# Cloudflare load balancer. When a request arrives at one of these via
+# the CDN, Railway/Fly's edge rewrites the Host header to the origin's
+# own hostname — so request.url.netloc is misleading. We hardcode the
+# apex as the user-facing URL for these hosts so Unipile's success_
+# redirect_url + notify_url always point at the apex, regardless of
+# which backend the LB happened to pick or whether SURPLUS_BASE_URL is
+# set in the environment.
+_PRODUCTION_APEX = "https://www.surpluslayer.com"
+_PRODUCTION_ORIGIN_HOSTS = (
+    "surplus-production.up.railway.app",
+    "surplus-prod.fly.dev",
+    "surplus.fly.dev",
+)
+
+
 def _surplus_base_url(request: Request) -> str:
     """Base URL the user's browser sees us at : used to construct redirect/notify
-    URLs Unipile will call back. Prefer SURPLUS_BASE_URL env (production), fall
-    back to the request's own origin (local dev). Always force https:// for
-    surpluslayer.com hosts : Railway terminates SSL upstream so request.url.scheme
-    is "http" but the user-facing URL is "https"."""
+    URLs Unipile will call back. Resolution order:
+
+      1. SURPLUS_BASE_URL env (explicit operator override; wins everything)
+      2. Hardcoded apex when the request's Host is a known production
+         origin behind the CDN (belt-and-suspenders against missing env
+         var on Railway/Fly)
+      3. The request's own origin, forcing https:// for production hosts
+         (local dev / preview builds)
+
+    Always force https:// for surpluslayer.com / railway.app hosts :
+    Railway terminates SSL upstream so request.url.scheme is "http" but
+    the user-facing URL is "https"."""
     env = (os.environ.get("SURPLUS_BASE_URL", "") or "").strip().rstrip("/")
     if env:
         return env
     host = request.url.netloc
+    if any(host == h or host.startswith(h + ":") for h in _PRODUCTION_ORIGIN_HOSTS):
+        return _PRODUCTION_APEX
     # Trust X-Forwarded-Proto if present, otherwise infer https for production hosts
     forwarded = request.headers.get("x-forwarded-proto", "").lower()
     scheme = forwarded or request.url.scheme

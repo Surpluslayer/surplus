@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, Component } from "react";
 import { SURPLUS_APP_CSS as CSS } from "./surplusTheme.js";
 import TriageApp, { UploadStep, ReviewStep, TRIAGE_CSS } from "./TriageApp.jsx";
 import {
@@ -354,7 +354,11 @@ function Pipeline({ profile, eventId, onResult, onError, onDone }) {
     // bolts citation-count signal onto cross-source matches when present.
     { key: "scholar", label: "Scholar adapter", icon: GraduationCap, note: "Research signal · supplementary" },
   ];
-  const selectedSources = (profile.sources && profile.sources.length > 0)
+  // Defensive : profile *should* always be set when Pipeline mounts (Stage02
+  // gets it from App-level state which is hydrated before render). Optional
+  // chaining keeps a blank screen from happening if a future state-ordering
+  // bug ever lets profile through as null/undefined.
+  const selectedSources = (profile?.sources && profile.sources.length > 0)
     ? profile.sources
     : ["linkedin"];
   const sources = ALL_SOURCE_CARDS.filter((s) => selectedSources.includes(s.key));
@@ -2128,74 +2132,87 @@ export default function App() {
         eventName={profile?.eventName}
         eventId={eventId}
       >
-        {stage === "intake" && (
-          <SharedIntake
-            initialProfile={profile || undefined}
-            onSubmitted={(ev, prof) => {
-              setEventId(ev.id);
-              setProfile(prof);
-              setStage("decide");
-            }}
-            onError={(err) => setApiError(err?.message || String(err))}
-          />
-        )}
-        {stage === "decide" && (
-          <Stage02
-            eventId={eventId}
-            profile={profile}
-            committedPath={committedPath}
-            onCommit={setCommittedPath}
-            runResult={runResult}
-            setRunResult={setRunResult}
-            onAdvance={() => setStage("outreach")}
-            onError={(err) => setApiError(err?.message || String(err))}
-          />
-        )}
-        {stage === "outreach" && committedPath === "outbound" && (
-          <Prospects
-            profile={profile}
-            runResult={runResult}
-            eventId={eventId}
-            onError={(err) => setApiError(err?.message || String(err))}
-            onNext={() => setStage("matching")}
-          />
-        )}
-        {stage === "outreach" && committedPath === "inbound" && (
-          <>
-            <ReviewStep eventId={eventId} />
-            <div className="stage-foot">
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={() => setStage("matching")}
-              >
-                Continue to Matching <ArrowRight size={16} />
-              </button>
-            </div>
-          </>
-        )}
-        {stage === "matching" && (
-          <Matching
-            profile={profile}
-            eventId={eventId}
-            onError={(err) => setApiError(err?.message || String(err))}
-            onNext={() => setStage("roi")}
-          />
-        )}
-        {stage === "roi" && (
-          <ROI
-            profile={profile}
-            eventId={eventId}
-            onRestart={() => {
-              setStage("intake");
-              setEventId(null);
-              setProfile(null);
-              setCommittedPath(null);
-              setRunResult(null);
-              setApiError(null);
-            }}
-          />
-        )}
+        <StageErrorBoundary
+          key={stage}
+          onReset={() => {
+            try { localStorage.removeItem(UNIFIED_SESSION_KEY); } catch {}
+            setStage("intake");
+            setEventId(null);
+            setProfile(null);
+            setCommittedPath(null);
+            setRunResult(null);
+            setApiError(null);
+          }}
+        >
+          {stage === "intake" && (
+            <SharedIntake
+              initialProfile={profile || undefined}
+              onSubmitted={(ev, prof) => {
+                setEventId(ev.id);
+                setProfile(prof);
+                setStage("decide");
+              }}
+              onError={(err) => setApiError(err?.message || String(err))}
+            />
+          )}
+          {stage === "decide" && (
+            <Stage02
+              eventId={eventId}
+              profile={profile}
+              committedPath={committedPath}
+              onCommit={setCommittedPath}
+              runResult={runResult}
+              setRunResult={setRunResult}
+              onAdvance={() => setStage("outreach")}
+              onError={(err) => setApiError(err?.message || String(err))}
+            />
+          )}
+          {stage === "outreach" && committedPath === "outbound" && (
+            <Prospects
+              profile={profile}
+              runResult={runResult}
+              eventId={eventId}
+              onError={(err) => setApiError(err?.message || String(err))}
+              onNext={() => setStage("matching")}
+            />
+          )}
+          {stage === "outreach" && committedPath === "inbound" && (
+            <>
+              <ReviewStep eventId={eventId} />
+              <div className="stage-foot">
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => setStage("matching")}
+                >
+                  Continue to Matching <ArrowRight size={16} />
+                </button>
+              </div>
+            </>
+          )}
+          {stage === "matching" && (
+            <Matching
+              profile={profile}
+              eventId={eventId}
+              onError={(err) => setApiError(err?.message || String(err))}
+              onNext={() => setStage("roi")}
+            />
+          )}
+          {stage === "roi" && (
+            <ROI
+              profile={profile}
+              eventId={eventId}
+              onRestart={() => {
+                setStage("intake");
+                setEventId(null);
+                setProfile(null);
+                setCommittedPath(null);
+                setRunResult(null);
+                setApiError(null);
+              }}
+            />
+          )}
+        </StageErrorBoundary>
       </UnifiedShell>
     );
   }
@@ -2231,6 +2248,58 @@ const STAGE_INDEX = {
   matching: 3,
   roi:      4,
 };
+
+// Render-time guard. Any stage component that throws would otherwise
+// unmount its subtree and leave the operator on a blank canvas with
+// no clue what happened. The boundary catches the error, surfaces the
+// message + a recover button. Reset clears App-level flow state by
+// invoking the parent's onReset (we pass setStage-to-intake etc).
+class StageErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    // Surface in DevTools console for debugging; the UI shows the same.
+    // eslint-disable-next-line no-console
+    console.error("[StageErrorBoundary]", error, info?.componentStack);
+  }
+  render() {
+    if (this.state.error) {
+      const msg = this.state.error?.message || String(this.state.error);
+      return (
+        <div className="stage">
+          <header className="stage-head">
+            <h1>Something broke on this screen</h1>
+            <p className="lede">
+              The flow hit an unexpected error. Open DevTools → Console for
+              the full stack. Below is the surface message :
+            </p>
+          </header>
+          <section className="card" style={{ maxWidth: 720, fontFamily: "monospace", fontSize: 12 }}>
+            <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}>{msg}</pre>
+          </section>
+          <div className="stage-foot">
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => {
+                this.setState({ error: null });
+                this.props.onReset && this.props.onReset();
+              }}
+            >
+              Restart from Intake
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // Persistence : only three keys go to localStorage. Components re-fetch
 // their own state on mount; we don't cache runResult / prospects /
