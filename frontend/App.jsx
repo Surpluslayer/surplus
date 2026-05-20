@@ -160,17 +160,19 @@ const THRESHOLD = 70;
 const SIDE_CLASS = { Builds: "side-build", Hires: "side-hire", Operates: "side-op" };
 
 // ---- shared UI ----------------------------------------------
-function StageRail({ stage, setStage, maxReached }) {
+function StageRail({ stage, setStage, maxReached, mutedIds = [] }) {
   return (
     <nav className="rail">
       {STAGES.map((s) => {
         const Icon = s.icon;
         const done = s.id < stage;
-        const active = s.id === stage;
+        const muted = mutedIds.includes(s.id) && !done;
+        const active = s.id === stage && !muted;
         const reachable = s.id <= maxReached;
         return (
           <button key={s.id}
             className={`rail-item ${active ? "active" : ""} ${done ? "done" : ""}`}
+            style={muted ? { opacity: 0.5 } : undefined}
             onClick={() => reachable && setStage(s.id)} disabled={!reachable}>
             <span className="rail-dot">{done ? <Check size={13} strokeWidth={3} /> : <Icon size={13} />}</span>
             <span className="rail-label">{s.label}</span>
@@ -1963,14 +1965,26 @@ export default function App() {
   });
 
   // Unified post-auth stage. Both legacy entry points land here.
-  //   "intake"  : the merged chip/bubble form (SharedIntake)
-  //   "decide"  : stage 02 picker (outbound prospecting vs inbound CSV)
+  //   "intake"    : the merged chip/bubble form (SharedIntake)
+  //   "decide"    : stage 02 picker (outbound prospecting vs inbound CSV)
+  //   "outreach"  : stage 03. Outbound = legacy Prospects UI;
+  //                 inbound = read-only "skipped" card.
+  //   "matching"  : stage 04 placeholder for now.
   const [stage, setStage] = useState("intake");
   const [eventId, setEventId] = useState(null);
   // Profile captured from SharedIntake's submit. Stage02 hands it to the
   // existing Pipeline component + derives the triage_config payload from
   // it for the inbound branch.
   const [profile, setProfile] = useState(null);
+  // Path the operator committed to at stage 02. Source of truth for what
+  // stage 03+ should render in this session. The persistent source is
+  // event-side artifacts (triage_config vs prospects); this lives in
+  // memory for now.
+  const [committedPath, setCommittedPath] = useState(null); // null | "outbound" | "inbound"
+  // /prospect response — Pipeline writes it, Prospects (stage 03 outbound)
+  // reads it. Needs to live above Stage02 so Pipeline's result survives
+  // the stage transition.
+  const [runResult, setRunResult] = useState(null);
   const [apiError, setApiError] = useState(null);
 
   useEffect(() => {
@@ -2004,7 +2018,10 @@ export default function App() {
   // Event row only; the placeholder downstream stands in for the
   // decision screen that comes next prompt.
   if (user) {
-    const stageIdx = stage === "decide" ? 1 : 0;
+    const stageIdx = STAGE_INDEX[stage] ?? 0;
+    // Inbound mode: stage 03 (auto-outreach, id=2) renders as a muted
+    // "skipped" bubble until the operator clicks "Continue to Matching".
+    const mutedIds = committedPath === "inbound" ? [2] : [];
     return (
       <UnifiedShell
         user={user}
@@ -2014,10 +2031,13 @@ export default function App() {
           setStage("intake");
           setEventId(null);
           setProfile(null);
+          setCommittedPath(null);
+          setRunResult(null);
         }}
         apiError={apiError}
         onClearError={() => setApiError(null)}
         stageIdx={stageIdx}
+        mutedIds={mutedIds}
         eventName={profile?.eventName}
         eventId={eventId}
       >
@@ -2036,8 +2056,28 @@ export default function App() {
           <Stage02
             eventId={eventId}
             profile={profile}
+            committedPath={committedPath}
+            onCommit={setCommittedPath}
+            runResult={runResult}
+            setRunResult={setRunResult}
+            onAdvance={() => setStage("outreach")}
             onError={(err) => setApiError(err?.message || String(err))}
           />
+        )}
+        {stage === "outreach" && committedPath === "outbound" && (
+          <Prospects
+            profile={profile}
+            runResult={runResult}
+            eventId={eventId}
+            onError={(err) => setApiError(err?.message || String(err))}
+            onNext={() => setStage("matching")}
+          />
+        )}
+        {stage === "outreach" && committedPath === "inbound" && (
+          <InboundOutreachSkip onContinue={() => setStage("matching")} />
+        )}
+        {stage === "matching" && (
+          <MatchingPlaceholder eventId={eventId} />
         )}
       </UnifiedShell>
     );
@@ -2065,6 +2105,16 @@ export default function App() {
   );
 }
 
+// Map App.stage (string) → rail index. Keeps the rail-id mapping in one
+// place so STAGES[].id and stage names don't drift apart.
+const STAGE_INDEX = {
+  intake:   0,
+  decide:   1,
+  outreach: 2,
+  matching: 3,
+  // roi: 4 — stage 05 lives here when we build it.
+};
+
 // Shell for the unified intake → stage 02 → ... flow. Reuses
 // SURPLUS_APP_CSS classes so it looks identical to the legacy shells.
 // Injects TRIAGE_CSS too so UploadStep renders correctly when stage 02
@@ -2072,7 +2122,7 @@ export default function App() {
 // nav happens via the in-stage actions, not the rail.
 function UnifiedShell({
   user, onLogout, apiError, onClearError, children,
-  stageIdx = 0, eventName, eventId,
+  stageIdx = 0, mutedIds = [], eventName, eventId,
 }) {
   const noop = () => {};
   return (
@@ -2095,7 +2145,12 @@ function UnifiedShell({
               </span>
             )}
           </div>
-          <StageRail stage={stageIdx} setStage={noop} maxReached={stageIdx} />
+          <StageRail
+            stage={stageIdx}
+            setStage={noop}
+            maxReached={stageIdx}
+            mutedIds={mutedIds}
+          />
           {user && <UserMenu user={user} onLogout={onLogout} />}
         </header>
         {apiError && (
@@ -2141,29 +2196,28 @@ function deriveTriageConfig(profile) {
 }
 
 // Stage 02 : the path picker. Toggling between the cards before
-// committing is free. Committing locks the choice and renders the
-// existing Pipeline (outbound) or UploadStep (inbound) below.
-//
-// Mode is local-only here; the persistent source of truth is
-// downstream artifacts (event.triage_config or event.prospects[]).
-function Stage02({ eventId, profile, onError }) {
+// committing is free. Committing locks the choice (via onCommit) and
+// renders the existing Pipeline (outbound) or UploadStep (inbound)
+// below. The committed path lives in App state so stage 03+ can read it.
+function Stage02({
+  eventId, profile, committedPath, onCommit, runResult, setRunResult,
+  onAdvance, onError,
+}) {
   const [selected, setSelected] = useState(null);
-  const [committed, setCommitted] = useState(null);
   const [working, setWorking] = useState(false);
-  const [runResult, setRunResult] = useState(null);
 
   const startOutbound = () => {
-    if (committed) return;
+    if (committedPath) return;
     // No API call here : Pipeline's mount-effect fires /prospect.
-    setCommitted("outbound");
+    onCommit("outbound");
   };
 
   const startInbound = async () => {
-    if (committed || working) return;
+    if (committedPath || working) return;
     setWorking(true);
     try {
       await api.setTriageConfig(eventId, deriveTriageConfig(profile || {}));
-      setCommitted("inbound");
+      onCommit("inbound");
     } catch (e) {
       onError && onError(e);
     } finally {
@@ -2171,8 +2225,8 @@ function Stage02({ eventId, profile, onError }) {
     }
   };
 
-  const isLocked = committed !== null;
-  const displaySelection = committed || selected;
+  const isLocked = committedPath !== null;
+  const displaySelection = committedPath || selected;
 
   return (
     <div className="stage">
@@ -2228,18 +2282,62 @@ function Stage02({ eventId, profile, onError }) {
         </p>
       )}
 
-      {committed === "outbound" && (
+      {committedPath === "outbound" && (
         <Pipeline
           profile={profile}
           eventId={eventId}
           onResult={setRunResult}
           onError={onError}
-          onDone={() => {}}
+          onDone={onAdvance}
         />
       )}
-      {committed === "inbound" && (
-        <UploadStep eventId={eventId} onNext={() => {}} />
+      {committedPath === "inbound" && (
+        <UploadStep eventId={eventId} onNext={onAdvance} />
       )}
+    </div>
+  );
+}
+
+// Stage 03 inbound : a read-only card that explains why we don't run
+// outreach for applicant flows. "Continue to Matching" bumps the App
+// stage to 04. The 5-stage rail keeps the bubble at id=2 visible but
+// muted (see App's mutedIds wiring); once we advance, it gets a check.
+function InboundOutreachSkip({ onContinue }) {
+  return (
+    <div className="stage">
+      <header className="stage-head">
+        <h1>Auto-outreach skipped</h1>
+        <p className="lede">
+          Applicants already opted in by applying — no outreach needed.
+        </p>
+      </header>
+      <section className="card" style={{ maxWidth: 580 }}>
+        <p style={{ margin: 0, lineHeight: 1.6 }}>
+          Auto-outreach is part of the outbound flow only. Since you're
+          scoring applicants from a CSV, the matcher treats their
+          applications as confirmed RSVPs and skips straight to matching.
+        </p>
+      </section>
+      <div className="stage-foot">
+        <button type="button" className="btn-primary" onClick={onContinue}>
+          Continue to Matching <ArrowRight size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Stage 04 placeholder. Real matching UI ships in the next prompt.
+function MatchingPlaceholder({ eventId }) {
+  return (
+    <div className="stage">
+      <header className="stage-head">
+        <h1>Matching</h1>
+        <p className="lede">
+          Event {eventId ? <strong>#{eventId}</strong> : ""} is ready for the
+          matcher. The real matching UI ships next.
+        </p>
+      </header>
     </div>
   );
 }
