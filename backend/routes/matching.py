@@ -10,6 +10,9 @@ from ..auth import current_user, get_owned_event
 from ..db import get_db
 from ..agents.matcher import build_edges, form_groups
 from ..agents.sponsor_matcher import score_event_sponsors
+# Gap #1+#2+#3a: inbound applicants are bridged through this adapter so
+# matcher.py / roi.py see attendee-shaped objects without schema changes.
+from ..triage.matcher_adapter import is_inbound_event, run_inbound_match
 
 router = APIRouter(prefix="/events", tags=["04 · matching"])
 
@@ -88,6 +91,20 @@ def match(
     into the format's groups, balancing market sides. Idempotent.
     """
     ev = get_owned_event(event_id, user, db)
+
+    # Gap #3a: inbound (triage_config + no prospects) computes matches in
+    # memory only. MatchEdge / SponsorMatch FK to prospects.id, so we'd
+    # violate FK if we persisted rows for applicant ids.
+    if is_inbound_event(ev):
+        result = run_inbound_match(ev)
+        if result is None:
+            raise HTTPException(
+                409, "no accepted applicants : review the CSV first"
+            )
+        attending, edges, groups = result
+        return schemas.MatchResult.build(
+            ev, attending, edges, groups, sponsor_matches=[],
+        )
 
     attending = _confirmed(ev)
     if not attending:
