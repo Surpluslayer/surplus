@@ -547,7 +547,7 @@ function ConfigStep({ user, eventId, setEventId, onNext }) {
 
 // ─── Stage 02 : Upload ─────────────────────────────────────────
 
-function UploadStep({ eventId, onNext }) {
+export function UploadStep({ eventId, onNext }) {
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState(null);
@@ -1069,7 +1069,7 @@ function DimBar({ label, v }) {
 }
 
 
-const TRIAGE_CSS = `
+export const TRIAGE_CSS = `
 /* Triage-only: upload / review / drawer / landing (shell + configure use surplusTheme) */
 .triage-landing {
   --bg:#f6f7f9; --panel:#ffffff; --panel-2:#fbfcfd; --line:#e4e8ee;
