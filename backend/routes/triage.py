@@ -270,16 +270,24 @@ async def _evaluate_event_async(event_id: int) -> None:
     Best-effort : exceptions are swallowed + logged so a failing eval can't
     crash the request that scheduled it.
     """
+    # Loud progress prints so a silent failure (bg task never fired ; rubric
+    # synth returned a default ; no applicants) is visible in deploy logs.
+    # Cheap to leave on : two lines per upload, no PII.
+    print(f"  [triage.eval] start event={event_id}")
     bg_db = SessionLocal()
     try:
         ev = bg_db.get(models.Event, event_id)
         if ev is None:
+            print(f"  [triage.eval] event={event_id} NOT FOUND in bg session")
             return
         applicants = list(ev.applicants)
         if not applicants:
+            print(f"  [triage.eval] event={event_id} has 0 applicants ; nothing to score")
             return
+        print(f"  [triage.eval] event={event_id} scoring {len(applicants)} applicants")
         rubric = synthesize_rubric(ev.id, ev.triage_config or "", applicants)
         await evaluate_all(bg_db, ev, rubric)
+        print(f"  [triage.eval] event={event_id} done")
     except Exception as exc:  # noqa: BLE001
         print(f"  [triage.evaluate_event_async] {event_id}: "
               f"{type(exc).__name__}: {exc}")
