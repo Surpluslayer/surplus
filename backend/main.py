@@ -274,6 +274,24 @@ def exa_diagnostics():
 # or run `cd frontend && npm run dev` for hot-reload development.
 _FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if _FRONTEND_DIST.is_dir():
-    # html=True makes StaticFiles serve index.html for "/" and for any path
-    # that doesn't match an existing file (= SPA fallback).
-    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
+    # Starlette's StaticFiles(html=True) only resolves directory indexes,
+    # NOT a SPA-style catch-all fallback : /signin?error=foo 404s because
+    # no `signin` file exists. We need to explicitly fall back to
+    # index.html for any unknown non-/api path so React Router can pick
+    # up the route on the client.
+    from starlette.responses import FileResponse
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    class SPAStaticFiles(StaticFiles):
+        async def get_response(self, path: str, scope):
+            try:
+                return await super().get_response(path, scope)
+            except StarletteHTTPException as exc:
+                # Only fall back for client-side routes (404 + non-API).
+                # Other status codes (405, etc.) bubble up unchanged.
+                if exc.status_code == 404 and not path.startswith("api/"):
+                    return FileResponse(str(_FRONTEND_DIST / "index.html"))
+                raise
+
+    app.mount("/", SPAStaticFiles(directory=str(_FRONTEND_DIST), html=True),
+              name="frontend")

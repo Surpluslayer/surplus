@@ -388,12 +388,24 @@ async def linkedin_webhook(payload: dict, db: DbSession = Depends(get_db)) -> JS
 @router.get("/linkedin/callback")
 async def linkedin_callback(
     state: str = Query(...),
+    account_id: Optional[str] = Query(None),
     db: DbSession = Depends(get_db),
 ) -> RedirectResponse:
     """User's browser redirected here by Unipile after they auth'd.
 
-    The webhook may or may not have fired by the time we get here : poll
-    briefly for the AuthState to resolve before deciding.
+    Two information sources arrive here in parallel :
+      1. Webhook (POST /linkedin/webhook) — fires from Unipile to us with
+         the full payload (status, account_id, name=state_token). When
+         the payload has `name`, the webhook handler links AuthState to
+         User. Some Unipile configurations don't echo `name` back, in
+         which case the webhook 200s but no-ops.
+      2. Callback redirect (this endpoint) — Unipile appends
+         `?account_id=<id>` to the URL we registered as success_redirect.
+
+    Strategy : if AuthState already has user_id (webhook landed cleanly,
+    or the reconnect path pre-filled it), use that. Otherwise fall back
+    to the account_id in the URL and upsert the User ourselves — the
+    webhook is best-effort, not load-bearing.
     """
     base_redirect = "/"
     error_redirect = "/signin?error=linkedin_callback_failed"
@@ -402,8 +414,10 @@ async def linkedin_callback(
     if not auth_state:
         return RedirectResponse(error_redirect, status_code=303)
 
-    # Poll up to ~5s for the webhook to land if it hasn't already
-    for _ in range(20):
+    # Poll briefly for the webhook to land — short-circuit early if it
+    # already did. Capped at ~1.5s so we degrade fast to the URL-based
+    # fallback when the webhook isn't going to help us.
+    for _ in range(6):
         if auth_state.user_id is not None:
             break
         if auth_state.status == "failed":
@@ -412,8 +426,41 @@ async def linkedin_callback(
         db.refresh(auth_state)
 
     if auth_state.user_id is None:
-        # Webhook never landed; show signin with a "still processing" hint
-        return RedirectResponse("/signin?error=linkedin_pending", status_code=303)
+        # Webhook didn't link. Use the account_id from the URL to upsert
+        # the user ourselves. Pull profile fields from Unipile if we have
+        # API creds; otherwise create a minimal record the operator can
+        # fill in later.
+        acct = (account_id or "").strip()
+        if not acct:
+            return RedirectResponse("/signin?error=linkedin_pending", status_code=303)
+        dsn, api_key = _unipile_dsn(), _unipile_api_key()
+        profile = await _fetch_unipile_profile(acct, dsn, api_key) if (dsn and api_key) else {}
+        fields = _extract_profile_fields(profile)
+        user = db.query(User).filter(User.unipile_account_id == acct).first()
+        now = _utcnow()
+        if user:
+            for k, v in fields.items():
+                if v:
+                    setattr(user, k, v)
+            user.last_login_at = now
+            user.linkedin_status = "active"
+        else:
+            user = User(
+                unipile_account_id=acct,
+                name=fields.get("name") or "LinkedIn user",
+                email=fields.get("email"),
+                headline=fields.get("headline"),
+                avatar_url=fields.get("avatar_url"),
+                linkedin_public_id=fields.get("linkedin_public_id"),
+                linkedin_provider_id=fields.get("linkedin_provider_id"),
+                last_login_at=now,
+                linkedin_status="active",
+            )
+            db.add(user)
+            db.flush()
+        auth_state.user_id = user.id
+        auth_state.status = "callback_upserted"
+        db.commit()
 
     user = db.query(User).filter(User.id == auth_state.user_id).first()
     if not user:

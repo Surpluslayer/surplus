@@ -426,11 +426,27 @@ def judge_relevance_batch(candidates: list[dict], icp: dict) -> dict[str, tuple[
         # Fail-closed: every candidate gets dropped with the error as reason.
         return {c["identity"]: (False, f"verdict error: {exc}") for c in candidates}
 
+    saw_tool_use = False
     for block in response.content:
         if getattr(block, "type", "") == "tool_use" and block.name == "emit_verdicts":
-            for v in block.input.get("verdicts", []):
+            saw_tool_use = True
+            verdicts = block.input.get("verdicts", [])
+            print(f"  [llm.judge] Haiku returned {len(verdicts)} verdicts "
+                  f"for {len(candidates)} candidates")
+            input_ids = {str(c.get("identity", "")) for c in candidates}
+            for v in verdicts:
                 ident = v.get("identity")
                 if ident:
+                    if str(ident) not in input_ids:
+                        print(f"  [llm.judge] identity mismatch : "
+                              f"Haiku emitted {ident!r}, not in input set")
                     out[str(ident)] = (bool(v.get("relevant")), str(v.get("reason", "")))
             break
+    if not saw_tool_use:
+        # Haiku ignored the tool and returned text instead — dump the first
+        # chunk so we can see what it said.
+        text_chunks = [getattr(b, "text", "") for b in response.content
+                       if getattr(b, "type", "") == "text"]
+        print(f"  [llm.judge] no tool_use block. Text response : "
+              f"{(''.join(text_chunks))[:300]!r}")
     return out
