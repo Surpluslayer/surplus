@@ -2077,7 +2077,15 @@ export default function App() {
           <InboundOutreachSkip onContinue={() => setStage("matching")} />
         )}
         {stage === "matching" && (
-          <MatchingPlaceholder eventId={eventId} />
+          <Matching
+            profile={profile}
+            eventId={eventId}
+            onError={(err) => setApiError(err?.message || String(err))}
+            // TODO: wire to setStage("roi") once stage 05 exists in the
+            // unified flow. The legacy SurplusApp uses this to advance to
+            // ROI. For now Matching's "Generate ROI" CTA is a no-op.
+            onNext={() => {}}
+          />
         )}
       </UnifiedShell>
     );
@@ -2323,21 +2331,6 @@ function InboundOutreachSkip({ onContinue }) {
           Continue to Matching <ArrowRight size={16} />
         </button>
       </div>
-    </div>
-  );
-}
-
-// Stage 04 placeholder. Real matching UI ships in the next prompt.
-function MatchingPlaceholder({ eventId }) {
-  return (
-    <div className="stage">
-      <header className="stage-head">
-        <h1>Matching</h1>
-        <p className="lede">
-          Event {eventId ? <strong>#{eventId}</strong> : ""} is ready for the
-          matcher. The real matching UI ships next.
-        </p>
-      </header>
     </div>
   );
 }
