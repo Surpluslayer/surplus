@@ -12,6 +12,10 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from .env_loader import load_env
+
+load_env()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles

@@ -2,8 +2,44 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   ArrowRight, Check, Upload, Search, Filter, ChevronRight,
   Loader2, FileText, Sparkles, AlertCircle, ExternalLink, Link2,
+  Target, ClipboardList,
 } from "lucide-react";
 import { api } from "./lib/api.js";
+import { SURPLUS_APP_CSS } from "./surplusTheme.js";
+
+const Chip = ({ active, onClick, children }) => (
+  <button type="button" className={`chip ${active ? "chip-on" : ""}`} onClick={onClick}>{children}</button>
+);
+
+const TRIAGE_RAIL = [
+  { key: "config", label: "Configure", icon: Target },
+  { key: "upload", label: "Upload", icon: Upload },
+  { key: "review", label: "Review", icon: ClipboardList },
+];
+
+function TriageRail({ stage, setStage, maxReached }) {
+  const cur = TRIAGE_RAIL.findIndex((x) => x.key === stage);
+  return (
+    <nav className="rail">
+      {TRIAGE_RAIL.map((s, i) => {
+        const Icon = s.icon;
+        const done = i < cur;
+        const active = s.key === stage;
+        const reachable = i <= maxReached;
+        return (
+          <button key={s.key} type="button"
+            className={`rail-item ${active ? "active" : ""} ${done ? "done" : ""}`}
+            disabled={!reachable}
+            onClick={() => reachable && setStage(s.key)}>
+            <span className="rail-dot">{done ? <Check size={13} strokeWidth={3} /> : <Icon size={13} />}</span>
+            <span className="rail-label">{s.label}</span>
+            <span className="rail-idx">0{i + 1}</span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
 
 // =============================================================
 // Applicant Triage : the inbound flow.
@@ -29,12 +65,6 @@ const EVENT_TYPES = [
   { key: "other",           label: "Other" },
 ];
 
-const STAGES = [
-  { key: "config", label: "Configure" },
-  { key: "upload", label: "Upload" },
-  { key: "review", label: "Review" },
-];
-
 const REC_META = {
   accept:        { color: "rec-accept",   label: "Accept" },
   maybe:         { color: "rec-maybe",    label: "Maybe" },
@@ -48,7 +78,7 @@ export default function TriageApp({ user, onLogout, onSwitchMode, onSignedIn }) 
   const [maxReached, setMaxReached] = useState(0);
 
   const goTo = (s) => {
-    const idx = STAGES.findIndex((x) => x.key === s);
+    const idx = TRIAGE_RAIL.findIndex((x) => x.key === s);
     setStage(s);
     setMaxReached((m) => Math.max(m, idx));
   };
@@ -59,47 +89,33 @@ export default function TriageApp({ user, onLogout, onSwitchMode, onSignedIn }) 
   if (!user) return null;
 
   return (
-    <div className="triage-root">
+    <div className="root">
+      <style>{SURPLUS_APP_CSS}</style>
       <style>{TRIAGE_CSS}</style>
-      <div className="triage-frame">
-        <header className="triage-topbar">
-          <div className="triage-brand">
-            <img className="triage-logo" src="/surplus-logo.png" alt="" />
-            <span className="triage-name">surplus</span>
-            <span className="triage-mode-tag">Applicant Triage</span>
+      <div className="frame">
+        <header className="topbar">
+          <div className="brand">
+            <img className="brand-logo" src="/surplus-logo.png" alt="" />
+            <div className="brand-text">
+              <span className="brand-name">surplus</span>
+            </div>
+            <span className="live-badge">Applicant Triage</span>
           </div>
-          <nav className="triage-rail">
-            {STAGES.map((s, i) => {
-              const active = s.key === stage;
-              const done = i < STAGES.findIndex((x) => x.key === stage);
-              const reachable = i <= maxReached;
-              return (
-                <button key={s.key}
-                  className={`triage-rail-item ${active ? "active" : ""} ${done ? "done" : ""}`}
-                  disabled={!reachable}
-                  onClick={() => reachable && setStage(s.key)}>
-                  <span className="triage-rail-dot">
-                    {done ? <Check size={12} strokeWidth={3} /> : <span>{i + 1}</span>}
-                  </span>
-                  {s.label}
-                </button>
-              );
-            })}
-          </nav>
-          <div className="triage-user">
-            <button className="triage-mode-switch" onClick={onSwitchMode} title="Switch to outbound prospecting">
+          <TriageRail stage={stage} setStage={goTo} maxReached={maxReached} />
+          <div className="triage-topbar-actions">
+            <button type="button" className="topbar-mode-switch" onClick={onSwitchMode} title="Switch to outbound prospecting">
               Outbound mode
             </button>
             {user && (
-              <span className="triage-user-name" title={user.email || ""}>
+              <span className="user-name" title={user.email || ""}>
                 {user.name || user.email || "Operator"}
               </span>
             )}
-            <button className="triage-logout" onClick={onLogout}>Log out</button>
+            <button type="button" className="signin-modal-dismiss" onClick={onLogout}>Log out</button>
           </div>
         </header>
 
-        <main className="triage-stage">
+        <main className="canvas">
           {stage === "config" && (
             <ConfigStep
               user={user}
@@ -180,6 +196,7 @@ function TriageLanding({ onSignedIn }) {
 
   return (
     <div className="triage-landing">
+      <style>{SURPLUS_APP_CSS}</style>
       <style>{TRIAGE_CSS}</style>
       <div className="triage-landing-card">
         <div className="triage-landing-brand">
@@ -234,7 +251,7 @@ function TriageLanding({ onSignedIn }) {
             <input className="triage-in" type="email" value={email} required
                    onChange={(e) => setEmail(e.target.value)}
                    placeholder="ops@verci.com" />
-            <button type="submit" className="triage-cta triage-landing-cta"
+            <button type="submit" className="btn-primary triage-landing-cta"
                     disabled={busy || !name.trim() || !email.trim()}>
               {busy ? (
                 <><Loader2 className="spin" size={16} /> Creating your account…</>
@@ -399,39 +416,41 @@ function ConfigStep({ user, eventId, setEventId, onNext }) {
   };
 
   return (
-    <form className="triage-form" onSubmit={handleSubmit}>
-      <header className="triage-head">
-        <h1>Configure the event</h1>
-        <p>Who's the sponsor, what do they want from the room, and who's the wrong fit.</p>
+    <form className="stage" onSubmit={handleSubmit}>
+      <header className="stage-head">
+        <h1>Define the event</h1>
       </header>
 
-      <section className="triage-card triage-luma">
-        <h3><span className="triage-card-num"><Link2 size={14} /></span> Import from Luma <span className="triage-hint">: optional — we'll pre-fill name + description</span></h3>
-        <div className="triage-luma-row">
-          <input className="triage-in" value={lumaUrl}
-                 onChange={(e) => setLumaUrl(e.target.value)}
-                 placeholder="https://lu.ma/your-event"
-                 onKeyDown={(e) => {
-                   if (e.key === "Enter") { e.preventDefault(); handleLumaImport(); }
-                 }} />
-          <button type="button" className="triage-cta-secondary"
-                  disabled={lumaLoading || !lumaUrl.trim()}
-                  onClick={handleLumaImport}>
+      <section className="card">
+        <h3>
+          <span className="card-num"><Link2 size={12} strokeWidth={2.5} aria-hidden /></span>
+          Import from Luma <span className="hint">: optional — we&apos;ll pre-fill name + description</span>
+        </h3>
+        <div className="luma-import-row">
+          <input className="text-in" value={lumaUrl}
+            onChange={(e) => setLumaUrl(e.target.value)}
+            placeholder="https://lu.ma/your-event"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); handleLumaImport(); }
+            }} />
+          <button type="button" className="btn-primary"
+            disabled={lumaLoading || !lumaUrl.trim()}
+            onClick={handleLumaImport}>
             {lumaLoading ? (
-              <><Loader2 className="spin" size={14} /> Importing…</>
+              <><Loader2 className="spin" size={16} /> Importing…</>
             ) : (
-              <>Import <ArrowRight size={14} /></>
+              <>Import <ArrowRight size={16} /></>
             )}
           </button>
         </div>
         {lumaError && (
-          <div className="triage-error" role="alert" style={{ marginTop: 8 }}>
+          <div className="api-error" role="alert" style={{ marginTop: 10 }}>
             <AlertCircle size={14} /> {lumaError}
           </div>
         )}
         {lumaImported && !lumaError && (
-          <div className="triage-luma-ok">
-            <Check size={14} /> Imported "{lumaImported.name || "event"}"
+          <div className="luma-ok-banner">
+            <Check size={14} /> Imported &quot;{lumaImported.name || "event"}&quot;
             {lumaImported.location ? ` · ${lumaImported.location}` : ""}
             {lumaImported.capacity ? ` · cap ${lumaImported.capacity}` : ""}
             . We also proposed sponsor / ideal-profile / anti-fit from the
@@ -440,85 +459,80 @@ function ConfigStep({ user, eventId, setEventId, onNext }) {
         )}
       </section>
 
-      <div className="triage-grid">
-        <section className="triage-card">
-          <h3><span className="triage-card-num">A</span> Sponsor + event</h3>
+      <div className="form-grid">
+        <section className="card">
+          <h3><span className="card-num">A</span> Sponsor + event</h3>
 
-          <label>Event name <span className="triage-hint">: just for your reference</span></label>
-          <input className="triage-in" value={eventName}
-                 onChange={(e) => setEventName(e.target.value)}
-                 placeholder="Event name" />
+          <label>Event name <span className="hint">: just for your reference</span></label>
+          <input className="text-in" value={eventName}
+            onChange={(e) => setEventName(e.target.value)}
+            placeholder="e.g. Founders dinner" />
 
           <label>Event type</label>
-          <div className="triage-chips">
+          <div className="chip-row">
             {EVENT_TYPES.map((t) => (
-              <button type="button" key={t.key}
-                className={`triage-chip ${eventType === t.key ? "on" : ""}`}
-                onClick={() => setEventType(t.key)}>{t.label}</button>
+              <Chip key={t.key} active={eventType === t.key} onClick={() => setEventType(t.key)}>{t.label}</Chip>
             ))}
           </div>
 
           <label>Sponsor / partner name</label>
-          <input className="triage-in" value={sponsorName}
-                 onChange={(e) => setSponsorName(e.target.value)}
-                 placeholder="Sponsor or partner" />
+          <input className="text-in" value={sponsorName}
+            onChange={(e) => setSponsorName(e.target.value)}
+            placeholder="Sponsor or partner" />
 
-          <label>Capacity <span className="triage-hint">: optional</span></label>
-          <input className="triage-in" value={capacity} type="number" min="1"
-                 onChange={(e) => setCapacity(e.target.value)}
-                 placeholder="" />
+          <label>Capacity <span className="hint">: optional</span></label>
+          <input className="text-in" value={capacity} type="number" min="1"
+            onChange={(e) => setCapacity(e.target.value)}
+            placeholder="" />
         </section>
 
-        <section className="triage-card">
-          <h3><span className="triage-card-num">B</span> Who's the right room</h3>
+        <section className="card">
+          <h3><span className="card-num">B</span> Who&apos;s the right room</h3>
 
-          <label>Event goal <span className="triage-hint">: what should this room produce for the sponsor?</span></label>
-          <textarea className="triage-ta" value={eventGoal} rows={3}
-                    onChange={(e) => setEventGoal(e.target.value)}
-                    placeholder="What should this room produce for the sponsor?" />
+          <label>Event goal <span className="hint">: what should this room produce for the sponsor?</span></label>
+          <textarea className="text-in" value={eventGoal} rows={3}
+            onChange={(e) => setEventGoal(e.target.value)}
+            placeholder="What should this room produce for the sponsor?" />
 
           <label>Ideal attendee profile</label>
-          <textarea className="triage-ta" value={idealProfile} rows={3}
-                    onChange={(e) => setIdealProfile(e.target.value)}
-                    placeholder="Who is the right attendee?" />
+          <textarea className="text-in" value={idealProfile} rows={3}
+            onChange={(e) => setIdealProfile(e.target.value)}
+            placeholder="Who is the right attendee?" />
 
-          <label>Hard filters <span className="triage-hint">: one per line. Violations cap the score.</span></label>
-          <textarea className="triage-ta" value={hardFilters} rows={3}
-                    onChange={(e) => setHardFilters(e.target.value)}
-                    placeholder="One filter per line" />
+          <label>Hard filters <span className="hint">: one per line. Violations cap the score.</span></label>
+          <textarea className="text-in" value={hardFilters} rows={3}
+            onChange={(e) => setHardFilters(e.target.value)}
+            placeholder="One filter per line" />
         </section>
 
-        <section className="triage-card">
-          <h3><span className="triage-card-num">C</span> Anti-fit + nice-to-have</h3>
+        <section className="card">
+          <h3><span className="card-num">C</span> Anti-fit + nice-to-have</h3>
 
-          <label>Anti-fit examples <span className="triage-hint">: categories the sponsor does NOT want</span></label>
-          <textarea className="triage-ta" value={antiFit} rows={4}
-                    onChange={(e) => setAntiFit(e.target.value)}
-                    placeholder="One per line" />
+          <label>Anti-fit examples <span className="hint">: categories the sponsor does NOT want</span></label>
+          <textarea className="text-in" value={antiFit} rows={4}
+            onChange={(e) => setAntiFit(e.target.value)}
+            placeholder="One per line" />
 
-          <label>Nice-to-have signals <span className="triage-hint">: bonus points if applicants show these</span></label>
-          <textarea className="triage-ta" value={niceToHave} rows={3}
-                    onChange={(e) => setNiceToHave(e.target.value)}
-                    placeholder="One per line" />
+          <label>Nice-to-have signals <span className="hint">: bonus points if applicants show these</span></label>
+          <textarea className="text-in" value={niceToHave} rows={3}
+            onChange={(e) => setNiceToHave(e.target.value)}
+            placeholder="One per line" />
 
-          <label>Notes for reviewers <span className="triage-hint">: optional</span></label>
-          <textarea className="triage-ta" value={notes} rows={2}
-                    onChange={(e) => setNotes(e.target.value)}
-                    placeholder="" />
+          <label>Notes for reviewers <span className="hint">: optional</span></label>
+          <textarea className="text-in" value={notes} rows={2}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="" />
         </section>
       </div>
 
       {error && (
-        <div className="triage-error" role="alert">
+        <div className="api-error" role="alert">
           <AlertCircle size={14} /> {error}
         </div>
       )}
 
-      <div className="triage-foot">
-        <p className="triage-foot-hint">
-          We'll synthesize a scoring rubric from this when you upload your applicant CSV.
-        </p>
-        <button type="submit" className="triage-cta" disabled={saving}>
+      <div className="stage-foot">
+        <button type="submit" className="btn-primary" disabled={saving}>
           {saving ? (
             <><Loader2 className="spin" size={16} /> Saving…</>
           ) : (
@@ -587,10 +601,10 @@ function UploadStep({ eventId, onNext }) {
 
   return (
     <div className="triage-upload">
-      <header className="triage-head">
+      <header className="stage-head">
         <h1>Upload the applicant CSV</h1>
-        <p>Drop your Luma export. We'll score every applicant against the rubric from step 1.</p>
       </header>
+      <p className="lede">Drop your Luma export. We&apos;ll score every applicant against the rubric from step 1.</p>
 
       {!uploaded ? (
         <div
@@ -653,8 +667,8 @@ function UploadStep({ eventId, onNext }) {
             </p>
           </div>
 
-          <div className="triage-foot triage-foot-right">
-            <button className="triage-cta" onClick={onNext}>
+          <div className="stage-foot" style={{ justifyContent: "flex-end" }}>
+            <button type="button" className="btn-primary" onClick={onNext}>
               See review queue <ArrowRight size={16} />
             </button>
           </div>
@@ -662,7 +676,7 @@ function UploadStep({ eventId, onNext }) {
       )}
 
       {error && (
-        <div className="triage-error" role="alert">
+        <div className="api-error" role="alert">
           <AlertCircle size={14} /> {error}
         </div>
       )}
@@ -743,10 +757,10 @@ function ReviewStep({ eventId }) {
 
   return (
     <div className="triage-review">
-      <header className="triage-head triage-head-row">
+      <header className="stage-head triage-head-row">
         <div>
           <h1>Review queue</h1>
-          <p>
+          <p className="lede" style={{ marginTop: 6 }}>
             {applicants.length} applicants
             {progress && progress.pending > 0 && (
               <span className="triage-progress-inline">
@@ -1056,159 +1070,40 @@ function DimBar({ label, v }) {
 
 
 const TRIAGE_CSS = `
-.triage-root, .triage-landing {
-  --bg:#f5f6fa; --panel:#fff; --line:#e5e8ef;
-  --ink:#1a1825; --ink-dim:#5b596b; --ink-faint:#9a96aa;
+/* Triage-only: upload / review / drawer / landing (shell + configure use surplusTheme) */
+.triage-landing {
+  --bg:#f6f7f9; --panel:#ffffff; --panel-2:#fbfcfd; --line:#e4e8ee;
+  --ink:#1f1c2e; --ink-dim:#5f5b73; --ink-faint:#9b96ac;
   --acc:#6b46e0; --acc-deep:#5836c6; --acc-soft:#ede9fb;
-  --ok:#1a8f3b; --ok-soft:#e7f6ec;
+  --r-card:16px; --r-pill:999px;
   --warn:#a87100; --warn-soft:#fef5e0;
   --bad:#c43146; --bad-soft:#fce6ea;
   --gray:#5b596b; --gray-soft:#f0f0f5;
-  --shadow:0 4px 16px rgba(15,15,30,0.05);
+  --shadow:0 8px 30px rgba(76,52,143,0.08); --shadow-sm:0 3px 14px rgba(76,52,143,0.06);
   --shadow-md:0 8px 24px rgba(15,15,30,0.08);
-  font-family:'Plus Jakarta Sans',system-ui,-apple-system,sans-serif;
+  --li:#0a66c2; --li-deep:#084e96;
+  font-family:'Plus Jakarta Sans',system-ui,sans-serif;
   color:var(--ink);
+  background:var(--bg);
+  min-height:100vh;
 }
-.triage-root { background:var(--bg); min-height:100vh; }
-.triage-frame { max-width:1320px; margin:0 auto; padding:16px 24px 64px; }
-.triage-topbar {
-  display:flex; align-items:center; justify-content:space-between;
-  padding:14px 18px; background:var(--panel); border:1px solid var(--line);
-  border-radius:14px; box-shadow:var(--shadow); margin-bottom:18px;
-}
-.triage-brand { display:flex; align-items:center; gap:10px; }
-.triage-logo { width:28px; height:28px; }
-.triage-name { font-weight:800; letter-spacing:-0.04em; font-size:1.35rem; }
-.triage-mode-tag {
-  margin-left:6px; padding:3px 9px; border-radius:999px;
-  font-size:10.5px; font-weight:600; letter-spacing:0.02em; text-transform:uppercase;
-  background:var(--acc-soft); color:var(--acc); border:1px solid rgba(108,67,217,0.18);
-}
-.triage-rail { display:flex; gap:4px; }
-.triage-rail-item {
-  display:flex; align-items:center; gap:7px; background:transparent;
-  border:1px solid transparent; color:var(--ink-faint);
-  padding:7px 12px; border-radius:999px;
-  font-family:inherit; font-size:11.5px; font-weight:500;
-  cursor:pointer; transition:all 0.15s;
-}
-.triage-rail-item:disabled { cursor:not-allowed; opacity:0.4; }
-.triage-rail-item:not(:disabled):hover { color:var(--acc); background:var(--acc-soft); }
-.triage-rail-item.active { background:var(--acc); color:#fff; box-shadow:0 4px 12px rgba(108,67,217,0.3); }
-.triage-rail-item.done { color:var(--ink-dim); }
-.triage-rail-dot {
-  display:flex; align-items:center; justify-content:center;
-  width:16px; height:16px; border-radius:50%; font-size:10px; font-weight:700;
-  background:rgba(255,255,255,0.2);
-}
-.triage-rail-item.active .triage-rail-dot { background:rgba(255,255,255,0.3); }
-.triage-rail-item:not(.active):not(.done) .triage-rail-dot {
-  background:var(--gray-soft); color:var(--ink-faint);
-}
-.triage-user { display:flex; align-items:center; gap:10px; font-size:12px; color:var(--ink-dim); }
-.triage-mode-switch {
-  padding:6px 10px; background:transparent; border:1px solid var(--line);
-  border-radius:999px; font-family:inherit; font-size:11.5px;
-  color:var(--ink-dim); cursor:pointer; transition:all 0.15s;
-}
-.triage-mode-switch:hover { color:var(--acc); border-color:var(--acc); }
-.triage-user-name { font-weight:500; }
-.triage-logout {
-  padding:5px 9px; background:transparent; border:0; color:var(--ink-faint);
-  font-family:inherit; font-size:11.5px; cursor:pointer;
-}
-.triage-logout:hover { color:var(--ink-dim); }
 
-.triage-stage { animation:tr-fade 0.4s ease; }
-@keyframes tr-fade { from{opacity:0;transform:translateY(6px);} to{opacity:1;transform:none;} }
-
-.triage-head { margin-bottom:18px; max-width:680px; }
-.triage-head h1 { font-family:'Playfair Display',Georgia,serif;
-  font-size:36px; font-weight:600; letter-spacing:-0.01em; line-height:1.15; margin:0 0 6px; }
-.triage-head p { font-size:14px; line-height:1.55; color:var(--ink-dim); margin:0; }
-
-/* Form */
-.triage-grid {
-  display:grid; grid-template-columns:repeat(3, minmax(0, 1fr));
-  gap:18px; margin-bottom:18px;
+.triage-cta-secondary {
+  display:inline-flex; align-items:center; gap:6px; padding:9px 14px;
+  border-radius:var(--r-el); border:1px solid var(--acc); background:var(--panel-2);
+  color:var(--acc); font-family:inherit; font-size:12.5px; font-weight:600;
+  cursor:pointer; transition:all 0.15s; white-space:nowrap; text-decoration:none;
+  box-sizing:border-box;
 }
-@media (max-width:1100px) { .triage-grid { grid-template-columns:1fr; } }
-.triage-card {
-  background:var(--panel); border:1px solid var(--line);
-  border-radius:14px; padding:20px 18px; box-shadow:var(--shadow);
-}
-.triage-card h3 {
-  display:flex; align-items:center; gap:10px; margin:0 0 14px;
-  font-size:14px; font-weight:600; letter-spacing:-0.01em;
-}
-.triage-card-num {
-  width:22px; height:22px; border-radius:6px; display:inline-flex;
-  align-items:center; justify-content:center; background:var(--acc-soft);
-  color:var(--acc); font-size:11px; font-weight:700;
-}
-.triage-card label {
-  display:block; font-size:11px; text-transform:uppercase; letter-spacing:0.06em;
-  color:var(--ink-faint); font-weight:600; margin-top:14px; margin-bottom:6px;
-}
-.triage-card label:first-of-type { margin-top:0; }
-.triage-hint { text-transform:none; letter-spacing:0; font-weight:400;
-  color:var(--ink-faint); }
-.triage-in, .triage-ta {
-  width:100%; padding:9px 12px; border-radius:9px;
-  border:1px solid var(--line); background:var(--panel);
-  font-family:inherit; font-size:13.5px; color:var(--ink);
-  box-sizing:border-box; transition:border-color 0.12s;
-}
-.triage-ta { line-height:1.5; resize:vertical; }
-.triage-in:focus, .triage-ta:focus { outline:none; border-color:var(--acc); }
-
-.triage-chips { display:flex; flex-wrap:wrap; gap:6px; }
-.triage-chip {
-  padding:6px 11px; border-radius:999px; border:1px solid var(--line);
-  background:var(--panel); color:var(--ink-dim);
-  font-family:inherit; font-size:12px; cursor:pointer; transition:all 0.12s;
-}
-.triage-chip:hover { color:var(--acc); border-color:var(--acc); }
-.triage-chip.on { background:var(--acc); color:#fff; border-color:var(--acc); }
-
-.triage-foot {
-  display:flex; align-items:center; justify-content:space-between;
-  margin-top:6px; padding-top:14px; border-top:1px solid var(--line);
-}
-.triage-foot-right { justify-content:flex-end; }
-.triage-foot-hint { font-size:12px; color:var(--ink-faint); margin:0; }
-.triage-cta {
-  display:inline-flex; align-items:center; gap:8px; padding:10px 18px;
-  border-radius:999px; border:0; background:var(--acc); color:#fff;
-  font-family:inherit; font-size:13.5px; font-weight:600; cursor:pointer;
-  transition:all 0.15s;
-}
-.triage-cta:hover:not(:disabled) { background:var(--acc-deep); box-shadow:0 6px 16px rgba(108,67,217,0.3); }
-.triage-cta:disabled { opacity:0.7; cursor:wait; }
+.triage-cta-secondary:hover { background:var(--acc-soft); }
 
 .triage-error {
   display:flex; align-items:center; gap:7px; padding:10px 13px;
   margin:14px 0 0; border-radius:9px;
-  background:var(--bad-soft); color:var(--bad); border:1px solid #f3d6dc;
+  background:var(--no-soft); color:var(--no); border:1px solid #f3d6dc;
   font-size:13px;
 }
-
-.triage-luma { margin-bottom:18px; }
-.triage-luma-row { display:flex; gap:8px; align-items:stretch; }
-.triage-luma-row .triage-in { flex:1; }
-.triage-cta-secondary {
-  display:inline-flex; align-items:center; gap:6px; padding:9px 14px;
-  border-radius:9px; border:1px solid var(--acc); background:var(--panel);
-  color:var(--acc); font-family:inherit; font-size:13px; font-weight:600;
-  cursor:pointer; transition:all 0.15s; white-space:nowrap;
-}
-.triage-cta-secondary:hover:not(:disabled) { background:var(--acc-soft); }
-.triage-cta-secondary:disabled { opacity:0.5; cursor:not-allowed; }
-.triage-luma-ok {
-  display:flex; align-items:center; gap:7px; padding:9px 12px; margin-top:10px;
-  border-radius:9px; background:var(--good-soft, #e9f7ef); color:var(--good, #137a3d);
-  border:1px solid #c9eedb; font-size:12.5px;
-}
+.triage-upload .lede { margin-bottom:18px; max-width:560px; }
 
 /* Upload */
 .triage-drop {
@@ -1367,7 +1262,10 @@ const TRIAGE_CSS = `
 .triage-drawer-sec { margin-bottom:16px; }
 
 /* Decision bar : accept / maybe / reject + notes */
-.triage-head-row { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+.stage-head.triage-head-row {
+  display:flex; align-items:flex-start; justify-content:space-between; gap:16px;
+  max-width:none; width:100%; margin-bottom:12px;
+}
 .triage-head-row .triage-cta-secondary { margin-top:4px; text-decoration:none; }
 .triage-decision {
   margin-bottom:18px; padding:14px; border-radius:10px;

@@ -1,0 +1,17 @@
+import fs from "fs";
+const p = new URL("../App.jsx", import.meta.url);
+let s = fs.readFileSync(p, "utf8");
+const commentStart = s.indexOf("// ---- styles -------------------------------------------------");
+if (commentStart < 0) throw new Error("styles comment not found");
+const cssStart = s.indexOf("const CSS = `", commentStart);
+if (cssStart < 0) throw new Error("const CSS not found");
+const end = s.indexOf("\n`;", cssStart);
+if (end < 0) throw new Error("CSS block end not found");
+const tail = s.slice(end + "\n`;".length);
+let newS = s.slice(0, commentStart) + tail;
+const ins = 'import { SURPLUS_APP_CSS as CSS } from "./surplusTheme.js";\n';
+const pos = newS.indexOf("import TriageApp");
+if (pos < 0) throw new Error("import TriageApp not found");
+newS = newS.slice(0, pos) + ins + newS.slice(pos);
+fs.writeFileSync(p, newS);
+console.log("OK");
