@@ -281,6 +281,12 @@ async def evaluate_all(db, event: models.Event, rubric: Rubric) -> dict:
                 )
                 if result.error:
                     failed += 1
+                    # Surface the per-applicant error in logs : without this
+                    # a silent "(scoring failed)" evaluation row gives no
+                    # hint whether it was a network error, a JSON parse,
+                    # or an unset key.
+                    print(f"  [triage.score] {a.id} ({a.name}): "
+                          f"{result.error}")
                 else:
                     scored += 1
                 persist_evaluation(db, a, event.id, result, rubric)
