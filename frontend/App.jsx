@@ -1969,7 +1969,8 @@ export default function App() {
   //   "decide"    : stage 02 picker (outbound prospecting vs inbound CSV)
   //   "outreach"  : stage 03. Outbound = legacy Prospects UI;
   //                 inbound = read-only "skipped" card.
-  //   "matching"  : stage 04 placeholder for now.
+  //   "matching"  : stage 04. Renders the legacy Matching component.
+  //   "roi"       : stage 05. Renders the legacy ROI component.
   const [stage, setStage] = useState("intake");
   const [eventId, setEventId] = useState(null);
   // Profile captured from SharedIntake's submit. Stage02 hands it to the
@@ -2081,10 +2082,21 @@ export default function App() {
             profile={profile}
             eventId={eventId}
             onError={(err) => setApiError(err?.message || String(err))}
-            // TODO: wire to setStage("roi") once stage 05 exists in the
-            // unified flow. The legacy SurplusApp uses this to advance to
-            // ROI. For now Matching's "Generate ROI" CTA is a no-op.
-            onNext={() => {}}
+            onNext={() => setStage("roi")}
+          />
+        )}
+        {stage === "roi" && (
+          <ROI
+            profile={profile}
+            eventId={eventId}
+            onRestart={() => {
+              setStage("intake");
+              setEventId(null);
+              setProfile(null);
+              setCommittedPath(null);
+              setRunResult(null);
+              setApiError(null);
+            }}
           />
         )}
       </UnifiedShell>
@@ -2120,7 +2132,7 @@ const STAGE_INDEX = {
   decide:   1,
   outreach: 2,
   matching: 3,
-  // roi: 4 — stage 05 lives here when we build it.
+  roi:      4,
 };
 
 // Shell for the unified intake → stage 02 → ... flow. Reuses
