@@ -5,7 +5,7 @@ import { api } from "./lib/api.js";
 // Unified intake form for the merged app. Mode-less : both downstream
 // branches (outbound prospecting, inbound triage) start from this same
 // screen. Submitting creates an Event row via api.createEvent and nothing
-// else — no triage_config write, no prospecting kickoff. The downstream
+// else: no triage_config write, no prospecting kickoff. The downstream
 // decision happens on the next screen.
 
 const FORMATS = ["Sit-down dinner", "Hackathon", "Workshop", "Mixer", "Roundtable"];
@@ -74,7 +74,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
   // Luma import : optional pre-fill at the bottom of the form. Re-uses
   // the existing backend scraper (api.previewLumaEvent → /events/triage/
   // luma-preview → backend/triage/luma.py). Never overwrites operator
-  // input — only fills empty fields via the (prev) => prev || ... pattern.
+  // input: only fills empty fields via the (prev) => prev || ... pattern.
   // suggestions.hard_filters / anti_fit_examples are intentionally NOT
   // mapped to chip groups (too risky to auto-toggle).
   const [lumaUrl, setLumaUrl] = useState("");
@@ -107,7 +107,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
         if (ev.starts_at) {
           next.eventDate = next.eventDate || String(ev.starts_at).slice(0, 10);
         }
-        // Headcount has a slider min=0 max=160 — clamp before assigning.
+        // Headcount has a slider min=0 max=160, clamp before assigning.
         // We treat the default 40 as "not yet set by the operator" for
         // the purpose of the empty-only rule : that's the seed value
         // and the only way it survives intake is if the operator never
@@ -175,6 +175,63 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
         <h1>Define the event</h1>
       </header>
 
+      {/* Thin one-line Luma pre-fill row. Sits above the form so the
+          three A/B/C cards stay on screen without extra scrolling. */}
+      <div
+        className="luma-quick"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          flexWrap: "wrap",
+        }}
+      >
+        <label
+          htmlFor="luma-url"
+          style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
+        >
+          Luma:
+        </label>
+        <input
+          id="luma-url"
+          type="text"
+          className="text-in"
+          style={{ flex: "1 1 240px", minWidth: 240 }}
+          value={lumaUrl}
+          onChange={(e) => setLumaUrl(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); handleLumaImport(); }
+          }}
+          placeholder="https://lu.ma/your-event"
+        />
+        <button
+          type="button"
+          className="btn-primary"
+          style={{ padding: "8px 14px" }}
+          onClick={handleLumaImport}
+          disabled={lumaLoading || !lumaUrl.trim()}
+        >
+          {lumaLoading ? (
+            <><Loader2 className="spin" size={14} /> Importing</>
+          ) : (
+            "Import"
+          )}
+        </button>
+        <span className="hint" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+          *optional
+        </span>
+      </div>
+      {lumaError && (
+        <div className="api-error" role="alert" style={{ marginTop: 4 }}>
+          <AlertCircle size={14} /> {lumaError}
+        </div>
+      )}
+      {lumaImported && !lumaError && (
+        <div className="luma-ok-banner" style={{ marginTop: 4 }}>
+          <Check size={14} /> Imported &quot;{lumaImported.name || "event"}&quot;
+        </div>
+      )}
+
       <div className="form-grid">
         <section className="card">
           <h3><span className="card-num">A</span> Ideal attendee (ICP)</h3>
@@ -199,7 +256,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
               <Chip key={y} active={profile.yoe.includes(y)} onClick={() => toggle("yoe", y)}>{y}</Chip>
             ))}
           </div>
-          <label>Sources <span className="hint">: more sources, longer search</span></label>
+          <label>Sources</label>
           <div className="chip-row">
             {SOURCES.map((src) => (
               <Chip key={src.key}
@@ -236,7 +293,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
 
         <section className="card">
           <h3><span className="card-num">C</span> Goal &amp; budget</h3>
-          <label>Primary objective <span className="hint">: first selected drives ROI math</span></label>
+          <label>Primary objective</label>
           <div className="chip-row">
             {GOALS.map((g) => (
               <Chip key={g} active={profile.goal.includes(g)} onClick={() => toggle("goal", g)}>{g}</Chip>
@@ -257,44 +314,6 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
           </div>
         </section>
       </div>
-
-      <section className="card">
-        <h3>
-          <span className="card-num"><Link2 size={12} strokeWidth={2.5} aria-hidden /></span>
-          Have a Luma page? <span className="hint">: optional — we&apos;ll pre-fill what we can.</span>
-        </h3>
-        <div className="luma-import-row">
-          <input className="text-in" value={lumaUrl}
-            onChange={(e) => setLumaUrl(e.target.value)}
-            placeholder="https://lu.ma/your-event"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") { e.preventDefault(); handleLumaImport(); }
-            }} />
-          <button type="button" className="btn-primary"
-            disabled={lumaLoading || !lumaUrl.trim()}
-            onClick={handleLumaImport}>
-            {lumaLoading ? (
-              <><Loader2 className="spin" size={16} /> Importing…</>
-            ) : (
-              <>Import <ArrowRight size={16} /></>
-            )}
-          </button>
-        </div>
-        {lumaError && (
-          <div className="api-error" role="alert" style={{ marginTop: 10 }}>
-            <AlertCircle size={14} /> {lumaError}
-          </div>
-        )}
-        {lumaImported && !lumaError && (
-          <div className="luma-ok-banner">
-            <Check size={14} /> Imported &quot;{lumaImported.name || "event"}&quot;
-            {lumaImported.location ? ` · ${lumaImported.location}` : ""}
-            {lumaImported.capacity ? ` · cap ${lumaImported.capacity}` : ""}
-            . Empty fields above were filled in — anything you'd already
-            typed is preserved.
-          </div>
-        )}
-      </section>
 
       {submitError && (
         <div className="api-error" role="alert">
