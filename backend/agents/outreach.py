@@ -169,7 +169,11 @@ def _framing(event) -> str:
 
 
 _COMPOSE_MODEL = os.environ.get("OUTREACH_COMPOSE_MODEL", "claude-haiku-4-5-20251001")
-_COMPOSE_TIMEOUT_S = float(os.environ.get("OUTREACH_COMPOSE_TIMEOUT", "8"))
+# Bumped to 30s default : Railway's Anthropic round-trip routinely needs
+# >8s to even complete TCP/TLS handshake (manifesting as APIConnectionError,
+# not APITimeoutError — anthropic-sdk wraps httpx.ConnectTimeout as the
+# former). Local + Fly are both fine under 30s.
+_COMPOSE_TIMEOUT_S = float(os.environ.get("OUTREACH_COMPOSE_TIMEOUT", "30"))
 _COMPOSE_MAX_TOKENS = 800
 
 

@@ -70,10 +70,14 @@ def _judge_timeout() -> float:
     short-circuiting timeout means we silently bypass the ICP gate, which
     surfaces wrong-person matches in the UI.
     """
+    # Bumped to 30s default : Railway -> Anthropic round-trips routinely
+    # need 6-12s for batched judge calls of 50 candidates. 6s was forcing
+    # constant fail-open ("kept all candidates"), which bypassed the ICP
+    # gate and surfaced bad matches like designers for "ML engineer" ICPs.
     try:
-        return max(2.0, float(os.environ.get("PROSPECTING_JUDGE_TIMEOUT", "6")))
+        return max(2.0, float(os.environ.get("PROSPECTING_JUDGE_TIMEOUT", "30")))
     except ValueError:
-        return 6.0
+        return 30.0
 
 
 def _icp_cache_key(icp: dict) -> str:
