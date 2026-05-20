@@ -1,0 +1,100 @@
+# fly.toml — Fly.io app config for surplus
+#
+# Derived from Dockerfile + Procfile + railway.json + requirements.txt.
+# Drop it in at repo root and `flyctl deploy` from your Windows box.
+#
+# WHAT FLY DOES WITH IT
+#   - Builds the multi-stage Dockerfile (frontend bundle → python runtime)
+#   - Runs the existing CMD : `uvicorn backend.main:app` listens on $PORT
+#   - Routes :80 / :443 traffic to internal_port = 8000
+#   - HTTPS forced; HTTP/2 by default
+#   - HTTP health-check hits the existing /api/health endpoint (no new code)
+#   - One warm machine (min_machines_running = 1) so demo-day cold starts
+#     don't bite you. Set to 0 if you'd rather pay nothing when idle.
+#
+# WHAT YOU STILL HAVE TO DO ON WINDOWS
+#   1. flyctl auth login
+#   2. flyctl launch --no-deploy --name surplus-prod --region sjc \
+#        --copy-config --no-postgres --no-redis
+#      (Fly will see this file and respect it instead of generating one.)
+#   3. flyctl secrets set DATABASE_URL=... ANTHROPIC_API_KEY=... \
+#        EXA_API_KEY=... UNIPILE_DSN=... UNIPILE_API_KEY=... \
+#        UNIPILE_ACCOUNT_ID=... UNIPILE_WEBHOOK_SECRET=... \
+#        DEMO_ACCESS_TOKEN=... (etc — full list in .env.example)
+#   4. flyctl deploy
+#   5. curl https://surplus-prod.fly.dev/api/health
+#
+# NOTES
+#   - This config assumes DATABASE_URL → Neon Postgres (db.py auto-switches
+#     postgres:// → postgresql://). If you ever fall back to the SQLite
+#     path at /app/backend/data/surplus.db, you'll need to mount a Fly
+#     volume there — Fly machines have ephemeral disks just like Railway.
+#     The [mounts] block at the bottom of this file is commented out and
+#     ready to uncomment if you go that route.
+#   - The Dockerfile sets ENV PORT=8000; Fly also injects PORT. They match,
+#     so the CMD just works. No override needed.
+#   - Railway config (railway.json, Procfile) is left untouched : both
+#     deploys can coexist as primary/failover.
+
+app = "surplus-prod"
+primary_region = "sjc"
+
+[build]
+  # Reuse the existing multi-stage Dockerfile rather than Fly's buildpacks.
+  # Frontend gets built in the node stage, then copied into the python image.
+  dockerfile = "Dockerfile"
+
+[env]
+  # The Dockerfile defaults PORT to 8000 and uvicorn binds it. Setting it
+  # here too makes the [http_service] internal_port self-documenting.
+  PORT = "8000"
+  # Cost ceiling : keep discovery cheap by default. Override per-deploy
+  # via `flyctl secrets set` if you want bigger pools.
+  PROSPECTING_MAX_PER_SOURCE = "5"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Auto-stop saves money in idle hours but adds a ~1s cold-start. We
+  # keep one machine warm so demo-day first-paint isn't lumpy. Flip
+  # min_machines_running to 0 to let everything scale to zero overnight.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  # FastAPI under uvicorn handles a lot of concurrent requests per
+  # machine. These limits push Fly to spin up another machine before
+  # the existing one saturates. Tune up for traffic, down for cost.
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 50
+    hard_limit = 100
+
+# Health check : hits the existing /api/health endpoint defined in
+# backend/main.py. Fly will mark the machine unhealthy + restart it if
+# this 5xxs or times out repeatedly.
+[[http_service.checks]]
+  grace_period = "15s"
+  interval = "30s"
+  method = "GET"
+  path = "/api/health"
+  protocol = "http"
+  timeout = "5s"
+
+# Single VM size that fits the workload. Uvicorn + FastAPI + the
+# Anthropic / Exa SDKs sit comfortably in 512MB at idle; bump to
+# shared-cpu-2x / 1024MB if you start seeing memory pressure in
+# `flyctl logs`.
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "512mb"
+
+# ─── Optional : SQLite persistence ────────────────────────────────────
+# Uncomment this block ONLY if you're running without DATABASE_URL and
+# need /app/backend/data/surplus.db to survive restarts. You'll also
+# need to `flyctl volumes create surplus_data --size 1 --region sjc`
+# once before the first deploy.
+#
+# [mounts]
+#   source = "surplus_data"
+#   destination = "/app/backend/data"
