@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { SURPLUS_APP_CSS as CSS } from "./surplusTheme.js";
-import TriageApp from "./TriageApp.jsx";
+import TriageApp, { UploadStep, TRIAGE_CSS } from "./TriageApp.jsx";
 import {
   ArrowRight, Check, Circle, Activity, Send, Network, Target,
   GitBranch, BriefcaseBusiness, Zap, TrendingUp, RotateCw, Mail,
@@ -1964,9 +1964,13 @@ export default function App() {
 
   // Unified post-auth stage. Both legacy entry points land here.
   //   "intake"  : the merged chip/bubble form (SharedIntake)
-  //   "decide"  : placeholder for the next-prompt decision screen
+  //   "decide"  : stage 02 picker (outbound prospecting vs inbound CSV)
   const [stage, setStage] = useState("intake");
   const [eventId, setEventId] = useState(null);
+  // Profile captured from SharedIntake's submit. Stage02 hands it to the
+  // existing Pipeline component + derives the triage_config payload from
+  // it for the inbound branch.
+  const [profile, setProfile] = useState(null);
   const [apiError, setApiError] = useState(null);
 
   useEffect(() => {
@@ -2000,6 +2004,7 @@ export default function App() {
   // Event row only; the placeholder downstream stands in for the
   // decision screen that comes next prompt.
   if (user) {
+    const stageIdx = stage === "decide" ? 1 : 0;
     return (
       <UnifiedShell
         user={user}
@@ -2008,21 +2013,31 @@ export default function App() {
           setUser(undefined);
           setStage("intake");
           setEventId(null);
+          setProfile(null);
         }}
         apiError={apiError}
         onClearError={() => setApiError(null)}
+        stageIdx={stageIdx}
+        eventName={profile?.eventName}
+        eventId={eventId}
       >
         {stage === "intake" && (
           <SharedIntake
-            onSubmitted={(ev) => {
+            initialProfile={profile || undefined}
+            onSubmitted={(ev, prof) => {
               setEventId(ev.id);
+              setProfile(prof);
               setStage("decide");
             }}
             onError={(err) => setApiError(err?.message || String(err))}
           />
         )}
         {stage === "decide" && (
-          <Stage02Placeholder eventId={eventId} />
+          <Stage02
+            eventId={eventId}
+            profile={profile}
+            onError={(err) => setApiError(err?.message || String(err))}
+          />
         )}
       </UnifiedShell>
     );
@@ -2050,14 +2065,20 @@ export default function App() {
   );
 }
 
-// Minimal chrome for the unified intake → decision flow. Reuses
+// Shell for the unified intake → stage 02 → ... flow. Reuses
 // SURPLUS_APP_CSS classes so it looks identical to the legacy shells.
-// No StageRail yet : the next prompt's decision screen will rebuild
-// the rail with the merged stage list.
-function UnifiedShell({ user, onLogout, apiError, onClearError, children }) {
+// Injects TRIAGE_CSS too so UploadStep renders correctly when stage 02
+// commits to the inbound path. The 5-stage rail is read-only for now :
+// nav happens via the in-stage actions, not the rail.
+function UnifiedShell({
+  user, onLogout, apiError, onClearError, children,
+  stageIdx = 0, eventName, eventId,
+}) {
+  const noop = () => {};
   return (
     <div className="root">
       <style>{CSS}</style>
+      <style>{TRIAGE_CSS}</style>
       <div className="frame">
         <header className="topbar">
           <div className="brand">
@@ -2065,7 +2086,16 @@ function UnifiedShell({ user, onLogout, apiError, onClearError, children }) {
             <div className="brand-text">
               <span className="brand-name">surplus</span>
             </div>
+            {(eventName?.trim() || eventId) && (
+              <span className="live-badge"
+                    title={eventId ? "connected to backend" : "event name"}>
+                {eventName?.trim()
+                  ? eventName.trim()
+                  : `event #${eventId} · live`}
+              </span>
+            )}
           </div>
+          <StageRail stage={stageIdx} setStage={noop} maxReached={stageIdx} />
           {user && <UserMenu user={user} onLogout={onLogout} />}
         </header>
         {apiError && (
@@ -2079,22 +2109,176 @@ function UnifiedShell({ user, onLogout, apiError, onClearError, children }) {
   );
 }
 
-// Stand-in for the upcoming stage 02 decision screen. The next prompt
-// replaces this with the real picker (prospecting vs CSV upload).
-function Stage02Placeholder({ eventId }) {
+// Pure : turn the SharedIntake chip profile into a triage_config payload.
+// Used only when the operator picks the inbound branch at stage 02.
+function deriveTriageConfig(profile) {
+  const role = (profile?.role || "").trim();
+  const seniorityList = (profile?.seniority || []).join(", ");
+  const stageList = (profile?.coStage || []).join(", ");
+  const yoeList = (profile?.yoe || []).join(", ");
+
+  const parts = [];
+  if (role) parts.push(`Target role: ${role}.`);
+  if (seniorityList) parts.push(`Seniority: ${seniorityList}.`);
+  if (stageList) parts.push(`Company stage: ${stageList}.`);
+  if (yoeList) parts.push(`Years of experience: ${yoeList}.`);
+  const ideal_attendee_profile = parts.join(" ");
+
+  const event_goal = (profile?.goal && profile.goal[0]) || null;
+  const capacity = Number.isFinite(profile?.headcount) ? profile.headcount : null;
+
+  return {
+    event_type: "other",
+    sponsor_name: null,
+    event_goal,
+    ideal_attendee_profile,
+    hard_filters: [],
+    nice_to_have_signals: [],
+    anti_fit_examples: [],
+    capacity,
+    notes: null,
+  };
+}
+
+// Stage 02 : the path picker. Toggling between the cards before
+// committing is free. Committing locks the choice and renders the
+// existing Pipeline (outbound) or UploadStep (inbound) below.
+//
+// Mode is local-only here; the persistent source of truth is
+// downstream artifacts (event.triage_config or event.prospects[]).
+function Stage02({ eventId, profile, onError }) {
+  const [selected, setSelected] = useState(null);
+  const [committed, setCommitted] = useState(null);
+  const [working, setWorking] = useState(false);
+  const [runResult, setRunResult] = useState(null);
+
+  const startOutbound = () => {
+    if (committed) return;
+    // No API call here : Pipeline's mount-effect fires /prospect.
+    setCommitted("outbound");
+  };
+
+  const startInbound = async () => {
+    if (committed || working) return;
+    setWorking(true);
+    try {
+      await api.setTriageConfig(eventId, deriveTriageConfig(profile || {}));
+      setCommitted("inbound");
+    } catch (e) {
+      onError && onError(e);
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const isLocked = committed !== null;
+  const displaySelection = committed || selected;
+
   return (
     <div className="stage">
+      <style>{STAGE02_CSS}</style>
       <header className="stage-head">
-        <h1>Event created · pick what's next</h1>
-        <p className="lede">
-          Event {eventId ? <strong>#{eventId}</strong> : ""} is saved. The next
-          screen will let you choose between running outbound prospecting
-          or uploading an applicant CSV. Coming in the next prompt.
-        </p>
+        <h1>Run agent</h1>
+        <p className="lede">Pick how you want to source attendees.</p>
       </header>
+
+      <div className="path-picker">
+        <div
+          className={`path-card ${displaySelection === "outbound" ? "sel" : ""} ${isLocked && committed !== "outbound" ? "off" : ""}`}
+          role="button"
+          tabIndex={isLocked ? -1 : 0}
+          onClick={() => !isLocked && setSelected("outbound")}
+        >
+          <h3>Outbound · prospect new candidates</h3>
+          <p>We search GitHub, LinkedIn, X, Scholar for people matching your ICP.</p>
+          {!isLocked && (
+            <button
+              className="btn-primary"
+              onClick={(e) => { e.stopPropagation(); startOutbound(); }}
+              disabled={working}
+            >
+              Run prospecting <ArrowRight size={16} />
+            </button>
+          )}
+        </div>
+
+        <div
+          className={`path-card ${displaySelection === "inbound" ? "sel" : ""} ${isLocked && committed !== "inbound" ? "off" : ""}`}
+          role="button"
+          tabIndex={isLocked ? -1 : 0}
+          onClick={() => !isLocked && setSelected("inbound")}
+        >
+          <h3>Inbound · score existing applicants</h3>
+          <p>Upload a Luma CSV. We score each applicant against your ICP.</p>
+          {!isLocked && (
+            <button
+              className="btn-primary"
+              onClick={(e) => { e.stopPropagation(); startInbound(); }}
+              disabled={working}
+            >
+              {working ? "Setting up…" : "Upload CSV"} <ArrowRight size={16} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {isLocked && (
+        <p className="path-lock-note">
+          Locked — start a new event to change paths.
+        </p>
+      )}
+
+      {committed === "outbound" && (
+        <Pipeline
+          profile={profile}
+          eventId={eventId}
+          onResult={setRunResult}
+          onError={onError}
+          onDone={() => {}}
+        />
+      )}
+      {committed === "inbound" && (
+        <UploadStep eventId={eventId} onNext={() => {}} />
+      )}
     </div>
   );
 }
+
+const STAGE02_CSS = `
+.path-picker {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  margin-bottom: 14px;
+}
+.path-card {
+  background: var(--panel);
+  border: 1.5px solid var(--line);
+  border-radius: var(--r-card);
+  padding: 20px 22px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.05s;
+  outline: none;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.path-card:hover:not(.off) { border-color: var(--acc); }
+.path-card:focus-visible { box-shadow: 0 0 0 3px var(--acc-soft); }
+.path-card.sel {
+  border-color: var(--acc);
+  box-shadow: 0 0 0 3px var(--acc-soft);
+}
+.path-card.off { opacity: 0.45; cursor: not-allowed; }
+.path-card h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--ink); }
+.path-card p { margin: 0; font-size: 13px; color: var(--ink-dim); line-height: 1.5; }
+.path-card .btn-primary { align-self: flex-start; margin-top: 6px; }
+.path-lock-note {
+  font-size: 12px; color: var(--ink-faint);
+  margin: 0 0 14px;
+}
+@media (max-width: 720px) {
+  .path-picker { grid-template-columns: 1fr; }
+}
+`;
 
 function needsSignIn(err) {
   if (!err) return false;
