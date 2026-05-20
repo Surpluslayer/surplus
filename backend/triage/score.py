@@ -31,6 +31,25 @@ from .rubric import Rubric
 SCORE_MODEL = os.environ.get("TRIAGE_SCORE_MODEL", "claude-haiku-4-5-20251001")
 SCORE_MAX_TOKENS = 1200
 SCORE_CONCURRENCY = 10
+# Bumped from 15s : Railway -> Anthropic round-trips routinely take 6-12s
+# for the TCP/TLS handshake + Haiku response, and fresh-client connection
+# storms make it worse. Matches the 30s default we use in compose
+# (backend/agents/outreach.py).
+SCORE_TIMEOUT_S = float(os.environ.get("TRIAGE_SCORE_TIMEOUT", "30"))
+
+
+# Module-singleton Anthropic client for score_applicant : same fix as
+# compose (PR #93). Per-call Anthropic() instantiation hits Railway's
+# egress connection limits and surfaces as APIConnectionError on every
+# request, leaving us with all-zero "(scoring failed)" evaluations.
+_SCORE_CLIENT = None
+
+def _score_client():
+    global _SCORE_CLIENT
+    if _SCORE_CLIENT is None:
+        from anthropic import Anthropic
+        _SCORE_CLIENT = Anthropic(max_retries=2)
+    return _SCORE_CLIENT
 
 
 _SCORE_SYSTEM = """You score one applicant against a per-event rubric.
@@ -194,13 +213,12 @@ def score_applicant(applicant: models.Applicant, rubric: Rubric,
     user_msg = _build_user_message(applicant, enrichment, rubric)
     try:
         if client is None:
-            from anthropic import Anthropic
-            client = Anthropic()
+            client = _score_client()
         t0 = time.time()
         resp = client.messages.create(
             model=SCORE_MODEL,
             max_tokens=SCORE_MAX_TOKENS,
-            timeout=15,
+            timeout=SCORE_TIMEOUT_S,
             system=[{"type": "text", "text": _SCORE_SYSTEM,
                      "cache_control": {"type": "ephemeral"}}],
             messages=[
