@@ -1955,6 +1955,24 @@ export default function App() {
     try { return localStorage.getItem("surplus_mode") || "outbound"; }
     catch { return "outbound"; }
   });
+  // Shared eventId across both flows so the operator can switch between
+  // Triage and Outbound without losing the event they're working on. The
+  // Event row in the DB is the same entity; only the UI mode differs.
+  // Persisted in localStorage so refresh / new tab restores context too.
+  const [sharedEventId, setSharedEventId] = useState(() => {
+    try {
+      const v = localStorage.getItem("surplus_event_id");
+      const n = v ? parseInt(v, 10) : NaN;
+      return Number.isFinite(n) ? n : null;
+    } catch { return null; }
+  });
+  const updateSharedEventId = (eid) => {
+    setSharedEventId(eid);
+    try {
+      if (eid) localStorage.setItem("surplus_event_id", String(eid));
+      else localStorage.removeItem("surplus_event_id");
+    } catch {}
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1990,6 +2008,8 @@ export default function App() {
     return (
       <TriageApp
         user={user}
+        initialEventId={sharedEventId}
+        onEventChange={updateSharedEventId}
         onLogout={async () => {
           try { await api.logout(); } catch {}
           setUser(undefined);
@@ -2002,6 +2022,8 @@ export default function App() {
   return (
     <SurplusApp
       user={user || null}
+      initialEventId={sharedEventId}
+      onEventChange={updateSharedEventId}
       onLogout={() => setUser(undefined)}
       onSignIn={async () => {
         try {
@@ -2076,9 +2098,13 @@ function SignInModal({ open, onClose, onSignIn }) {
   );
 }
 
-function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
-  const [stage, setStage] = useState(0);
-  const [maxReached, setMaxReached] = useState(0);
+function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage,
+                      initialEventId = null, onEventChange = () => {} }) {
+  // If we already have an eventId (e.g. user toggled here from Triage with
+  // the same event), skip Intake and land them on Prospecting. Otherwise
+  // start at the beginning of the funnel.
+  const [stage, setStage] = useState(initialEventId ? 1 : 0);
+  const [maxReached, setMaxReached] = useState(initialEventId ? 1 : 0);
   const [profile, setProfile] = useState({
     role: "Infrastructure / ML platform engineers",
     seniority: ["Staff+"],
@@ -2095,8 +2121,13 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
   });
   // backend-wired state : eventId comes from real /events POST; runResult is
   // the response from /run (prospects, counts, etc.). Both null until the
-  // user runs the flow.
-  const [eventId, setEventId] = useState(null);
+  // user runs the flow. `initialEventId` seeds from App-level state so a
+  // mode-switch (Outbound <-> Triage) preserves the event.
+  const [eventId, setEventIdLocal] = useState(initialEventId);
+  const setEventId = (eid) => {
+    setEventIdLocal(eid);
+    onEventChange(eid);
+  };
   const [runResult, setRunResult] = useState(null);
   const [apiError, setApiError] = useState(null);
   const [signInModalOpen, setSignInModalOpen] = useState(false);

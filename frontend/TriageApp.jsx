@@ -42,9 +42,18 @@ const REC_META = {
   needs_review:  { color: "rec-needs",    label: "Needs Review" },
 };
 
-export default function TriageApp({ user, onLogout, onSwitchMode, onSignedIn }) {
-  const [eventId, setEventId] = useState(null);
-  const [stage, setStage] = useState("config");
+export default function TriageApp({ user, onLogout, onSwitchMode, onSignedIn,
+                                    initialEventId = null,
+                                    onEventChange = () => {} }) {
+  // Seeded from App-level state so toggling Outbound <-> Triage preserves
+  // the current event. A new upload sets eventId via the existing flow ;
+  // we mirror it back up so the outbound side sees it too.
+  const [eventId, setEventIdLocal] = useState(initialEventId);
+  const setEventId = (eid) => {
+    setEventIdLocal(eid);
+    onEventChange(eid);
+  };
+  const [stage, setStage] = useState(initialEventId ? "upload" : "config");
   const [maxReached, setMaxReached] = useState(0);
 
   const goTo = (s) => {
