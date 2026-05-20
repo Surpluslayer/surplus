@@ -424,7 +424,7 @@ function ConfigStep({ user, eventId, setEventId, onNext }) {
       <section className="card">
         <h3>
           <span className="card-num"><Link2 size={12} strokeWidth={2.5} aria-hidden /></span>
-          Import from Luma <span className="hint">: optional — we&apos;ll pre-fill name + description</span>
+          Import from Luma <span className="hint">: optional : we&apos;ll pre-fill name + description</span>
         </h3>
         <div className="luma-import-row">
           <input className="text-in" value={lumaUrl}
@@ -454,7 +454,7 @@ function ConfigStep({ user, eventId, setEventId, onNext }) {
             {lumaImported.location ? ` · ${lumaImported.location}` : ""}
             {lumaImported.capacity ? ` · cap ${lumaImported.capacity}` : ""}
             . We also proposed sponsor / ideal-profile / anti-fit from the
-            description — review and tighten the fields below before continuing.
+            description : review and tighten the fields below before continuing.
           </div>
         )}
       </section>
@@ -859,12 +859,12 @@ function ApplicantRow({ a, selected, onClick }) {
         <div className="triage-sub">{a.email || ""}</div>
       </td>
       <td>
-        <div>{a.role || "—"}</div>
+        <div>{a.role || "-"}</div>
         <div className="triage-sub">{a.company || ""}</div>
       </td>
-      <td className="triage-sub-cell">{ev?.archetype || "—"}</td>
-      <td className="num">{ev ? <ScorePill v={ev.fit_score} /> : "—"}</td>
-      <td className="num">{ev ? <ScorePill v={ev.confidence_score} muted /> : "—"}</td>
+      <td className="triage-sub-cell">{ev?.archetype || "-"}</td>
+      <td className="num">{ev ? <ScorePill v={ev.fit_score} /> : "-"}</td>
+      <td className="num">{ev ? <ScorePill v={ev.confidence_score} muted /> : "-"}</td>
       <td>
         {ev ? (
           <span className={`triage-rec ${meta.color}`}>{meta.label}</span>
@@ -981,7 +981,7 @@ function ApplicantDrawer({ applicant, eventId, onApplicantUpdated, onClose }) {
           {decision && !decisionError && (
             <div className="triage-decision-meta">
               Saved · system rec was{" "}
-              <strong>{decision.system_recommendation || "—"}</strong>
+              <strong>{decision.system_recommendation || "-"}</strong>
             </div>
           )}
         </section>
@@ -999,8 +999,8 @@ function ApplicantDrawer({ applicant, eventId, onApplicantUpdated, onClose }) {
               </div>
             </div>
 
-            <DrawerSection title="Why fit">{ev.why_fit || "—"}</DrawerSection>
-            <DrawerSection title="Why not">{ev.why_not_fit || "—"}</DrawerSection>
+            <DrawerSection title="Why fit">{ev.why_fit || "-"}</DrawerSection>
+            <DrawerSection title="Why not">{ev.why_not_fit || "-"}</DrawerSection>
 
             <DrawerSection title="Dimension breakdown">
               <div className="triage-dim-grid">
@@ -1018,7 +1018,7 @@ function ApplicantDrawer({ applicant, eventId, onApplicantUpdated, onClose }) {
             <DrawerSection title="Evidence used">
               <ul className="triage-evidence">
                 {(ev.evidence_used || []).map((e, i) => <li key={i}>{e}</li>)}
-                {(!ev.evidence_used || ev.evidence_used.length === 0) && <li className="triage-sub">— no evidence cited —</li>}
+                {(!ev.evidence_used || ev.evidence_used.length === 0) && <li className="triage-sub">no evidence cited</li>}
               </ul>
             </DrawerSection>
 
