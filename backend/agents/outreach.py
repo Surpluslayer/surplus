@@ -174,6 +174,30 @@ _COMPOSE_MODEL = os.environ.get("OUTREACH_COMPOSE_MODEL", "claude-haiku-4-5-2025
 # not APITimeoutError — anthropic-sdk wraps httpx.ConnectTimeout as the
 # former). Local + Fly are both fine under 30s.
 _COMPOSE_TIMEOUT_S = float(os.environ.get("OUTREACH_COMPOSE_TIMEOUT", "30"))
+
+
+_COMPOSE_CLIENT = None
+
+
+def _compose_client():
+    """Shared anthropic client for compose calls.
+
+    Earlier code instantiated `Anthropic()` per-call (= a new httpx
+    Client + new TCP + new TLS handshake every time). With the prefetch
+    semaphore at 10 concurrent calls, that meant 10 fresh handshakes
+    every prospecting run. On Railway this consistently failed with
+    APIConnectionError (egress connection storm) while the synchronous
+    /outreach/preview path worked because it only fired one at a time.
+
+    Using a module singleton + max_retries=2 fixes both : the SDK
+    reuses connection pool entries and absorbs single 429/5xx blips.
+    Same pattern as judge_relevance_batch's _client().
+    """
+    global _COMPOSE_CLIENT
+    if _COMPOSE_CLIENT is None:
+        from anthropic import Anthropic
+        _COMPOSE_CLIENT = Anthropic(max_retries=2)
+    return _COMPOSE_CLIENT
 _COMPOSE_MAX_TOKENS = 800
 
 
@@ -301,8 +325,7 @@ def _compose_via_claude(prospect, event, host_bio, framing,
     if not (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
         return None
     try:
-        from anthropic import Anthropic
-        client = Anthropic()
+        client = _compose_client()
         t0 = time.time()
         resp = client.messages.create(
             model=_COMPOSE_MODEL,

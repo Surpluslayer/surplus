@@ -2102,6 +2102,14 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
   const [signInModalOpen, setSignInModalOpen] = useState(false);
   const go = (s) => { setStage(s); setMaxReached((m) => Math.max(m, s)); };
 
+  // Auto-close the LinkedIn modal the moment a user appears. Handles the
+  // race where reportError pops the modal on an early 401 (eg /api/auth/me
+  // fires before the demo-enter cookie lands) and then the user becomes
+  // signed-in but the modal lingers with stale open state.
+  useEffect(() => {
+    if (user && signInModalOpen) setSignInModalOpen(false);
+  }, [user, signInModalOpen]);
+
   const reportError = (err) => {
     // Only pop the LinkedIn modal when we're actually signed-out. If `user`
     // is already populated, a 401 from a polling / background call is a
