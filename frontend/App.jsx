@@ -2103,7 +2103,11 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
   const go = (s) => { setStage(s); setMaxReached((m) => Math.max(m, s)); };
 
   const reportError = (err) => {
-    if (needsSignIn(err)) {
+    // Only pop the LinkedIn modal when we're actually signed-out. If `user`
+    // is already populated, a 401 from a polling / background call is a
+    // transient blip (cookie race during demo-enter, expired probe, etc.)
+    // — don't interrupt the operator with a modal they have to dismiss.
+    if (needsSignIn(err) && !user) {
       setSignInModalOpen(true);
       return;
     }
