@@ -78,23 +78,17 @@ def demo_enter(
     """
     expected = _demo_token()
     if not expected:
-        # Log internally so an operator looking at server logs can tell
-        # WHICH 404 condition tripped. The 404 response stays opaque.
-        print("  [demo.enter] 404 : DEMO_ACCESS_TOKEN env var is unset")
         raise HTTPException(status_code=404, detail="not found")
 
     # constant-time compare : avoid leaking the token length / prefix via
     # response timing.
     if not hmac.compare_digest(key, expected):
-        print(f"  [demo.enter] 404 : key mismatch "
-              f"(received len={len(key)}, expected len={len(expected)})")
         raise HTTPException(status_code=404, detail="not found")
 
     operator_account_id = _operator_account_id()
     if not operator_account_id:
         # Misconfigured deploy : feature is on but there's no operator user
         # to issue a session for. 404 so we don't leak the misconfiguration.
-        print("  [demo.enter] 404 : UNIPILE_ACCOUNT_ID env var is unset")
         raise HTTPException(status_code=404, detail="not found")
 
     operator = (

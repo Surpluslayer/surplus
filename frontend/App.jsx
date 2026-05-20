@@ -3,7 +3,7 @@ import TriageApp from "./TriageApp.jsx";
 import {
   ArrowRight, Check, Circle, Activity, Send, Network, Target,
   GitBranch, BriefcaseBusiness, Zap, TrendingUp, RotateCw, Mail,
-  CornerDownRight, LogOut, GraduationCap, Link2
+  CornerDownRight, LogOut, GraduationCap
 } from "lucide-react";
 import { api } from "./lib/api.js";
 import MatchingRadarGraph from "./components/MatchingRadarGraph.jsx";
@@ -237,86 +237,14 @@ function toggleIn(arr, v) {
   return [...cur, v];
 }
 
-function Intake({ profile, setProfile, onRun, onUploadApplicants }) {
+function Intake({ profile, setProfile, onRun }) {
   const set = (k, v) => setProfile((p) => ({ ...p, [k]: v }));
   const toggle = (k, v) => setProfile((p) => ({ ...p, [k]: toggleIn(p[k], v) }));
-
-  // ── Luma import : one paste fills both the outbound ICP fields AND the
-  // triage-only fields below (sponsor, anti-fit, etc), so the operator
-  // doesn't fill the same event details twice across two flows.
-  const [lumaUrl, setLumaUrl] = useState("");
-  const [lumaLoading, setLumaLoading] = useState(false);
-  const [lumaError, setLumaError] = useState(null);
-  const [lumaImported, setLumaImported] = useState(null);
-  const handleLumaImport = async () => {
-    setLumaError(null);
-    const url = (lumaUrl || "").trim();
-    if (!url) { setLumaError("Paste a Luma event URL (lu.ma/...)."); return; }
-    setLumaLoading(true);
-    try {
-      const res = await api.previewLumaEvent(url);
-      const ev = res.event || {};
-      const sug = res.suggestions || {};
-      setProfile((p) => ({
-        ...p,
-        // Direct fields from Luma — only overwrite if currently default/blank
-        eventName: ev.name || p.eventName,
-        headcount: ev.capacity || p.headcount,
-        city: p.city && p.city !== "San Francisco" ? p.city : (ev.location || p.city),
-        // Claude-inferred ICP (don't clobber operator typing)
-        role: p.role && p.role !== "Infrastructure / ML platform engineers"
-              ? p.role
-              : (sug.ideal_attendee_profile ? sug.ideal_attendee_profile.slice(0, 120) : p.role),
-        sponsorName: p.sponsorName || (sug.sponsor_name || ""),
-        idealProfile: p.idealProfile || (sug.ideal_attendee_profile || ""),
-        hardFilters: p.hardFilters
-          || (Array.isArray(sug.hard_filters) ? sug.hard_filters.join("\n") : ""),
-        antiFit: p.antiFit
-          || (Array.isArray(sug.anti_fit_examples) ? sug.anti_fit_examples.join("\n") : ""),
-        niceToHave: p.niceToHave
-          || (Array.isArray(sug.nice_to_have_signals) ? sug.nice_to_have_signals.join("\n") : ""),
-      }));
-      setLumaImported(ev);
-    } catch (err) {
-      setLumaError(err.message || "Could not import from Luma.");
-    } finally {
-      setLumaLoading(false);
-    }
-  };
-
   return (
     <div className="stage">
       <header className="stage-head">
         <h1>Define the event</h1>
       </header>
-
-      <section className="card luma-import-card">
-        <h3>
-          <span className="card-num"><Link2 size={14} /></span>
-          Import from Luma
-          <span className="hint">: optional — fills the form below</span>
-        </h3>
-        <div className="luma-import-row">
-          <input className="text-in" value={lumaUrl}
-                 onChange={(e) => setLumaUrl(e.target.value)}
-                 placeholder="https://lu.ma/your-event"
-                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleLumaImport(); } }} />
-          <button type="button" className="btn-reset luma-import-btn"
-                  disabled={lumaLoading || !lumaUrl.trim()}
-                  onClick={handleLumaImport}>
-            {lumaLoading ? "Importing…" : "Import →"}
-          </button>
-        </div>
-        {lumaError && <div className="luma-import-err">{lumaError}</div>}
-        {lumaImported && !lumaError && (
-          <div className="luma-import-ok">
-            ✓ Imported "{lumaImported.name || "event"}"
-            {lumaImported.location ? ` · ${lumaImported.location}` : ""}
-            {lumaImported.capacity ? ` · cap ${lumaImported.capacity}` : ""}
-            — review and edit fields below.
-          </div>
-        )}
-      </section>
 
       <div className="form-grid">
         <section className="card">
@@ -400,50 +328,10 @@ function Intake({ profile, setProfile, onRun, onUploadApplicants }) {
           </div>
         </section>
 
-        {/* Card D : Applicant triage ICP (sponsor + filters). Used by the
-            Triage Review scoring when the operator uploads a Luma CSV on
-            this event. Optional — leave blank to skip triage scoring.
-            Saved alongside the Event row as triage_config on submit. */}
-        <section className="card">
-          <h3>
-            <span className="card-num">D</span> Applicant triage
-            <span className="hint">: optional — sets the scoring rubric for any Luma CSV uploaded later</span>
-          </h3>
-          <label>Sponsor / partner name</label>
-          <input className="text-in" value={profile.sponsorName}
-                 placeholder="e.g. Stripe x ElevenLabs"
-                 onChange={(e) => set("sponsorName", e.target.value)} />
-          <label>Ideal attendee profile <span className="hint">: fuller description than Target role above</span></label>
-          <textarea className="text-in" rows={2} value={profile.idealProfile}
-                    placeholder="What kind of person should be in the room?"
-                    onChange={(e) => set("idealProfile", e.target.value)} />
-          <label>Hard filters <span className="hint">: one per line</span></label>
-          <textarea className="text-in" rows={2} value={profile.hardFilters}
-                    placeholder="Must be in NYC&#10;Must have a real product"
-                    onChange={(e) => set("hardFilters", e.target.value)} />
-          <label>Anti-fit examples <span className="hint">: one per line</span></label>
-          <textarea className="text-in" rows={2} value={profile.antiFit}
-                    placeholder="Photography businesses&#10;Hobby creators"
-                    onChange={(e) => set("antiFit", e.target.value)} />
-          <label>Nice-to-have signals <span className="hint">: one per line</span></label>
-          <textarea className="text-in" rows={2} value={profile.niceToHave}
-                    placeholder="High monthly transaction volume&#10;Real product users"
-                    onChange={(e) => set("niceToHave", e.target.value)} />
-        </section>
-
       </div>
 
-      <div className="stage-foot intake-foot">
-        <button className="btn-primary" onClick={onRun}>
-          Run agent pipeline <ArrowRight size={16} />
-        </button>
-        {onUploadApplicants && (
-          <button className="btn-reset intake-upload-cta"
-                  onClick={onUploadApplicants}
-                  title="Skip cold outbound. Upload a Luma applicant CSV and triage against the rubric above.">
-            Upload Luma CSV instead <ArrowRight size={14} />
-          </button>
-        )}
+      <div className="stage-foot">
+        <button className="btn-primary" onClick={onRun}>Run agent pipeline <ArrowRight size={16} /></button>
       </div>
     </div>
   );
@@ -2204,14 +2092,6 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
     goal: ["Hiring pipeline"],
     budget: 8000,
     sources: ["linkedin"],
-    // ICP fields used by Applicant Triage scoring (saved as triage_config
-    // alongside the Event row on /events submit). Filled by Luma import or
-    // edited inline. Operator can leave them blank to skip triage scoring.
-    sponsorName: "",
-    idealProfile: "",
-    hardFilters: "",      // newline-separated
-    antiFit: "",          // newline-separated
-    niceToHave: "",       // newline-separated
   });
   // backend-wired state : eventId comes from real /events POST; runResult is
   // the response from /run (prospects, counts, etc.). Both null until the
@@ -2261,76 +2141,7 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
         sources: profile.sources,
       });
       setEventId(ev.id);
-      // Save triage_config alongside the Event row so Applicant Triage
-      // scoring picks up the SAME ICP (sponsor, ideal profile, hard
-      // filters, etc) without needing a separate Configure step. Best-
-      // effort : if save fails (e.g. operator skipped Luma + left fields
-      // blank), the outbound flow still proceeds.
-      const splitLines = (s) => (s || "").split("\n")
-        .map((x) => x.trim()).filter(Boolean);
-      try {
-        await api.setTriageConfig(ev.id, {
-          event_type: profile.format || "sponsor_cafe",
-          sponsor_name: profile.sponsorName?.trim() || null,
-          event_goal: (profile.goal || []).join(", ") || null,
-          ideal_attendee_profile: profile.idealProfile?.trim() || profile.role || null,
-          hard_filters: splitLines(profile.hardFilters),
-          nice_to_have_signals: splitLines(profile.niceToHave),
-          anti_fit_examples: splitLines(profile.antiFit),
-          capacity: profile.headcount || null,
-        });
-      } catch (cfgErr) {
-        console.warn("triage_config save failed (non-fatal):", cfgErr);
-      }
       go(1);
-    } catch (e) {
-      reportError(e);
-    }
-  };
-
-  // "Upload Luma CSV instead" path from Intake. Same upfront work as
-  // handleIntakeRun (create event + save triage_config), but instead of
-  // jumping to outbound Prospecting we flip mode to Triage and land the
-  // operator on the Upload step. Same event, same ICP, different
-  // candidate source. Caller is the Intake's secondary CTA.
-  const handleUploadApplicants = async () => {
-    setApiError(null);
-    const splitLines = (s) => (s || "").split("\n")
-      .map((x) => x.trim()).filter(Boolean);
-    try {
-      const ev = await api.createEvent({
-        role: profile.role,
-        seniority: profile.seniority,
-        co_stage: profile.coStage,
-        yoe: profile.yoe,
-        headcount: profile.headcount,
-        format: profile.format,
-        city: profile.city,
-        event_date: profile.eventDate,
-        event_name: profile.eventName,
-        goal: profile.goal,
-        budget: profile.budget,
-        sources: profile.sources,
-      });
-      setEventId(ev.id);
-      try {
-        await api.setTriageConfig(ev.id, {
-          event_type: profile.format || "sponsor_cafe",
-          sponsor_name: profile.sponsorName?.trim() || null,
-          event_goal: (profile.goal || []).join(", ") || null,
-          ideal_attendee_profile: profile.idealProfile?.trim() || profile.role || null,
-          hard_filters: splitLines(profile.hardFilters),
-          nice_to_have_signals: splitLines(profile.niceToHave),
-          anti_fit_examples: splitLines(profile.antiFit),
-          capacity: profile.headcount || null,
-        });
-      } catch (cfgErr) {
-        console.warn("triage_config save failed (non-fatal):", cfgErr);
-      }
-      // Flip to Triage : eventId is shared via App-level state, so
-      // TriageApp mounts with initialEventId set and skips Configure
-      // straight to Upload.
-      if (onSwitchToTriage) onSwitchToTriage();
     } catch (e) {
       reportError(e);
     }
@@ -2364,11 +2175,31 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
             )}
           </div>
           <StageRail stage={stage} setStage={go} maxReached={maxReached} />
-          {/* Triage mode button removed : Applicant Triage ICP is now set
-              inline on Intake (Luma URL + Card D), so the operator doesn't
-              need to switch into a separate flow just to define event
-              criteria. Triage Review / Upload still reachable via /triage
-              direct URL or App-level mode state. */}
+          {onSwitchToTriage && (
+            <button className="topbar-mode-switch"
+                    onClick={async () => {
+                      if (user) {
+                        onSwitchToTriage();
+                        return;
+                      }
+                      // Signed-out : mint an anonymous session and drop the
+                      // user straight into the triage flow. No form, no
+                      // signup, no LinkedIn. Email can be attached later
+                      // if they want to recover the event across browsers.
+                      try {
+                        localStorage.setItem("surplus_mode", "triage");
+                      } catch {}
+                      try {
+                        await api.triageQuickStart();
+                        window.location.reload();
+                      } catch (e) {
+                        alert("Could not start a triage session: " + (e.message || e));
+                      }
+                    }}
+                    title="Switch to Applicant Triage (review Luma applicants)">
+              Triage mode
+            </button>
+          )}
           {user ? (
             <UserMenu user={user} onLogout={onLogout} />
           ) : (
@@ -2388,9 +2219,7 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
           onSignIn={onSignIn}
         />
         <main className="canvas" key={stage}>
-          {stage === 0 && <Intake profile={profile} setProfile={setProfile}
-                                  onRun={handleIntakeRun}
-                                  onUploadApplicants={onSwitchToTriage ? handleUploadApplicants : null} />}
+          {stage === 0 && <Intake profile={profile} setProfile={setProfile} onRun={handleIntakeRun} />}
           {stage === 1 && <Pipeline profile={profile} eventId={eventId}
                                     onResult={setRunResult}
                                     onError={reportError}
@@ -2530,40 +2359,6 @@ const CSS = `
 .rail-item.done { color:var(--ink-dim); }
 .rail-dot { display:flex; }
 .rail-idx { font-size:9px; opacity:0.6; }
-
-/* Luma import row on Intake : sits above the 3-card grid, optional. */
-.luma-import-card { margin-bottom:6px; }
-.luma-import-row { display:flex; gap:8px; align-items:stretch; }
-.luma-import-row .text-in { flex:1; }
-.luma-import-btn {
-  white-space:nowrap; padding:9px 14px; border-radius:9px;
-  border:1px solid var(--acc); background:var(--panel); color:var(--acc);
-  font-family:inherit; font-size:13px; font-weight:600; cursor:pointer;
-  transition:all 0.15s;
-}
-.luma-import-btn:hover:not(:disabled) { background:var(--acc-soft); }
-.luma-import-btn:disabled { opacity:0.5; cursor:not-allowed; }
-.luma-import-err {
-  margin-top:8px; padding:8px 11px; border-radius:8px;
-  background:var(--bad-soft, #fce6ea); color:var(--bad, #c43146);
-  border:1px solid #f3d6dc; font-size:12.5px;
-}
-.luma-import-ok {
-  margin-top:8px; padding:8px 11px; border-radius:8px;
-  background:var(--good-soft, #e9f7ef); color:var(--good, #137a3d);
-  border:1px solid #c9eedb; font-size:12.5px;
-}
-.intake-foot { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
-.intake-upload-cta {
-  display:inline-flex; align-items:center; gap:6px;
-  padding:10px 16px; border-radius:999px;
-  border:1px solid var(--line); background:var(--panel); color:var(--ink-dim);
-  font-family:inherit; font-size:13px; font-weight:500;
-  cursor:pointer; transition:all 0.15s;
-}
-.intake-upload-cta:hover {
-  color:var(--acc); border-color:var(--acc); background:var(--acc-soft);
-}
 .canvas { animation:fade 0.4s ease; }
 @keyframes fade { from{opacity:0;transform:translateY(6px);} to{opacity:1;transform:none;} }
 .stage { display:flex; flex-direction:column; gap:22px; }

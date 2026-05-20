@@ -135,10 +135,6 @@ export const api = {
     }
     return res.json();
   },
-  // Unified candidate pool : both outbound prospects + inbound applicants
-  // normalized into a single list, sorted by fit_score desc. Read-only ;
-  // individual mutations still go through per-source endpoints.
-  listCandidates: (id) => request(`/events/${id}/candidates`),
   listTriageApplicants: (id) => request(`/events/${id}/triage/applicants`),
   getTriageProgress: (id) => request(`/events/${id}/triage/evaluations`),
   // PR E : operator accept/maybe/reject decision per applicant
