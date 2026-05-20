@@ -296,11 +296,13 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[di
             "github": "github.com",
             "x": "x.com",
         }[source]
-        # Exa's canonical category labels for entity-type results
+        # Exa's canonical category labels for entity-type results.
+        # x: no category — Exa deprecated "tweet" (returns 400). Neural
+        # match against the query + includeDomains=x.com is enough.
         category = {
             "linkedin": "linkedin profile",
             "github": "github",
-            "x": "tweet",
+            "x": None,
         }[source]
     body = {
         "query": query,

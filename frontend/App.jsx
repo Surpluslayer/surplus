@@ -39,7 +39,10 @@ const YOE = ["0-2", "3-5", "6-10", "10+"];
 const SOURCES = [
   { key: "linkedin", label: "LinkedIn", locked: true },
   { key: "github",   label: "GitHub" },
-  { key: "x",        label: "X / Twitter" },
+  // X / Twitter pulled : Exa deprecated `category: "tweet"` and stopped
+  // honoring includeDomains=x.com, so the channel returns 0. Tracked in
+  // backend/agents/exa.py x-source handling. Re-add when we have a real
+  // X discovery backend (SerpAPI site:x.com or X API).
   { key: "scholar",  label: "Scholar" },
 ];
 
