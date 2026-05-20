@@ -322,8 +322,16 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[di
     # this phrase. Massively cuts wrong-geo results before they hit our
     # parser. Only do this for LinkedIn since github/x profile pages rarely
     # carry a clean location string Exa can match.
+    #
+    # Exa contract change : includeText is now a STRING (single phrase, ≤5
+    # words), not an array. Previously we wrapped it in a list and Exa 400d
+    # with 'Invalid includeText. includeText currently only supports one
+    # phrase of up to 5 words'. We also truncate the phrase to 5 words just
+    # in case the config has something longer.
     if city_cfg and source == "linkedin":
-        body["includeText"] = [city_cfg["include_text"]]
+        phrase = " ".join((city_cfg.get("include_text") or "").split()[:5])
+        if phrase:
+            body["includeText"] = phrase
     headers = {
         "x-api-key": _api_key(),
         "content-type": "application/json",
