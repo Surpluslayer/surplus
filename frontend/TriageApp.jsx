@@ -695,7 +695,7 @@ const FILTER_OPTIONS = [
   { key: "reject",       label: "Reject" },
 ];
 
-function ReviewStep({ eventId }) {
+export function ReviewStep({ eventId }) {
   const [applicants, setApplicants] = useState([]);
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");

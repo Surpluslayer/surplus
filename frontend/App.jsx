@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { SURPLUS_APP_CSS as CSS } from "./surplusTheme.js";
-import TriageApp, { UploadStep, TRIAGE_CSS } from "./TriageApp.jsx";
+import TriageApp, { UploadStep, ReviewStep, TRIAGE_CSS } from "./TriageApp.jsx";
 import {
   ArrowRight, Check, Circle, Activity, Send, Network, Target,
   GitBranch, BriefcaseBusiness, Zap, TrendingUp, RotateCw, Mail,
@@ -2100,9 +2100,11 @@ export default function App() {
   // decision screen that comes next prompt.
   if (user) {
     const stageIdx = STAGE_INDEX[stage] ?? 0;
-    // Inbound mode: stage 03 (auto-outreach, id=2) renders as a muted
-    // "skipped" bubble until the operator clicks "Continue to Matching".
-    const mutedIds = committedPath === "inbound" ? [2] : [];
+    // Both paths land on functional content at stage 03 (Prospects for
+    // outbound, ReviewStep for inbound). No muted bubbles — the UI
+    // loophole is that the same rail slot carries different content
+    // depending on committedPath.
+    const mutedIds = [];
     return (
       <UnifiedShell
         user={user}
@@ -2159,7 +2161,18 @@ export default function App() {
           />
         )}
         {stage === "outreach" && committedPath === "inbound" && (
-          <InboundOutreachSkip onContinue={() => setStage("matching")} />
+          <>
+            <ReviewStep eventId={eventId} />
+            <div className="stage-foot">
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => setStage("matching")}
+              >
+                Continue to Matching <ArrowRight size={16} />
+              </button>
+            </div>
+          </>
         )}
         {stage === "matching" && (
           <Matching
@@ -2426,35 +2439,6 @@ function Stage02({
       {committedPath === "inbound" && (
         <UploadStep eventId={eventId} onNext={onAdvance} />
       )}
-    </div>
-  );
-}
-
-// Stage 03 inbound : a read-only card that explains why we don't run
-// outreach for applicant flows. "Continue to Matching" bumps the App
-// stage to 04. The 5-stage rail keeps the bubble at id=2 visible but
-// muted (see App's mutedIds wiring); once we advance, it gets a check.
-function InboundOutreachSkip({ onContinue }) {
-  return (
-    <div className="stage">
-      <header className="stage-head">
-        <h1>Auto-outreach skipped</h1>
-        <p className="lede">
-          Applicants already opted in by applying — no outreach needed.
-        </p>
-      </header>
-      <section className="card" style={{ maxWidth: 580 }}>
-        <p style={{ margin: 0, lineHeight: 1.6 }}>
-          Auto-outreach is part of the outbound flow only. Since you're
-          scoring applicants from a CSV, the matcher treats their
-          applications as confirmed RSVPs and skips straight to matching.
-        </p>
-      </section>
-      <div className="stage-foot">
-        <button type="button" className="btn-primary" onClick={onContinue}>
-          Continue to Matching <ArrowRight size={16} />
-        </button>
-      </div>
     </div>
   );
 }
