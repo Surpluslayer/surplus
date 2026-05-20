@@ -2278,6 +2278,18 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage,
       setSignInModalOpen(true);
       return;
     }
+    // 404 with an eventId in scope = the backend redeployed and wiped
+    // the SQLite store, so our cached eventId points at a row that no
+    // longer exists. Auto-recover : clear the cached id and bounce
+    // back to Intake instead of leaving the operator stuck on a
+    // Prospecting screen that 404s every poll.
+    if (err?.status === 404 && eventId) {
+      setEventId(null);
+      setRunResult(null);
+      go(0);
+      setApiError("Event not found : the backend redeployed and wiped the store. Start a new event from Intake.");
+      return;
+    }
     const msg = typeof err === "string" ? err : err?.message || "Something went wrong";
     setApiError(msg);
   };
