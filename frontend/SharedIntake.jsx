@@ -78,7 +78,9 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
         city: profile.city,
         event_date: profile.eventDate,
         event_name: profile.eventName,
-        goal: profile.goal,
+        // Gap #4: roi.goal_cfg keys on the literal string; a CSV-joined
+        // multi-goal silently misses the dict. Send only the primary.
+        goal: profile.goal.slice(0, 1),
         budget: profile.budget,
         sources: profile.sources,
       });
