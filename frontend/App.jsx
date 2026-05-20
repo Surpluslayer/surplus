@@ -2200,6 +2200,14 @@ export default function App() {
         mutedIds={mutedIds}
         eventName={profile?.eventName}
         eventId={eventId}
+        // Free rail navigation : click any bubble to jump to that
+        // stage. No state clearing, no path unlock, no re-run side
+        // effects. setStage on its own : stage components keep
+        // whatever they had.
+        onStageJump={(idx) => {
+          const name = STAGE_NAMES[idx];
+          if (name) setStage(name);
+        }}
       >
         <StageErrorBoundary
           key={stage}
@@ -2310,6 +2318,10 @@ const STAGE_INDEX = {
   matching: 3,
   roi:      4,
 };
+
+// Reverse lookup for the rail click handler : map a clicked bubble's
+// numeric id back to the stage name App.setStage takes.
+const STAGE_NAMES = ["intake", "decide", "outreach", "matching", "roi"];
 
 // Render-time guard. Any stage component that throws would otherwise
 // unmount its subtree and leave the operator on a blank canvas with
@@ -2449,11 +2461,12 @@ function InboundReviewWithAdvance({ eventId, onAdvance }) {
 // Shell for the unified intake → stage 02 → ... flow. Reuses
 // SURPLUS_APP_CSS classes so it looks identical to the legacy shells.
 // Injects TRIAGE_CSS too so UploadStep renders correctly when stage 02
-// commits to the inbound path. The 5-stage rail is read-only for now :
-// nav happens via the in-stage actions, not the rail.
+// commits to the inbound path. The 5-stage rail is now click-navigable
+// in both directions when the parent passes onStageJump; clicks fall
+// back to no-op when the prop isn't wired.
 function UnifiedShell({
   user, onLogout, apiError, onClearError, children,
-  stageIdx = 0, mutedIds = [], eventName, eventId,
+  stageIdx = 0, mutedIds = [], eventName, eventId, onStageJump,
 }) {
   const noop = () => {};
   return (
@@ -2478,8 +2491,11 @@ function UnifiedShell({
           </div>
           <StageRail
             stage={stageIdx}
-            setStage={noop}
-            maxReached={stageIdx}
+            setStage={onStageJump || noop}
+            // All 5 bubbles are clickable in both directions. STAGES.length
+            // is the upper bound (id 0..4), so maxReached = length - 1
+            // makes every bubble reachable.
+            maxReached={STAGES.length - 1}
             mutedIds={mutedIds}
           />
           {user && <UserMenu user={user} onLogout={onLogout} />}
