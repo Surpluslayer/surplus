@@ -7,6 +7,7 @@ import {
   CornerDownRight, LogOut, GraduationCap
 } from "lucide-react";
 import { api } from "./lib/api.js";
+import SharedIntake from "./SharedIntake.jsx";
 import MatchingRadarGraph from "./components/MatchingRadarGraph.jsx";
 import pipeGithubIcon from "./src/assets/pipe/github-icon.png";
 import pipeXIcon from "./src/assets/pipe/x-icon.png";
@@ -1952,10 +1953,21 @@ export default function App() {
   // Persist the mode in localStorage so a refresh / new tab returns the
   // operator to where they were. Triage-only users (no Unipile) effectively
   // always want triage mode; the LinkedIn-connected operator might toggle.
+  //
+  // NOTE : mode is preserved only for the signed-out landing fall-through
+  // (SurplusApp vs TriageApp signup card). Signed-in users now flow
+  // through the unified intake → decision pipeline regardless of mode.
   const [mode, setMode] = useState(() => {
     try { return localStorage.getItem("surplus_mode") || "outbound"; }
     catch { return "outbound"; }
   });
+
+  // Unified post-auth stage. Both legacy entry points land here.
+  //   "intake"  : the merged chip/bubble form (SharedIntake)
+  //   "decide"  : placeholder for the next-prompt decision screen
+  const [stage, setStage] = useState("intake");
+  const [eventId, setEventId] = useState(null);
+  const [apiError, setApiError] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1983,22 +1995,43 @@ export default function App() {
     return <div style={{ minHeight: "100vh", background: "#f6f7f9" }} />;
   }
 
-  // Triage mode renders only when the user is actually signed in. Signed-out
-  // users see SurplusApp as the universal entry; clicking 'Triage mode' in its
-  // topbar sets localStorage and opens the signin modal. After auth, mode is
-  // already 'triage', so they land in TriageApp on reload.
-  if (mode === "triage" && user) {
+  // ── Unified post-auth flow ──────────────────────────────────────────
+  // Signed-in users land here regardless of mode. SharedIntake creates an
+  // Event row only; the placeholder downstream stands in for the
+  // decision screen that comes next prompt.
+  if (user) {
     return (
-      <TriageApp
+      <UnifiedShell
         user={user}
         onLogout={async () => {
           try { await api.logout(); } catch {}
           setUser(undefined);
+          setStage("intake");
+          setEventId(null);
         }}
-        onSwitchMode={() => switchMode("outbound")}
-      />
+        apiError={apiError}
+        onClearError={() => setApiError(null)}
+      >
+        {stage === "intake" && (
+          <SharedIntake
+            onSubmitted={(ev) => {
+              setEventId(ev.id);
+              setStage("decide");
+            }}
+            onError={(err) => setApiError(err?.message || String(err))}
+          />
+        )}
+        {stage === "decide" && (
+          <Stage02Placeholder eventId={eventId} />
+        )}
+      </UnifiedShell>
     );
   }
+
+  // Signed-out users : SurplusApp owns the signin modal and the
+  // triage-quickstart entry path. Once authenticated, the unified branch
+  // above takes over. TriageApp returns null when user is falsy so we
+  // don't route signed-out users to it.
 
   return (
     <SurplusApp
@@ -2014,6 +2047,52 @@ export default function App() {
       }}
       onSwitchToTriage={() => switchMode("triage")}
     />
+  );
+}
+
+// Minimal chrome for the unified intake → decision flow. Reuses
+// SURPLUS_APP_CSS classes so it looks identical to the legacy shells.
+// No StageRail yet : the next prompt's decision screen will rebuild
+// the rail with the merged stage list.
+function UnifiedShell({ user, onLogout, apiError, onClearError, children }) {
+  return (
+    <div className="root">
+      <style>{CSS}</style>
+      <div className="frame">
+        <header className="topbar">
+          <div className="brand">
+            <img className="brand-logo" src="/surplus-logo.png" alt="Surplus logo" />
+            <div className="brand-text">
+              <span className="brand-name">surplus</span>
+            </div>
+          </div>
+          {user && <UserMenu user={user} onLogout={onLogout} />}
+        </header>
+        {apiError && (
+          <div className="api-error" onClick={onClearError} role="alert">
+            {apiError}
+          </div>
+        )}
+        <main className="canvas">{children}</main>
+      </div>
+    </div>
+  );
+}
+
+// Stand-in for the upcoming stage 02 decision screen. The next prompt
+// replaces this with the real picker (prospecting vs CSV upload).
+function Stage02Placeholder({ eventId }) {
+  return (
+    <div className="stage">
+      <header className="stage-head">
+        <h1>Event created · pick what's next</h1>
+        <p className="lede">
+          Event {eventId ? <strong>#{eventId}</strong> : ""} is saved. The next
+          screen will let you choose between running outbound prospecting
+          or uploading an applicant CSV. Coming in the next prompt.
+        </p>
+      </header>
+    </div>
   );
 }
 

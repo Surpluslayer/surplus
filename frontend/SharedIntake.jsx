@@ -1,12 +1,12 @@
 import React, { useState } from "react";
-import {
-  ArrowRight, CornerDownRight, Link2, Loader2, AlertCircle, Check,
-} from "lucide-react";
+import { ArrowRight, CornerDownRight, Loader2, AlertCircle } from "lucide-react";
 import { api } from "./lib/api.js";
 
-// Single intake form shared by outbound (SurplusApp) and inbound (TriageApp).
-// UI mirrors the legacy outbound Intake exactly : chips, sliders, three cards.
-// The Luma-URL pre-fill row only renders for mode === "inbound".
+// Unified intake form for the merged app. Mode-less : both downstream
+// branches (outbound prospecting, inbound triage) start from this same
+// screen. Submitting creates an Event row via api.createEvent and nothing
+// else — no triage_config write, no prospecting kickoff. The downstream
+// decision happens on the next screen.
 
 const FORMATS = ["Sit-down dinner", "Hackathon", "Workshop", "Mixer", "Roundtable"];
 const GOALS = ["Hiring pipeline", "Fundraising", "Sales pipeline", "Product testing", "Community density"];
@@ -55,86 +55,13 @@ function toggleIn(arr, v) {
   return [...cur, v];
 }
 
-// Pure : turn the outbound-shaped chip profile into a triage_config payload.
-// Used only when mode === "inbound". Exported for unit testing.
-export function deriveTriageConfig(profile) {
-  const role = (profile.role || "").trim();
-  const seniorityList = (profile.seniority || []).join(", ");
-  const stageList = (profile.coStage || []).join(", ");
-  const yoeList = (profile.yoe || []).join(", ");
-
-  const parts = [];
-  if (role) parts.push(`Target role: ${role}.`);
-  if (seniorityList) parts.push(`Seniority: ${seniorityList}.`);
-  if (stageList) parts.push(`Company stage: ${stageList}.`);
-  if (yoeList) parts.push(`Years of experience: ${yoeList}.`);
-  const ideal_attendee_profile = parts.join(" ");
-
-  const event_goal = (profile.goal && profile.goal[0]) || null;
-  const capacity = Number.isFinite(profile.headcount) ? profile.headcount : null;
-
-  return {
-    event_type: "other",
-    sponsor_name: null,
-    event_goal,
-    ideal_attendee_profile,
-    hard_filters: [],
-    nice_to_have_signals: [],
-    anti_fit_examples: [],
-    capacity,
-    notes: null,
-  };
-}
-
-export default function SharedIntake({
-  mode = "outbound",
-  initialProfile,
-  onSubmitted,
-  onError,
-}) {
+export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
   const [profile, setProfile] = useState(() => ({ ...DEFAULT_PROFILE, ...(initialProfile || {}) }));
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
 
-  // Luma import : inbound-only pre-fill at the top of the form.
-  const [lumaUrl, setLumaUrl] = useState("");
-  const [lumaLoading, setLumaLoading] = useState(false);
-  const [lumaError, setLumaError] = useState(null);
-  const [lumaImported, setLumaImported] = useState(null);
-
   const set = (k, v) => setProfile((p) => ({ ...p, [k]: v }));
   const toggle = (k, v) => setProfile((p) => ({ ...p, [k]: toggleIn(p[k], v) }));
-
-  const handleLumaImport = async () => {
-    setLumaError(null);
-    const url = (lumaUrl || "").trim();
-    if (!url) {
-      setLumaError("Paste a Luma event URL (lu.ma/...).");
-      return;
-    }
-    setLumaLoading(true);
-    try {
-      const res = await api.previewLumaEvent(url);
-      const ev = res.event || {};
-      const sug = res.suggestions || {};
-      setProfile((p) => {
-        const next = { ...p };
-        if (ev.name && !next.eventName.trim()) next.eventName = ev.name;
-        const cap = Number(ev.capacity);
-        if (Number.isFinite(cap) && cap > 0) next.headcount = cap;
-        if (ev.location && !next.city.trim()) next.city = ev.location;
-        if (sug.ideal_attendee_profile && !next.role.trim()) {
-          next.role = sug.ideal_attendee_profile;
-        }
-        return next;
-      });
-      setLumaImported(ev);
-    } catch (err) {
-      setLumaError(err.message || "Could not import from Luma.");
-    } finally {
-      setLumaLoading(false);
-    }
-  };
 
   const handleSubmit = async () => {
     if (submitting) return;
@@ -155,9 +82,6 @@ export default function SharedIntake({
         budget: profile.budget,
         sources: profile.sources,
       });
-      if (mode === "inbound") {
-        await api.setTriageConfig(ev.id, deriveTriageConfig(profile));
-      }
       onSubmitted && onSubmitted(ev, profile);
     } catch (e) {
       const msg = e?.message || "Could not create event.";
@@ -167,52 +91,11 @@ export default function SharedIntake({
     }
   };
 
-  const submitLabel = mode === "inbound" ? "Continue" : "Run agent pipeline";
-
   return (
     <div className="stage">
       <header className="stage-head">
         <h1>Define the event</h1>
       </header>
-
-      {mode === "inbound" && (
-        <section className="card">
-          <h3>
-            <span className="card-num"><Link2 size={12} strokeWidth={2.5} aria-hidden /></span>
-            Import from Luma <span className="hint">: optional — we&apos;ll pre-fill name + capacity + location</span>
-          </h3>
-          <div className="luma-import-row">
-            <input className="text-in" value={lumaUrl}
-              onChange={(e) => setLumaUrl(e.target.value)}
-              placeholder="https://lu.ma/your-event"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") { e.preventDefault(); handleLumaImport(); }
-              }} />
-            <button type="button" className="btn-primary"
-              disabled={lumaLoading || !lumaUrl.trim()}
-              onClick={handleLumaImport}>
-              {lumaLoading ? (
-                <><Loader2 className="spin" size={16} /> Importing…</>
-              ) : (
-                <>Import <ArrowRight size={16} /></>
-              )}
-            </button>
-          </div>
-          {lumaError && (
-            <div className="api-error" role="alert" style={{ marginTop: 10 }}>
-              <AlertCircle size={14} /> {lumaError}
-            </div>
-          )}
-          {lumaImported && !lumaError && (
-            <div className="luma-ok-banner">
-              <Check size={14} /> Imported &quot;{lumaImported.name || "event"}&quot;
-              {lumaImported.location ? ` · ${lumaImported.location}` : ""}
-              {lumaImported.capacity ? ` · cap ${lumaImported.capacity}` : ""}
-              . Review the chips below before continuing.
-            </div>
-          )}
-        </section>
-      )}
 
       <div className="form-grid">
         <section className="card">
@@ -306,9 +189,9 @@ export default function SharedIntake({
       <div className="stage-foot">
         <button type="button" className="btn-primary" onClick={handleSubmit} disabled={submitting}>
           {submitting ? (
-            <><Loader2 className="spin" size={16} /> {mode === "inbound" ? "Saving…" : "Starting…"}</>
+            <><Loader2 className="spin" size={16} /> Creating event…</>
           ) : (
-            <>{submitLabel} <ArrowRight size={16} /></>
+            <>Continue <ArrowRight size={16} /></>
           )}
         </button>
       </div>
