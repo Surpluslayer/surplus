@@ -971,7 +971,18 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
         <p className="foot-note">
           {aboveT.length} of {PROS.length} above threshold · agent sent every one · {PROS.filter((p) => p.status === "rsvp").length} RSVP'd
         </p>
-        <button className="btn-primary" onClick={onNext}>Build guest list <ArrowRight size={16} /></button>
+        {/* Smoke #3: don't let the operator advance to Matching with zero RSVPs.
+            Matching would 409 immediately and leave them stuck on the error
+            banner. The bulk "Mark all as RSVP'd" CTA in the agent-bar above
+            is the explicit path forward. */}
+        <button
+          className="btn-primary"
+          onClick={onNext}
+          disabled={rsvpN === 0}
+          title={rsvpN === 0 ? "Mark at least one prospect RSVP'd first" : undefined}
+        >
+          Build guest list <ArrowRight size={16} />
+        </button>
       </div>
     </div>
   );
@@ -1197,7 +1208,7 @@ function blankSponsorForm() {
 }
 
 
-function Matching({ profile, eventId, onError, onNext }) {
+function Matching({ profile, eventId, onError, onNext, committedPath }) {
   const [matchResult, setMatchResult] = useState(null);
   const [matchError, setMatchError] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1264,7 +1275,12 @@ function Matching({ profile, eventId, onError, onNext }) {
       } catch (e) {
         if (!cancelled) {
           if (e.status === 409) {
-            setMatchError("No RSVPs yet : flip prospects to RSVP'd below, then retry.");
+            // Smoke #4: path-aware copy. Outbound has prospects; inbound has applicants.
+            setMatchError(
+              committedPath === "inbound"
+                ? "No accepted applicants yet : go back and accept some in the review queue."
+                : "No RSVPs yet : flip prospects to RSVP'd below, then retry."
+            );
           } else if (e.status === 404) {
             setMatchError("Event not found : the backend may have redeployed and wiped the SQLite store. Restart from Intake.");
           } else {
@@ -1712,11 +1728,29 @@ function tierOf(score) { return score >= 90 ? "high" : score >= 82 ? "mid" : "lo
 
 function ROI({ profile, eventId, onRestart }) {
   const cfg = GOAL_CONFIG[primaryGoal(profile)];
-  const attending = PROSPECTS.filter((p) => p.status === "rsvp");
-  const ledger = attending.map((p) => {
-    const tier = cfg.tiers[tierOf(p.score)];
-    return { ...p, ...tier, value: cfg.value[tier.state] };
-  });
+
+  // Smoke #2: real ROI from the backend (api.getRoi). roi.py's settle()
+  // produces a ledger + metrics in the wire shape we render below. We
+  // fall back to a mocked client-side ledger when no eventId is set,
+  // while the request is in flight, or when /roi 4xx's (e.g., 409 no
+  // confirmed guests). Both inbound and outbound hit the same endpoint;
+  // backend branches via is_inbound_event in routes/roi.py.
+  const [roiData, setRoiData] = useState(null);
+  useEffect(() => {
+    if (!eventId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await api.getRoi(eventId);
+        if (!cancelled) setRoiData(data);
+      } catch (_e) {
+        // Silent fall-back to mock. The Matching screen already shows
+        // the 409 / 404 banner if attendees are missing; we don't need
+        // to surface it again here.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [eventId]);
 
   // Sponsor column : only renders when the event carries ≥1 sponsor.
   // Fetched from the same /sponsors endpoint the Matching screen uses,
@@ -1739,6 +1773,11 @@ function ROI({ profile, eventId, onRestart }) {
   }, [eventId]);
   const hasSponsors = sponsors.length > 0;
   const sponsorFor = (guest) => {
+    // When the backend ROI lands, ledger rows carry a `sponsor` string
+    // directly (best-match attribution computed server-side in roi.py's
+    // _sponsor_attribution). Use that when present; fall back to the
+    // client-side token-match for the mocked path.
+    if (guest.sponsor) return guest.sponsor;
     if (!hasSponsors) return "";
     const hay = [guest.role, guest.works_on, guest.offers].join(" ").toLowerCase();
     let best = null;
@@ -1755,31 +1794,58 @@ function ROI({ profile, eventId, onRestart }) {
     return best || "";
   };
 
-  const invited = Math.round(profile.headcount / 0.6);
-  const rsvp = Math.round(invited * 0.62);
-  const attended = attending.length;
-  const valueGenerated = ledger.reduce((s, g) => s + g.value, 0);
-  const roi = (valueGenerated - profile.budget) / profile.budget;
-  const wonN = ledger.filter((g) => g.state === "won").length;
+  // Mock-derivation defaults. Overridden below when roiData lands.
+  const mockAttending = PROSPECTS.filter((p) => p.status === "rsvp");
+  const mockLedger = mockAttending.map((p) => {
+    const tier = cfg.tiers[tierOf(p.score)];
+    return { ...p, ...tier, value: cfg.value[tier.state] };
+  });
+  const mockInvited = Math.round(profile.headcount / 0.6);
+  const mockValueGen = mockLedger.reduce((s, g) => s + g.value, 0);
+  const mockBudget = profile.budget || 0;
+  const mockRoiPct = mockBudget > 0
+    ? Math.round(((mockValueGen - mockBudget) / mockBudget) * 100)
+    : 0;
+  const mockLiAboveT = PROSPECTS.filter((p) => p.score >= THRESHOLD);
+  const mockLiInvites = mockLiAboveT.length;
+  const mockLiAccepted = mockLiAboveT.filter(
+    (p) => p.status === "contacted" || p.status === "rsvp"
+  ).length;
+  const mockLiReplied = mockLiAboveT.filter((p) => p.status === "rsvp").length;
+
+  // Effective values : prefer the real backend response when present.
+  const useReal = !!roiData;
+  const ledger = useReal ? roiData.ledger : mockLedger;
+  const m = (useReal ? (roiData.metrics || {}) : null);
+  const invited      = useReal ? (m.invited ?? mockInvited) : mockInvited;
+  const attended     = useReal ? (m.attended ?? ledger.length) : mockAttending.length;
+  const valueGenerated = useReal ? (m.value_generated ?? 0) : mockValueGen;
+  const wonN         = useReal
+    ? ledger.filter((g) => g.state === "won").length
+    : mockLedger.filter((g) => g.state === "won").length;
+  const budget       = useReal ? (m.budget ?? mockBudget) : mockBudget;
+  const roiPct       = useReal ? (m.net_roi_pct ?? mockRoiPct) : mockRoiPct;
+  // Real metrics don't include a separate RSVP funnel step; attended is
+  // the post-RSVP step in roi.py. Synthesize a soft RSVP estimate when
+  // backend doesn't provide one so the funnel viz still has 4 rows.
+  const rsvp = useReal
+    ? Math.max(attended, Math.round(invited * 0.62))
+    : Math.round(mockInvited * 0.62);
+  const ledgerHead = useReal ? (m.ledger_head || cfg.ledgerHead) : cfg.ledgerHead;
+  const liInvitesSent     = useReal ? (m.li_invites_sent ?? mockLiInvites) : mockLiInvites;
+  const liInvitesAccepted = useReal ? (m.li_invites_accepted ?? mockLiAccepted) : mockLiAccepted;
+  const liMessagesSent    = useReal ? (m.li_messages_sent ?? liInvitesAccepted) : liInvitesAccepted;
+  const liMessagesReplied = useReal ? (m.li_messages_replied ?? mockLiReplied) : mockLiReplied;
+
+  const roi = roiPct / 100;
 
   const funnel = [
     { k: "Invited", v: invited, w: 100 },
-    { k: "RSVP'd", v: rsvp, w: (rsvp / invited) * 100 },
-    { k: "Attended", v: attended, w: (attended / invited) * 100 },
-    { k: "Converted", v: wonN, w: (wonN / invited) * 100 },
+    { k: "RSVP'd", v: rsvp, w: invited > 0 ? (rsvp / invited) * 100 : 0 },
+    { k: "Attended", v: attended, w: invited > 0 ? (attended / invited) * 100 : 0 },
+    { k: "Converted", v: wonN, w: invited > 0 ? (wonN / invited) * 100 : 0 },
   ];
 
-  // LinkedIn outreach funnel : derived from the static prospect statuses.
-  // In the demo, the agent only invited prospects above THRESHOLD; those that
-  // ended up in `contacted` or `rsvp` accepted the connection request, and
-  // those in `rsvp` ultimately replied to the post-accept DM.
-  const liAboveT = PROSPECTS.filter((p) => p.score >= THRESHOLD);
-  const liInvitesSent = liAboveT.length;
-  const liInvitesAccepted = liAboveT.filter(
-    (p) => p.status === "contacted" || p.status === "rsvp"
-  ).length;
-  const liMessagesSent = liInvitesAccepted; // agent auto-DMs once a connection is accepted
-  const liMessagesReplied = liAboveT.filter((p) => p.status === "rsvp").length;
   const pct = (num, den) => (den > 0 ? Math.round((num / den) * 100) : 0);
   const liAcceptanceRate = pct(liInvitesAccepted, liInvitesSent);
   const liResponseRate = pct(liMessagesReplied, liMessagesSent);
@@ -1795,7 +1861,7 @@ function ROI({ profile, eventId, onRestart }) {
           <span className="roi-hero-label">Net ROI · {(profile.goal || []).join(" + ") || primaryGoal(profile)}</span>
           <span className="roi-hero-num">{(roi * 100).toFixed(0)}%</span>
           <span className="roi-hero-sub">
-            {fmtK(valueGenerated)} verified value · ${profile.budget.toLocaleString()} spent
+            {fmtK(valueGenerated)} verified value · ${(budget || 0).toLocaleString()} spent
           </span>
         </div>
         <div className="roi-funnel">
@@ -1859,15 +1925,18 @@ function ROI({ profile, eventId, onRestart }) {
 
       <div className={`ledger ${hasSponsors ? "ledger--sponsored" : ""}`}>
         <div className="ledger-head">
-          <span>Guest</span><span>Side</span><span>{cfg.ledgerHead}</span>
+          <span>Guest</span><span>Side</span><span>{ledgerHead}</span>
           {hasSponsors && <span>Sponsor</span>}
           <span>Verified value</span>
         </div>
         {ledger.sort((a, b) => b.value - a.value).map((g) => (
-          <div className={`ledger-row led-${g.state}`} key={g.id}>
+          // key falls back to prospect_id when ledger rows come from the
+          // backend (LedgerRow.prospect_id, no .id), and uses .id for the
+          // mocked PROSPECTS path.
+          <div className={`ledger-row led-${g.state}`} key={g.id ?? g.prospect_id}>
             <span className="led-guest">
               <span className="led-name">{g.name}</span>
-              <span className="led-co">{g.company.split(" (")[0]}</span>
+              <span className="led-co">{(g.company || "").split(" (")[0]}</span>
             </span>
             <span><span className={`side-tag sm ${SIDE_CLASS[g.side]}`}>{g.side}</span></span>
             <span className="led-outcome">
@@ -2177,23 +2246,16 @@ export default function App() {
             />
           )}
           {stage === "outreach" && committedPath === "inbound" && (
-            <>
-              <ReviewStep eventId={eventId} />
-              <div className="stage-foot">
-                <button
-                  type="button"
-                  className="btn-primary"
-                  onClick={() => setStage("matching")}
-                >
-                  Continue to Matching <ArrowRight size={16} />
-                </button>
-              </div>
-            </>
+            <InboundReviewWithAdvance
+              eventId={eventId}
+              onAdvance={() => setStage("matching")}
+            />
           )}
           {stage === "matching" && (
             <Matching
               profile={profile}
               eventId={eventId}
+              committedPath={committedPath}
               onError={(err) => setApiError(err?.message || String(err))}
               onNext={() => setStage("roi")}
             />
@@ -2327,6 +2389,61 @@ function profileFromEventOut(ev) {
     budget:     ev.budget ?? 0,
     sources:    ev.sources || ["linkedin"],
   };
+}
+
+// Smoke #3 + #5: inbound outreach wrapper. Renders the legacy ReviewStep
+// unchanged + a sibling footer button that's gated on the operator
+// having accepted at least one applicant. Stops the silent fall-through
+// where /match would otherwise use model-recommended accepts because no
+// human decisions exist (`_accepted_applicants` fallback in
+// backend/triage/matcher_adapter.py).
+function InboundReviewWithAdvance({ eventId, onAdvance }) {
+  const [acceptCount, setAcceptCount] = useState(null); // null while loading
+  useEffect(() => {
+    if (!eventId) return;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const list = await api.listTriageApplicants(eventId);
+        if (!alive) return;
+        const n = (list || []).filter(
+          (a) => a.decision && a.decision.human_decision === "accept",
+        ).length;
+        setAcceptCount(n);
+      } catch {
+        if (alive) setAcceptCount(0);
+      }
+    };
+    tick();
+    // ReviewStep already polls every 2s; same cadence so the gate flips
+    // the moment the operator accepts someone.
+    const t = setInterval(tick, 2000);
+    return () => { alive = false; clearInterval(t); };
+  }, [eventId]);
+
+  const ready = (acceptCount || 0) > 0;
+  return (
+    <>
+      <ReviewStep eventId={eventId} />
+      <div className="stage-foot">
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={onAdvance}
+          disabled={!ready}
+          title={ready ? undefined : "Accept at least one applicant to continue"}
+        >
+          Continue to Matching
+          {acceptCount !== null && (
+            <span style={{ opacity: 0.7, fontSize: 12, marginLeft: 6 }}>
+              ({acceptCount} accepted)
+            </span>
+          )}
+          {" "}<ArrowRight size={16} />
+        </button>
+      </div>
+    </>
+  );
 }
 
 // Shell for the unified intake → stage 02 → ... flow. Reuses

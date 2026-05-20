@@ -23,30 +23,43 @@ from ..agents.matcher import build_edges, form_groups
 from ..agents.roi import settle
 
 
-# Gap #1: archetype → side. Builds / Hires / Operates is the taxonomy
-# matcher.build_edges keys off for cross-side (symbiotic) edges. Map
-# investors and community ops onto the "hires/operates" side so the
-# heuristic can still produce symbiotic edges in a same-archetype pool.
+# Gap #1 / smoke #7: archetype → side. Builds / Hires / Operates is the
+# taxonomy matcher.build_edges keys off for cross-side (symbiotic) edges.
+# We spread the 10 archetypes across all three sides so mixed-archetype
+# pools (the realistic case for a founders / partners CSV) produce a
+# meaningful number of cross-side pairs in the heuristic matcher path.
+# Homogeneous pools (e.g., all "founder") still produce only affinity
+# edges — that's a fundamental matcher limit, not an adapter one. The
+# LLM-driven matcher_lib path bypasses this taxonomy entirely when
+# ANTHROPIC_API_KEY is set.
 _ARCHETYPE_TO_SIDE = {
     "founder":          "Builds",
     "engineer":         "Builds",
     "researcher":       "Builds",
     "creator":          "Builds",
-    "student":          "Builds",
     "operator":         "Operates",
     "service_provider": "Operates",
     "community_member": "Operates",
+    "student":          "Operates",   # was Builds — students are a distinct cohort
     "investor":         "Hires",
-    "other":            "Builds",
+    "other":            "Hires",      # was Builds — spreads the "other" bucket off-side
 }
 
-# Gap #1: archetype → works_on domain tag. matcher._AFFINITY only knows
-# a handful of keys ("ml-platform", "data-infra", ...). For applicants
-# we keep this conservative : "general" by default so the affinity
-# adjacency lookup just no-ops instead of mis-clustering.
+# Gap #1 / smoke #7: archetype → works_on. matcher._AFFINITY adjacency
+# keys are domain tags. Varying tags per archetype increases the chance
+# of affinity edges within same-side pools (which matters when the
+# heuristic falls back to affinity-only for homogeneous-archetype CSVs).
 _ARCHETYPE_TO_WORKS_ON = {
+    "founder":          "general",
+    "engineer":         "web-infra",
     "researcher":       "ml-platform",
     "creator":          "web-infra",
+    "operator":         "general",
+    "service_provider": "data-infra",
+    "community_member": "general",
+    "student":          "general",
+    "investor":         "general",
+    "other":            "general",
 }
 
 

@@ -94,7 +94,9 @@ def match(
 
     # Gap #3a: inbound (triage_config + no prospects) computes matches in
     # memory only. MatchEdge / SponsorMatch FK to prospects.id, so we'd
-    # violate FK if we persisted rows for applicant ids.
+    # violate FK if we persisted rows for applicant ids. Smoke #6 — we
+    # still compute the sponsor-match wire payload in memory so the
+    # operator's sponsor chips actually produce results on the screen.
     if is_inbound_event(ev):
         result = run_inbound_match(ev)
         if result is None:
@@ -102,8 +104,9 @@ def match(
                 409, "no accepted applicants : review the CSV first"
             )
         attending, edges, groups = result
+        sponsor_payload = _compute_inbound_sponsor_matches(ev, attending)
         return schemas.MatchResult.build(
-            ev, attending, edges, groups, sponsor_matches=[],
+            ev, attending, edges, groups, sponsor_matches=sponsor_payload,
         )
 
     attending = _confirmed(ev)
@@ -141,6 +144,45 @@ def match(
     db.commit()
     return schemas.MatchResult.build(ev, attending, edges, groups,
                                       sponsor_matches=sponsor_match_payload)
+
+
+def _compute_inbound_sponsor_matches(ev: models.Event, attending: list) -> list[dict]:
+    """Smoke #6: sponsor matches for inbound events. Same wire shape as
+    _persist_sponsor_matches, but no SponsorMatch DB writes — applicants
+    aren't in the prospects table so the FK would violate. The matcher
+    duck-types on attributes, and applicants_as_attending exposes the
+    fields score_event_sponsors reads (role / works_on / offers / seeks /
+    seniority / fit_score / id), so we can score in memory without DB.
+    """
+    import json
+    sponsors = list(ev.sponsors or [])
+    if not sponsors:
+        return []
+    scored = score_event_sponsors(ev, attending)
+    by_pid = {p.id: p for p in attending}
+    payload: list[dict] = []
+    for sponsor in sponsors:
+        rows = scored.get(sponsor.id, [])
+        match_rows: list[dict] = []
+        for row in rows:
+            prospect = by_pid.get(row["prospect_id"])
+            if prospect is None:
+                continue
+            match_rows.append({
+                "sponsor_id": sponsor.id,
+                "sponsor_name": sponsor.name,
+                "prospect_id": prospect.id,
+                "prospect_name": prospect.name,
+                "score": row["score"],
+                "reasons": row["reasons"],
+            })
+        payload.append({
+            "sponsor_id": sponsor.id,
+            "sponsor_name": sponsor.name,
+            "tier": sponsor.tier or "",
+            "matches": match_rows,
+        })
+    return payload
 
 
 def _persist_sponsor_matches(db: Session, ev: models.Event,
