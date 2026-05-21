@@ -54,15 +54,10 @@ async function maybeFreshReset() {
   } catch {}
 }
 
-function renderApp() {
-  ReactDOM.createRoot(document.getElementById("root")).render(
-    <React.StrictMode>
-      <App />
-    </React.StrictMode>,
-  );
-}
+await maybeFreshReset();
 
-// Avoid top-level await : Vite's default prod target (es2020 + Safari 14)
-// doesn't support it, so the build fails. Promise-then keeps the same
-// ordering : React only mounts after the reset finishes.
-maybeFreshReset().then(renderApp, renderApp);
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
