@@ -2169,11 +2169,15 @@ export default function App() {
         setCommittedPath(path);
         const savedStage = VALID_STAGES.has(cached.stage) ? cached.stage : "intake";
         setStage(savedStage);
-      } catch (_e) {
-        // 404 / 403 / network : clear the key and fall through. No
-        // banner : operator just lands on a fresh intake, which is
-        // the same behavior as no cached session.
+      } catch (e) {
+        // Clear the key in every error case : we never silently reuse a
+        // cached event_id without backend confirming ownership. 401 also
+        // surfaces an explicit "session expired" banner so the visitor
+        // knows their demo session went away (vs. just landing on intake).
         try { localStorage.removeItem(UNIFIED_SESSION_KEY); } catch {}
+        if (e?.status === 401) {
+          setApiError("Session expired. Start a new demo.");
+        }
       } finally {
         if (!cancelled) setHydrated(true);
       }

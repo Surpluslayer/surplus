@@ -38,13 +38,14 @@ import hmac
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session as DbSession
 
 from ..auth import create_session, set_session_cookie
 from ..db import get_db
-from ..models import User
+from ..models import Event, User
 
 
 router = APIRouter(prefix="/api/demo", tags=["demo"])
@@ -106,3 +107,60 @@ def demo_enter(
     response = RedirectResponse("/", status_code=303)
     set_session_cookie(response, sess.session_token)
     return response
+
+
+class DemoStartRequest(BaseModel):
+    key: str = ""
+
+
+class DemoStartResponse(BaseModel):
+    event_id: int
+    demo_session_id: int
+
+
+@router.post("/start", response_model=DemoStartResponse)
+def demo_start(
+    body: DemoStartRequest,
+    response: Response,
+    db: DbSession = Depends(get_db),
+) -> DemoStartResponse:
+    """Create a fresh demo session + placeholder event for a one-shot demo
+    visit. Same gating as /enter (DEMO_ACCESS_TOKEN), but returns JSON instead
+    of redirecting : called by the SPA on `?fresh=true` boot."""
+    expected = _demo_token()
+    if not expected:
+        raise HTTPException(status_code=404, detail="not found")
+    if not hmac.compare_digest(body.key, expected):
+        raise HTTPException(status_code=404, detail="not found")
+
+    operator_account_id = _operator_account_id()
+    if not operator_account_id:
+        raise HTTPException(status_code=404, detail="not found")
+
+    operator = (
+        db.query(User)
+        .filter(User.unipile_account_id == operator_account_id)
+        .first()
+    )
+    if not operator:
+        raise HTTPException(status_code=500, detail="operator user missing")
+
+    sess = create_session(db, operator)
+    ev = Event(
+        user_id=operator.id,
+        role="",
+        seniority="",
+        co_stage="",
+        headcount=0,
+        format="",
+        city="",
+        goal="",
+        budget=0,
+        sources="linkedin",
+    )
+    db.add(ev)
+    db.commit()
+    db.refresh(ev)
+
+    set_session_cookie(response, sess.session_token)
+    return DemoStartResponse(event_id=ev.id, demo_session_id=sess.id)
