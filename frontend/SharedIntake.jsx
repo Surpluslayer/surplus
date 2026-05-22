@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { ArrowRight, CornerDownRight, Loader2, AlertCircle, Link2, Check } from "lucide-react";
 import { api } from "./lib/api.js";
 
@@ -85,13 +85,18 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
   const set = (k, v) => setProfile((p) => ({ ...p, [k]: v }));
   const toggle = (k, v) => setProfile((p) => ({ ...p, [k]: toggleIn(p[k], v) }));
 
-  const handleLumaImport = async () => {
+  const handleLumaImport = async (maybeUrl) => {
     setLumaError(null);
-    const url = (lumaUrl || "").trim();
+    // Accept an explicit URL so the topbar entry path can hand us a
+    // pending URL without round-tripping through React state. Button
+    // onClick passes a SyntheticEvent : ignore non-strings.
+    const explicit = typeof maybeUrl === "string" ? maybeUrl : null;
+    const url = ((explicit ?? lumaUrl) || "").trim();
     if (!url) {
       setLumaError("Paste a Luma event URL (lu.ma/...).");
       return;
     }
+    if (explicit && lumaUrl !== explicit) setLumaUrl(explicit);
     setLumaLoading(true);
     try {
       const res = await api.previewLumaEvent(url);
@@ -138,6 +143,19 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
       setLumaLoading(false);
     }
   };
+
+  // Auto-consume a pending Luma URL left in sessionStorage by the
+  // landing topbar's TopbarLumaEntry. Pop-and-fire-once : remove the
+  // key before kicking off the import so a refresh doesn't re-import.
+  // Empty deps : runs exactly once on mount, intentional.
+  useEffect(() => {
+    let pending = null;
+    try { pending = sessionStorage.getItem("surplus_pending_luma_url"); } catch {}
+    if (!pending) return;
+    try { sessionStorage.removeItem("surplus_pending_luma_url"); } catch {}
+    handleLumaImport(pending);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSubmit = async () => {
     if (submitting) return;

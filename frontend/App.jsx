@@ -4,7 +4,7 @@ import TriageApp, { UploadStep, ReviewStep, TRIAGE_CSS } from "./TriageApp.jsx";
 import {
   ArrowRight, Check, Circle, Activity, Send, Network, Target,
   GitBranch, BriefcaseBusiness, Zap, TrendingUp, RotateCw, Mail,
-  CornerDownRight, LogOut, GraduationCap
+  CornerDownRight, LogOut, GraduationCap, Link2, Loader2
 } from "lucide-react";
 import { api } from "./lib/api.js";
 import SharedIntake from "./SharedIntake.jsx";
@@ -2779,6 +2779,66 @@ function SignInModal({ open, onClose, onSignIn }) {
   );
 }
 
+// Topbar Luma URL entry. Replaces the previous "Triage mode" button :
+// paste a lu.ma URL, press Go, and we drop the operator straight into
+// the triage flow with that event pre-imported on the intake page.
+// Stashes the URL in sessionStorage so SharedIntake's mount effect can
+// pick it up and call previewLumaEvent without the operator re-pasting.
+function TopbarLumaEntry({ user, onSwitchToTriage }) {
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const cleaned = (url || "").trim();
+    if (!cleaned || busy) return;
+    setBusy(true);
+    try { sessionStorage.setItem("surplus_pending_luma_url", cleaned); } catch {}
+    try { localStorage.setItem("surplus_mode", "triage"); } catch {}
+    if (user) {
+      // Already signed in : flip mode + jump straight into the unified
+      // intake. SharedIntake's mount effect will consume the pending URL.
+      onSwitchToTriage();
+      setBusy(false);
+      return;
+    }
+    // Signed-out : mint an anonymous triage session, then full-reload
+    // so /api/auth/me picks up the new cookie and the App re-renders
+    // into the signed-in branch.
+    try {
+      await api.triageQuickStart();
+      window.location.reload();
+    } catch (err) {
+      try { sessionStorage.removeItem("surplus_pending_luma_url"); } catch {}
+      setBusy(false);
+      alert("Could not start a triage session: " + (err?.message || err));
+    }
+  };
+
+  return (
+    <form className="topbar-luma" onSubmit={submit}>
+      <Link2 size={14} className="topbar-luma-icon" aria-hidden />
+      <input
+        type="text"
+        className="topbar-luma-input"
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        placeholder="Paste lu.ma URL"
+        aria-label="Luma event URL"
+        disabled={busy}
+      />
+      <button
+        type="submit"
+        className="topbar-luma-go"
+        disabled={busy || !url.trim()}
+        title="Open triage with this Luma event"
+      >
+        {busy ? <Loader2 className="spin" size={13} /> : "Go"}
+      </button>
+    </form>
+  );
+}
+
 function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
   const [stage, setStage] = useState(0);
   const [maxReached, setMaxReached] = useState(0);
@@ -2879,29 +2939,7 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
           </div>
           <StageRail stage={stage} setStage={go} maxReached={maxReached} />
           {onSwitchToTriage && (
-            <button className="topbar-mode-switch"
-                    onClick={async () => {
-                      if (user) {
-                        onSwitchToTriage();
-                        return;
-                      }
-                      // Signed-out : mint an anonymous session and drop the
-                      // user straight into the triage flow. No form, no
-                      // signup, no LinkedIn. Email can be attached later
-                      // if they want to recover the event across browsers.
-                      try {
-                        localStorage.setItem("surplus_mode", "triage");
-                      } catch {}
-                      try {
-                        await api.triageQuickStart();
-                        window.location.reload();
-                      } catch (e) {
-                        alert("Could not start a triage session: " + (e.message || e));
-                      }
-                    }}
-                    title="Switch to Applicant Triage (review Luma applicants)">
-              Triage mode
-            </button>
+            <TopbarLumaEntry user={user} onSwitchToTriage={onSwitchToTriage} />
           )}
           {user ? (
             <UserMenu user={user} onLogout={onLogout} />
