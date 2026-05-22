@@ -46,17 +46,31 @@ app.add_middleware(
 )
 
 
-# Stamp no-store on every /api/* response so Cloudflare (which sits in
-# front of Railway and aggressively caches 404s with max-age=14400 by
+# Stamp no-store on every API response so Cloudflare (which sits in
+# front of Fly and aggressively caches 404s with max-age=14400 by
 # default) never caches API responses : success OR error. Without this,
 # a single bad 404 during a deploy can poison an endpoint for 4 hours
 # for every visitor. We can't fix this at the CF layer, so we fix it
 # at the origin : Cloudflare honors `Cache-Control: no-store` and skips
 # its cache when origin sends it.
+#
+# Covers every API path prefix the backend mounts. Anything not listed
+# falls through to the SPA static files, which Vite already cache-busts
+# via content-hashed filenames.
+_API_PATH_PREFIXES = (
+    "/api/",        # auth, demo
+    "/events",      # events, pipeline, matching, roi, triage, curation
+    "/admin",
+    "/webhooks",
+    "/docs",        # OpenAPI UI : leak risk if cached at edge
+    "/openapi.json",
+)
+
 @app.middleware("http")
 async def no_store_for_api(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path.startswith("/api/"):
+    path = request.url.path
+    if any(path.startswith(p) for p in _API_PATH_PREFIXES):
         response.headers["Cache-Control"] = (
             "no-store, no-cache, must-revalidate, private"
         )
