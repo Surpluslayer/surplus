@@ -27,6 +27,27 @@ textarea.text-in { min-height:72px; resize:vertical; line-height:1.5; }
 }
 .triage-topbar-actions { display:flex; align-items:center; gap:12px; margin-left:auto; flex-wrap:wrap; }
 .card-num svg { display:block; }
+.topbar-luma {
+  display:flex; align-items:center; gap:6px; margin-left:auto;
+  padding:4px 6px 4px 10px; background:var(--panel-2);
+  border:1px solid var(--line); border-radius:var(--r-pill);
+}
+.topbar-luma-icon { color:var(--acc); flex:0 0 auto; }
+.topbar-luma-input {
+  border:0; background:transparent; outline:none; font-family:inherit;
+  font-size:12.5px; color:var(--ink); width:180px; padding:4px 2px;
+}
+.topbar-luma-input::placeholder { color:var(--ink-faint); }
+.topbar-luma-input:disabled { opacity:0.6; cursor:wait; }
+.topbar-luma-go {
+  background:var(--acc); color:#fff; border:0; border-radius:var(--r-pill);
+  font-family:inherit; font-size:12px; font-weight:600;
+  padding:5px 12px; cursor:pointer; transition:background 0.12s;
+  display:inline-flex; align-items:center; gap:5px; min-width:32px;
+  justify-content:center;
+}
+.topbar-luma-go:hover:not(:disabled) { background:var(--acc-deep); }
+.topbar-luma-go:disabled { opacity:0.55; cursor:not-allowed; }
 `;
 const out =
   "export const SURPLUS_APP_CSS = `" + css + extra + "\n`;\n";
