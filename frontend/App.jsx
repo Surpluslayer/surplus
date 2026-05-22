@@ -794,7 +794,7 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
         {useReal && eventId && (
           <>
             <a className="btn-reset" style={{marginLeft: "auto"}}
-               href={`/api/events/${eventId}/prospects/export.csv`}
+               href={`/api/events/${eventId}/prospects/export.csv?t=${Date.now()}`}
                target="_blank" rel="noopener noreferrer">
               Export CSV
             </a>
