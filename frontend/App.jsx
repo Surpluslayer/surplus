@@ -806,10 +806,17 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
         <span className="agent-stat"><strong>{rsvpN}</strong> RSVP'd</span>
         <span className="agent-stat"><strong>0</strong> manual touches</span>
         {useReal && eventId && (
-          <button className="btn-reset" style={{marginLeft: "auto"}}
-                  disabled={rsvpBulkBusy} onClick={markRsvpAll}>
-            {rsvpBulkBusy ? "Marking…" : "Mark all as RSVP'd"}
-          </button>
+          <>
+            <a className="btn-reset" style={{marginLeft: "auto"}}
+               href={`/api/events/${eventId}/prospects/export.csv`}
+               target="_blank" rel="noopener noreferrer">
+              Export CSV
+            </a>
+            <button className="btn-reset"
+                    disabled={rsvpBulkBusy} onClick={markRsvpAll}>
+              {rsvpBulkBusy ? "Marking…" : "Mark all as RSVP'd"}
+            </button>
+          </>
         )}
       </div>
 

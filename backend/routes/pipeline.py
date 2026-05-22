@@ -10,7 +10,11 @@ The env-var operator account remains the fallback for webhook handlers
 the owning user via Prospect → Event → User).
 """
 from __future__ import annotations
+import csv
+import io
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -140,6 +144,46 @@ def get_prospects(
     if not ev.prospects:
         raise HTTPException(409, "pipeline has not been run for this event yet")
     return schemas.PipelineResult.build(ev, ev.prospects)
+
+
+@router.get("/{event_id}/prospects/export.csv")
+def export_prospects_csv(
+    event_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Stream the post-prospecting candidate pool as a CSV. Read-only :
+    does not mutate prospect state or kick off any pipeline work."""
+    ev = get_owned_event(event_id, user, db)
+    if not ev.prospects:
+        raise HTTPException(409, "pipeline has not been run for this event yet")
+
+    rows = sorted(ev.prospects, key=lambda p: (-p.fit_score, p.id))
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "prospect_id", "name", "role", "company", "seniority",
+        "side", "works_on", "offers", "seeks",
+        "linkedin_url", "sources",
+        "gh_stars", "x_followers", "scholar_citations",
+        "fit_score", "fit_reason", "status",
+    ])
+    for p in rows:
+        writer.writerow([
+            p.id, p.name or "", p.role or "", p.company or "", p.seniority or "",
+            p.side or "", p.works_on or "", p.offers or "", p.seeks or "",
+            p.linkedin_url or "", p.sources or "",
+            p.gh_stars or 0, p.x_followers or 0, p.scholar_citations or 0,
+            p.fit_score or 0, p.fit_reason or "", p.status or "",
+        ])
+    buf.seek(0)
+    filename = f"prospects-event-{ev.id}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"content-disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{event_id}/prospect/preview", response_model=schemas.ProspectingPreview)
