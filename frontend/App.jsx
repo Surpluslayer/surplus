@@ -2112,12 +2112,6 @@ export default function App() {
       .then((u) => {
         if (cancelled) return;
         setUser(u);
-        // A user with no Unipile connection (signed up via skip-LinkedIn)
-        // can only really use triage : default them there.
-        if (u && !u.unipile_account_id) {
-          setMode("triage");
-          try { localStorage.setItem("surplus_mode", "triage"); } catch {}
-        }
       })
       .catch(() => { if (!cancelled) setUser(undefined); });
     return () => { cancelled = true; };
