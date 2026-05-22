@@ -39,7 +39,7 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session as DbSession
 
 from ..auth import create_session, set_session_cookie
@@ -48,6 +48,21 @@ from ..models import User
 
 
 router = APIRouter(prefix="/api/demo", tags=["demo"])
+
+# Stale browser/CDN caches of either the 303 or a 404 from a prior misconfig
+# can poison this URL for returning visitors (symptom: regular browser sees
+# {"detail":"Not Found"} while incognito works). Set no-store on every
+# response so a single bad deploy can never burn the share link.
+_NO_STORE = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, private",
+    "Pragma": "no-cache",
+}
+
+
+def _not_found() -> JSONResponse:
+    return JSONResponse(
+        status_code=404, content={"detail": "not found"}, headers=_NO_STORE
+    )
 
 
 def _demo_token() -> Optional[str]:
@@ -65,7 +80,7 @@ def _operator_account_id() -> Optional[str]:
 def demo_enter(
     key: str = Query(..., description="Shared secret matching DEMO_ACCESS_TOKEN"),
     db: DbSession = Depends(get_db),
-) -> RedirectResponse:
+):
     """Issue a session for the operator user and redirect to /.
 
     Returns 404 when:
@@ -78,18 +93,18 @@ def demo_enter(
     """
     expected = _demo_token()
     if not expected:
-        raise HTTPException(status_code=404, detail="not found")
+        return _not_found()
 
     # constant-time compare : avoid leaking the token length / prefix via
     # response timing.
     if not hmac.compare_digest(key, expected):
-        raise HTTPException(status_code=404, detail="not found")
+        return _not_found()
 
     operator_account_id = _operator_account_id()
     if not operator_account_id:
         # Misconfigured deploy : feature is on but there's no operator user
         # to issue a session for. 404 so we don't leak the misconfiguration.
-        raise HTTPException(status_code=404, detail="not found")
+        return _not_found()
 
     operator = (
         db.query(User)
@@ -104,5 +119,7 @@ def demo_enter(
 
     sess = create_session(db, operator)
     response = RedirectResponse("/", status_code=303)
+    for k, v in _NO_STORE.items():
+        response.headers[k] = v
     set_session_cookie(response, sess.session_token)
     return response
