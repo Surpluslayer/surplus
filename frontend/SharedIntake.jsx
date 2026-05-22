@@ -175,28 +175,19 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
         <h1>Define the event</h1>
       </header>
 
-      {/* Thin one-line Luma pre-fill row. Sits above the form so the
-          three A/B/C cards stay on screen without extra scrolling. */}
-      <div
-        className="luma-quick"
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          flexWrap: "wrap",
-        }}
-      >
-        <label
-          htmlFor="luma-url"
-          style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
-        >
-          Luma:
+      {/* One-line Luma pre-fill row. Sits above the form so the three
+          A/B/C cards stay on screen without extra scrolling. Styled as
+          a subtle card via .luma-quick so the row is unmistakably
+          visible and doesn't blend into the page header. */}
+      <div className="luma-quick">
+        <Link2 size={14} aria-hidden className="luma-quick-icon" />
+        <label htmlFor="luma-url" className="luma-quick-label">
+          Luma URL
         </label>
         <input
           id="luma-url"
           type="text"
-          className="text-in"
-          style={{ flex: "1 1 240px", minWidth: 240 }}
+          className="text-in luma-quick-input"
           value={lumaUrl}
           onChange={(e) => setLumaUrl(e.target.value)}
           onKeyDown={(e) => {
@@ -206,8 +197,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
         />
         <button
           type="button"
-          className="btn-primary"
-          style={{ padding: "8px 14px" }}
+          className="btn-primary luma-quick-btn"
           onClick={handleLumaImport}
           disabled={lumaLoading || !lumaUrl.trim()}
         >
@@ -217,9 +207,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
             "Import"
           )}
         </button>
-        <span className="hint" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-          *optional
-        </span>
+        <span className="hint luma-quick-hint">*optional, pre-fills name + date + capacity</span>
       </div>
       {lumaError && (
         <div className="api-error" role="alert" style={{ marginTop: 4 }}>

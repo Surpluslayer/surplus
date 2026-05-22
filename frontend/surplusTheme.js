@@ -569,6 +569,16 @@ export const SURPLUS_APP_CSS = `
 textarea.text-in { min-height:72px; resize:vertical; line-height:1.5; }
 .luma-import-row { display:flex; gap:8px; align-items:stretch; flex-wrap:wrap; }
 .luma-import-row .text-in { flex:1; min-width:200px; }
+.luma-quick {
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  padding:10px 14px; background:var(--panel); border:1px solid var(--line);
+  border-radius:var(--r-el); box-shadow:var(--shadow-sm);
+}
+.luma-quick-icon { color:var(--acc); flex:0 0 auto; }
+.luma-quick-label { font-size:13px; font-weight:600; color:var(--ink); white-space:nowrap; }
+.luma-quick-input { flex:1 1 240px; min-width:240px; }
+.luma-quick-btn { padding:8px 14px; flex:0 0 auto; }
+.luma-quick-hint { font-size:12px; color:var(--ink-faint); white-space:nowrap; }
 .luma-ok-banner {
   display:flex; align-items:flex-start; gap:7px; padding:10px 12px; margin-top:10px;
   border-radius:var(--r-el); background:var(--ok-soft); color:var(--ok);
