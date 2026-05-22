@@ -16,7 +16,7 @@ from .env_loader import load_env
 
 load_env()
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -44,6 +44,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Stamp no-store on every /api/* response so Cloudflare (which sits in
+# front of Railway and aggressively caches 404s with max-age=14400 by
+# default) never caches API responses : success OR error. Without this,
+# a single bad 404 during a deploy can poison an endpoint for 4 hours
+# for every visitor. We can't fix this at the CF layer, so we fix it
+# at the origin : Cloudflare honors `Cache-Control: no-store` and skips
+# its cache when origin sends it.
+@app.middleware("http")
+async def no_store_for_api(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = (
+            "no-store, no-cache, must-revalidate, private"
+        )
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 app.include_router(auth.router)
 app.include_router(demo.router)
