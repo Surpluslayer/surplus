@@ -749,21 +749,29 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
     }
   };
 
-  const connectLinkedIn = async () => {
-    try {
-      const r = await api.startLinkedinAuth();
-      if (r?.url) window.location.href = r.url;
-    } catch (e) {
-      onError && onError("Could not start LinkedIn sign-in: " + e.message);
-    }
-  };
-
   const goToCheckout = async () => {
     try {
       const r = await api.startCheckout();
       if (r?.url) window.location.href = r.url;
     } catch (e) {
       onError && onError("Could not open Stripe checkout: " + e.message);
+    }
+  };
+
+  const connectLinkedIn = async () => {
+    try {
+      const r = await api.startLinkedinAuth();
+      if (r?.url) window.location.href = r.url;
+    } catch (e) {
+      // Connect-LinkedIn is now the paywall : the backend returns 402
+      // payment_required for signed-in users who haven't paid. Route
+      // them to Stripe instead of showing a raw error.
+      if (e.status === 402 && (e.body?.detail?.code || e.body?.code) === "payment_required") {
+        setPaywallKind("payment");
+        setPaywallOpen(true);
+        return;
+      }
+      onError && onError("Could not start LinkedIn sign-in: " + e.message);
     }
   };
 
@@ -826,11 +834,11 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
         onClose={() => setPaywallOpen(false)}
         onSignIn={paywallKind === "payment" ? goToCheckout : connectLinkedIn}
         title={paywallKind === "payment"
-          ? "Upgrade to send"
+          ? "Upgrade to connect LinkedIn"
           : "Connect LinkedIn to send"}
         sub={paywallKind === "payment"
-          ? "Real LinkedIn outreach is on the paid tier. You've run the full workflow end-to-end : upgrade to unlock automatic sends."
-          : "You're on the paid tier. Connect your own LinkedIn account so we can send through it."}
+          ? "Connecting LinkedIn unlocks automatic outreach across your whole pool. One-time upgrade : your LinkedIn account stays on your LinkedIn, not ours."
+          : "We use Unipile's hosted auth so the connection stays on your LinkedIn account."}
         ctaLabel={paywallKind === "payment"
           ? "Upgrade with Stripe"
           : "Sign in with LinkedIn"}

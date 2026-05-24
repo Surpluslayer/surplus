@@ -18,7 +18,12 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
-from ..auth import current_user, get_owned_event, require_linkedin_send
+from ..auth import (
+    current_user,
+    get_owned_event,
+    require_linkedin_connected,
+    require_paid_auto_outreach,
+)
 from ..db import get_db
 from ..pipeline import run_prospect, run_outreach_stage, run_pipeline
 from ..agents.outreach import compose
@@ -88,7 +93,7 @@ def outreach_only(
         raise HTTPException(409, "no approved prospects to contact : "
                                  "threshold may be too high for the pool")
 
-    require_linkedin_send(user)
+    require_paid_auto_outreach(user)
     provider = get_provider_for_user(user)
     if not provider.dry_run and not confirm_live_batch:
         raise HTTPException(
@@ -120,7 +125,7 @@ async def run(
     """
     ev = get_owned_event(event_id, user, db)
 
-    require_linkedin_send(user)
+    require_paid_auto_outreach(user)
     provider = get_provider_for_user(user)
     if not provider.dry_run and not confirm_live_batch:
         raise HTTPException(
@@ -365,7 +370,7 @@ def send_connection_invite(
     if not p.linkedin_url:
         raise HTTPException(409, "prospect has no linkedin_url")
 
-    require_linkedin_send(user)
+    require_linkedin_connected(user)
     provider = get_provider_for_user(user)
     status = _refresh_connection_status(provider, p)
 
@@ -458,7 +463,7 @@ def send_direct_message(
     if not p.linkedin_url:
         raise HTTPException(409, "prospect has no linkedin_url")
 
-    require_linkedin_send(user)
+    require_linkedin_connected(user)
     provider = get_provider_for_user(user)
 
     # Resolve & cache the linkedin provider id. Re-resolve when going live if

@@ -193,42 +193,69 @@ def user_can_send_linkedin(user: User) -> bool:
     return user_has_paid(user) and user_has_linkedin_connected(user)
 
 
-def require_linkedin_send(user: User) -> None:
-    """Gate a real-send route. No-op when the user can send; otherwise raises
-    402 with a structured body the SPA renders as the upgrade paywall.
+def require_linkedin_connected(user: User) -> None:
+    """Gate any real LinkedIn send (manual one-off OR batch). Requires
+    only a connected, active LinkedIn account : NO payment check.
 
-    Two failure codes the frontend branches on:
-      - `payment_required`     : free-tier user. Frontend opens Stripe Checkout.
-      - `linkedin_send_locked` : paid but no LinkedIn. Frontend opens the
-                                  existing "Sign in with LinkedIn" modal.
-
-    Payment is checked FIRST : commercial gate before the LinkedIn one, so
-    free users see the price tag before being asked to connect an account.
+    Used for one-at-a-time manual send routes (invite, dm) where the
+    operator is doing the work themselves : payment is for letting the
+    agent send autonomously, not for the mechanical ability to send.
     """
-    if user_can_send_linkedin(user):
+    if user_has_linkedin_connected(user):
         return
-    if not user_has_paid(user):
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={
-                "code": "payment_required",
-                "message": (
-                    "Real LinkedIn outreach is a paid feature. Upgrade to "
-                    "unlock automatic sends across the workflow."
-                ),
-            },
-        )
     raise HTTPException(
         status_code=status.HTTP_402_PAYMENT_REQUIRED,
         detail={
             "code": "linkedin_send_locked",
             "message": (
-                "You're on the paid tier : connect your LinkedIn account to "
-                "start sending. We use Unipile's hosted auth so the connection "
-                "stays on your LinkedIn account, not ours."
+                "Connect your LinkedIn account to start sending. We use "
+                "Unipile's hosted auth so the connection stays on your "
+                "LinkedIn account, not ours."
             ),
         },
     )
+
+
+def require_paid_to_connect_linkedin(user: Optional[User]) -> None:
+    """Gate the LinkedIn-connection start. Anonymous callers (first-time
+    signup via LinkedIn) are let through unchanged : we need SOMEONE to
+    be able to sign up for free.
+
+    For an already-signed-in user (typically email/triage signup) who
+    is now trying to attach LinkedIn to their account : require payment
+    first. Connecting LinkedIn unlocks all sending (manual + batch);
+    the paywall sits at this connect step so users only pay when they
+    actually want to use the integration.
+    """
+    if user is None:
+        return  # first-time LinkedIn signup : let them through
+    if user_has_paid(user):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_402_PAYMENT_REQUIRED,
+        detail={
+            "code": "payment_required",
+            "message": (
+                "Connecting LinkedIn is a paid feature. Upgrade once and "
+                "your LinkedIn account unlocks automatic outreach across "
+                "the whole workflow."
+            ),
+        },
+    )
+
+
+# Back-compat aliases : keep imports working until the call sites get
+# migrated. The "send" gate is now just "linkedin connected"; the
+# "auto outreach" gate is too (payment is collected at connect time).
+def require_paid_auto_outreach(user: User) -> None:  # noqa: D401
+    """Alias of require_linkedin_connected. Kept so existing imports don't
+    crash; payment is enforced at the connect-LinkedIn step, not on send."""
+    require_linkedin_connected(user)
+
+
+def require_linkedin_send(user: User) -> None:  # noqa: D401
+    """Alias of require_linkedin_connected (back-compat)."""
+    require_linkedin_connected(user)
 
 
 # ─── Access control ─────────────────────────────────────────────
