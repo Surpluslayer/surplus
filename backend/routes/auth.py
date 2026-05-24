@@ -465,6 +465,30 @@ async def linkedin_callback(
         fields = _extract_profile_fields(profile)
         user = db.query(User).filter(User.unipile_account_id == acct).first()
         now = _utcnow()
+        if user is None:
+            # Dedup before insert : if the operator's site-data was cleared
+            # (or they signed up via triage / email-only first), the new
+            # Unipile account will have a fresh acct id but the SAME person
+            # is behind it. Match on stable LinkedIn identifiers first
+            # (provider_id then public_id), then fall back to email. Any
+            # match means we CLAIM that existing User row : its Stripe
+            # paid_at / customer_id / event ownership all stay intact, and
+            # we just point its unipile_account_id at the new acct.
+            for key, val in (
+                ("linkedin_provider_id", fields.get("linkedin_provider_id")),
+                ("linkedin_public_id", fields.get("linkedin_public_id")),
+                ("email", fields.get("email")),
+            ):
+                if not val:
+                    continue
+                user = db.query(User).filter(
+                    getattr(User, key) == val
+                ).first()
+                if user is not None:
+                    print(f"  [auth.dedup] claimed existing user.id={user.id} "
+                          f"via {key} : new unipile_account_id={acct}")
+                    user.unipile_account_id = acct
+                    break
         if user:
             for k, v in fields.items():
                 if v:

@@ -23,6 +23,10 @@ async function request(path, opts = {}) {
     // backend redeploy) vs 409 (precondition not met) vs 5xx (server error)
     // without parsing the message string.
     err.status = res.status;
+    // 402 paywall responses ship a structured body { code, message } the
+    // SPA branches on (payment_required vs linkedin_send_locked). Try
+    // parsing JSON and attach to the error; non-JSON bodies leave .body null.
+    try { err.body = JSON.parse(text); } catch { err.body = null; }
     throw err;
   }
   // some endpoints return empty body
@@ -154,6 +158,8 @@ export const api = {
   me: () => request("/api/auth/me"),
   // returns { url } : frontend sets window.location = url to begin the flow
   startLinkedinAuth: () => request("/api/auth/linkedin/start", { method: "POST" }),
+  // billing : start a Stripe Checkout Session and return { url } to redirect to.
+  startCheckout: () => request("/api/billing/checkout-session", { method: "POST" }),
   // Triage-only signup : no LinkedIn / Unipile required. Creates a User
   // row + session for someone who only wants to review applicants.
   // Outbound features grey out / show "Connect LinkedIn" until they

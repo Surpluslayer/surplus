@@ -69,6 +69,7 @@ def init_db() -> None:
     _migrate_event_triage_config()
     _migrate_event_event_date()
     _migrate_event_event_name()
+    _migrate_user_billing_columns()
     _ensure_operator_user_and_backfill()
 
 
@@ -112,6 +113,34 @@ def _migrate_event_triage_config() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE events ADD COLUMN triage_config TEXT DEFAULT ''"))
+
+
+def _migrate_user_billing_columns() -> None:
+    """Add users.stripe_customer_id (VARCHAR(120), NULL) and users.paid_at
+    (DATETIME, NULL). NULL paid_at = free tier; webhook stamps it on
+    successful Stripe Checkout. Cross-dialect-safe : SQLite + Postgres
+    both accept these ADD COLUMNs without a default."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    with ENGINE.begin() as conn:
+        if "stripe_customer_id" not in cols:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN stripe_customer_id VARCHAR(120)"
+            ))
+            # Indexed on the model; SQLite ignores unique-but-indexed ADD,
+            # Postgres needs an explicit CREATE INDEX.
+            if ENGINE.dialect.name == "postgresql":
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_users_stripe_customer_id "
+                    "ON users (stripe_customer_id)"
+                ))
+        if "paid_at" not in cols:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN paid_at TIMESTAMP"
+            ))
 
 
 def _migrate_user_unipile_account_id_nullable() -> None:

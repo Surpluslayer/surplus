@@ -172,33 +172,60 @@ def revoke_session(db: DbSession, token: str) -> None:
 # and even preview composed messages, but the actual send is a paid feature
 # gated behind connecting their own LinkedIn.
 
-def user_can_send_linkedin(user: User) -> bool:
-    """True when `user` may fire real LinkedIn outreach : they've connected a
-    LinkedIn account via Sign-in-with-LinkedIn and it's healthy.
+def user_has_paid(user: User) -> bool:
+    """True when the user has a successful Stripe Checkout on file. The
+    paid tier unlocks real LinkedIn sends; free tier can browse, prospect,
+    match, and preview composed messages."""
+    return getattr(user, "paid_at", None) is not None
 
-    A future paid-tier flag would AND in here; for now "connected" is the line.
-    """
-    return bool(getattr(user, "unipile_account_id", None)) and user.linkedin_status == "active"
+
+def user_has_linkedin_connected(user: User) -> bool:
+    """True when the user has connected (and not disconnected) their own
+    LinkedIn via Unipile hosted-auth."""
+    return (bool(getattr(user, "unipile_account_id", None))
+            and user.linkedin_status == "active")
+
+
+def user_can_send_linkedin(user: User) -> bool:
+    """True when `user` may fire real LinkedIn outreach. Requires BOTH a
+    paid subscription AND a connected LinkedIn account : payment unlocks
+    the feature, the LinkedIn connection is mechanically required to send."""
+    return user_has_paid(user) and user_has_linkedin_connected(user)
 
 
 def require_linkedin_send(user: User) -> None:
-    """Gate a real-send route. No-op for users who can send; otherwise raises
+    """Gate a real-send route. No-op when the user can send; otherwise raises
     402 with a structured body the SPA renders as the upgrade paywall.
 
-    Call this BEFORE get_provider_for_user(user) on every route that fires a
-    real connection invite or DM : that call would otherwise raise a bare
-    ValueError (→ 500) for a not-connected user instead of a clean paywall.
+    Two failure codes the frontend branches on:
+      - `payment_required`     : free-tier user. Frontend opens Stripe Checkout.
+      - `linkedin_send_locked` : paid but no LinkedIn. Frontend opens the
+                                  existing "Sign in with LinkedIn" modal.
+
+    Payment is checked FIRST : commercial gate before the LinkedIn one, so
+    free users see the price tag before being asked to connect an account.
     """
     if user_can_send_linkedin(user):
         return
+    if not user_has_paid(user):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "code": "payment_required",
+                "message": (
+                    "Real LinkedIn outreach is a paid feature. Upgrade to "
+                    "unlock automatic sends across the workflow."
+                ),
+            },
+        )
     raise HTTPException(
         status_code=status.HTTP_402_PAYMENT_REQUIRED,
         detail={
             "code": "linkedin_send_locked",
             "message": (
-                "Sending LinkedIn outreach is a paid feature. This demo lets "
-                "you run the entire workflow end-to-end : sign in with your "
-                "own LinkedIn to send for real."
+                "You're on the paid tier : connect your LinkedIn account to "
+                "start sending. We use Unipile's hosted auth so the connection "
+                "stays on your LinkedIn account, not ours."
             ),
         },
     )

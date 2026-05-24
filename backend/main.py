@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .db import init_db
-from .routes import admin, auth, curation, demo, events, pipeline, matching, roi, triage, webhooks
+from .routes import admin, auth, billing, curation, demo, events, pipeline, matching, roi, triage, webhooks
 
 
 @asynccontextmanager
@@ -87,6 +87,7 @@ app.include_router(triage.router)
 app.include_router(curation.router)
 app.include_router(webhooks.router)
 app.include_router(admin.router)
+app.include_router(billing.router)
 
 
 # NB: previously had a verbose 500 exception handler here that leaked

@@ -15,7 +15,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend import models, schemas
-from backend.auth import require_linkedin_send, user_can_send_linkedin
+from backend.auth import (
+    require_linkedin_send,
+    user_can_send_linkedin,
+    user_has_paid,
+    user_has_linkedin_connected,
+)
 from backend.db import Base
 from backend.providers import get_preview_provider
 
@@ -33,15 +38,38 @@ def db():
 
 
 def _connected_user(db):
+    """Paid AND LinkedIn-connected : the only state that can actually send."""
+    from datetime import datetime, timezone
     u = models.User(name="Op", email="op@example.com",
-                    unipile_account_id="acct_123", linkedin_status="active")
+                    unipile_account_id="acct_123", linkedin_status="active",
+                    paid_at=datetime.now(timezone.utc),
+                    stripe_customer_id="cus_test")
     db.add(u); db.commit(); db.refresh(u)
     return u
 
 
 def _demo_user(db):
+    """No payment, no LinkedIn : the demo / free-tier baseline."""
     u = models.User(name="Demo", email="demo@surpluslayer.com",
                     unipile_account_id=None, linkedin_status="disconnected")
+    db.add(u); db.commit(); db.refresh(u)
+    return u
+
+
+def _paid_but_unconnected_user(db):
+    """Paid, but hasn't connected LinkedIn yet : 402 linkedin_send_locked."""
+    from datetime import datetime, timezone
+    u = models.User(name="Paying", email="pay@example.com",
+                    unipile_account_id=None, linkedin_status="disconnected",
+                    paid_at=datetime.now(timezone.utc))
+    db.add(u); db.commit(); db.refresh(u)
+    return u
+
+
+def _connected_unpaid_user(db):
+    """LinkedIn connected but no payment : 402 payment_required."""
+    u = models.User(name="Free", email="free@example.com",
+                    unipile_account_id="acct_free", linkedin_status="active")
     db.add(u); db.commit(); db.refresh(u)
     return u
 
@@ -66,22 +94,48 @@ def _event_with_prospect(db, user):
 # ── capability gate ────────────────────────────────────────────────────
 
 def test_user_can_send_truth_table(db):
+    # Only paid + connected can send.
     assert user_can_send_linkedin(_connected_user(db)) is True
+    # Free tier (no payment, no LinkedIn) : blocked.
     assert user_can_send_linkedin(_demo_user(db)) is False
-    # connected account but stale connection : also blocked
+    # Paid but not connected : blocked.
+    assert user_can_send_linkedin(_paid_but_unconnected_user(db)) is False
+    # Connected but not paid : blocked.
+    assert user_can_send_linkedin(_connected_unpaid_user(db)) is False
+    # Stale LinkedIn (disconnected) : also blocked even if paid.
+    from datetime import datetime, timezone
     stale = models.User(name="S", email="s@e.com",
-                        unipile_account_id="x", linkedin_status="disconnected")
+                        unipile_account_id="x", linkedin_status="disconnected",
+                        paid_at=datetime.now(timezone.utc))
     assert user_can_send_linkedin(stale) is False
 
 
-def test_require_send_raises_402_for_demo_user(db):
+def test_require_send_demo_user_gets_payment_required(db):
+    """Free-tier (no payment) user hits the payment paywall first :
+    commercial gate runs before the LinkedIn-connection gate."""
     with pytest.raises(HTTPException) as ei:
         require_linkedin_send(_demo_user(db))
+    assert ei.value.status_code == 402
+    assert ei.value.detail["code"] == "payment_required"
+
+
+def test_require_send_paid_unconnected_user_gets_linkedin_locked(db):
+    """Paid user without a LinkedIn connection hits the second paywall."""
+    with pytest.raises(HTTPException) as ei:
+        require_linkedin_send(_paid_but_unconnected_user(db))
     assert ei.value.status_code == 402
     assert ei.value.detail["code"] == "linkedin_send_locked"
 
 
-def test_require_send_noop_for_connected_user(db):
+def test_require_send_connected_unpaid_user_gets_payment_required(db):
+    """Connected but unpaid user STILL needs to pay first."""
+    with pytest.raises(HTTPException) as ei:
+        require_linkedin_send(_connected_unpaid_user(db))
+    assert ei.value.status_code == 402
+    assert ei.value.detail["code"] == "payment_required"
+
+
+def test_require_send_noop_for_paid_connected_user(db):
     assert require_linkedin_send(_connected_user(db)) is None
 
 

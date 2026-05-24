@@ -431,6 +431,18 @@ class User(Base):
     # output. Set via POST /admin/voice-examples.
     voice_examples: Mapped[str] = mapped_column(Text, default="")
 
+    # ─── Billing ───────────────────────────────────────────────────────
+    # Stripe customer id, set by the checkout webhook on first successful
+    # payment. Indexed because the webhook path looks users up by it.
+    stripe_customer_id: Mapped[Optional[str]] = mapped_column(
+        String(120), default=None, index=True,
+    )
+    # When the user's most recent Stripe Checkout completed. NULL = never
+    # paid (or refunded out). require_linkedin_send() blocks real LinkedIn
+    # sends when NULL : free tier can browse + run prospecting + see
+    # composed previews, paid tier unlocks the actual outreach.
+    paid_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+
 
 # ─── Curation (Stage 1-5: ingested-audience workflow) ─────────────────
 # A separate row-type from Prospect (outbound-sourced) and Applicant

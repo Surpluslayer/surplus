@@ -589,6 +589,10 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
   const [editsById, setEditsById] = useState({});
   const [sendState, setSendState] = useState({});
   const [paywallOpen, setPaywallOpen] = useState(false);
+  // 402 responses carry a `code` field : "payment_required" routes to
+  // Stripe Checkout, "linkedin_send_locked" routes to the LinkedIn modal.
+  // We re-use a single SignInModal for both, parameterized by this state.
+  const [paywallKind, setPaywallKind] = useState("payment");  // "payment" | "linkedin"
   const [providerInfo, setProviderInfo] = useState(null);
   const [rsvpBulkBusy, setRsvpBulkBusy] = useState(false);
   const [rsvpRowBusy, setRsvpRowBusy] = useState({});
@@ -723,15 +727,18 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
         },
       }));
     } catch (e) {
-      // 402 = send is a paid feature (demo / not-LinkedIn-connected session).
-      // Don't render it as a hard failure : pop the upgrade paywall and clear
-      // this row's send state so the button resets instead of showing an error.
+      // 402 = send is gated. Two reasons:
+      //   payment_required     → open Stripe Checkout (free tier).
+      //   linkedin_send_locked → open LinkedIn modal (paid but not connected).
+      // Either way clear the row's send state so the button resets cleanly.
       if (e.status === 402) {
         setSendState((s) => {
           const next = { ...s };
           delete next[prospectId];
           return next;
         });
+        const code = e.body?.detail?.code || e.body?.code || "linkedin_send_locked";
+        setPaywallKind(code === "payment_required" ? "payment" : "linkedin");
         setPaywallOpen(true);
         return;
       }
@@ -748,6 +755,15 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
       if (r?.url) window.location.href = r.url;
     } catch (e) {
       onError && onError("Could not start LinkedIn sign-in: " + e.message);
+    }
+  };
+
+  const goToCheckout = async () => {
+    try {
+      const r = await api.startCheckout();
+      if (r?.url) window.location.href = r.url;
+    } catch (e) {
+      onError && onError("Could not open Stripe checkout: " + e.message);
     }
   };
 
@@ -808,10 +824,16 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
       <SignInModal
         open={paywallOpen}
         onClose={() => setPaywallOpen(false)}
-        onSignIn={connectLinkedIn}
-        title="Sending is a paid feature"
-        sub="This demo lets you run the entire workflow end-to-end. Sign in with your own LinkedIn to send real outreach."
-        ctaLabel="Sign in with LinkedIn to send"
+        onSignIn={paywallKind === "payment" ? goToCheckout : connectLinkedIn}
+        title={paywallKind === "payment"
+          ? "Upgrade to send"
+          : "Connect LinkedIn to send"}
+        sub={paywallKind === "payment"
+          ? "Real LinkedIn outreach is on the paid tier. You've run the full workflow end-to-end : upgrade to unlock automatic sends."
+          : "You're on the paid tier. Connect your own LinkedIn account so we can send through it."}
+        ctaLabel={paywallKind === "payment"
+          ? "Upgrade with Stripe"
+          : "Sign in with LinkedIn"}
       />
       <header className="stage-head">
         <h1>Scored pool, agent sends itself</h1>
