@@ -142,10 +142,10 @@ const THRESHOLD = 70;
 const SIDE_CLASS = { Builds: "side-build", Hires: "side-hire", Operates: "side-op" };
 
 // ---- shared UI ----------------------------------------------
-function StageRail({ stage, setStage, maxReached, mutedIds = [] }) {
+function StageRail({ stage, setStage, maxReached, mutedIds = [], stages = STAGES }) {
   return (
     <nav className="rail">
-      {STAGES.map((s) => {
+      {stages.map((s) => {
         const Icon = s.icon;
         const done = s.id < stage;
         const muted = mutedIds.includes(s.id) && !done;
@@ -1740,7 +1740,9 @@ function Matching({ profile, eventId, onError, onNext, committedPath }) {
       </div>
 
       <div className="stage-foot">
-        <button className="btn-primary" onClick={onNext}>Settle ROI <ArrowRight size={16} /></button>
+        {onNext && (
+          <button className="btn-primary" onClick={onNext}>Settle ROI <ArrowRight size={16} /></button>
+        )}
       </div>
     </div>
   );
@@ -2224,6 +2226,13 @@ export default function App() {
     }
   }, [eventId, stage, committedPath, hydrated]);
 
+  // Demo sessions have no ROI stage : if a stale/restored stage lands them
+  // there, bounce back to Matching (the demo's last step) so they don't
+  // stare at a blank canvas.
+  useEffect(() => {
+    if (user && user.is_demo && stage === "roi") setStage("matching");
+  }, [user, stage]);
+
   if (user === null || (user && !hydrated)) {
     return <div style={{ minHeight: "100vh", background: "#f6f7f9" }} />;
   }
@@ -2234,6 +2243,13 @@ export default function App() {
   // decision screen that comes next prompt.
   if (user) {
     const stageIdx = STAGE_INDEX[stage] ?? 0;
+    // Demo-link sessions don't get the ROI ledger stage : hide its rail
+    // bubble, its screen, and the "Settle ROI" advance. Nothing is deleted :
+    // the stage just isn't surfaced for these users.
+    const hideRoi = !!user.is_demo;
+    const visibleStages = hideRoi
+      ? STAGES.filter((s) => s.key !== "roi")
+      : STAGES;
     // Both paths land on functional content at stage 03 (Prospects for
     // outbound, ReviewStep for inbound). No muted bubbles : the UI
     // loophole is that the same rail slot carries different content
@@ -2241,6 +2257,7 @@ export default function App() {
     const mutedIds = [];
     return (
       <UnifiedShell
+        stages={visibleStages}
         user={user}
         onLogout={async () => {
           try { await api.logout(); } catch {}
@@ -2326,10 +2343,11 @@ export default function App() {
               eventId={eventId}
               committedPath={committedPath}
               onError={(err) => setApiError(err?.message || String(err))}
-              onNext={() => setStage("roi")}
+              // Demo sessions end at Matching : no ROI ledger to settle.
+              onNext={hideRoi ? null : () => setStage("roi")}
             />
           )}
-          {stage === "roi" && (
+          {stage === "roi" && !hideRoi && (
             <ROI
               profile={profile}
               eventId={eventId}
@@ -2528,6 +2546,7 @@ function InboundReviewWithAdvance({ eventId, onAdvance }) {
 function UnifiedShell({
   user, onLogout, apiError, onClearError, children,
   stageIdx = 0, mutedIds = [], eventName, eventId, onStageJump,
+  stages = STAGES,
 }) {
   const noop = () => {};
   return (
@@ -2553,10 +2572,11 @@ function UnifiedShell({
           <StageRail
             stage={stageIdx}
             setStage={onStageJump || noop}
-            // All 5 bubbles are clickable in both directions. STAGES.length
-            // is the upper bound (id 0..4), so maxReached = length - 1
-            // makes every bubble reachable.
-            maxReached={STAGES.length - 1}
+            stages={stages}
+            // Every visible bubble is clickable in both directions :
+            // maxReached is the highest visible stage id (drops to 3 when
+            // the ROI stage is hidden for demo sessions).
+            maxReached={stages.length ? Math.max(...stages.map((s) => s.id)) : 0}
             mutedIds={mutedIds}
           />
           {user && <UserMenu user={user} onLogout={onLogout} />}

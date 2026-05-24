@@ -38,6 +38,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session as DbSession
 
 from ..auth import (
+    DEMO_USER_EMAIL,
     LAST_ACCOUNT_COOKIE,
     SESSION_COOKIE,
     clear_session_cookie,
@@ -604,6 +605,9 @@ def me(user: User = Depends(current_user)) -> JSONResponse:
         "linkedin_public_id": user.linkedin_public_id,
         "linkedin_status": user.linkedin_status,
         "unipile_account_id": user.unipile_account_id,
+        # True for sessions that entered via the hidden demo link. The SPA
+        # uses this to hide demo-only surfaces (e.g. the ROI ledger stage).
+        "is_demo": user.email == DEMO_USER_EMAIL,
     })
 
 

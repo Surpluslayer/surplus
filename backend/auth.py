@@ -26,6 +26,11 @@ from .models import Session, User
 SESSION_COOKIE = "surplus_session"
 SESSION_TTL_DAYS = 30
 
+# Identity of the shared demo user minted by the hidden demo link
+# (routes/demo.py). Kept here so both demo.py and the /me endpoint can
+# reference one source of truth without a circular import.
+DEMO_USER_EMAIL = "demo@surpluslayer.com"
+
 # Long-lived cookie remembering which Unipile account this browser was
 # last signed in with. Lets /linkedin/start call Unipile's hosted-auth
 # with type=reconnect (reuses existing account = no new billed seat)
