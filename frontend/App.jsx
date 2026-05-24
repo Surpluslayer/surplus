@@ -587,6 +587,7 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
   const [previewById, setPreviewById] = useState({});
   const [editsById, setEditsById] = useState({});
   const [sendState, setSendState] = useState({});
+  const [paywallOpen, setPaywallOpen] = useState(false);
   const [providerInfo, setProviderInfo] = useState(null);
   const [rsvpBulkBusy, setRsvpBulkBusy] = useState(false);
   const [rsvpRowBusy, setRsvpRowBusy] = useState({});
@@ -722,9 +723,15 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
       }));
     } catch (e) {
       // 402 = send is a paid feature (demo / not-LinkedIn-connected session).
-      // Don't render it as a hard failure : surface the upgrade paywall.
+      // Don't render it as a hard failure : pop the upgrade paywall and clear
+      // this row's send state so the button resets instead of showing an error.
       if (e.status === 402) {
-        setSendState((s) => ({ ...s, [prospectId]: { status: "paywall" } }));
+        setSendState((s) => {
+          const next = { ...s };
+          delete next[prospectId];
+          return next;
+        });
+        setPaywallOpen(true);
         return;
       }
       setSendState((s) => ({
@@ -797,6 +804,14 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
 
   return (
     <div className="stage">
+      <SignInModal
+        open={paywallOpen}
+        onClose={() => setPaywallOpen(false)}
+        onSignIn={connectLinkedIn}
+        title="Sending is a paid feature"
+        sub="This demo lets you run the entire workflow end-to-end. Sign in with your own LinkedIn to send real outreach."
+        ctaLabel="Sign in with LinkedIn to send"
+      />
       <header className="stage-head">
         <h1>Scored pool, agent sends itself</h1>
       </header>
@@ -957,16 +972,6 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
                         {selSend.state && <span> · state: {selSend.state}</span>}
                 </div>
               )}
-                    {selSend && selSend.status === "paywall" && (
-                      <div className="send-result paywall">
-                        <strong>Sending is a paid feature.</strong> This demo lets
-                        you run the full workflow : sign in with your own LinkedIn
-                        to send real outreach.
-                        <button className="paywall-cta" onClick={connectLinkedIn}>
-                          Sign in with LinkedIn <ArrowRight size={13} />
-                        </button>
-                      </div>
-                    )}
                     {selSend && selSend.status === "failed" && (
                       <div className="send-result err">
                         ⚠ Send failed: {selSend.error}
@@ -2752,7 +2757,7 @@ function LinkedInMark({ size = 18 }) {
   );
 }
 
-function SignInModal({ open, onClose, onSignIn }) {
+function SignInModal({ open, onClose, onSignIn, title, sub, ctaLabel }) {
   const [busy, setBusy] = useState(false);
   if (!open) return null;
 
@@ -2779,14 +2784,14 @@ function SignInModal({ open, onClose, onSignIn }) {
         onClick={(e) => e.stopPropagation()}
       >
         <p id="signin-modal-title" className="signin-modal-title">
-          Please sign in with LinkedIn
+          {title || "Please sign in with LinkedIn"}
         </p>
         <p className="signin-modal-sub">
-          You need to connect LinkedIn before surplus can create an event and run outreach.
+          {sub || "You need to connect LinkedIn before surplus can create an event and run outreach."}
         </p>
         <button type="button" className="signin-modal-cta" onClick={handleSignIn} disabled={busy}>
           <LinkedInMark size={18} />
-          <span>{busy ? "Redirecting…" : "Sign in with LinkedIn"}</span>
+          <span>{busy ? "Redirecting…" : (ctaLabel || "Sign in with LinkedIn")}</span>
         </button>
 
         <button type="button" className="signin-modal-dismiss" onClick={onClose}>
