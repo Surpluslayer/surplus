@@ -12,7 +12,7 @@
 import posthog from "posthog-js";
 
 // ── Replace this with your PostHog Project API key (phc_…) ──────────────
-const POSTHOG_KEY = "phc_PASTE_YOUR_PROJECT_KEY_HERE";
+const POSTHOG_KEY = "phc_tepkkBdxdHbsTNU6mXygDzgRfTYHYWWNKWNo6sNrGUiB";
 const POSTHOG_HOST = "https://us.i.posthog.com";
 const POSTHOG_UI_HOST = "https://us.posthog.com";
 // ────────────────────────────────────────────────────────────────────────
