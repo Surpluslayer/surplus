@@ -51,17 +51,17 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session as DbSession
 
-from ..auth import create_session, set_session_cookie
+from ..auth import DEMO_USER_EMAIL, create_session, set_session_cookie
 from ..db import get_db
 from ..models import User
 
 
 router = APIRouter(prefix="/api/demo", tags=["demo"])
 
-# Stable identity for the shared demo user. Email lives in our DB only :
-# nothing is ever sent to it. unipile_account_id stays NULL so the send
-# capability gate (auth.user_can_send_linkedin) treats it as not-connected.
-DEMO_USER_EMAIL = "demo@surpluslayer.com"
+# DEMO_USER_EMAIL lives in auth.py (single source of truth shared with the
+# /me endpoint). Email lives in our DB only : nothing is ever sent to it.
+# unipile_account_id stays NULL so the send capability gate
+# (auth.user_can_send_linkedin) treats it as not-connected.
 
 # Stale browser/CDN caches of either the 303 or a 404 from a prior misconfig
 # can poison this URL for returning visitors (symptom: regular browser sees

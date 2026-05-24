@@ -133,3 +133,19 @@ def test_get_or_create_demo_user_is_not_connected_and_idempotent(db):
     assert user_can_send_linkedin(u1) is False
     u2 = _get_or_create_demo_user(db)
     assert u2.id == u1.id  # idempotent : one shared demo user
+
+
+# ── /me exposes is_demo so the SPA can hide demo-only surfaces ───────────
+
+def test_me_flags_demo_user_only(db):
+    """The demo user is is_demo=True; a real connected user is False. The SPA
+    keys hiding the ROI ledger stage off this flag."""
+    import json
+    from backend.routes.auth import me
+    from backend.routes.demo import _get_or_create_demo_user
+
+    demo = _get_or_create_demo_user(db)
+    real = _connected_user(db)
+
+    assert json.loads(me(demo).body)["is_demo"] is True
+    assert json.loads(me(real).body)["is_demo"] is False
