@@ -303,6 +303,13 @@ export const SURPLUS_APP_CSS = `
 .send-result.ok { background:#e9f7ec; color:#1f7a3e; }
 .send-result.err { background:#fff5f5; color:#b03030; }
 .send-result.muted { background:var(--panel-2); color:var(--ink-faint); font-weight:500; }
+.send-result.paywall { background:#fff8e8; color:#8a5a00; border:1px solid #f1d79a;
+  flex-wrap:wrap; line-height:1.5; font-weight:500; }
+.send-result.paywall strong { font-weight:700; }
+.paywall-cta { margin-left:auto; display:inline-flex; align-items:center; gap:5px;
+  background:var(--acc); color:#fff; border:none; border-radius:6px;
+  padding:6px 11px; font-size:10.5px; font-weight:700; cursor:pointer; }
+.paywall-cta:hover { filter:brightness(1.05); }
 .agent-feed { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
   padding:18px; box-shadow:var(--shadow-sm); }
 .feed-scroll { display:flex; flex-direction:column; gap:6px; max-height:176px; overflow:hidden; }

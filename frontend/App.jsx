@@ -721,10 +721,25 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
         },
       }));
     } catch (e) {
+      // 402 = send is a paid feature (demo / not-LinkedIn-connected session).
+      // Don't render it as a hard failure : surface the upgrade paywall.
+      if (e.status === 402) {
+        setSendState((s) => ({ ...s, [prospectId]: { status: "paywall" } }));
+        return;
+      }
       setSendState((s) => ({
         ...s,
         [prospectId]: { status: "failed", error: e.message },
       }));
+    }
+  };
+
+  const connectLinkedIn = async () => {
+    try {
+      const r = await api.startLinkedinAuth();
+      if (r?.url) window.location.href = r.url;
+    } catch (e) {
+      onError && onError("Could not start LinkedIn sign-in: " + e.message);
     }
   };
 
@@ -942,6 +957,16 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
                         {selSend.state && <span> · state: {selSend.state}</span>}
                 </div>
               )}
+                    {selSend && selSend.status === "paywall" && (
+                      <div className="send-result paywall">
+                        <strong>Sending is a paid feature.</strong> This demo lets
+                        you run the full workflow : sign in with your own LinkedIn
+                        to send real outreach.
+                        <button className="paywall-cta" onClick={connectLinkedIn}>
+                          Sign in with LinkedIn <ArrowRight size={13} />
+                        </button>
+                      </div>
+                    )}
                     {selSend && selSend.status === "failed" && (
                       <div className="send-result err">
                         ⚠ Send failed: {selSend.error}

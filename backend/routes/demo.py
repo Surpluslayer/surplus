@@ -2,43 +2,52 @@
 routes/demo.py : hidden-link demo entry point.
 
 Goal: hand someone (an investor, a friend, a candidate user) a single URL
-that drops them into the full surplus app without making them sign in
-with their own LinkedIn first. They get a real signed-in session backed
-by the operator user (i.e., the LinkedIn account configured via the
-UNIPILE_ACCOUNT_ID env var), so every action : including real outreach
-sends : works end-to-end.
+that drops them into the full surplus app without making them sign in with
+their own LinkedIn first. They get a real signed-in session backed by a
+dedicated DEMO user, so the entire workflow works end-to-end : intake,
+prospecting, fit scoring, matching, ROI, and composing personalized
+outreach (preview included).
+
+What's intentionally NOT possible from a demo session: firing real LinkedIn
+outreach. The demo user has no connected LinkedIn account (unipile_account_id
+is NULL), so every real send route hits the paywall (HTTP 402 via
+auth.require_linkedin_send) instead of spending anyone's LinkedIn quota or
+DMing from a real account. To actually send, the visitor signs in with their
+own LinkedIn and upgrades.
 
 Security model:
   - Gated by a shared secret in the DEMO_ACCESS_TOKEN env var.
-  - URL is NOT meant to be public. Don't post it on Twitter. The trade-off
-    for "everything works including real sends" is that anyone with the
-    link can spend the operator's daily LinkedIn quota and send DMs from
-    your account.
   - When DEMO_ACCESS_TOKEN is unset, the route returns 404 : it doesn't
     exist in production unless you opt in by setting the env var.
   - constant-time comparison on the token to avoid timing attacks.
+  - The blast radius is small now : the worst a leaked link can do is let
+    someone poke around the demo workspace. No real sends are possible.
 
 Share URL shape:
   https://www.surpluslayer.com/api/demo/enter?key=<DEMO_ACCESS_TOKEN>
 
 Effect:
   - 303 redirect to "/" with the surplus_session cookie set
-  - Session is tied to the operator User row (same one auto-created by
-    _ensure_operator_user_and_backfill at startup)
-  - From that point the SPA behaves identically to a real signed-in user
+  - Session is tied to a single shared demo User row (get-or-created on
+    first use). All demo visitors share that workspace : fine for a guided
+    demo; swap _get_or_create_demo_user for a per-visitor mint (like
+    routes/auth.py:triage_quick_start) if you want each visitor a clean slate.
+  - From that point the SPA behaves like any signed-in but not-LinkedIn-
+    connected user : the whole workflow works, sends paywall.
 
 To revoke a leaked link: rotate DEMO_ACCESS_TOKEN in Railway env. Active
 sessions issued by the old link continue to work until their 30-day TTL
-expires (they're indistinguishable from a normal session) : to kill them
-immediately, delete the corresponding rows from the sessions table.
+expires : to kill them immediately, delete the corresponding rows from the
+sessions table.
 """
 from __future__ import annotations
 
 import hmac
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session as DbSession
 
@@ -48,6 +57,11 @@ from ..models import User
 
 
 router = APIRouter(prefix="/api/demo", tags=["demo"])
+
+# Stable identity for the shared demo user. Email lives in our DB only :
+# nothing is ever sent to it. unipile_account_id stays NULL so the send
+# capability gate (auth.user_can_send_linkedin) treats it as not-connected.
+DEMO_USER_EMAIL = "demo@surpluslayer.com"
 
 # Stale browser/CDN caches of either the 303 or a 404 from a prior misconfig
 # can poison this URL for returning visitors (symptom: regular browser sees
@@ -71,9 +85,23 @@ def _demo_token() -> Optional[str]:
     return tok or None
 
 
-def _operator_account_id() -> Optional[str]:
-    aid = (os.environ.get("UNIPILE_ACCOUNT_ID") or "").strip()
-    return aid or None
+def _get_or_create_demo_user(db: DbSession) -> User:
+    """The shared, not-LinkedIn-connected demo user. Idempotent."""
+    user = db.query(User).filter(User.email == DEMO_USER_EMAIL).first()
+    if user is None:
+        user = User(
+            name="Surplus Demo",
+            email=DEMO_USER_EMAIL,
+            headline="Demo account : full workflow, LinkedIn sending disabled",
+            # NULL on purpose : this is what gates real sends behind the paywall.
+            unipile_account_id=None,
+            linkedin_status="disconnected",
+            last_login_at=datetime.now(timezone.utc),
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    return user
 
 
 @router.get("/enter")
@@ -81,15 +109,14 @@ def demo_enter(
     key: str = Query(..., description="Shared secret matching DEMO_ACCESS_TOKEN"),
     db: DbSession = Depends(get_db),
 ):
-    """Issue a session for the operator user and redirect to /.
+    """Issue a session for the demo user and redirect to /.
 
     Returns 404 when:
       - DEMO_ACCESS_TOKEN env var is unset (feature disabled)
-      - UNIPILE_ACCOUNT_ID env var is unset (no operator user to attach)
       - key doesn't match the configured token (don't leak existence)
 
-    All three are 404 (not 403/401) so probing the URL with a wrong key
-    is indistinguishable from the feature being off.
+    Both are 404 (not 403/401) so probing the URL with a wrong key is
+    indistinguishable from the feature being off.
     """
     expected = _demo_token()
     if not expected:
@@ -100,24 +127,9 @@ def demo_enter(
     if not hmac.compare_digest(key, expected):
         return _not_found()
 
-    operator_account_id = _operator_account_id()
-    if not operator_account_id:
-        # Misconfigured deploy : feature is on but there's no operator user
-        # to issue a session for. 404 so we don't leak the misconfiguration.
-        return _not_found()
+    demo_user = _get_or_create_demo_user(db)
 
-    operator = (
-        db.query(User)
-        .filter(User.unipile_account_id == operator_account_id)
-        .first()
-    )
-    if not operator:
-        # Should be impossible : _ensure_operator_user_and_backfill creates
-        # this row at startup whenever UNIPILE_ACCOUNT_ID is set. Surface
-        # as 500 so it's visible in logs if it ever happens.
-        raise HTTPException(status_code=500, detail="operator user missing")
-
-    sess = create_session(db, operator)
+    sess = create_session(db, demo_user)
     response = RedirectResponse("/", status_code=303)
     for k, v in _NO_STORE.items():
         response.headers[k] = v

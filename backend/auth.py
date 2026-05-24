@@ -160,6 +160,45 @@ def revoke_session(db: DbSession, token: str) -> None:
         db.commit()
 
 
+# ─── Send capability gate ───────────────────────────────────────
+# Signing in (current_user) is necessary but not sufficient to fire real
+# LinkedIn outreach. Demo and triage-only users get a full-workflow session
+# with unipile_account_id=NULL : they can run intake → prospect → match → roi
+# and even preview composed messages, but the actual send is a paid feature
+# gated behind connecting their own LinkedIn.
+
+def user_can_send_linkedin(user: User) -> bool:
+    """True when `user` may fire real LinkedIn outreach : they've connected a
+    LinkedIn account via Sign-in-with-LinkedIn and it's healthy.
+
+    A future paid-tier flag would AND in here; for now "connected" is the line.
+    """
+    return bool(getattr(user, "unipile_account_id", None)) and user.linkedin_status == "active"
+
+
+def require_linkedin_send(user: User) -> None:
+    """Gate a real-send route. No-op for users who can send; otherwise raises
+    402 with a structured body the SPA renders as the upgrade paywall.
+
+    Call this BEFORE get_provider_for_user(user) on every route that fires a
+    real connection invite or DM : that call would otherwise raise a bare
+    ValueError (→ 500) for a not-connected user instead of a clean paywall.
+    """
+    if user_can_send_linkedin(user):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_402_PAYMENT_REQUIRED,
+        detail={
+            "code": "linkedin_send_locked",
+            "message": (
+                "Sending LinkedIn outreach is a paid feature. This demo lets "
+                "you run the entire workflow end-to-end : sign in with your "
+                "own LinkedIn to send for real."
+            ),
+        },
+    )
+
+
 # ─── Access control ─────────────────────────────────────────────
 
 def get_owned_event(event_id: int, user: User, db: DbSession):

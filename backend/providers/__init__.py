@@ -65,6 +65,33 @@ def get_provider_for_user(user) -> LinkedInProvider:
     )
 
 
+def get_preview_provider(user) -> LinkedInProvider:
+    """Resolve a provider for read-only paths that NEVER send for real :
+    compose preview and the bulk connection-status check.
+
+    Connected users get their normal per-user provider (the preview route
+    forces dry-run on it anyway). Users with no LinkedIn connection (demo /
+    triage-only) get a dry-run, account-less provider so the compose preview
+    and connection-check still render end-to-end instead of 500ing : the
+    dry-run code paths (send_connection, is_relation, resolve_linkedin_user)
+    never touch the network, so a NULL account_id is safe here.
+
+    Do NOT use this for real-send routes : gate those with
+    auth.require_linkedin_send() so a not-connected user gets a 402 paywall.
+    """
+    if getattr(user, "unipile_account_id", None):
+        return get_provider_for_user(user)
+    name = os.environ.get("PROVIDER", "unipile").lower().strip()
+    if name != "unipile":
+        raise ValueError(f"Unknown PROVIDER={name!r} (expected 'unipile')")
+    return UnipileProvider(
+        dsn=os.environ.get("UNIPILE_DSN"),
+        api_key=os.environ.get("UNIPILE_API_KEY"),
+        account_id=None,
+        dry_run=True,
+    )
+
+
 def get_provider_for_prospect(prospect, fallback: LinkedInProvider) -> LinkedInProvider:
     """Route a send through the owning user's LinkedIn account.
 
@@ -98,6 +125,7 @@ __all__ = [
     "UnipileProvider",
     "get_provider",
     "get_provider_for_user",
+    "get_preview_provider",
     "get_provider_for_prospect",
     "reset_provider_cache",
 ]
