@@ -318,16 +318,34 @@ if _FRONTEND_DIST.is_dir():
     from starlette.responses import FileResponse
     from starlette.exceptions import HTTPException as StarletteHTTPException
 
+    def _no_store(response):
+        """Force revalidation of the SPA shell. index.html is the ONE file
+        Vite does not content-hash : its name is always index.html, and it's
+        what references the hashed JS/CSS bundle. If a browser or Cloudflare
+        caches it, the app keeps loading a stale bundle after a deploy (e.g.
+        an old build with no paywall-popup handling), so a fresh deploy never
+        reaches the user. The hashed assets stay cacheable : only the shell
+        is marked no-store."""
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+        response.headers["Pragma"] = "no-cache"
+
     class SPAStaticFiles(StaticFiles):
         async def get_response(self, path: str, scope):
             try:
-                return await super().get_response(path, scope)
+                response = await super().get_response(path, scope)
             except StarletteHTTPException as exc:
                 # Only fall back for client-side routes (404 + non-API).
                 # Other status codes (405, etc.) bubble up unchanged.
                 if exc.status_code == 404 and not path.startswith("api/"):
-                    return FileResponse(str(_FRONTEND_DIST / "index.html"))
+                    response = FileResponse(str(_FRONTEND_DIST / "index.html"))
+                    _no_store(response)
+                    return response
                 raise
+            # The SPA shell is the only HTML the mount serves : keep it fresh
+            # so deploys take effect immediately. Hashed assets are untouched.
+            if getattr(response, "media_type", None) == "text/html":
+                _no_store(response)
+            return response
 
     app.mount("/", SPAStaticFiles(directory=str(_FRONTEND_DIST), html=True),
               name="frontend")
