@@ -7,6 +7,7 @@ import {
   CornerDownRight, LogOut, GraduationCap, Link2, Loader2
 } from "lucide-react";
 import { api } from "./lib/api.js";
+import { identifyUser, resetAnalytics } from "./lib/analytics.js";
 import SharedIntake from "./SharedIntake.jsx";
 import {
   FORMATS,
@@ -2032,6 +2033,7 @@ function UserMenu({ user, onLogout }) {
   const [open, setOpen] = useState(false);
   const handleLogout = async () => {
     try { await api.logout(); } catch (e) { /* still clear local state */ }
+    resetAnalytics();
     onLogout();
   };
   const initials = (user?.name || "?").trim().split(/\s+/).map(s => s[0] || "").join("").slice(0, 2).toUpperCase();
@@ -2137,6 +2139,8 @@ export default function App() {
       .then((u) => {
         if (cancelled) return;
         setUser(u);
+        // Tie PostHog events to this user (and tag demo vs real traffic).
+        identifyUser(u);
         // A user with no Unipile connection (signed up via skip-LinkedIn)
         // can only really use triage : default them there.
         if (u && !u.unipile_account_id) {
@@ -2261,6 +2265,7 @@ export default function App() {
         user={user}
         onLogout={async () => {
           try { await api.logout(); } catch {}
+          resetAnalytics();
           // Belt-and-suspenders : the write effect would also clear
           // the key when eventId becomes null, but we explicit-clear
           // here too so the spec wording matches the code.

@@ -2,6 +2,11 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import App from "./App.jsx";
+import { initAnalytics } from "./lib/analytics.js";
+
+// Boot PostHog before React mounts so autocapture + session replay catch
+// the very first interactions. No-op when no key is configured.
+initAnalytics();
 
 // ?fresh=true (or ?fresh=1) escape hatch : wipe the cached unified
 // session so a returning user with a stale eventId lands on the
