@@ -316,6 +316,48 @@ def test_app_router_picks_earliest_start():
     assert ev.starts_at == "2026-09-09T18:00:00Z"
 
 
+def test_app_router_city_state_from_rendered_text():
+    """Partiful's public location renders as "City, ST" text in the RSC
+    stream, not under a known location key. Pull it out by shape."""
+    fragment = (
+        '...,["$","div",null,{"children":"Boston, MA"}],'
+        '["$","div",null,{"children":"Get on the list for full location"}],'
+        '{"startDate":"2026-05-26T14:00:00-04:00"}'
+    )
+    html = _page_with_next_f(fragment)
+    ev = parse_luma_html(html, source_url="https://partiful.com/e/agentsmeet")
+    assert ev.location == "Boston, MA"
+    assert ev.starts_at == "2026-05-26T14:00:00-04:00"
+
+
+def test_city_state_ignores_invalid_state_code():
+    """"good, OK" would falsely match City, ST shape — OK is a real state,
+    but a lowercase leading word must not match."""
+    fragment = 'prose like "sounds good, OK we are set" with no real venue'
+    html = _page_with_next_f(fragment)
+    ev = parse_luma_html(html)
+    assert ev.location is None
+
+
+def test_city_state_keyed_location_still_wins():
+    """When a proper city/venue key exists, prefer it over the regex net."""
+    fragment = ('{"city":"Cambridge","note":"see you in Boston, MA soon"}')
+    html = _page_with_next_f(fragment)
+    ev = parse_luma_html(html)
+    assert ev.location == "Cambridge"
+
+
+def test_city_state_from_raw_html_when_not_in_next_f():
+    """Even if __next_f decoding misses it, a rendered "City, ST" in the
+    raw HTML should still be picked up."""
+    html = """<html><head>
+<meta property="og:title" content="RSVP to Some Event | Partiful" />
+<meta property="og:description" content="desc" />
+</head><body><div>Austin, TX</div></body></html>"""
+    ev = parse_luma_html(html)
+    assert ev.location == "Austin, TX"
+
+
 def test_app_router_double_encoded_payload():
     """RSC chunks sometimes carry stringified JSON, so keys remain
     backslash-escaped after one decode. We should still extract."""
