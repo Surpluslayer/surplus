@@ -405,6 +405,9 @@ function ConfigStep({ user: _user, eventId, setEventId, onNext }) {
         city: (ev.location && String(ev.location).trim()) || p.city,
         // ev.starts_at is ISO-8601; slice gives the YYYY-MM-DD the date input wants.
         eventDate: ev.starts_at ? String(ev.starts_at).slice(0, 10) : p.eventDate,
+        // event_format is snapped to FORMATS server-side; map it onto the picker.
+        format: (sug.event_format && FORMATS.includes(sug.event_format))
+          ? sug.event_format : p.format,
       }));
       setLumaEnrich((prev) => ({
         ...prev,

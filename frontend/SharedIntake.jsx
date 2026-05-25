@@ -105,12 +105,21 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
       setProfile((prev) => {
         const next = { ...prev };
         // Only fill empty fields. Skip everything if the operator
-        // already typed something.
+        // already typed something. NB: city/format have non-empty seed
+        // defaults, so "untouched" means "still equals the seed" (same
+        // rule as headcount below), not "falsy".
         if (ev.name) next.eventName = next.eventName || ev.name;
-        if (ev.location) next.city = next.city || ev.location;
+        if (ev.location && next.city === DEFAULT_PROFILE.city) {
+          next.city = ev.location;
+        }
         // ev.starts_at is ISO-8601 per LumaEvent; slice gives YYYY-MM-DD.
         if (ev.starts_at) {
           next.eventDate = next.eventDate || String(ev.starts_at).slice(0, 10);
+        }
+        // event_format is snapped to our FORMATS taxonomy server-side.
+        if (sug.event_format && FORMATS.includes(sug.event_format)
+            && next.format === DEFAULT_PROFILE.format) {
+          next.format = sug.event_format;
         }
         // Headcount has a slider min=0 max=160, clamp before assigning.
         // We treat the default 40 as "not yet set by the operator" for

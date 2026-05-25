@@ -265,6 +265,68 @@ def test_parse_app_router_epoch_date():
     assert ev.location == "Boston, MA"
 
 
+def test_app_router_unknown_date_key_still_works():
+    """We don't hard-code Partiful's key names : any *start*-ish key with
+    an ISO value should be picked up."""
+    fragment = ('{"eventStartTime":"2027-03-04T19:00:00-05:00",'
+                '"eventCity":"Brooklyn"}')
+    html = _page_with_next_f(fragment)
+    ev = parse_luma_html(html)
+    assert ev.starts_at == "2027-03-04T19:00:00-05:00"
+    # "eventCity" isn't a known location key; the generic city/venue tiers
+    # won't match it, which is fine — we just shouldn't crash or guess wrong.
+
+
+def test_app_router_ignores_created_updated_dates():
+    """createdAt / updatedAt must not be mistaken for the event start."""
+    fragment = ('{"createdAt":"2020-01-01T00:00:00Z",'
+                '"updatedAt":"2020-02-02T00:00:00Z",'
+                '"startDate":"2026-12-31T20:00:00-05:00"}')
+    html = _page_with_next_f(fragment)
+    ev = parse_luma_html(html)
+    assert ev.starts_at == "2026-12-31T20:00:00-05:00"
+
+
+def test_app_router_no_event_date_when_only_created():
+    """If the only dates are createdAt/updatedAt, return nothing rather
+    than pre-filling a misleading date."""
+    fragment = '{"createdAt":"2020-01-01T00:00:00Z","venueName":"Somewhere"}'
+    html = _page_with_next_f(fragment)
+    ev = parse_luma_html(html)
+    assert ev.starts_at is None
+    assert ev.location == "Somewhere"
+
+
+def test_app_router_prefers_city_over_venue_and_address():
+    """City wins over venue/address so the City field gets an actual city."""
+    fragment = ('{"venueName":"The Foundry","address":"100 Main St, Detroit MI",'
+                '"city":"Detroit"}')
+    html = _page_with_next_f(fragment)
+    ev = parse_luma_html(html)
+    assert ev.location == "Detroit"
+
+
+def test_app_router_picks_earliest_start():
+    """Multiple start-keyed datetimes (e.g. recurring instances) : take the
+    earliest, i.e. the event start."""
+    fragment = ('{"startDate":"2026-10-10T18:00:00Z",'
+                '"startDate":"2026-09-09T18:00:00Z"}')
+    html = _page_with_next_f(fragment)
+    ev = parse_luma_html(html)
+    assert ev.starts_at == "2026-09-09T18:00:00Z"
+
+
+def test_app_router_double_encoded_payload():
+    """RSC chunks sometimes carry stringified JSON, so keys remain
+    backslash-escaped after one decode. We should still extract."""
+    inner = ('{"startDate":"2026-08-08T12:00:00Z","city":"Austin"}')
+    fragment = 'wrapper:' + json.dumps(inner)  # inner is now a JSON string
+    html = _page_with_next_f(fragment)
+    ev = parse_luma_html(html)
+    assert ev.starts_at == "2026-08-08T12:00:00Z"
+    assert ev.location == "Austin"
+
+
 def test_parse_handles_jsonld_graph_envelope():
     """JSON-LD often wraps multiple nodes in @graph; we should still find Event."""
     html = _page_with_jsonld({

@@ -67,9 +67,20 @@ class TriageSuggestion(BaseModel):
     Empty lists / None mean 'couldn't infer, fill in manually'."""
     sponsor_name: Optional[str] = None
     ideal_attendee_profile: Optional[str] = None
+    # Closest match in our format taxonomy, inferred from the description.
+    # Partiful has no structured "format" field, so this is the only way
+    # to pre-fill it. One of EVENT_FORMATS, or None if unclear.
+    event_format: Optional[str] = None
     hard_filters: list[str] = []
     anti_fit_examples: list[str] = []
     nice_to_have_signals: list[str] = []
+
+
+# Our event-format taxonomy (mirrors the frontend FORMATS list). The
+# suggestion step maps a free-text description onto exactly one of these.
+EVENT_FORMATS = ["Sit-down dinner", "Hackathon", "Workshop", "Mixer",
+                 "Roundtable"]
+_EVENT_FORMATS_LOWER = {f.lower(): f for f in EVENT_FORMATS}
 
 
 class LumaFetchError(Exception):
@@ -208,26 +219,40 @@ _NEXT_F_RE = re.compile(
     r'self\.__next_f\.push\(\[\d+\s*,\s*("(?:[^"\\]|\\.)*")\s*\]\)',
     re.DOTALL,
 )
-# Once the __next_f strings are unescaped, the event JSON appears literally;
-# scan it for the same field names we look for in the blob walk.
-_RAW_DATE_RE = re.compile(
-    r'"(?:startDate|startsAt|startAt|startDateTime|startTime|startTimestamp|start)"'
-    r'\s*:\s*(?:"([^"]+)"|(\d{10,13}))',
-    re.IGNORECASE,
+# Once the __next_f strings are unescaped, the event JSON appears inline.
+# We don't know Partiful's exact field names (and they change), so instead
+# of a fixed list we bucket every "key": value pair by what the key looks
+# like. These regexes capture key + value for string / number values.
+_KV_STR_RE = re.compile(r'"([A-Za-z0-9_]+)"\s*:\s*"((?:[^"\\]|\\.){1,300}?)"')
+_KV_NUM_RE = re.compile(r'"([A-Za-z0-9_]+)"\s*:\s*(\d{10,13})\b')
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
+
+# Date keys : a datetime under one of these is the event start. The deny
+# list keeps us off createdAt / updatedAt / endDate / RSVP timestamps etc.
+_DATE_KEY_DENY = ("created", "updated", "modified", "deleted", "expire",
+                  "publish", "lastseen", "seenat", "synced", "rsvp",
+                  "claimed", "joined", "closed", "ended", "endtime",
+                  "enddate", "reminder", "cancel")
+_DATE_KEY_STRONG = ("start", "begin")        # almost certainly the start
+_DATE_KEY_OK = ("date", "time", "when", "event", "schedul", "happen")
+
+# Location keys, most-specific first : a "city" beats a venue name beats a
+# full address. Lets the City field get an actual city when one exists.
+_LOC_KEY_TIERS = (
+    ("city", "addresslocality", "locality", "town"),
+    ("venuename", "locationname", "placename"),
+    ("formattedaddress", "fulladdress", "displayaddress"),
+    ("venue", "location", "address", "place", "geoaddress"),
 )
-_RAW_LOC_RE = re.compile(
-    r'"(?:locationName|venueName|venue|formattedAddress|geoAddress|placeName|address)"'
-    r'\s*:\s*"([^"]+)"',
-    re.IGNORECASE,
-)
-# Exact (lowercased) key names, not substrings : substring matching on
-# "start"/"location" pulls in unrelated fields (subscription starts,
-# locationPrivacy enums, etc) and yields garbage.
+# Substrings that mean a "location"-ish value isn't a real place.
+_LOC_VALUE_DENY = ("http", "://", "{", "}", "null", "undefined")
+
+# Exact (lowercased) key names for the JSON-blob walk (Pages Router).
 _DATE_KEYS = {"startdate", "startsat", "starttime", "startdatetime",
-              "start", "startts", "starttimestamp"}
+              "start", "startts", "starttimestamp", "eventdate", "when"}
 _LOCATION_KEYS = {"location", "locationname", "locationinfo", "venue",
                   "venuename", "address", "formattedaddress", "geoaddress",
-                  "placename", "place"}
+                  "placename", "place", "city", "addresslocality", "locality"}
 
 
 def _coerce_iso_date(val) -> Optional[str]:
@@ -307,18 +332,71 @@ def _decode_next_f(html: str) -> str:
     return "".join(chunks)
 
 
+def _pick_date_from_text(text: str) -> Optional[str]:
+    """Find the event start in a flat payload without knowing the exact
+    key name. Rank candidates by how date-like their key is, drop keys on
+    the deny list, and prefer the earliest start among the best tier."""
+    candidates: list[tuple[int, str]] = []
+
+    def consider(key: str, iso: Optional[str]) -> None:
+        if not iso:
+            return
+        kl = key.lower()
+        if any(d in kl for d in _DATE_KEY_DENY):
+            return
+        if any(s in kl for s in _DATE_KEY_STRONG):
+            rank = 0
+        elif any(s in kl for s in _DATE_KEY_OK):
+            rank = 1
+        else:
+            return  # key doesn't look date-related : too risky to trust
+        candidates.append((rank, iso))
+
+    for key, val in _KV_STR_RE.findall(text):
+        if _ISO_DATE_RE.match(val.strip()):
+            consider(key, val.strip())
+    for key, val in _KV_NUM_RE.findall(text):
+        consider(key, _coerce_iso_date(int(val)))
+
+    if not candidates:
+        return None
+    # Best key-class first, then earliest datetime (the event start, not a
+    # later reminder/instance that shares the same key class).
+    candidates.sort(key=lambda c: (c[0], c[1]))
+    return candidates[0][1]
+
+
+def _pick_location_from_text(text: str) -> Optional[str]:
+    """Find a place string, preferring city > venue > address by key."""
+    by_key: dict[str, str] = {}
+    for key, val in _KV_STR_RE.findall(text):
+        kl = key.lower()
+        if kl in by_key:
+            continue
+        v = val.strip()
+        if not v or any(bad in v.lower() for bad in _LOC_VALUE_DENY):
+            continue
+        by_key[kl] = v
+    for tier in _LOC_KEY_TIERS:
+        for key in tier:
+            if key in by_key:
+                cleaned = _clean_location_value(by_key[key])
+                if cleaned:
+                    return cleaned
+    return None
+
+
 def _scan_text_for_event(text: str) -> tuple[Optional[str], Optional[str]]:
     """Regex-scan a flat text payload (decoded __next_f) for a start date
-    and location. Used when there's no clean JSON object to walk."""
-    date = None
-    m = _RAW_DATE_RE.search(text)
-    if m:
-        raw = m.group(1) if m.group(1) is not None else m.group(2)
-        date = _coerce_iso_date(int(raw) if (raw and raw.isdigit()) else raw)
-    loc = None
-    m = _RAW_LOC_RE.search(text)
-    if m:
-        loc = _clean_location_value(m.group(1))
+    and location. Field-name-agnostic : buckets every key/value pair."""
+    date = _pick_date_from_text(text)
+    loc = _pick_location_from_text(text)
+    # Some RSC chunks embed stringified JSON, so keys stay backslash-escaped
+    # after one decode (\"startDate\":\"...\"). Retry on a de-escaped copy.
+    if (not date or not loc) and '\\"' in text:
+        alt = text.replace('\\"', '"')
+        date = date or _pick_date_from_text(alt)
+        loc = loc or _pick_location_from_text(alt)
     return date, loc
 
 
@@ -485,11 +563,18 @@ based on phrasing in the description. One short clause each.
 (stage, traction, role, etc). One short clause each.
 - sponsor_name : the brand(s) hosting / co-hosting if obvious from the title \
 or description; null otherwise.
+- event_format : the format the description best matches, chosen from EXACTLY \
+this set : "Sit-down dinner", "Hackathon", "Workshop", "Mixer", "Roundtable". \
+Pick the single closest one (a talk / demo night / happy hour / meetup is a \
+"Mixer"; a build competition is a "Hackathon"; a hands-on session is a \
+"Workshop"; a moderated discussion is a "Roundtable"; a seated meal is a \
+"Sit-down dinner"). Return null only if there's truly no signal.
 
 Schema:
 {
   "sponsor_name": string | null,
   "ideal_attendee_profile": string | null,
+  "event_format": string | null,
   "hard_filters": string[],
   "anti_fit_examples": string[],
   "nice_to_have_signals": string[]
@@ -553,11 +638,15 @@ def suggest_triage_config(event: LumaEvent) -> TriageSuggestion:
 
     sponsor = parsed.get("sponsor_name")
     ideal = parsed.get("ideal_attendee_profile")
+    fmt = parsed.get("event_format")
+    # Snap the model's answer onto our taxonomy; ignore anything off-menu.
+    fmt = _EVENT_FORMATS_LOWER.get(fmt.strip().lower()) if isinstance(fmt, str) else None
     return TriageSuggestion(
         sponsor_name=(sponsor.strip() if isinstance(sponsor, str)
                       and sponsor.strip() else None),
         ideal_attendee_profile=(ideal.strip() if isinstance(ideal, str)
                                 and ideal.strip() else None),
+        event_format=fmt,
         hard_filters=_str_list(parsed.get("hard_filters")),
         anti_fit_examples=_str_list(parsed.get("anti_fit_examples")),
         nice_to_have_signals=_str_list(parsed.get("nice_to_have_signals")),
