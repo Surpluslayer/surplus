@@ -137,6 +137,77 @@ def test_fetch_partiful_url_uses_validated_host():
     assert client.last_url == "https://partiful.com/e/xyz"
 
 
+def _page_with_nextdata(blob: dict, extras: str = "") -> str:
+    """Render a Partiful-shaped page : OG tags for name/desc + a Next.js
+    __NEXT_DATA__ blob carrying the date + venue (no JSON-LD Event)."""
+    return f"""<html><head>
+<meta property="og:title" content="Partiful Event" />
+<meta property="og:description" content="A description." />
+{extras}
+<script id="__NEXT_DATA__" type="application/json">{json.dumps(blob)}</script>
+</head></html>"""
+
+
+def test_parse_partiful_nextdata_date_and_location():
+    """Partiful keeps the date + venue in __NEXT_DATA__, not JSON-LD/OG.
+    We should still surface starts_at + location."""
+    html = _page_with_nextdata({
+        "props": {"pageProps": {"event": {
+            "title": "Infra Engineers Mixer",
+            "startDate": "2026-06-06T18:00:00-07:00",
+            "location": {"name": "Stripe HQ",
+                         "address": "510 Townsend St, San Francisco"},
+        }}},
+    })
+    ev = parse_luma_html(html, source_url="https://partiful.com/e/abc")
+    assert ev.name == "Partiful Event"  # from OG
+    assert ev.starts_at == "2026-06-06T18:00:00-07:00"
+    assert "Stripe HQ" in (ev.location or "")
+    assert "Townsend" in (ev.location or "")
+
+
+def test_parse_partiful_nextdata_epoch_millis_date():
+    """startDate can be epoch millis; coerce to an ISO date the frontend
+    can slice to YYYY-MM-DD."""
+    html = _page_with_nextdata({
+        "props": {"pageProps": {"event": {
+            "startsAt": 1780765200000,  # 2026-06-06T17:00:00Z
+            "venue": "Online",
+        }}},
+    })
+    ev = parse_luma_html(html)
+    assert (ev.starts_at or "").startswith("2026-06-06")
+    assert ev.location == "Online"
+
+
+def test_parse_nextdata_rejects_enum_location():
+    """A bare uppercase enum under a location key isn't a venue."""
+    html = _page_with_nextdata({
+        "props": {"pageProps": {"event": {"location": "PUBLIC"}}},
+    })
+    ev = parse_luma_html(html)
+    assert ev.location is None
+
+
+def test_jsonld_date_location_win_over_nextdata():
+    """When JSON-LD already has the date/venue, __NEXT_DATA__ must not
+    clobber it (fill-empty-only)."""
+    html = (
+        _page_with_jsonld({
+            "@type": "Event", "name": "JSONLD wins",
+            "description": "d", "startDate": "2030-01-01T00:00:00Z",
+            "location": {"@type": "Place", "name": "Real Venue"},
+        })
+        + '<script id="__NEXT_DATA__" type="application/json">'
+        + json.dumps({"event": {"startDate": "1999-12-31",
+                                 "location": "Wrong Venue"}})
+        + "</script>"
+    )
+    ev = parse_luma_html(html)
+    assert ev.starts_at == "2030-01-01T00:00:00Z"
+    assert ev.location == "Real Venue"
+
+
 def test_parse_handles_jsonld_graph_envelope():
     """JSON-LD often wraps multiple nodes in @graph; we should still find Event."""
     html = _page_with_jsonld({

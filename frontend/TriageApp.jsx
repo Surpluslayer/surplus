@@ -403,6 +403,8 @@ function ConfigStep({ user: _user, eventId, setEventId, onNext }) {
         eventName: ev.name || p.eventName,
         headcount: ev.capacity != null ? Number(ev.capacity) : p.headcount,
         city: (ev.location && String(ev.location).trim()) || p.city,
+        // ev.starts_at is ISO-8601; slice gives the YYYY-MM-DD the date input wants.
+        eventDate: ev.starts_at ? String(ev.starts_at).slice(0, 10) : p.eventDate,
       }));
       setLumaEnrich((prev) => ({
         ...prev,
