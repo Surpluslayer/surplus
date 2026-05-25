@@ -783,6 +783,20 @@ export function ReviewStep({ eventId }) {
   const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState(null);
+  // Event capacity (headcount) : caps how many we auto-accept so we only
+  // take the top-N best-fit recommended applicants.
+  const [capacity, setCapacity] = useState(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkMsg, setBulkMsg] = useState(null);
+
+  useEffect(() => {
+    if (!eventId) return;
+    let alive = true;
+    api.getEvent(eventId)
+      .then((ev) => { if (alive) setCapacity(ev?.capacity != null ? Number(ev.capacity) : null); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [eventId]);
 
   // Poll continuously while there are unscored applicants so the table
   // fills in live. Stop once everyone's scored.
@@ -836,6 +850,40 @@ export function ReviewStep({ eventId }) {
 
   const selected = applicants.find((a) => a.id === selectedId) || null;
 
+  // System-recommended "accept"s, best fit first. If the event has a
+  // capacity, only the top-N fit into the room, so that's the slice we
+  // auto-accept.
+  const recommendedAccepts = useMemo(() => (
+    applicants
+      .filter((a) => a.evaluation?.recommendation === "accept")
+      .sort((x, y) => (y.evaluation?.fit_score ?? 0) - (x.evaluation?.fit_score ?? 0))
+  ), [applicants]);
+  const capped = capacity != null && capacity > 0;
+  const acceptTarget = capped ? recommendedAccepts.slice(0, capacity) : recommendedAccepts;
+  // Skip anyone already accepted so re-clicks are no-ops.
+  const toAccept = acceptTarget.filter((a) => a.decision?.human_decision !== "accept");
+
+  const autoAcceptRecommended = async () => {
+    if (bulkBusy || toAccept.length === 0) return;
+    setBulkBusy(true);
+    setBulkMsg(null);
+    try {
+      const updated = await Promise.all(
+        toAccept.map((a) => api.setTriageDecision(eventId, a.id, {
+          decision: "accept",
+          notes: a.decision?.reviewer_notes || "",
+        })),
+      );
+      const byId = new Map(updated.map((u) => [u.id, u]));
+      setApplicants((prev) => prev.map((a) => byId.get(a.id) || a));
+      setBulkMsg(`Accepted ${updated.length} applicant${updated.length === 1 ? "" : "s"}.`);
+    } catch (e) {
+      setBulkMsg(e.message || "Bulk accept failed.");
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   return (
     <div className="triage-review">
       <header className="stage-head triage-head-row">
@@ -850,18 +898,39 @@ export function ReviewStep({ eventId }) {
             )}
           </p>
         </div>
-        {eventId && applicants.length > 0 && (
-          <a
-            className="triage-cta-secondary"
-            href={api.triageExportUrl(eventId)}
-            target="_blank"
-            rel="noopener noreferrer"
-            download
-          >
-            <FileText size={14} /> Export CSV
-          </a>
-        )}
+        <div className="triage-head-actions">
+          {recommendedAccepts.length > 0 && (
+            <button
+              type="button"
+              className="triage-cta-primary"
+              disabled={bulkBusy || toAccept.length === 0}
+              onClick={autoAcceptRecommended}
+              title={capped && recommendedAccepts.length > capacity
+                ? `${recommendedAccepts.length} recommended · capped to top ${capacity} (event capacity)`
+                : undefined}
+            >
+              {bulkBusy
+                ? <><Loader2 className="spin" size={14} /> Accepting…</>
+                : <><Check size={14} /> Accept top {acceptTarget.length} recommended
+                    {capped && recommendedAccepts.length > capacity ? ` (capacity ${capacity})` : ""}</>}
+            </button>
+          )}
+          {eventId && applicants.length > 0 && (
+            <a
+              className="triage-cta-secondary"
+              href={api.triageExportUrl(eventId)}
+              target="_blank"
+              rel="noopener noreferrer"
+              download
+            >
+              <FileText size={14} /> Export CSV
+            </a>
+          )}
+        </div>
       </header>
+      {bulkMsg && (
+        <p className="triage-bulk-msg">{bulkMsg}</p>
+      )}
 
       <div className="triage-filterbar">
         <div className="triage-filter-pills">
@@ -1177,6 +1246,16 @@ export const TRIAGE_CSS = `
   box-sizing:border-box;
 }
 .triage-cta-secondary:hover { background:var(--acc-soft); }
+.triage-head-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.triage-cta-primary {
+  display:inline-flex; align-items:center; gap:6px; padding:9px 14px;
+  border-radius:var(--r-el); border:1px solid var(--acc); background:var(--acc);
+  color:#fff; font-family:inherit; font-size:12.5px; font-weight:600;
+  cursor:pointer; transition:all 0.15s; white-space:nowrap; box-sizing:border-box;
+}
+.triage-cta-primary:hover:not(:disabled) { background:var(--acc-deep); }
+.triage-cta-primary:disabled { opacity:0.5; cursor:not-allowed; }
+.triage-bulk-msg { font-size:12px; color:var(--ink-dim); margin:8px 0 0; }
 
 .triage-error {
   display:flex; align-items:center; gap:7px; padding:10px 13px;
