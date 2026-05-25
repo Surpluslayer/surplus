@@ -334,6 +334,37 @@ async def _fetch_unipile_profile(account_id: str, dsn: str, api_key: str) -> dic
         return {}
 
 
+async def _delete_unipile_account(
+    account_id: str, dsn: str, api_key: str
+) -> bool:
+    """Remove an orphan Unipile account that the dedup logic detected was
+    a duplicate. Called after we've migrated our User row to the new
+    account_id, so this account is no longer needed.
+
+    Best-effort : a failure here just leaves the orphan in Unipile's
+    dashboard (manual cleanup) but doesn't break sign-in. Logs loudly
+    so we can spot patterns if the delete API breaks.
+    """
+    if not account_id or not dsn or not api_key:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.delete(
+                f"{dsn}/api/v1/accounts/{account_id}",
+                headers={"X-API-KEY": api_key, "Accept": "application/json"},
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [auth.dedup.delete] account={account_id} "
+              f"transport_error={type(exc).__name__}: {exc}")
+        return False
+    if r.status_code >= 400:
+        print(f"  [auth.dedup.delete] account={account_id} "
+              f"HTTP {r.status_code} body={r.text[:160]}")
+        return False
+    print(f"  [auth.dedup.delete] account={account_id} deleted from Unipile")
+    return True
+
+
 def _extract_profile_fields(account_data: dict) -> dict:
     """Pluck the fields we want out of Unipile's account payload, tolerating
     a few different shapes the API uses across providers/versions."""
@@ -482,6 +513,7 @@ async def linkedin_callback(
         fields = _extract_profile_fields(profile)
         user = db.query(User).filter(User.unipile_account_id == acct).first()
         now = _utcnow()
+        orphan_unipile_account_id: Optional[str] = None  # set when dedup fires
         if user is None:
             # Dedup before insert : if the operator's site-data was cleared
             # (or they signed up via triage / email-only first), the new
@@ -504,6 +536,12 @@ async def linkedin_callback(
                 if user is not None:
                     print(f"  [auth.dedup] claimed existing user.id={user.id} "
                           f"via {key} : new unipile_account_id={acct}")
+                    # Capture the old Unipile account_id so we can delete
+                    # the orphan from Unipile *after* commit. Skip if it
+                    # equals the new acct (no actual swap happening) or is
+                    # already null (triage-signup path : no LinkedIn yet).
+                    if user.unipile_account_id and user.unipile_account_id != acct:
+                        orphan_unipile_account_id = user.unipile_account_id
                     user.unipile_account_id = acct
                     break
         if user:
@@ -529,6 +567,13 @@ async def linkedin_callback(
         auth_state.user_id = user.id
         auth_state.status = "callback_upserted"
         db.commit()
+
+        # Fire-and-forget : delete the orphan Unipile account that the
+        # dedup migrated AWAY from. Done after commit so a Unipile delete
+        # failure can't rollback the user-attachment. Best-effort.
+        if orphan_unipile_account_id and dsn and api_key:
+            await _delete_unipile_account(orphan_unipile_account_id,
+                                          dsn, api_key)
 
     user = db.query(User).filter(User.id == auth_state.user_id).first()
     if not user:
