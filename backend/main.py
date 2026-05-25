@@ -27,6 +27,14 @@ from .routes import admin, auth, billing, curation, demo, events, pipeline, matc
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # One-shot backfill for User rows created before the
+    # _extract_profile_fields camelCase fix. Idempotent — re-runs are no-ops.
+    try:
+        from .routes.auth import backfill_user_dedup_keys
+        await backfill_user_dedup_keys()
+    except Exception as exc:  # noqa: BLE001
+        # Don't let a backfill hiccup block startup; log and continue.
+        print(f"  [startup] backfill_user_dedup_keys failed: {exc}")
     yield
 
 

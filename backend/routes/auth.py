@@ -367,19 +367,28 @@ async def _delete_unipile_account(
 
 def _extract_profile_fields(account_data: dict) -> dict:
     """Pluck the fields we want out of Unipile's account payload, tolerating
-    a few different shapes the API uses across providers/versions."""
-    # Unipile typically nests LinkedIn-specific fields under params/connection_params
-    # for LINKEDIN, but the top-level often has name/email/picture too.
+    the camelCase keys Unipile actually returns plus snake_case variants
+    seen in older docs / other providers.
+
+    The dedup loop in linkedin_callback / linkedin_webhook depends on
+    linkedin_public_id + linkedin_provider_id being populated. Before this
+    fix the extractor looked at `public_identifier` / `entity_urn` while
+    Unipile actually returns `publicIdentifier` / `id` under `connection_params.im`,
+    so every existing User row had NULL dedup keys and a fresh sign-in
+    couldn't match itself to the existing row. That's the source of the
+    duplicate-Unipile-accounts-per-person issue in the dashboard.
+    """
     params = account_data.get("connection_params") or account_data.get("params") or {}
     li = params.get("im") or params.get("linkedin") or params  # forgive variations
 
     name = (
         account_data.get("name")
         or li.get("name")
+        or li.get("username")
         or " ".join(filter(None, [li.get("first_name"), li.get("last_name")]))
         or ""
     ).strip()
-    return {
+    out = {
         "name": name,
         "email": account_data.get("email") or li.get("email"),
         "headline": li.get("headline") or li.get("occupation"),
@@ -388,10 +397,34 @@ def _extract_profile_fields(account_data: dict) -> dict:
             or li.get("picture_url")
             or li.get("picture")
             or li.get("profile_picture_url")
+            or li.get("pictureUrl")
         ),
-        "linkedin_public_id": li.get("public_identifier") or li.get("vanityName"),
-        "linkedin_provider_id": li.get("entity_urn") or li.get("provider_id") or li.get("member_urn"),
+        # Unipile returns camelCase: `publicIdentifier`. Older docs / other
+        # providers use `public_identifier` / `vanityName`.
+        "linkedin_public_id": (
+            li.get("publicIdentifier")
+            or li.get("public_identifier")
+            or li.get("vanityName")
+        ),
+        # Unipile returns the LinkedIn URN directly as `id` (e.g. ACoAA...).
+        # Older shapes used `entity_urn` / `provider_id` / `member_urn`.
+        "linkedin_provider_id": (
+            li.get("id")
+            or li.get("entity_urn")
+            or li.get("provider_id")
+            or li.get("member_urn")
+        ),
     }
+    # Loud, observable warning if Unipile's shape drifts again. Without this
+    # the dedup keys silently went NULL for every user.
+    if account_data and not (out["linkedin_provider_id"] or out["linkedin_public_id"]):
+        print(
+            "  [auth.extract] WARNING : no linkedin_provider_id or "
+            "linkedin_public_id extracted. Unipile payload shape may have "
+            f"changed. account_data keys={list(account_data.keys())} "
+            f"im keys={list(li.keys()) if isinstance(li, dict) else 'n/a'}"
+        )
+    return out
 
 
 @router.post("/linkedin/webhook")
@@ -701,6 +734,73 @@ def me(user: User = Depends(current_user)) -> JSONResponse:
         "paid_at": user.paid_at.isoformat() if user.paid_at else None,
         "stripe_customer_id": user.stripe_customer_id,
     })
+
+
+# ─── Startup backfill : repopulate dedup keys on existing User rows ──
+#
+# Before the _extract_profile_fields camelCase fix, every existing User row
+# had NULL linkedin_provider_id / linkedin_public_id, so the dedup loop in
+# linkedin_callback / linkedin_webhook could never match an incoming sign-in
+# to an existing user. That cascade produced duplicate Unipile accounts in
+# the dashboard AND, worse, fresh User rows with paid_at=NULL — meaning a
+# previously-paid user would be forced through Stripe Checkout again the
+# moment they cleared cookies. Critical for prod billing.
+#
+# This runs once at startup. For each User row missing dedup keys, we hit
+# the Unipile /accounts/<id> endpoint, re-run _extract_profile_fields with
+# the now-correct keys, and write whatever we get back. Best-effort : a
+# Unipile 404 just leaves the row alone (the user will heal on their
+# next real sign-in).
+
+async def backfill_user_dedup_keys() -> None:
+    """One-shot async backfill. Idempotent and safe to run on every boot."""
+    import httpx
+    from ..db import SessionLocal
+    from ..models import User
+
+    dsn, api_key = _unipile_dsn(), _unipile_api_key()
+    if not (dsn and api_key):
+        print("  [auth.backfill] skipped : no Unipile DSN / API key")
+        return
+
+    db = SessionLocal()
+    try:
+        candidates = db.query(User).filter(
+            User.unipile_account_id.isnot(None),
+            (User.linkedin_provider_id.is_(None))
+            | (User.linkedin_public_id.is_(None)),
+        ).all()
+        if not candidates:
+            print("  [auth.backfill] no users need dedup-key backfill")
+            return
+        print(f"  [auth.backfill] backfilling dedup keys for "
+              f"{len(candidates)} user(s)")
+        async with httpx.AsyncClient(timeout=15) as client:
+            for u in candidates:
+                try:
+                    r = await client.get(
+                        f"{dsn}/api/v1/accounts/{u.unipile_account_id}",
+                        headers={"X-API-KEY": api_key, "Accept": "application/json"},
+                    )
+                    if r.status_code >= 400:
+                        print(f"  [auth.backfill] user.id={u.id} "
+                              f"unipile_account_id={u.unipile_account_id} "
+                              f"→ HTTP {r.status_code} (orphan, skipped)")
+                        continue
+                    fields = _extract_profile_fields(r.json() or {})
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  [auth.backfill] user.id={u.id} fetch error: {exc}")
+                    continue
+                wrote = []
+                for k, v in fields.items():
+                    if v and getattr(u, k, None) != v:
+                        setattr(u, k, v)
+                        wrote.append(k)
+                if wrote:
+                    print(f"  [auth.backfill] user.id={u.id} updated: {wrote}")
+        db.commit()
+    finally:
+        db.close()
 
 
 # ─── 5. Logout ────────────────────────────────────────────────────
