@@ -535,8 +535,9 @@ function prospectRowStatus(p, threshold) {
   return statusMeta(p.status);
 }
 
-// Unpaid users see only the top N prospects in full; the rest are blurred
-// behind an "Unlock" paywall that opens Stripe Checkout. Paid users see all.
+// Non-operators (no connected Unipile/LinkedIn account) see only the top N
+// prospects in full; the rest are blurred behind an "Unlock" wall. Connecting
+// LinkedIn via Unipile (the pay-then-connect flow) reveals the whole list.
 const FREE_PROSPECTS = 8;
 
 function Prospects({ profile, runResult, eventId, onError, onNext, locked = false }) {
@@ -582,8 +583,8 @@ function Prospects({ profile, runResult, eventId, onError, onNext, locked = fals
   const [selected, setSelected] = useState(sorted[0]?.id ?? null);
   const sel = PROS.find((p) => p.id === selected) || sorted[0] || null;
 
-  // Unpaid: top N shown in full, the rest blurred behind the Unlock paywall.
-  // Paid users see every row.
+  // Non-operators: top N shown in full, the rest blurred behind the Unlock
+  // wall. Operators (connected Unipile account) see every row.
   const freeRows = locked ? sorted.slice(0, FREE_PROSPECTS) : sorted;
   const lockedRows = locked ? sorted.slice(FREE_PROSPECTS) : [];
 
@@ -615,9 +616,12 @@ function Prospects({ profile, runResult, eventId, onError, onNext, locked = fals
     );
   };
 
-  // Unlock CTA routes to Stripe Checkout (same paywall the send-block uses).
+  // Unlock CTA routes to the Unipile sign-in flow : becoming an operator
+  // (a connected LinkedIn account) is what clears the blur. connectLinkedIn
+  // routes unpaid users through Stripe first, so the pay-then-connect path
+  // still works from this CTA.
   const openUnlockPaywall = () => {
-    setPaywallKind("payment");
+    setPaywallKind("linkedin");
     setPaywallOpen(true);
   };
 
@@ -2395,7 +2399,7 @@ export default function App() {
               profile={profile}
               runResult={runResult}
               eventId={eventId}
-              locked={!user.paid_at}
+              locked={!user.unipile_account_id}
               onError={(err) => setApiError(err?.message || String(err))}
               onNext={() => setStage("matching")}
             />
