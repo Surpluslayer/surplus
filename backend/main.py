@@ -107,10 +107,20 @@ app.include_router(billing.router)
 
 @app.get("/api/health", tags=["meta"])
 def health():
-    """API discovery JSON. Moved from `/` so the frontend can own `/`."""
+    """API discovery JSON. Moved from `/` so the frontend can own `/`.
+
+    git_sha is baked at image-build time (Dockerfile ARG GIT_SHA, passed via
+    `flyctl deploy --build-arg GIT_SHA=$(git rev-parse --short HEAD)`). Hit
+    this endpoint to confirm which commit is actually live vs. `main`.
+    """
+    import os
     return {
         "service": "surplus-roi-engine",
         "version": "0.1.0",
+        "git_sha": os.environ.get("GIT_SHA", "unknown"),
+        # Fly stamps this per deploy even without a build-arg, so a changed
+        # value confirms a fresh deploy landed even if GIT_SHA wasn't passed.
+        "image_ref": os.environ.get("FLY_IMAGE_REF"),
         "stages": ["01 intake", "02-03 pipeline", "04 matching", "05 roi"],
         "docs": "/docs",
     }

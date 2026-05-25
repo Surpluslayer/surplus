@@ -30,6 +30,11 @@ COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 # make sure the SQLite data dir exists + is writable
 RUN mkdir -p /app/backend/data && chmod -R 777 /app/backend/data
 
+# Git commit baked at build time so /api/health can report what's live.
+# Pass it at deploy: `flyctl deploy --build-arg GIT_SHA=$(git rev-parse --short HEAD)`.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=${GIT_SHA}
+
 # Railway injects $PORT. Default 8000 for local docker run.
 ENV PORT=8000
 EXPOSE 8000
