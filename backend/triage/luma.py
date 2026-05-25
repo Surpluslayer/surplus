@@ -173,16 +173,52 @@ def _location_str(loc) -> Optional[str]:
     return None
 
 
-# ── __NEXT_DATA__ fallback (Partiful) ──────────────────────────────────
+# ── Title cleanup ──────────────────────────────────────────────────────
+# Partiful's og:title is decorated : "RSVP to <event name> | Partiful".
+# Strip the boilerplate so the operator gets the bare event name.
+_TITLE_SUFFIX_RE = re.compile(
+    r"\s*[|·–—\-]\s*(?:Partiful|Luma|lu\.ma)\s*$",
+    re.IGNORECASE,
+)
+_TITLE_PREFIX_RE = re.compile(r"^\s*RSVP\s+to\s+", re.IGNORECASE)
+
+
+def _clean_event_title(title: Optional[str]) -> Optional[str]:
+    if not title:
+        return None
+    s = _TITLE_SUFFIX_RE.sub("", title.strip())
+    s = _TITLE_PREFIX_RE.sub("", s)
+    return s.strip() or None
+
+
+# ── __NEXT_DATA__ / App Router fallback (Partiful) ─────────────────────
 # Partiful doesn't emit a schema.org Event JSON-LD node, so the date and
-# venue don't come through JSON-LD/OG. Both fields live in the Next.js
-# __NEXT_DATA__ blob instead. The blob's exact shape isn't a stable
-# contract, so we walk it depth-first looking for plausibly-named keys
-# rather than hard-coding a path — first sane hit wins.
+# venue don't come through JSON-LD/OG. They live in Next.js page data:
+#   - Pages Router : one __NEXT_DATA__ JSON blob.
+#   - App Router   : streamed as escaped JS strings in self.__next_f.push().
+# Neither shape is a stable contract, so we search for plausibly-named
+# keys rather than hard-coding a path — first sane hit wins.
 
 _NEXTDATA_RE = re.compile(
     r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
     re.DOTALL | re.IGNORECASE,
+)
+# App Router streams RSC payload as self.__next_f.push([n, "<escaped str>"]).
+_NEXT_F_RE = re.compile(
+    r'self\.__next_f\.push\(\[\d+\s*,\s*("(?:[^"\\]|\\.)*")\s*\]\)',
+    re.DOTALL,
+)
+# Once the __next_f strings are unescaped, the event JSON appears literally;
+# scan it for the same field names we look for in the blob walk.
+_RAW_DATE_RE = re.compile(
+    r'"(?:startDate|startsAt|startAt|startDateTime|startTime|startTimestamp|start)"'
+    r'\s*:\s*(?:"([^"]+)"|(\d{10,13}))',
+    re.IGNORECASE,
+)
+_RAW_LOC_RE = re.compile(
+    r'"(?:locationName|venueName|venue|formattedAddress|geoAddress|placeName|address)"'
+    r'\s*:\s*"([^"]+)"',
+    re.IGNORECASE,
 )
 # Exact (lowercased) key names, not substrings : substring matching on
 # "start"/"location" pulls in unrelated fields (subscription starts,
@@ -258,8 +294,37 @@ def _scan_nextdata(node, state: dict) -> None:
                     return
 
 
+def _decode_next_f(html: str) -> str:
+    """Concatenate the unescaped self.__next_f.push() payload chunks (App
+    Router). Each chunk is a JSON string literal, so json.loads unescapes
+    it; joining yields the RSC stream with event JSON inline."""
+    chunks: list[str] = []
+    for m in _NEXT_F_RE.finditer(html):
+        try:
+            chunks.append(json.loads(m.group(1)))
+        except json.JSONDecodeError:
+            continue
+    return "".join(chunks)
+
+
+def _scan_text_for_event(text: str) -> tuple[Optional[str], Optional[str]]:
+    """Regex-scan a flat text payload (decoded __next_f) for a start date
+    and location. Used when there's no clean JSON object to walk."""
+    date = None
+    m = _RAW_DATE_RE.search(text)
+    if m:
+        raw = m.group(1) if m.group(1) is not None else m.group(2)
+        date = _coerce_iso_date(int(raw) if (raw and raw.isdigit()) else raw)
+    loc = None
+    m = _RAW_LOC_RE.search(text)
+    if m:
+        loc = _clean_location_value(m.group(1))
+    return date, loc
+
+
 def _parse_nextdata(html: str) -> tuple[Optional[str], Optional[str]]:
-    """Pull (starts_at, location) out of the __NEXT_DATA__ blob if present."""
+    """Pull (starts_at, location) out of Next.js page data — the Pages
+    Router __NEXT_DATA__ blob if present, else the App Router stream."""
     for m in _NEXTDATA_RE.finditer(html):
         try:
             data = json.loads(m.group(1).strip())
@@ -267,7 +332,11 @@ def _parse_nextdata(html: str) -> tuple[Optional[str], Optional[str]]:
             continue
         state = {"date": None, "loc": None}
         _scan_nextdata(data, state)
-        return state["date"], state["loc"]
+        if state["date"] or state["loc"]:
+            return state["date"], state["loc"]
+    payload = _decode_next_f(html)
+    if payload:
+        return _scan_text_for_event(payload)
     return None, None
 
 
@@ -324,7 +393,7 @@ def parse_luma_html(html: str, *, source_url: str = "") -> LumaEvent:
     og = {m.group(1).lower(): m.group(2) for m in _OG_RE.finditer(html)}
     meta = {m.group(1).lower(): m.group(2) for m in _NAME_OG_RE.finditer(html)}
     if not name:
-        name = (og.get("title") or meta.get("twitter:title") or "").strip() or None
+        name = _clean_event_title(og.get("title") or meta.get("twitter:title"))
     if not description:
         description = (
             og.get("description") or meta.get("description")
@@ -333,8 +402,8 @@ def parse_luma_html(html: str, *, source_url: str = "") -> LumaEvent:
     if not cover_image_url:
         cover_image_url = og.get("image") or meta.get("twitter:image") or None
 
-    # __NEXT_DATA__ fallback : Partiful carries date + venue here rather
-    # than in JSON-LD/OG. Only fills fields JSON-LD didn't already provide.
+    # Next.js page-data fallback : Partiful carries date + venue here
+    # rather than in JSON-LD/OG. Only fills fields JSON-LD didn't provide.
     if not (starts_at and location):
         nd_date, nd_loc = _parse_nextdata(html)
         starts_at = starts_at or nd_date

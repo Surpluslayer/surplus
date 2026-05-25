@@ -208,6 +208,63 @@ def test_jsonld_date_location_win_over_nextdata():
     assert ev.location == "Real Venue"
 
 
+def test_parse_partiful_strips_rsvp_and_suffix_from_title():
+    """Partiful's og:title is 'RSVP to <name> | Partiful' : we want the
+    bare event name."""
+    html = """<html><head>
+<meta property="og:title" content="RSVP to Physical AI Up Close with Pickle Robot #BOSTechWeek | Partiful" />
+<meta property="og:description" content="A robotics meetup." />
+</head></html>"""
+    ev = parse_luma_html(html, source_url="https://partiful.com/e/abc")
+    assert ev.name == "Physical AI Up Close with Pickle Robot #BOSTechWeek"
+
+
+def test_clean_title_leaves_plain_name_untouched():
+    html = """<html><head>
+<meta property="og:title" content="Founders Dinner" />
+<meta property="og:description" content="d" />
+</head></html>"""
+    ev = parse_luma_html(html)
+    assert ev.name == "Founders Dinner"
+
+
+def _page_with_next_f(*json_fragments: str, extras: str = "") -> str:
+    """Render an App Router page : OG tags + self.__next_f.push() chunks
+    whose concatenated, unescaped payload contains the event JSON."""
+    pushes = "\n".join(
+        f"<script>self.__next_f.push([1,{json.dumps(frag)}])</script>"
+        for frag in json_fragments
+    )
+    return f"""<html><head>
+<meta property="og:title" content="RSVP to App Router Event | Partiful" />
+<meta property="og:description" content="desc" />
+{extras}
+</head><body>{pushes}</body></html>"""
+
+
+def test_parse_partiful_app_router_date_and_location():
+    """Modern Partiful uses the App Router : event data is streamed in
+    escaped __next_f strings, not a __NEXT_DATA__ blob."""
+    fragment = (
+        'some preamble {"event":{"title":"x",'
+        '"startDate":"2026-09-12T17:00:00-04:00",'
+        '"locationName":"MIT Media Lab, Cambridge MA"}} trailing'
+    )
+    html = _page_with_next_f(fragment)
+    ev = parse_luma_html(html, source_url="https://partiful.com/e/xyz")
+    assert ev.name == "App Router Event"
+    assert ev.starts_at == "2026-09-12T17:00:00-04:00"
+    assert "MIT Media Lab" in (ev.location or "")
+
+
+def test_parse_app_router_epoch_date():
+    fragment = '{"startsAt":1789311600000,"venue":"Boston, MA"}'
+    html = _page_with_next_f(fragment)
+    ev = parse_luma_html(html)
+    assert (ev.starts_at or "").startswith("2026-")
+    assert ev.location == "Boston, MA"
+
+
 def test_parse_handles_jsonld_graph_envelope():
     """JSON-LD often wraps multiple nodes in @graph; we should still find Event."""
     html = _page_with_jsonld({
