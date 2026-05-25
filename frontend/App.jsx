@@ -2726,10 +2726,11 @@ function Stage02({
     }
   };
 
-  // Paths are switchable : committing to one no longer locks out the other,
-  // so the operator can alternate between outbound and inbound on the same
-  // event. The committed path's card renders its content below; the other
-  // card offers a "Switch to …" action.
+  // Paths are switchable for every signed-in user (operator, demo, or
+  // triage-only : Stage02 is reached regardless of mode/connection).
+  // Committing to one no longer locks out the other, so anyone can alternate
+  // between outbound and inbound on the same event. The committed path's card
+  // renders its content below; the other card offers a "Switch to …" action.
   const displaySelection = committedPath || selected;
 
   return (
