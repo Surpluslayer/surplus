@@ -2708,13 +2708,13 @@ function Stage02({
   const [working, setWorking] = useState(false);
 
   const startOutbound = () => {
-    if (committedPath) return;
+    if (committedPath === "outbound") return;
     // No API call here : Pipeline's mount-effect fires /prospect.
     onCommit("outbound");
   };
 
   const startInbound = async () => {
-    if (committedPath || working) return;
+    if (committedPath === "inbound" || working) return;
     setWorking(true);
     try {
       await api.setTriageConfig(eventId, deriveTriageConfig(profile || {}));
@@ -2726,7 +2726,10 @@ function Stage02({
     }
   };
 
-  const isLocked = committedPath !== null;
+  // Paths are switchable : committing to one no longer locks out the other,
+  // so the operator can alternate between outbound and inbound on the same
+  // event. The committed path's card renders its content below; the other
+  // card offers a "Switch to …" action.
   const displaySelection = committedPath || selected;
 
   return (
@@ -2739,47 +2742,47 @@ function Stage02({
 
       <div className="path-picker">
         <div
-          className={`path-card ${displaySelection === "outbound" ? "sel" : ""} ${isLocked && committedPath !== "outbound" ? "off" : ""}`}
+          className={`path-card ${displaySelection === "outbound" ? "sel" : ""}`}
           role="button"
-          tabIndex={isLocked ? -1 : 0}
-          onClick={() => !isLocked && setSelected("outbound")}
+          tabIndex={0}
+          onClick={() => setSelected("outbound")}
         >
           <h3>Outbound · prospect new candidates</h3>
           <p>We search GitHub, LinkedIn, X, Scholar for people matching your ICP.</p>
-          {!isLocked && (
+          {committedPath !== "outbound" && (
             <button
               className="btn-primary"
               onClick={(e) => { e.stopPropagation(); startOutbound(); }}
               disabled={working}
             >
-              Run prospecting <ArrowRight size={16} />
+              {committedPath === "inbound" ? "Switch to outbound" : "Run prospecting"} <ArrowRight size={16} />
             </button>
           )}
         </div>
 
         <div
-          className={`path-card ${displaySelection === "inbound" ? "sel" : ""} ${isLocked && committedPath !== "inbound" ? "off" : ""}`}
+          className={`path-card ${displaySelection === "inbound" ? "sel" : ""}`}
           role="button"
-          tabIndex={isLocked ? -1 : 0}
-          onClick={() => !isLocked && setSelected("inbound")}
+          tabIndex={0}
+          onClick={() => setSelected("inbound")}
         >
           <h3>Inbound · score existing applicants</h3>
           <p>Upload a Luma CSV. We score each applicant against your ICP.</p>
-          {!isLocked && (
+          {committedPath !== "inbound" && (
             <button
               className="btn-primary"
               onClick={(e) => { e.stopPropagation(); startInbound(); }}
               disabled={working}
             >
-              {working ? "Setting up…" : "Upload CSV"} <ArrowRight size={16} />
+              {working ? "Setting up…" : (committedPath === "outbound" ? "Switch to inbound" : "Upload CSV")} <ArrowRight size={16} />
             </button>
           )}
         </div>
       </div>
 
-      {isLocked && (
+      {committedPath && (
         <p className="path-lock-note">
-          Start a new event to switch paths.
+          You're on the <strong>{committedPath}</strong> path · switch anytime with the other card.
         </p>
       )}
 
