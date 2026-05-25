@@ -900,17 +900,11 @@ function Prospects({ profile, runResult, eventId, onError, onNext, locked = fals
         <span className="agent-stat"><strong>{rsvpN}</strong> RSVP'd</span>
         <span className="agent-stat"><strong>0</strong> manual touches</span>
         {useReal && eventId && (
-          <>
-            <a className="btn-reset" style={{marginLeft: "auto"}}
-               href={`/events/${eventId}/prospects/export.csv?t=${Date.now()}`}
-               target="_blank" rel="noopener noreferrer">
-              Export CSV
-            </a>
-            <button className="btn-reset"
-                    disabled={rsvpBulkBusy} onClick={markRsvpAll}>
-              {rsvpBulkBusy ? "Marking…" : "Mark all as RSVP'd"}
-            </button>
-          </>
+          <a className="btn-reset" style={{marginLeft: "auto"}}
+             href={`/events/${eventId}/prospects/export.csv?t=${Date.now()}`}
+             target="_blank" rel="noopener noreferrer">
+            Export CSV
+          </a>
         )}
       </div>
 
@@ -1064,16 +1058,24 @@ function Prospects({ profile, runResult, eventId, onError, onNext, locked = fals
         </p>
         {/* Smoke #3: don't let the operator advance to Matching with zero RSVPs.
             Matching would 409 immediately and leave them stuck on the error
-            banner. The bulk "Mark all as RSVP'd" CTA in the agent-bar above
-            is the explicit path forward. */}
-        <button
-          className="btn-primary"
-          onClick={onNext}
-          disabled={rsvpN === 0}
-          title={rsvpN === 0 ? "Mark at least one prospect RSVP'd first" : undefined}
-        >
-          Build guest list <ArrowRight size={16} />
-        </button>
+            banner. The bulk "Mark all as RSVP'd" CTA sits right beside the
+            advance button so the path forward is obvious. */}
+        <div className="foot-actions">
+          {useReal && eventId && (
+            <button className="btn-reset"
+                    disabled={rsvpBulkBusy} onClick={markRsvpAll}>
+              {rsvpBulkBusy ? "Marking…" : "Mark all as RSVP'd"}
+            </button>
+          )}
+          <button
+            className="btn-primary"
+            onClick={onNext}
+            disabled={rsvpN === 0}
+            title={rsvpN === 0 ? "Mark at least one prospect RSVP'd first" : undefined}
+          >
+            Build guest list <ArrowRight size={16} />
+          </button>
+        </div>
       </div>
     </div>
   );

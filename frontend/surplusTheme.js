@@ -162,6 +162,8 @@ export const SURPLUS_APP_CSS = `
 .stage-foot { display:flex; align-items:center; justify-content:space-between;
   border-top:1px solid var(--line); padding-top:20px; gap:16px; }
 .foot-note { font-size:11.5px; color:var(--ink-faint); }
+.foot-actions { display:flex; align-items:center; gap:16px; }
+.foot-actions .btn-reset { margin-left:0; }
 .btn-primary { background:var(--acc); color:#fff; border:none; font-family:inherit;
   font-size:12.5px; font-weight:700; padding:12px 20px; cursor:pointer; display:flex;
   align-items:center; gap:8px; letter-spacing:-0.01em; border-radius:var(--r-el);
