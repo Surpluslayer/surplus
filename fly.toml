@@ -15,9 +15,10 @@ primary_region = "sjc"
   # The Dockerfile defaults PORT to 8000 and uvicorn binds it. Setting it
   # here too makes the [http_service] internal_port self-documenting.
   PORT = "8000"
-  # Cost ceiling : keep discovery cheap by default. Override per-deploy
-  # via `flyctl secrets set` if you want bigger pools.
-  PROSPECTING_MAX_PER_SOURCE = "5"
+  # Pool size : ~3×this post-merge. Kept above the SPA's free-preview quota
+  # (FREE_PROSPECTS=8) so unpaid users always see a long blurred tail behind
+  # the paywall. Discovery stays cheap (~$0.02/run even at the code's 50 cap).
+  PROSPECTING_MAX_PER_SOURCE = "25"
 
 [http_service]
   internal_port = 8000
