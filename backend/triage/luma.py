@@ -247,6 +247,22 @@ _LOC_KEY_TIERS = (
 # Substrings that mean a "location"-ish value isn't a real place.
 _LOC_VALUE_DENY = ("http", "://", "{", "}", "null", "undefined")
 
+# Last-resort location heuristic : Partiful renders the public location as
+# "City, ST" (e.g. "Boston, MA") even when the full address is gated. App
+# Router server-renders that text into the payload, so we can pull it out
+# by shape regardless of which field holds it. Gated on real US state codes
+# to avoid matching prose like "good, OK".
+_US_STATES = {
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID",
+    "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS",
+    "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK",
+    "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV",
+    "WI", "WY", "DC",
+}
+_CITY_STATE_RE = re.compile(
+    r"\b([A-Z][A-Za-z.'\-]+(?:[ ][A-Z][A-Za-z.'\-]+){0,3}),[ ]([A-Z]{2})\b"
+)
+
 # Exact (lowercased) key names for the JSON-blob walk (Pages Router).
 _DATE_KEYS = {"startdate", "startsat", "starttime", "startdatetime",
               "start", "startts", "starttimestamp", "eventdate", "when"}
@@ -366,8 +382,18 @@ def _pick_date_from_text(text: str) -> Optional[str]:
     return candidates[0][1]
 
 
+def _find_city_state(text: str) -> Optional[str]:
+    """Pull the first "City, ST" (valid US state) out of a text blob —
+    matches Partiful's rendered public location like "Boston, MA"."""
+    for m in _CITY_STATE_RE.finditer(text):
+        if m.group(2) in _US_STATES:
+            return f"{m.group(1)}, {m.group(2)}"
+    return None
+
+
 def _pick_location_from_text(text: str) -> Optional[str]:
-    """Find a place string, preferring city > venue > address by key."""
+    """Find a place string, preferring city > venue > address by key, then
+    falling back to a rendered "City, ST" match."""
     by_key: dict[str, str] = {}
     for key, val in _KV_STR_RE.findall(text):
         kl = key.lower()
@@ -383,7 +409,7 @@ def _pick_location_from_text(text: str) -> Optional[str]:
                 cleaned = _clean_location_value(by_key[key])
                 if cleaned:
                     return cleaned
-    return None
+    return _find_city_state(text)
 
 
 def _scan_text_for_event(text: str) -> tuple[Optional[str], Optional[str]]:
@@ -486,6 +512,10 @@ def parse_luma_html(html: str, *, source_url: str = "") -> LumaEvent:
         nd_date, nd_loc = _parse_nextdata(html)
         starts_at = starts_at or nd_date
         location = location or nd_loc
+    # Final net for the public location : scan the raw HTML for "City, ST"
+    # (the form Partiful renders before RSVP, e.g. "Boston, MA").
+    if not location:
+        location = _find_city_state(html)
 
     return LumaEvent(
         url=source_url,
