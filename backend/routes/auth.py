@@ -805,6 +805,10 @@ async def backfill_user_dedup_keys() -> None:
             return
         print(f"  [auth.backfill] backfilling dedup keys for "
               f"{len(candidates)} user(s)")
+        # Throttle to ~5 req/s so a fresh deploy can't burn the workspace's
+        # Unipile quota in a tight loop. On HTTP 429 we back off and bail
+        # out of the rest of the batch — they'll get picked up on the next
+        # boot. Sequential (not asyncio.gather) for the same reason.
         async with httpx.AsyncClient(timeout=15) as client:
             for u in candidates:
                 try:
@@ -812,6 +816,11 @@ async def backfill_user_dedup_keys() -> None:
                         f"{dsn}/api/v1/accounts/{u.unipile_account_id}",
                         headers={"X-API-KEY": api_key, "Accept": "application/json"},
                     )
+                    if r.status_code == 429:
+                        print(f"  [auth.backfill] HIT Unipile 429 at "
+                              f"user.id={u.id} — bailing out; remaining "
+                              f"users will be tried on next boot")
+                        break
                     if r.status_code >= 400:
                         print(f"  [auth.backfill] user.id={u.id} "
                               f"unipile_account_id={u.unipile_account_id} "
@@ -828,6 +837,7 @@ async def backfill_user_dedup_keys() -> None:
                         wrote.append(k)
                 if wrote:
                     print(f"  [auth.backfill] user.id={u.id} updated: {wrote}")
+                await asyncio.sleep(0.2)  # ~5 req/s ceiling
         db.commit()
     finally:
         db.close()
