@@ -746,10 +746,6 @@ export function UploadStep({ eventId, onNext }) {
                   : "5%",
               }} />
             </div>
-            <p className="triage-progress-hint">
-              Sonnet is generating a per-event rubric, then Haiku scores each applicant in parallel.
-              First scores appear in ~5 seconds. You can move to Review now if you want to watch them stream in.
-            </p>
           </div>
 
           <div className="stage-foot" style={{ justifyContent: "flex-end" }}>
