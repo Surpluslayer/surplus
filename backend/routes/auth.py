@@ -462,6 +462,28 @@ async def linkedin_webhook(payload: dict, db: DbSession = Depends(get_db)) -> JS
 
     user = db.query(User).filter(User.unipile_account_id == account_id).first()
     now = _utcnow()
+    orphan_unipile_account_id: Optional[str] = None  # captured for post-commit delete
+    if user is None:
+        # Same dedup as the URL-callback path : if this account_id is new
+        # but the LinkedIn person isn't, claim the existing User row and
+        # capture the old account_id so we can delete the orphan from
+        # Unipile after commit. Without this, Unipile-webhook-first flows
+        # (the common case) bypass dedup entirely and leak duplicates.
+        for key, val in (
+            ("linkedin_provider_id", fields.get("linkedin_provider_id")),
+            ("linkedin_public_id", fields.get("linkedin_public_id")),
+            ("email", fields.get("email")),
+        ):
+            if not val:
+                continue
+            user = db.query(User).filter(getattr(User, key) == val).first()
+            if user is not None:
+                print(f"  [auth.dedup] (webhook) claimed existing user.id={user.id} "
+                      f"via {key} : new unipile_account_id={account_id}")
+                if user.unipile_account_id and user.unipile_account_id != account_id:
+                    orphan_unipile_account_id = user.unipile_account_id
+                user.unipile_account_id = account_id
+                break
     if user:
         # Existing user re-connecting : refresh profile fields, mark active
         for k, v in fields.items():
@@ -488,6 +510,14 @@ async def linkedin_webhook(payload: dict, db: DbSession = Depends(get_db)) -> JS
     auth_state.status = "webhook_done"
     auth_state.completed_at = now
     db.commit()
+
+    # Same orphan-delete as the URL-callback path : after commit, drop the
+    # old Unipile account from Unipile's dashboard so they don't bill us
+    # for duplicate seats. Best-effort.
+    if orphan_unipile_account_id and dsn and api_key:
+        await _delete_unipile_account(orphan_unipile_account_id,
+                                      dsn, api_key)
+
     return JSONResponse({"ok": True, "user_id": user.id})
 
 
