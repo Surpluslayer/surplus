@@ -28,10 +28,11 @@ Share URL shape:
 
 Effect:
   - 303 redirect to "/" with the surplus_session cookie set
-  - Session is tied to a single shared demo User row (get-or-created on
-    first use). All demo visitors share that workspace : fine for a guided
-    demo; swap _get_or_create_demo_user for a per-visitor mint (like
-    routes/auth.py:triage_quick_start) if you want each visitor a clean slate.
+  - Each visit mints a fresh demo User row (per-visitor, like
+    routes/auth.py:triage_quick_start) so nobody inherits a prior visitor's
+    events/prospects OR an accidental LinkedIn connection : every entry is a
+    clean, disconnected slate. The dedicated demo email domain lets /me still
+    flag is_demo.
   - From that point the SPA behaves like any signed-in but not-LinkedIn-
     connected user : the whole workflow works, sends paywall.
 
@@ -44,6 +45,7 @@ from __future__ import annotations
 
 import hmac
 import os
+import secrets
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -51,17 +53,17 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session as DbSession
 
-from ..auth import DEMO_USER_EMAIL, create_session, set_session_cookie
+from ..auth import DEMO_USER_EMAIL_DOMAIN, create_session, set_session_cookie
 from ..db import get_db
 from ..models import User
 
 
 router = APIRouter(prefix="/api/demo", tags=["demo"])
 
-# DEMO_USER_EMAIL lives in auth.py (single source of truth shared with the
-# /me endpoint). Email lives in our DB only : nothing is ever sent to it.
-# unipile_account_id stays NULL so the send capability gate
-# (auth.user_can_send_linkedin) treats it as not-connected.
+# DEMO_USER_EMAIL_DOMAIN lives in auth.py (single source of truth shared with
+# the /me is_demo check). Emails live in our DB only : nothing is ever sent to
+# them. unipile_account_id stays NULL so the send capability gate
+# (auth.user_can_send_linkedin) treats every demo user as not-connected.
 
 # Stale browser/CDN caches of either the 303 or a 404 from a prior misconfig
 # can poison this URL for returning visitors (symptom: regular browser sees
@@ -85,22 +87,30 @@ def _demo_token() -> Optional[str]:
     return tok or None
 
 
-def _get_or_create_demo_user(db: DbSession) -> User:
-    """The shared, not-LinkedIn-connected demo user. Idempotent."""
-    user = db.query(User).filter(User.email == DEMO_USER_EMAIL).first()
-    if user is None:
-        user = User(
-            name="Surplus Demo",
-            email=DEMO_USER_EMAIL,
-            headline="Demo account : full workflow, LinkedIn sending disabled",
-            # NULL on purpose : this is what gates real sends behind the paywall.
-            unipile_account_id=None,
-            linkedin_status="disconnected",
-            last_login_at=datetime.now(timezone.utc),
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+def _mint_demo_user(db: DbSession) -> User:
+    """A fresh, not-LinkedIn-connected demo user per visit.
+
+    Each click on the share link gets its own demo workspace : no events,
+    no prospects, nothing carried over, and crucially no inherited LinkedIn
+    connection. (A single shared demo row could be turned into an operator
+    if anyone ever connected LinkedIn from a demo session, which then leaks
+    to every visitor. Per-visitor rows make that impossible.) The dedicated
+    demo email domain lets /me still flag is_demo so the SPA hides demo-only
+    surfaces like the ROI ledger.
+    """
+    tag = secrets.token_hex(6)
+    user = User(
+        name="Surplus Demo",
+        email=f"demo-{tag}@{DEMO_USER_EMAIL_DOMAIN}",
+        headline="Demo account : full workflow, LinkedIn sending disabled",
+        # NULL on purpose : this is what gates real sends behind the paywall.
+        unipile_account_id=None,
+        linkedin_status="disconnected",
+        last_login_at=datetime.now(timezone.utc),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
     return user
 
 
@@ -127,7 +137,7 @@ def demo_enter(
     if not hmac.compare_digest(key, expected):
         return _not_found()
 
-    demo_user = _get_or_create_demo_user(db)
+    demo_user = _mint_demo_user(db)
 
     sess = create_session(db, demo_user)
     response = RedirectResponse("/", status_code=303)

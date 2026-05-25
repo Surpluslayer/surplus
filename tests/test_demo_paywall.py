@@ -230,26 +230,32 @@ def test_outreach_preview_renders_for_demo_user(db):
 
 # ── demo user bootstrap ──────────────────────────────────────────────────
 
-def test_get_or_create_demo_user_is_not_connected_and_idempotent(db):
-    from backend.routes.demo import _get_or_create_demo_user
-    u1 = _get_or_create_demo_user(db)
+def test_mint_demo_user_is_not_connected_and_per_visitor(db):
+    from backend.routes.demo import _mint_demo_user
+    u1 = _mint_demo_user(db)
     assert u1.unipile_account_id is None
     assert user_can_send_linkedin(u1) is False
-    u2 = _get_or_create_demo_user(db)
-    assert u2.id == u1.id  # idempotent : one shared demo user
+    u2 = _mint_demo_user(db)
+    # Per-visitor : each call is a fresh, isolated demo user (no shared row
+    # that could inherit a connection or prior visitor's events).
+    assert u2.id != u1.id
 
 
 # ── /me exposes is_demo so the SPA can hide demo-only surfaces ───────────
 
 def test_me_flags_demo_user_only(db):
-    """The demo user is is_demo=True; a real connected user is False. The SPA
-    keys hiding the ROI ledger stage off this flag."""
+    """Demo users (legacy shared row AND per-visitor mints) are is_demo=True;
+    a real connected user is False. The SPA keys hiding the ROI ledger stage
+    off this flag."""
     import json
     from backend.routes.auth import me
-    from backend.routes.demo import _get_or_create_demo_user
+    from backend.routes.demo import _mint_demo_user
 
-    demo = _get_or_create_demo_user(db)
+    minted = _mint_demo_user(db)
+    legacy = models.User(name="Surplus Demo", email="demo@surpluslayer.com")
+    db.add(legacy); db.commit(); db.refresh(legacy)
     real = _connected_user(db)
 
-    assert json.loads(me(demo).body)["is_demo"] is True
+    assert json.loads(me(minted).body)["is_demo"] is True
+    assert json.loads(me(legacy).body)["is_demo"] is True
     assert json.loads(me(real).body)["is_demo"] is False

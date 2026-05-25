@@ -38,12 +38,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session as DbSession
 
 from ..auth import (
-    DEMO_USER_EMAIL,
     LAST_ACCOUNT_COOKIE,
     SESSION_COOKIE,
     clear_session_cookie,
     create_session,
     current_user,
+    is_demo_user,
     require_paid_to_connect_linkedin,
     revoke_session,
     set_last_account_cookie,
@@ -756,7 +756,7 @@ def me(user: User = Depends(current_user)) -> JSONResponse:
         "unipile_account_id": user.unipile_account_id,
         # True for sessions that entered via the hidden demo link. The SPA
         # uses this to hide demo-only surfaces (e.g. the ROI ledger stage).
-        "is_demo": user.email == DEMO_USER_EMAIL,
+        "is_demo": is_demo_user(user),
         # Billing state. paid_at is null for free-tier users; once stamped
         # by the Stripe webhook (or the dev-toggle endpoint) the SPA can
         # branch on it to hide the "Upgrade" CTA. stripe_customer_id is

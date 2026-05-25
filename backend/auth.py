@@ -26,10 +26,19 @@ from .models import Session, User
 SESSION_COOKIE = "surplus_session"
 SESSION_TTL_DAYS = 30
 
-# Identity of the shared demo user minted by the hidden demo link
-# (routes/demo.py). Kept here so both demo.py and the /me endpoint can
-# reference one source of truth without a circular import.
+# Identity of demo users minted by the hidden demo link (routes/demo.py).
+# Kept here so both demo.py and /me reference one source of truth without a
+# circular import. DEMO_USER_EMAIL is the legacy shared row; per-visitor demo
+# users now get demo-<tag>@<DEMO_USER_EMAIL_DOMAIN> so each visit is isolated
+# and can never inherit a connected/operator state. is_demo_user() matches both.
 DEMO_USER_EMAIL = "demo@surpluslayer.com"
+DEMO_USER_EMAIL_DOMAIN = "demo.surpluslayer.com"
+
+
+def is_demo_user(user) -> bool:
+    """True for any demo-link user (legacy shared row or per-visitor mint)."""
+    email = (getattr(user, "email", "") or "").lower()
+    return email == DEMO_USER_EMAIL or email.endswith(f"@{DEMO_USER_EMAIL_DOMAIN}")
 
 # Long-lived cookie remembering which Unipile account this browser was
 # last signed in with. Lets /linkedin/start call Unipile's hosted-auth
