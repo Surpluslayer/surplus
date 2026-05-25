@@ -155,13 +155,14 @@ def preview_luma_event(
     body: LumaPreviewBody,
     user: models.User = Depends(current_user),
 ):
-    """Fetch a public Luma event page and return parsed metadata + Claude-
-    inferred triage suggestions so the Configure form can auto-fill.
+    """Fetch a public event page (Luma / Partiful) and return parsed
+    metadata + Claude-inferred triage suggestions so the Configure form
+    can auto-fill.
 
     Auth-gated (current_user) so anonymous traffic can't use us as a free
-    proxy. URL validated server-side to lu.ma / luma.com only — see
-    triage.luma._validate_luma_url for SSRF hardening. Suggestion call is
-    best-effort : on Anthropic failure we still return the parsed event
+    proxy. URL validated server-side to the supported event hosts only —
+    see triage.luma._validate_luma_url for SSRF hardening. Suggestion call
+    is best-effort : on Anthropic failure we still return the parsed event
     with empty suggestions instead of 500-ing."""
     try:
         event = fetch_luma_event(body.url)

@@ -93,7 +93,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
     const explicit = typeof maybeUrl === "string" ? maybeUrl : null;
     const url = ((explicit ?? lumaUrl) || "").trim();
     if (!url) {
-      setLumaError("Paste a Luma event URL (lu.ma/...).");
+      setLumaError("Paste an event URL (lu.ma/... or partiful.com/e/...).");
       return;
     }
     if (explicit && lumaUrl !== explicit) setLumaUrl(explicit);
@@ -138,7 +138,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
       });
       setLumaImported(ev);
     } catch (err) {
-      setLumaError(err?.message || "Could not import from Luma.");
+      setLumaError(err?.message || "Could not import from that event URL.");
     } finally {
       setLumaLoading(false);
     }
@@ -200,7 +200,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
       <div className="luma-quick">
         <Link2 size={14} aria-hidden className="luma-quick-icon" />
         <label htmlFor="luma-url" className="luma-quick-label">
-          Luma URL
+          Event URL
         </label>
         <input
           id="luma-url"
@@ -211,7 +211,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
           onKeyDown={(e) => {
             if (e.key === "Enter") { e.preventDefault(); handleLumaImport(); }
           }}
-          placeholder="https://lu.ma/your-event"
+          placeholder="https://lu.ma/your-event or partiful.com/e/..."
         />
         <button
           type="button"

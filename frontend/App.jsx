@@ -2938,7 +2938,7 @@ function IntakeLumaEntry({ user, onSwitchToTriage }) {
     <form className="luma-quick" onSubmit={submit}>
       <Link2 size={14} aria-hidden className="luma-quick-icon" />
       <label htmlFor="intake-luma-url" className="luma-quick-label">
-        Luma URL
+        Event URL
       </label>
       <input
         id="intake-luma-url"
@@ -2946,15 +2946,15 @@ function IntakeLumaEntry({ user, onSwitchToTriage }) {
         className="text-in luma-quick-input"
         value={url}
         onChange={(e) => setUrl(e.target.value)}
-        placeholder="https://lu.ma/your-event"
-        aria-label="Luma event URL"
+        placeholder="https://lu.ma/your-event or partiful.com/e/..."
+        aria-label="Luma or Partiful event URL"
         disabled={busy}
       />
       <button
         type="submit"
         className="btn-primary luma-quick-btn"
         disabled={busy || !url.trim()}
-        title="Open triage with this Luma event"
+        title="Open triage with this event"
       >
         {busy ? <><Loader2 className="spin" size={14} /> Starting</> : "Go"}
       </button>

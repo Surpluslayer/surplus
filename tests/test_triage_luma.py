@@ -32,6 +32,18 @@ def test_validate_accepts_luma_com():
     assert _validate_luma_url("https://luma.com/foo") == "https://luma.com/foo"
 
 
+def test_validate_accepts_partiful():
+    assert _validate_luma_url(
+        "https://partiful.com/e/RE4ZMnljF6NtGKRx2466"
+    ) == "https://partiful.com/e/RE4ZMnljF6NtGKRx2466"
+
+
+def test_validate_accepts_partiful_www():
+    assert _validate_luma_url("www.partiful.com/e/abc").startswith(
+        "https://www.partiful.com/"
+    )
+
+
 def test_validate_adds_scheme():
     assert _validate_luma_url("lu.ma/xyz").startswith("https://lu.ma/")
 
@@ -97,6 +109,32 @@ def test_parse_falls_back_to_og_when_jsonld_missing():
     assert ev.name == "Founders Dinner NYC"
     assert "20 seats" in (ev.description or "")
     assert ev.cover_image_url == "https://cdn.lu.ma/og.png"
+
+
+def test_parse_partiful_og_only_page():
+    """Partiful event pages lean on Open Graph tags (they don't always emit
+    a JSON-LD Event). The OG fallback should still give us name + desc +
+    cover so the import is useful."""
+    html = """<html><head>
+<meta property="og:title" content="Infra Engineers Mixer" />
+<meta property="og:description" content="Staff+ platform folks, SF, 40 seats." />
+<meta property="og:image" content="https://images.partiful.com/cover.png" />
+</head></html>"""
+    ev = parse_luma_html(html, source_url="https://partiful.com/e/abc")
+    assert ev.name == "Infra Engineers Mixer"
+    assert "Staff+" in (ev.description or "")
+    assert ev.cover_image_url == "https://images.partiful.com/cover.png"
+
+
+def test_fetch_partiful_url_uses_validated_host():
+    html = """<html><head>
+<meta property="og:title" content="Partiful party" />
+<meta property="og:description" content="via stub" />
+</head></html>"""
+    client = _StubClient(_StubResponse(status_code=200, text=html))
+    ev = fetch_luma_event("https://partiful.com/e/xyz", client=client)
+    assert ev.name == "Partiful party"
+    assert client.last_url == "https://partiful.com/e/xyz"
 
 
 def test_parse_handles_jsonld_graph_envelope():

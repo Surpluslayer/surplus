@@ -390,7 +390,7 @@ function ConfigStep({ user: _user, eventId, setEventId, onNext }) {
     setLumaError(null);
     const url = (lumaUrl || "").trim();
     if (!url) {
-      setLumaError("Paste a Luma event URL (lu.ma/...).");
+      setLumaError("Paste an event URL (lu.ma/... or partiful.com/e/...).");
       return;
     }
     setLumaLoading(true);
@@ -421,7 +421,7 @@ function ConfigStep({ user: _user, eventId, setEventId, onNext }) {
       }));
       setLumaImported(ev);
     } catch (err) {
-      setLumaError(err.message || "Could not import from Luma.");
+      setLumaError(err.message || "Could not import from that event URL.");
     } finally {
       setLumaLoading(false);
     }
@@ -492,12 +492,12 @@ function ConfigStep({ user: _user, eventId, setEventId, onNext }) {
       <section className="card">
         <h3>
           <span className="card-num"><Link2 size={12} strokeWidth={2.5} aria-hidden /></span>
-          Import from Luma <span className="hint">: optional : we&apos;ll pre-fill name + description</span>
+          Import from Luma or Partiful <span className="hint">: optional : we&apos;ll pre-fill name + description</span>
         </h3>
         <div className="luma-import-row">
           <input className="text-in" value={lumaUrl}
             onChange={(e) => setLumaUrl(e.target.value)}
-            placeholder="https://lu.ma/your-event"
+            placeholder="https://lu.ma/your-event or partiful.com/e/..."
             onKeyDown={(e) => {
               if (e.key === "Enter") { e.preventDefault(); handleLumaImport(); }
             }} />

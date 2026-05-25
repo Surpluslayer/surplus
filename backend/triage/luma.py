@@ -1,16 +1,18 @@
 """
-triage/luma.py : Fetch public Luma event pages and extract event metadata
-without hitting the (paywalled, invite-only) Luma API.
+triage/luma.py : Fetch public event pages (Luma, Partiful) and extract
+event metadata without hitting their (paywalled, invite-only) APIs.
 
-Why this exists : operators copy-paste a lu.ma/xxx URL and the triage
-Configure form auto-fills name + description + capacity + location. Saves
-~30 seconds per event and means the rubric synth has real event context
-to work with instead of whatever the operator remembered to type.
+Why this exists : operators copy-paste a lu.ma/xxx or partiful.com/e/xxx
+URL and the triage Configure form auto-fills name + description +
+capacity + location. Saves ~30 seconds per event and means the rubric
+synth has real event context to work with instead of whatever the
+operator remembered to type.
 
-How it works : Luma pages are SSR'd Next.js with
+How it works : both Luma and Partiful pages are SSR'd Next.js with
   - one or more <script type="application/ld+json"> blocks containing
     schema.org Event JSON (name, description, startDate, location, etc.)
-  - Open Graph meta tags as a redundant fallback
+  - Open Graph meta tags as a redundant fallback (Partiful relies on
+    these — it doesn't always emit JSON-LD Event nodes)
   - __NEXT_DATA__ blob with the richest data, but the shape isn't stable
     so we treat it as best-effort only.
 
@@ -31,7 +33,12 @@ from pydantic import BaseModel
 from ..jsonx import extract_json
 
 
-LUMA_HOSTS = {"lu.ma", "www.lu.ma", "luma.com", "www.luma.com"}
+# Hosts we'll fetch on the operator's behalf. Kept to a known-good set so
+# we can't be used as an SSRF gadget against the operator's intranet.
+ALLOWED_EVENT_HOSTS = {
+    "lu.ma", "www.lu.ma", "luma.com", "www.luma.com",
+    "partiful.com", "www.partiful.com",
+}
 
 # Conservative timeout : Luma usually responds in <1s but we don't want
 # to hang the request thread if their CDN hiccups.
@@ -70,9 +77,9 @@ class LumaFetchError(Exception):
 
 
 def _validate_luma_url(url: str) -> str:
-    """Reject anything that isn't a lu.ma / luma.com URL so we can't be
-    used as an SSRF gadget against the operator's intranet. Returns the
-    normalized URL."""
+    """Reject anything that isn't a supported event host (Luma / Partiful)
+    so we can't be used as an SSRF gadget against the operator's intranet.
+    Returns the normalized URL."""
     url = (url or "").strip()
     if not url:
         raise LumaFetchError("URL is empty")
@@ -83,9 +90,10 @@ def _validate_luma_url(url: str) -> str:
     except ValueError as exc:
         raise LumaFetchError(f"could not parse URL: {exc}") from exc
     host = (parsed.hostname or "").lower()
-    if host not in LUMA_HOSTS:
+    if host not in ALLOWED_EVENT_HOSTS:
         raise LumaFetchError(
-            f"only lu.ma / luma.com URLs are supported, got {host!r}"
+            f"only lu.ma / luma.com / partiful.com URLs are supported, "
+            f"got {host!r}"
         )
     return url
 
@@ -165,10 +173,11 @@ def _location_str(loc) -> Optional[str]:
 
 
 def parse_luma_html(html: str, *, source_url: str = "") -> LumaEvent:
-    """Pull event fields out of a Luma page's HTML.
+    """Pull event fields out of an event page's HTML (Luma / Partiful).
 
     Strategy : prefer schema.org Event JSON-LD (rich + reliable); fall
-    back to Open Graph tags for fields not present in JSON-LD."""
+    back to Open Graph tags for fields not present in JSON-LD. Partiful
+    leans on the OG path since it doesn't always emit a JSON-LD Event."""
     name: Optional[str] = None
     description: Optional[str] = None
     starts_at: Optional[str] = None
@@ -239,15 +248,15 @@ def parse_luma_html(html: str, *, source_url: str = "") -> LumaEvent:
 
 
 def fetch_luma_event(url: str, *, client: Optional[httpx.Client] = None) -> LumaEvent:
-    """Fetch a public Luma event page and return parsed metadata.
+    """Fetch a public event page (Luma / Partiful) and return parsed metadata.
 
     Raises LumaFetchError on bad URL / non-2xx / parse failure. Network
     timeouts are wrapped as LumaFetchError so the route can surface a
     clean 4xx instead of a generic 500."""
     safe_url = _validate_luma_url(url)
     headers = {
-        # Luma serves a minimal shell to obvious bots; pretend to be a
-        # normal browser so we get the SSR'd HTML with JSON-LD inline.
+        # These hosts serve a minimal shell to obvious bots; pretend to be
+        # a normal browser so we get the SSR'd HTML with JSON-LD / OG inline.
         "user-agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/127.0 Safari/537.36"
@@ -262,15 +271,15 @@ def fetch_luma_event(url: str, *, client: Optional[httpx.Client] = None) -> Luma
         try:
             resp = client.get(safe_url, headers=headers)
         except httpx.HTTPError as exc:
-            raise LumaFetchError(f"could not reach Luma: {exc}") from exc
+            raise LumaFetchError(f"could not reach the event page: {exc}") from exc
         if resp.status_code == 404:
-            raise LumaFetchError("Luma event not found (404)")
+            raise LumaFetchError("event not found (404)")
         if resp.status_code >= 400:
-            raise LumaFetchError(f"Luma responded {resp.status_code}")
+            raise LumaFetchError(f"event page responded {resp.status_code}")
         parsed = parse_luma_html(resp.text, source_url=safe_url)
         if not (parsed.name or parsed.description):
             raise LumaFetchError(
-                "Luma page didn't include event metadata "
+                "event page didn't include metadata "
                 "(is the event private or invite-only?)"
             )
         return parsed
