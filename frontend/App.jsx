@@ -4,7 +4,7 @@ import TriageApp, { UploadStep, ReviewStep, TRIAGE_CSS } from "./TriageApp.jsx";
 import {
   ArrowRight, Check, Circle, Activity, Send, Network, Target,
   GitBranch, BriefcaseBusiness, Zap, TrendingUp, RotateCw, Mail,
-  CornerDownRight, LogOut, GraduationCap, Link2, Loader2
+  CornerDownRight, LogOut, GraduationCap, Link2, Loader2, Lock
 } from "lucide-react";
 import { api } from "./lib/api.js";
 import { identifyUser, resetAnalytics } from "./lib/analytics.js";
@@ -535,7 +535,11 @@ function prospectRowStatus(p, threshold) {
   return statusMeta(p.status);
 }
 
-function Prospects({ profile, runResult, eventId, onError, onNext }) {
+// Unpaid users see only the top N prospects in full; the rest are blurred
+// behind an "Unlock" paywall that opens Stripe Checkout. Paid users see all.
+const FREE_PROSPECTS = 8;
+
+function Prospects({ profile, runResult, eventId, onError, onNext, locked = false }) {
   // Use real backend prospects when /run has resolved; fall back to mock
   // so this component still renders if someone navigates directly to it.
   const useReal = !!runResult?.prospects;
@@ -577,6 +581,45 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
   // doesn't crash; the empty-state early return below catches the rest.
   const [selected, setSelected] = useState(sorted[0]?.id ?? null);
   const sel = PROS.find((p) => p.id === selected) || sorted[0] || null;
+
+  // Unpaid: top N shown in full, the rest blurred behind the Unlock paywall.
+  // Paid users see every row.
+  const freeRows = locked ? sorted.slice(0, FREE_PROSPECTS) : sorted;
+  const lockedRows = locked ? sorted.slice(FREE_PROSPECTS) : [];
+
+  const renderProspectRow = (p) => {
+    const m = prospectRowStatus(p, T);
+    return (
+      <button key={p.id}
+        className={`prospect-row ${selected === p.id ? "sel" : ""} ${p.score < T ? "dim" : ""}`}
+        onClick={() => setSelected(p.id)}>
+        <span className="pr-name">
+          <span className="pr-name-main">{p.name}
+            <span className={`side-tag ${SIDE_CLASS[p.side]}`}>{p.side}</span>
+          </span>
+          <span className="pr-role">{p.role} · {p.company}</span>
+        </span>
+        <span className="pr-signal">
+          <span className="sig"><GitBranch size={11} /> {fmtNum(p.gh)}</span>
+          <span className="sig"><Send size={11} /> {fmtNum(p.x)}</span>
+          {p.scholar > 0 && (
+            <span className="sig" title="Scholar citations">
+              <GraduationCap size={11} /> {fmtNum(p.scholar)}
+            </span>
+          )}
+        </span>
+        <span className="pr-status">
+          <span className={`st-tag ${m.cls}`}>{m.label}</span>
+        </span>
+      </button>
+    );
+  };
+
+  // Unlock CTA routes to Stripe Checkout (same paywall the send-block uses).
+  const openUnlockPaywall = () => {
+    setPaywallKind("payment");
+    setPaywallOpen(true);
+  };
 
   const sentN = aboveT.length;
   const rsvpN = PROS.filter((p) => p.status === "rsvp").length;
@@ -870,33 +913,23 @@ function Prospects({ profile, runResult, eventId, onError, onNext }) {
       <div className="prospect-layout">
         <div className="prospect-list">
           <div className="list-head"><span>Candidate</span><span>Signal</span><span>Status</span></div>
-          {sorted.map((p) => {
-            const m = prospectRowStatus(p, T);
-            return (
-              <button key={p.id}
-                className={`prospect-row ${selected === p.id ? "sel" : ""} ${p.score < T ? "dim" : ""}`}
-                onClick={() => setSelected(p.id)}>
-                <span className="pr-name">
-                  <span className="pr-name-main">{p.name}
-                    <span className={`side-tag ${SIDE_CLASS[p.side]}`}>{p.side}</span>
-                  </span>
-                  <span className="pr-role">{p.role} · {p.company}</span>
+          {freeRows.map(renderProspectRow)}
+          {lockedRows.length > 0 && (
+            <div className="locked-prospects">
+              <div className="locked-prospects-rows" aria-hidden="true">
+                {lockedRows.slice(0, 6).map(renderProspectRow)}
+              </div>
+              <div className="locked-prospects-overlay">
+                <Lock size={18} />
+                <span className="locked-prospects-count">
+                  {lockedRows.length} more matched {lockedRows.length === 1 ? "prospect" : "prospects"}
                 </span>
-                <span className="pr-signal">
-                  <span className="sig"><GitBranch size={11} /> {fmtNum(p.gh)}</span>
-                  <span className="sig"><Send size={11} /> {fmtNum(p.x)}</span>
-                  {p.scholar > 0 && (
-                    <span className="sig" title="Scholar citations">
-                      <GraduationCap size={11} /> {fmtNum(p.scholar)}
-                </span>
-                  )}
-                </span>
-                <span className="pr-status">
-                  <span className={`st-tag ${m.cls}`}>{m.label}</span>
-                </span>
-              </button>
-            );
-          })}
+                <button className="unlock-cta" onClick={openUnlockPaywall}>
+                  Unlock full list <ArrowRight size={13} />
+                </button>
+              </div>
+            </div>
+          )}
           <div className="threshold-note">
             <span className="threshold-line" />
             Threshold {T} : floats with funnel supply ({Math.round(profile.headcount / 0.6)} target)
@@ -2362,6 +2395,7 @@ export default function App() {
               profile={profile}
               runResult={runResult}
               eventId={eventId}
+              locked={!user.paid_at}
               onError={(err) => setApiError(err?.message || String(err))}
               onNext={() => setStage("matching")}
             />

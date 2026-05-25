@@ -231,6 +231,20 @@ export const SURPLUS_APP_CSS = `
 .side-build { color:var(--build); background:rgba(107,70,224,0.1); }
 .side-hire { color:var(--hire); background:rgba(63,127,214,0.1); }
 .side-op { color:var(--op); background:rgba(207,95,166,0.1); }
+.locked-prospects { position:relative; overflow:hidden; }
+.locked-prospects-rows { filter:blur(5px); opacity:0.55; pointer-events:none;
+  user-select:none; }
+.locked-prospects-overlay { position:absolute; inset:0; display:flex;
+  flex-direction:column; align-items:center; justify-content:center; gap:11px;
+  text-align:center; padding:18px;
+  background:linear-gradient(to bottom, rgba(255,255,255,0) 0%, var(--panel) 50%); }
+.locked-prospects-overlay > svg { color:var(--acc); }
+.locked-prospects-count { font-size:13px; font-weight:600; color:var(--ink-dim); }
+.unlock-cta { display:inline-flex; align-items:center; gap:6px;
+  background:var(--acc); color:#fff; border:0; border-radius:var(--r-pill);
+  padding:9px 17px; font-size:12.5px; font-weight:700; cursor:pointer;
+  transition:background 0.15s; }
+.unlock-cta:hover { background:var(--acc-deep); }
 .threshold-note { font-size:10px; color:var(--ink-faint); padding:13px 16px;
   display:flex; align-items:center; gap:8px; }
 .threshold-line { flex:1; height:1px;
