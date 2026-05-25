@@ -694,6 +694,12 @@ def me(user: User = Depends(current_user)) -> JSONResponse:
         # True for sessions that entered via the hidden demo link. The SPA
         # uses this to hide demo-only surfaces (e.g. the ROI ledger stage).
         "is_demo": user.email == DEMO_USER_EMAIL,
+        # Billing state. paid_at is null for free-tier users; once stamped
+        # by the Stripe webhook (or the dev-toggle endpoint) the SPA can
+        # branch on it to hide the "Upgrade" CTA. stripe_customer_id is
+        # populated by the webhook on successful checkout.
+        "paid_at": user.paid_at.isoformat() if user.paid_at else None,
+        "stripe_customer_id": user.stripe_customer_id,
     })
 
 
