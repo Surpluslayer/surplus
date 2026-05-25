@@ -535,9 +535,9 @@ function prospectRowStatus(p, threshold) {
   return statusMeta(p.status);
 }
 
-// Non-operators (no connected Unipile/LinkedIn account) see only the top N
-// prospects in full; the rest are blurred behind an "Unlock" wall. Connecting
-// LinkedIn via Unipile (the pay-then-connect flow) reveals the whole list.
+// Unpaid users see only the top N prospects in full; the rest are blurred
+// behind an "Unlock" wall that opens Stripe Checkout. Paying (becoming an
+// operator) reveals the whole list.
 const FREE_PROSPECTS = 8;
 
 function Prospects({ profile, runResult, eventId, onError, onNext, locked = false }) {
@@ -583,8 +583,8 @@ function Prospects({ profile, runResult, eventId, onError, onNext, locked = fals
   const [selected, setSelected] = useState(sorted[0]?.id ?? null);
   const sel = PROS.find((p) => p.id === selected) || sorted[0] || null;
 
-  // Non-operators: top N shown in full, the rest blurred behind the Unlock
-  // wall. Operators (connected Unipile account) see every row.
+  // Unpaid: top N shown in full, the rest blurred behind the Unlock wall.
+  // Paid users see every row.
   const freeRows = locked ? sorted.slice(0, FREE_PROSPECTS) : sorted;
   const lockedRows = locked ? sorted.slice(FREE_PROSPECTS) : [];
 
@@ -616,12 +616,12 @@ function Prospects({ profile, runResult, eventId, onError, onNext, locked = fals
     );
   };
 
-  // Unlock CTA routes to the Unipile sign-in flow : becoming an operator
-  // (a connected LinkedIn account) is what clears the blur. connectLinkedIn
-  // routes unpaid users through Stripe first, so the pay-then-connect path
-  // still works from this CTA.
+  // Unlock CTA routes to Stripe Checkout : payment is the conversion that
+  // clears the blur. (Connecting LinkedIn via Unipile happens at sign-in, so
+  // it can't gate this : an unpaid LinkedIn-authed user would never see the
+  // wall. Becoming a paying operator is the real unlock.)
   const openUnlockPaywall = () => {
-    setPaywallKind("linkedin");
+    setPaywallKind("payment");
     setPaywallOpen(true);
   };
 
@@ -2399,7 +2399,7 @@ export default function App() {
               profile={profile}
               runResult={runResult}
               eventId={eventId}
-              locked={!user.unipile_account_id}
+              locked={!user.paid_at}
               onError={(err) => setApiError(err?.message || String(err))}
               onNext={() => setStage("matching")}
             />
