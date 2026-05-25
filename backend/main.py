@@ -109,15 +109,31 @@ app.include_router(billing.router)
 def health():
     """API discovery JSON. Moved from `/` so the frontend can own `/`.
 
-    git_sha is baked at image-build time (Dockerfile ARG GIT_SHA, passed via
-    `flyctl deploy --build-arg GIT_SHA=$(git rev-parse --short HEAD)`). Hit
-    this endpoint to confirm which commit is actually live vs. `main`.
+    Reports which platform served the request and the live commit, so you
+    can hit www.surpluslayer.com/api/health and tell what's deployed where
+    (the apex is fronted by a Cloudflare LB that can route to either origin):
+      - Fly  : git_sha from the Dockerfile ARG GIT_SHA build-arg
+               (`flyctl deploy --build-arg GIT_SHA=$(git rev-parse --short HEAD)`)
+      - Railway : git_sha from RAILWAY_GIT_COMMIT_SHA (auto-injected, no
+                  build-arg needed)
     """
     import os
+    git_sha = (
+        os.environ.get("GIT_SHA")
+        or os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+        or "unknown"
+    )
+    if os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("RAILWAY_ENVIRONMENT"):
+        platform = "railway"
+    elif os.environ.get("FLY_IMAGE_REF") or os.environ.get("FLY_APP_NAME"):
+        platform = "fly"
+    else:
+        platform = "unknown"
     return {
         "service": "surplus-roi-engine",
         "version": "0.1.0",
-        "git_sha": os.environ.get("GIT_SHA", "unknown"),
+        "platform": platform,
+        "git_sha": git_sha,
         # Fly stamps this per deploy even without a build-arg, so a changed
         # value confirms a fresh deploy landed even if GIT_SHA wasn't passed.
         "image_ref": os.environ.get("FLY_IMAGE_REF"),
