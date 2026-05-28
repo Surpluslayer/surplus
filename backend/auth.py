@@ -262,6 +262,41 @@ def require_linkedin_send(user: User) -> None:  # noqa: D401
     require_can_send_linkedin(user)
 
 
+def require_paid_to_connect_linkedin(user: Optional[User]) -> None:
+    """Gate the LinkedIn-connect step on Stripe payment. The product flow is
+    pay-first, then LinkedIn : anonymous callers and signed-in unpaid users
+    both get bounced to Stripe Checkout before they can connect. The Stripe
+    checkout-session endpoint mints an anon User + session for the unsigned
+    case, so by the time the caller comes back here post-payment they're
+    signed in and paid.
+    """
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "code": "payment_required",
+                "message": (
+                    "Upgrade with Stripe to connect LinkedIn. Your payment "
+                    "creates your surplus account; the next step links your "
+                    "LinkedIn so the agent can send."
+                ),
+            },
+        )
+    if user_has_paid(user):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_402_PAYMENT_REQUIRED,
+        detail={
+            "code": "payment_required",
+            "message": (
+                "Upgrade with Stripe to connect LinkedIn. One payment "
+                "unlocks LinkedIn sign-in and autonomous outreach across the "
+                "whole workflow."
+            ),
+        },
+    )
+
+
 # ─── Access control ─────────────────────────────────────────────
 
 def get_owned_event(event_id: int, user: User, db: DbSession):

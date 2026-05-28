@@ -2309,6 +2309,34 @@ export default function App() {
     return <div style={{ minHeight: "100vh", background: "#f6f7f9" }} />;
   }
 
+  // ── Pay-first signup, second step : connect LinkedIn ────────────────
+  // Stripe Checkout creates the surplus account and stamps paid_at via
+  // the webhook. The user lands back on /billing/success signed-in but
+  // with linkedin_status="disconnected". Force the connect step before
+  // letting them into the workflow. Demo/triage users (no paid_at) aren't
+  // affected.
+  if (user && user.paid_at && user.linkedin_status !== "active" && !user.is_demo) {
+    return (
+      <ConnectLinkedinGate
+        user={user}
+        onConnect={async () => {
+          try {
+            const r = await api.startLinkedinAuth();
+            if (r?.url) window.location.href = r.url;
+          } catch (e) {
+            alert("Could not start LinkedIn sign-in: " + e.message);
+          }
+        }}
+        onLogout={async () => {
+          try { await api.logout(); } catch {}
+          resetAnalytics();
+          try { localStorage.removeItem(UNIFIED_SESSION_KEY); } catch {}
+          setUser(undefined);
+        }}
+      />
+    );
+  }
+
   // ── Unified post-auth flow ──────────────────────────────────────────
   // Signed-in users land here regardless of mode. SharedIntake creates an
   // Event row only; the placeholder downstream stands in for the
@@ -2448,11 +2476,15 @@ export default function App() {
       user={user || null}
       onLogout={() => setUser(undefined)}
       onSignIn={async () => {
+        // Pay-first signup : Stripe Checkout creates the surplus account
+        // (anon-friendly checkout-session mints a user + session cookie)
+        // and stamps paid_at on completion. The /billing/success landing
+        // then prompts the user to connect LinkedIn.
         try {
-          const r = await api.startLinkedinAuth();
+          const r = await api.startCheckout();
           if (r?.url) window.location.href = r.url;
         } catch (e) {
-          alert("Could not start LinkedIn sign-in: " + e.message);
+          alert("Could not start checkout: " + e.message);
         }
       }}
       onSwitchToTriage={() => switchMode("triage")}
@@ -2859,7 +2891,54 @@ function LinkedInMark({ size = 18 }) {
   );
 }
 
-function SignInModal({ open, onClose, onSignIn, onSecondary, title, sub, ctaLabel, secondaryCtaLabel }) {
+// Post-payment, pre-LinkedIn gate. The user paid via Stripe (paid_at is
+// stamped) but hasn't yet completed LinkedIn OAuth. Renders a centered
+// "Connect LinkedIn" screen so the second half of signup is unmissable.
+function ConnectLinkedinGate({ user, onConnect, onLogout }) {
+  const [busy, setBusy] = useState(false);
+  const click = async () => {
+    setBusy(true);
+    try { await onConnect(); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="root">
+      <style>{CSS}</style>
+      <div className="frame">
+        <header className="topbar">
+          <div className="brand">
+            <img className="brand-logo" src="/surplus-logo.png" alt="Surplus logo" />
+            <div className="brand-text">
+              <span className="brand-name">surplus</span>
+            </div>
+          </div>
+          {user && <UserMenu user={user} onLogout={onLogout} />}
+        </header>
+        <main className="canvas">
+          <div className="stage" style={{ maxWidth: 520, margin: "60px auto" }}>
+            <header className="stage-head">
+              <h1>Connect LinkedIn to finish setup</h1>
+              <p className="lede">
+                Payment confirmed. The last step is to connect your LinkedIn
+                so the agent can send invites and messages from your account.
+                Unipile&rsquo;s hosted auth keeps the connection on your
+                LinkedIn account, not ours.
+              </p>
+            </header>
+            <button type="button" className="signin-modal-cta" onClick={click} disabled={busy}
+                    style={{ marginTop: 8 }}>
+              <LinkedInMark size={18} />
+              <span>{busy ? "Redirecting…" : "Sign in with LinkedIn"}</span>
+            </button>
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+
+function SignInModal({ open, onClose, onSignIn, onSecondary, title, sub, ctaLabel, secondaryCtaLabel, primaryIcon = "linkedin" }) {
   const [busy, setBusy] = useState(false);
   const [busy2, setBusy2] = useState(false);
   if (!open) return null;
@@ -2904,7 +2983,7 @@ function SignInModal({ open, onClose, onSignIn, onSecondary, title, sub, ctaLabe
           {sub || "You need to connect LinkedIn before surplus can create an event and run outreach."}
         </p>
         <button type="button" className="signin-modal-cta" onClick={handleSignIn} disabled={anyBusy}>
-          <LinkedInMark size={18} />
+          {primaryIcon === "stripe" ? <CreditCard size={18} /> : <LinkedInMark size={18} />}
           <span>{busy ? "Redirecting…" : (ctaLabel || "Sign in with LinkedIn")}</span>
         </button>
         {onSecondary && (
@@ -3089,6 +3168,10 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
           open={signInModalOpen}
           onClose={() => setSignInModalOpen(false)}
           onSignIn={onSignIn}
+          title="Get started"
+          sub="surplus charges once via Stripe. Payment creates your account; we connect LinkedIn on the next step so the agent can send."
+          ctaLabel="Upgrade with Stripe"
+          primaryIcon="stripe"
         />
         <main className="canvas" key={stage}>
           {stage === 0 && (

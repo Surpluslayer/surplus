@@ -25,15 +25,22 @@ so a misconfigured deploy doesn't pretend to work.
 """
 from __future__ import annotations
 import os
+import secrets
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session as DbSession
 
 from .. import models
-from ..auth import current_user
+from ..auth import (
+    SESSION_COOKIE,
+    create_session,
+    current_user,
+    set_session_cookie,
+    _load_user_by_session,
+)
 from ..db import get_db
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
@@ -80,9 +87,17 @@ def _success_cancel_urls(request: Request) -> tuple[str, str]:
 def create_checkout_session(
     request: Request,
     db: DbSession = Depends(get_db),
-    user: models.User = Depends(current_user),
+    surplus_session: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE),
 ) -> JSONResponse:
     """Return the checkout URL the SPA should redirect to.
+
+    The Stripe paywall sits in front of LinkedIn login : an anonymous caller
+    needs a user row + session cookie BEFORE they pay, so the post-payment
+    webhook has a User to stamp paid_at on and the post-payment landing has
+    a signed-in session that can call /linkedin/start. We mint that row on
+    the fly here (mirroring routes/auth.py:triage_quick_start) when no
+    session cookie is present, and set the cookie on the JSONResponse so
+    the SPA's next request is authenticated.
 
     Two modes, controlled by env :
       - STRIPE_PAYMENT_LINK set : return that URL with client_reference_id
@@ -94,6 +109,22 @@ def create_checkout_session(
     Either way the response shape is { url, session_id? }, so the SPA
     doesn't have to care which mode is active.
     """
+    user = _load_user_by_session(db, surplus_session)
+    new_session_token: Optional[str] = None
+    if user is None:
+        # Anonymous : mint a fresh user + session so the Stripe webhook can
+        # find them by client_reference_id and the post-payment redirect
+        # carries a signed-in cookie.
+        tag = secrets.token_hex(6)
+        user = models.User(
+            name="Surplus user",
+            email=f"prepay-{tag}@anonymous.surplus",
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        sess = create_session(db, user)
+        new_session_token = sess.session_token
     payment_link = _env("STRIPE_PAYMENT_LINK")
     if payment_link:
         # Append client_reference_id + prefilled_email so the webhook can
@@ -107,7 +138,10 @@ def create_checkout_session(
         if user.email:
             params["prefilled_email"] = user.email
         url = urlunparse(parsed._replace(query=urlencode(params)))
-        return JSONResponse({"url": url})
+        resp = JSONResponse({"url": url})
+        if new_session_token:
+            set_session_cookie(resp, new_session_token)
+        return resp
 
     price_id = _env("STRIPE_PRICE_ID")
     if not price_id:
@@ -135,7 +169,10 @@ def create_checkout_session(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"stripe create_session error: {type(exc).__name__}",
         ) from exc
-    return JSONResponse({"url": session.url, "session_id": session.id})
+    resp = JSONResponse({"url": session.url, "session_id": session.id})
+    if new_session_token:
+        set_session_cookie(resp, new_session_token)
+    return resp
 
 
 @router.post("/webhook")
