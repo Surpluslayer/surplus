@@ -20,7 +20,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .db import init_db
+from .db import ENGINE, init_db
 from .routes import admin, auth, billing, curation, demo, events, pipeline, matching, roi, triage, webhooks
 
 
@@ -129,6 +129,14 @@ def health():
         platform = "fly"
     else:
         platform = "unknown"
+    # DB-engine surface so we never again silently fall back to SQLite in
+    # prod without noticing. Defensive : a broken ENGINE attribute access
+    # must NOT 5xx this endpoint — Railway's healthcheck hits it, and a
+    # 500 here causes container restart loops.
+    try:
+        db_dialect = ENGINE.dialect.name  # "postgresql" | "sqlite"
+    except Exception:
+        db_dialect = "unknown"
     return {
         "service": "surplus-roi-engine",
         "version": "0.1.0",
@@ -137,6 +145,8 @@ def health():
         # Fly stamps this per deploy even without a build-arg, so a changed
         # value confirms a fresh deploy landed even if GIT_SHA wasn't passed.
         "image_ref": os.environ.get("FLY_IMAGE_REF"),
+        "db_dialect": db_dialect,
+        "db_url_set": bool((os.environ.get("DATABASE_URL") or "").strip()),
         "stages": ["01 intake", "02-03 pipeline", "04 matching", "05 roi"],
         "docs": "/docs",
     }
