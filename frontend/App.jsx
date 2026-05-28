@@ -873,25 +873,34 @@ function Prospects({ profile, runResult, eventId, onError, onNext, locked = fals
 
   return (
     <div className="stage">
+      {/* Stripe-first paywall (per the architecture change in PR #168). The
+          modal shows ONE CTA based on the user's current state:
+            - "payment" / "both": route to Stripe Checkout. After paying,
+              the next send attempt naturally surfaces the LinkedIn-connect
+              modal via the linkedin_send_locked 402 path : no need to
+              prompt for LinkedIn upfront and cause the "two CTAs at once"
+              confusion the demo-link unlock used to produce.
+            - "linkedin": already paid, just needs to connect LinkedIn. */}
       <SignInModal
         open={paywallOpen}
         onClose={() => setPaywallOpen(false)}
-        onSignIn={paywallKind === "payment" ? goToCheckout : connectLinkedIn}
-        onSecondary={paywallKind === "both" ? goToCheckout : null}
+        onSignIn={paywallKind === "linkedin" ? connectLinkedIn : goToCheckout}
+        onSecondary={null}
         title={paywallKind === "payment"
           ? "Upgrade to send on LinkedIn"
           : paywallKind === "both"
-            ? "Register to unlock the full pool"
+            ? "Upgrade to unlock the full pool"
             : "Connect LinkedIn to send"}
         sub={paywallKind === "payment"
           ? "Your LinkedIn is connected : one upgrade unlocks sending across your whole pool, manual and autonomous. Your LinkedIn account stays on your LinkedIn, not ours."
           : paywallKind === "both"
-            ? "Sign in with your LinkedIn so we know who's sending, then upgrade with Stripe to reveal every matched prospect."
+            ? "Upgrade with Stripe to reveal every matched prospect. You'll connect your LinkedIn account on the next step so we know who's sending."
             : "We use Unipile's hosted auth so the connection stays on your LinkedIn account."}
-        ctaLabel={paywallKind === "payment"
-          ? "Upgrade with Stripe"
-          : "Sign in with LinkedIn"}
-        secondaryCtaLabel={paywallKind === "both" ? "Upgrade with Stripe" : null}
+        ctaLabel={paywallKind === "linkedin"
+          ? "Sign in with LinkedIn"
+          : "Upgrade with Stripe"}
+        secondaryCtaLabel={null}
+        primaryIcon={paywallKind === "linkedin" ? "linkedin" : "stripe"}
       />
       <header className="stage-head">
         <h1>Scored pool, agent sends itself</h1>
