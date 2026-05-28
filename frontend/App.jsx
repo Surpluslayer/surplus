@@ -2490,15 +2490,24 @@ export default function App() {
       user={user || null}
       onLogout={() => setUser(undefined)}
       onSignIn={async () => {
-        // Pay-first signup : Stripe Checkout creates the surplus account
-        // (anon-friendly checkout-session mints a user + session cookie)
-        // and stamps paid_at on completion. The /billing/success landing
-        // then prompts the user to connect LinkedIn.
+        // The top-right "Sign in" button is for RETURNING users : they
+        // already have a LinkedIn-backed account (paid or not) and just
+        // need to re-authenticate. Route to Unipile-hosted LinkedIn auth.
+        //
+        // Dedup-by-linkedin_provider_id in routes/auth.py:526 reattaches
+        // their existing User row (preserving paid_at + stripe_customer_id
+        // + every event they own) when they sign in again. New users who
+        // somehow click this instead of "Get started" go through the same
+        // path : LinkedIn-connect succeeds, then their next send attempt
+        // hits payment_required (402) which surfaces the Stripe modal.
+        //
+        // Was previously calling api.startCheckout() — that flow is for
+        // the "Get started" / new-signup CTA, not the sign-in CTA.
         try {
-          const r = await api.startCheckout();
+          const r = await api.startLinkedinAuth();
           if (r?.url) window.location.href = r.url;
         } catch (e) {
-          alert("Could not start checkout: " + e.message);
+          alert("Could not start LinkedIn sign-in: " + e.message);
         }
       }}
       onSwitchToTriage={() => switchMode("triage")}
@@ -3198,10 +3207,10 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
           open={signInModalOpen}
           onClose={() => setSignInModalOpen(false)}
           onSignIn={onSignIn}
-          title="Get started"
-          sub="surplus charges once via Stripe. Payment creates your account; we connect LinkedIn on the next step so the agent can send."
-          ctaLabel="Upgrade with Stripe"
-          primaryIcon="stripe"
+          title="Sign in to surplus"
+          sub="We use Unipile's hosted auth so your LinkedIn account stays on your LinkedIn, not ours. Returning users : your events, paid status, and connected LinkedIn account are all preserved."
+          ctaLabel="Sign in with LinkedIn"
+          primaryIcon="linkedin"
         />
         <main className="canvas" key={stage}>
           {stage === 0 && (
