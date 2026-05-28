@@ -16,9 +16,10 @@ from sqlalchemy.orm import sessionmaker
 
 from backend import models, schemas
 from backend.auth import (
-    require_linkedin_connected,
-    require_linkedin_send,         # back-compat alias for any old callers
-    require_paid_auto_outreach,
+    require_can_send_linkedin,
+    require_linkedin_connected,    # back-compat alias → require_can_send_linkedin
+    require_linkedin_send,         # back-compat alias → require_can_send_linkedin
+    require_paid_auto_outreach,    # back-compat alias → require_can_send_linkedin
     user_can_send_linkedin,
     user_has_paid,
     user_has_linkedin_connected,
@@ -112,81 +113,59 @@ def test_user_can_send_truth_table(db):
     assert user_can_send_linkedin(stale) is False
 
 
-def test_paid_auto_outreach_demo_user_gets_linkedin_locked(db):
+# Unified send gate : every real send (manual invite/dm AND batch outreach)
+# requires BOTH a connected LinkedIn AND a paid Stripe subscription. The
+# whole workflow up to the send is free (demo-like); Stripe is the one paywall.
+
+def test_send_gate_demo_user_gets_linkedin_locked(db):
     """Free-tier (no payment, no LinkedIn) user hits the LinkedIn paywall
-    first : LinkedIn is checked before payment because we don't ask
-    people to pay before they've connected the integration."""
+    first : LinkedIn is checked before payment so a user with neither is
+    asked to connect before being asked to pay."""
     with pytest.raises(HTTPException) as ei:
-        require_paid_auto_outreach(_demo_user(db))
+        require_can_send_linkedin(_demo_user(db))
     assert ei.value.status_code == 402
     assert ei.value.detail["code"] == "linkedin_send_locked"
 
 
-def test_paid_auto_outreach_connected_unpaid_user_passes(db):
-    """Under the new model payment is collected at connect-LinkedIn time,
-    not on send. A user whose row shows connected-but-unpaid (only
-    achievable transitionally or via manual DB tweak) can still fire
-    sends : the gate that mattered was the connect-LinkedIn one."""
-    assert require_paid_auto_outreach(_connected_unpaid_user(db)) is None
-
-
-def test_require_paid_to_connect_anonymous_passes():
-    """Anonymous callers (first-time LinkedIn signup) sail through : we
-    don't make them pay before they even have a User row."""
-    from backend.auth import require_paid_to_connect_linkedin
-    assert require_paid_to_connect_linkedin(None) is None
-
-
-def test_require_paid_to_connect_unpaid_signed_in_user_gets_402(db):
-    """Signed-in unpaid users hit the paywall when they try to attach
-    LinkedIn to their existing account."""
-    from backend.auth import require_paid_to_connect_linkedin
+def test_send_gate_connected_unpaid_user_gets_payment_required(db):
+    """Connected but UNPAID : Stripe is the paywall, so the send is blocked
+    with payment_required (frontend opens Stripe Checkout)."""
     with pytest.raises(HTTPException) as ei:
-        require_paid_to_connect_linkedin(_demo_user(db))
+        require_can_send_linkedin(_connected_unpaid_user(db))
     assert ei.value.status_code == 402
     assert ei.value.detail["code"] == "payment_required"
 
 
-def test_require_paid_to_connect_paid_user_passes(db):
-    """Already-paid users go straight through to the Unipile OAuth start."""
-    from backend.auth import require_paid_to_connect_linkedin
-    # Use the paid-but-not-yet-connected fixture (just paid, no LinkedIn yet)
-    assert require_paid_to_connect_linkedin(_paid_but_unconnected_user(db)) is None
-
-
-def test_paid_auto_outreach_noop_for_paid_connected_user(db):
-    assert require_paid_auto_outreach(_connected_user(db)) is None
-
-
-# Manual one-off sends (invite/dm) need a connection only, no payment.
-
-def test_linkedin_connected_demo_user_blocked(db):
-    """No LinkedIn → 402 linkedin_send_locked regardless of payment."""
+def test_send_gate_paid_but_unconnected_user_gets_linkedin_locked(db):
+    """Paid but no LinkedIn yet : asked to connect first."""
     with pytest.raises(HTTPException) as ei:
-        require_linkedin_connected(_demo_user(db))
+        require_can_send_linkedin(_paid_but_unconnected_user(db))
+    assert ei.value.status_code == 402
     assert ei.value.detail["code"] == "linkedin_send_locked"
 
 
-def test_linkedin_connected_unpaid_user_passes(db):
-    """Connected but UNPAID can fire manual sends : payment is only for
-    autonomous batch outreach, not for the mechanical send."""
-    assert require_linkedin_connected(_connected_unpaid_user(db)) is None
+def test_send_gate_noop_for_paid_connected_user(db):
+    """Signed in on LinkedIn AND paid Stripe : sends freely, no paywall."""
+    assert require_can_send_linkedin(_connected_user(db)) is None
 
 
-def test_linkedin_connected_paid_user_passes(db):
-    assert require_linkedin_connected(_connected_user(db)) is None
+# Back-compat aliases all forward to the same unified gate.
+
+def test_aliases_block_connected_unpaid_user(db):
+    user = _connected_unpaid_user(db)
+    for gate in (require_linkedin_connected, require_paid_auto_outreach,
+                 require_linkedin_send):
+        with pytest.raises(HTTPException) as ei:
+            gate(user)
+        assert ei.value.status_code == 402
+        assert ei.value.detail["code"] == "payment_required"
 
 
-# Back-compat alias still works (forwards to paid_auto_outreach).
-
-def test_require_linkedin_send_alias_demo_user(db):
-    with pytest.raises(HTTPException) as ei:
-        require_linkedin_send(_demo_user(db))
-    assert ei.value.status_code == 402
-
-
-def test_require_send_noop_for_paid_connected_user(db):
-    assert require_linkedin_send(_connected_user(db)) is None
+def test_aliases_noop_for_paid_connected_user(db):
+    user = _connected_user(db)
+    for gate in (require_linkedin_connected, require_paid_auto_outreach,
+                 require_linkedin_send):
+        assert gate(user) is None
 
 
 # ── real-send route paywalls the demo user ──────────────────────────────
