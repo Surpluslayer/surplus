@@ -481,6 +481,18 @@ async def linkedin_webhook(payload: dict, db: DbSession = Depends(get_db)) -> JS
     user = db.query(User).filter(User.unipile_account_id == account_id).first()
     now = _utcnow()
     orphan_unipile_account_id: Optional[str] = None  # captured for post-commit delete
+    if user is None and auth_state.user_id is not None:
+        # Stripe-first signup : /linkedin/start pre-tagged the AuthState with
+        # the paid prepay user's id. Adopt that row so LinkedIn fields merge
+        # into the same User (preserving paid_at) instead of creating a
+        # duplicate. Without this, name stays "Surplus user" after sign-in.
+        user = db.query(User).filter(User.id == auth_state.user_id).first()
+        if user is not None:
+            print(f"  [auth.webhook] adopting pre-tagged user.id={user.id} "
+                  f"for new unipile_account_id={account_id}")
+            if user.unipile_account_id and user.unipile_account_id != account_id:
+                orphan_unipile_account_id = user.unipile_account_id
+            user.unipile_account_id = account_id
     if user is None:
         # Same dedup as the URL-callback path : if this account_id is new
         # but the LinkedIn person isn't, claim the existing User row and
@@ -571,21 +583,29 @@ async def linkedin_callback(
         return RedirectResponse(error_redirect, status_code=303)
 
     # Poll briefly for the webhook to land — short-circuit early if it
-    # already did. Capped at ~1.5s so we degrade fast to the URL-based
-    # fallback when the webhook isn't going to help us.
+    # already wrote the LinkedIn profile fields. Capped at ~1.5s so we
+    # degrade fast to the URL-based fallback when the webhook isn't going
+    # to help us.
+    #
+    # Keying off `status` (not `user_id`) is important for Stripe-first
+    # signup : /linkedin/start pre-tags auth_state.user_id to the prepay
+    # user, so user_id-based polling would short-circuit BEFORE the webhook
+    # writes name/headline/etc., leaving the user displayed as "Surplus
+    # user." webhook_done means fields landed; pending means keep waiting.
+    _DONE_STATES = {"webhook_done", "callback_upserted"}
     for _ in range(6):
-        if auth_state.user_id is not None:
+        if auth_state.status in _DONE_STATES:
             break
         if auth_state.status == "failed":
             return RedirectResponse(error_redirect, status_code=303)
         await asyncio.sleep(0.25)
         db.refresh(auth_state)
 
-    if auth_state.user_id is None:
-        # Webhook didn't link. Use the account_id from the URL to upsert
-        # the user ourselves. Pull profile fields from Unipile if we have
-        # API creds; otherwise create a minimal record the operator can
-        # fill in later.
+    if auth_state.status not in _DONE_STATES:
+        # Webhook didn't write fields. Use the account_id from the URL to
+        # upsert the user ourselves. Pull profile fields from Unipile if we
+        # have API creds; otherwise create a minimal record the operator
+        # can fill in later.
         acct = (account_id or "").strip()
         if not acct:
             return RedirectResponse("/signin?error=linkedin_pending", status_code=303)
@@ -595,6 +615,18 @@ async def linkedin_callback(
         user = db.query(User).filter(User.unipile_account_id == acct).first()
         now = _utcnow()
         orphan_unipile_account_id: Optional[str] = None  # set when dedup fires
+        if user is None and auth_state.user_id is not None:
+            # Stripe-first signup : /linkedin/start pre-tagged the AuthState
+            # with the paid prepay user's id. Adopt that row so the LinkedIn
+            # fields merge into the same User (preserving paid_at) instead
+            # of creating a duplicate. Matches the webhook path.
+            user = db.query(User).filter(User.id == auth_state.user_id).first()
+            if user is not None:
+                print(f"  [auth.callback] adopting pre-tagged user.id={user.id} "
+                      f"for new unipile_account_id={acct}")
+                if user.unipile_account_id and user.unipile_account_id != acct:
+                    orphan_unipile_account_id = user.unipile_account_id
+                user.unipile_account_id = acct
         if user is None:
             # Dedup before insert : if the operator's site-data was cleared
             # (or they signed up via triage / email-only first), the new
