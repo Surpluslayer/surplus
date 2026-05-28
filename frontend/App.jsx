@@ -2290,11 +2290,11 @@ export default function App() {
     }
   }, [eventId, stage, committedPath, hydrated]);
 
-  // Demo sessions have no ROI stage : if a stale/restored stage lands them
-  // there, bounce back to Matching (the demo's last step) so they don't
-  // stare at a blank canvas.
+  // The ROI ledger is hidden platform-wide : if a stale/restored stage
+  // lands anyone there, bounce back to Matching (the new last step) so they
+  // don't stare at a blank canvas.
   useEffect(() => {
-    if (user && user.is_demo && stage === "roi") setStage("matching");
+    if (user && stage === "roi") setStage("matching");
   }, [user, stage]);
 
   if (user === null || (user && !hydrated)) {
@@ -2307,13 +2307,11 @@ export default function App() {
   // decision screen that comes next prompt.
   if (user) {
     const stageIdx = STAGE_INDEX[stage] ?? 0;
-    // Demo-link sessions don't get the ROI ledger stage : hide its rail
-    // bubble, its screen, and the "Settle ROI" advance. Nothing is deleted :
-    // the stage just isn't surfaced for these users.
-    const hideRoi = !!user.is_demo;
-    const visibleStages = hideRoi
-      ? STAGES.filter((s) => s.key !== "roi")
-      : STAGES;
+    // The ROI ledger is hidden platform-wide : hide its rail bubble, its
+    // screen, and the "Settle ROI" advance for every user. Nothing is
+    // deleted : the stage just isn't surfaced anymore.
+    const hideRoi = true;
+    const visibleStages = STAGES.filter((s) => s.key !== "roi");
     // Both paths land on functional content at stage 03 (Prospects for
     // outbound, ReviewStep for inbound). No muted bubbles : the UI
     // loophole is that the same rail slot carries different content
@@ -2640,8 +2638,8 @@ function UnifiedShell({
             setStage={onStageJump || noop}
             stages={stages}
             // Every visible bubble is clickable in both directions :
-            // maxReached is the highest visible stage id (drops to 3 when
-            // the ROI stage is hidden for demo sessions).
+            // maxReached is the highest visible stage id (3 now that the
+            // ROI ledger stage is hidden platform-wide).
             maxReached={stages.length ? Math.max(...stages.map((s) => s.id)) : 0}
             mutedIds={mutedIds}
           />
