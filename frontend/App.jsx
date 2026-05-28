@@ -4,7 +4,7 @@ import TriageApp, { UploadStep, ReviewStep, TRIAGE_CSS } from "./TriageApp.jsx";
 import {
   ArrowRight, Check, Circle, Activity, Send, Network, Target,
   GitBranch, BriefcaseBusiness, Zap, TrendingUp, RotateCw, Mail,
-  CornerDownRight, LogOut, GraduationCap, Link2, Loader2, Lock
+  CornerDownRight, LogOut, GraduationCap, Link2, Loader2, Lock, CreditCard
 } from "lucide-react";
 import { api } from "./lib/api.js";
 import { identifyUser, resetAnalytics } from "./lib/analytics.js";
@@ -617,10 +617,12 @@ function Prospects({ profile, runResult, eventId, onError, onNext, locked = fals
   };
 
   // Unlock CTA routes to Stripe Checkout : payment is the conversion that
-  // clears the blur. Connecting LinkedIn is free; Stripe is the single
-  // paywall, so becoming a paying operator is the real unlock.
+  // The lock is only shown to demo-link visitors (who have neither LinkedIn
+  // connected nor Stripe paid); clicking it surfaces BOTH steps in one
+  // modal so they can register LinkedIn and pay Stripe to convert into a
+  // real operator.
   const openUnlockPaywall = () => {
-    setPaywallKind("payment");
+    setPaywallKind("both");
     setPaywallOpen(true);
   };
 
@@ -873,15 +875,21 @@ function Prospects({ profile, runResult, eventId, onError, onNext, locked = fals
         open={paywallOpen}
         onClose={() => setPaywallOpen(false)}
         onSignIn={paywallKind === "payment" ? goToCheckout : connectLinkedIn}
+        onSecondary={paywallKind === "both" ? goToCheckout : null}
         title={paywallKind === "payment"
           ? "Upgrade to send on LinkedIn"
-          : "Connect LinkedIn to send"}
+          : paywallKind === "both"
+            ? "Register to unlock the full pool"
+            : "Connect LinkedIn to send"}
         sub={paywallKind === "payment"
           ? "Your LinkedIn is connected : one upgrade unlocks sending across your whole pool, manual and autonomous. Your LinkedIn account stays on your LinkedIn, not ours."
-          : "We use Unipile's hosted auth so the connection stays on your LinkedIn account."}
+          : paywallKind === "both"
+            ? "Sign in with your LinkedIn so we know who's sending, then upgrade with Stripe to reveal every matched prospect."
+            : "We use Unipile's hosted auth so the connection stays on your LinkedIn account."}
         ctaLabel={paywallKind === "payment"
           ? "Upgrade with Stripe"
           : "Sign in with LinkedIn"}
+        secondaryCtaLabel={paywallKind === "both" ? "Upgrade with Stripe" : null}
       />
       <header className="stage-head">
         <h1>Scored pool, agent sends itself</h1>
@@ -2390,7 +2398,7 @@ export default function App() {
               profile={profile}
               runResult={runResult}
               eventId={eventId}
-              locked={!user.paid_at}
+              locked={!!user.is_demo}
               onError={(err) => setApiError(err?.message || String(err))}
               onNext={() => setStage("matching")}
             />
@@ -2845,8 +2853,9 @@ function LinkedInMark({ size = 18 }) {
   );
 }
 
-function SignInModal({ open, onClose, onSignIn, title, sub, ctaLabel }) {
+function SignInModal({ open, onClose, onSignIn, onSecondary, title, sub, ctaLabel, secondaryCtaLabel }) {
   const [busy, setBusy] = useState(false);
+  const [busy2, setBusy2] = useState(false);
   if (!open) return null;
 
   const handleSignIn = async () => {
@@ -2857,6 +2866,17 @@ function SignInModal({ open, onClose, onSignIn, title, sub, ctaLabel }) {
       setBusy(false);
     }
   };
+
+  const handleSecondary = async () => {
+    setBusy2(true);
+    try {
+      await onSecondary();
+    } finally {
+      setBusy2(false);
+    }
+  };
+
+  const anyBusy = busy || busy2;
 
   return (
     <div
@@ -2877,10 +2897,16 @@ function SignInModal({ open, onClose, onSignIn, title, sub, ctaLabel }) {
         <p className="signin-modal-sub">
           {sub || "You need to connect LinkedIn before surplus can create an event and run outreach."}
         </p>
-        <button type="button" className="signin-modal-cta" onClick={handleSignIn} disabled={busy}>
+        <button type="button" className="signin-modal-cta" onClick={handleSignIn} disabled={anyBusy}>
           <LinkedInMark size={18} />
           <span>{busy ? "Redirecting…" : (ctaLabel || "Sign in with LinkedIn")}</span>
         </button>
+        {onSecondary && (
+          <button type="button" className="signin-modal-cta" onClick={handleSecondary} disabled={anyBusy}>
+            <CreditCard size={18} />
+            <span>{busy2 ? "Redirecting…" : (secondaryCtaLabel || "Upgrade with Stripe")}</span>
+          </button>
+        )}
 
         <button type="button" className="signin-modal-dismiss" onClick={onClose}>
           Not now
