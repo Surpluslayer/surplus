@@ -2737,12 +2737,28 @@ function Stage02({
 }) {
   const [selected, setSelected] = useState(null);
   const [working, setWorking] = useState(false);
+  // Tracks "I just kicked off a Pipeline run during this Stage02 visit, so
+  // when runResult lands, auto-advance to outreach." Without this, the
+  // Pipeline component unmounts the moment setRunResult fires (the
+  // !runResult guard flips false), killing its own auto-advance timeout :
+  // the user would get stuck on the "Continue to outreach" button.
+  // Revisits (no kickoff in this visit) stay on the picker so the path
+  // switcher remains usable -- the bug PR #167 was meant to fix.
+  const [autoAdvanceArmed, setAutoAdvanceArmed] = useState(false);
 
   const startOutbound = () => {
     if (committedPath === "outbound") return;
     // No API call here : Pipeline's mount-effect fires /prospect.
+    setAutoAdvanceArmed(true);
     onCommit("outbound");
   };
+
+  useEffect(() => {
+    if (autoAdvanceArmed && committedPath === "outbound" && runResult) {
+      setAutoAdvanceArmed(false);
+      onAdvance && onAdvance();
+    }
+  }, [autoAdvanceArmed, committedPath, runResult, onAdvance]);
 
   const startInbound = async () => {
     if (committedPath === "inbound" || working) return;

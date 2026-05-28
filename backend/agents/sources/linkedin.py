@@ -26,7 +26,17 @@ class LinkedInAdapter(SourceAdapter):
 
     async def fetch(self, icp: dict) -> list[dict]:
         if llm.llm_available():
-            return await asyncio.to_thread(self._fetch_via_llm, icp)
+            results = await asyncio.to_thread(self._fetch_via_llm, icp)
+            if results:
+                return results
+            # LLM mode returned zero candidates. Common causes : Anthropic
+            # API outage, Exa quota exhausted, web_search timeout, or the
+            # ICP-judge dropping every candidate as off-target. The user's
+            # outbound run would otherwise dead-end on "No candidates
+            # surfaced" with no path forward. Fall through to the mock
+            # POOL so they get a workable demo set instead.
+            print("  [adapter] linkedin LLM discovery returned empty : "
+                  "falling back to mock POOL so outreach still has targets")
         await self._delay()
         return [
             {
