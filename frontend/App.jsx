@@ -2786,7 +2786,7 @@ function Stage02({
         </p>
       )}
 
-      {committedPath === "outbound" && (
+      {committedPath === "outbound" && !runResult && (
         <Pipeline
           profile={profile}
           eventId={eventId}
@@ -2794,6 +2794,12 @@ function Stage02({
           onError={onError}
           onDone={onAdvance}
         />
+      )}
+      {committedPath === "outbound" && runResult && (
+        <button className="btn-primary" onClick={onAdvance}
+                style={{ alignSelf: "flex-start" }}>
+          Continue to outreach <ArrowRight size={16} />
+        </button>
       )}
       {committedPath === "inbound" && (
         <UploadStep eventId={eventId} onNext={onAdvance} />
