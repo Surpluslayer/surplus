@@ -197,74 +197,69 @@ def user_has_linkedin_connected(user: User) -> bool:
 
 def user_can_send_linkedin(user: User) -> bool:
     """True when `user` may fire real LinkedIn outreach. Requires BOTH a
-    paid subscription AND a connected LinkedIn account : payment unlocks
-    the feature, the LinkedIn connection is mechanically required to send."""
+    paid Stripe subscription AND a connected LinkedIn account : Stripe is
+    the paywall, the LinkedIn connection is mechanically required to send."""
     return user_has_paid(user) and user_has_linkedin_connected(user)
 
 
-def require_linkedin_connected(user: User) -> None:
-    """Gate any real LinkedIn send (manual one-off OR batch). Requires
-    only a connected, active LinkedIn account : NO payment check.
+def require_can_send_linkedin(user: User) -> None:
+    """The single gate for every real LinkedIn send : manual one-off
+    (invite/dm) AND batch autonomous outreach.
 
-    Used for one-at-a-time manual send routes (invite, dm) where the
-    operator is doing the work themselves : payment is for letting the
-    agent send autonomously, not for the mechanical ability to send.
+    The whole platform works like the demo : intake, prospecting, scoring,
+    matching, ROI, and composing message previews are all free and need no
+    payment : signing in and connecting LinkedIn are free too. The one and
+    only paywall is here, on the send, and it has two requirements:
+
+      1. A connected, active LinkedIn account (mechanically required to send).
+      2. A paid Stripe subscription (the paywall).
+
+    LinkedIn is checked first so a user with neither is asked to connect
+    before being asked to pay. The 402 `code` tells the SPA which modal to
+    open : `linkedin_send_locked` → connect-LinkedIn, `payment_required` →
+    Stripe checkout. A user who has done both sends freely : no paywall.
     """
-    if user_has_linkedin_connected(user):
-        return
-    raise HTTPException(
-        status_code=status.HTTP_402_PAYMENT_REQUIRED,
-        detail={
-            "code": "linkedin_send_locked",
-            "message": (
-                "Connect your LinkedIn account to start sending. We use "
-                "Unipile's hosted auth so the connection stays on your "
-                "LinkedIn account, not ours."
-            ),
-        },
-    )
+    if not user_has_linkedin_connected(user):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "code": "linkedin_send_locked",
+                "message": (
+                    "Connect your LinkedIn account to start sending. We use "
+                    "Unipile's hosted auth so the connection stays on your "
+                    "LinkedIn account, not ours."
+                ),
+            },
+        )
+    if not user_has_paid(user):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "code": "payment_required",
+                "message": (
+                    "Sending on LinkedIn is a paid feature. Upgrade once and "
+                    "your connected LinkedIn account unlocks sending across "
+                    "the whole workflow : manual and autonomous."
+                ),
+            },
+        )
 
 
-def require_paid_to_connect_linkedin(user: Optional[User]) -> None:
-    """Gate the LinkedIn-connection start. Anonymous callers (first-time
-    signup via LinkedIn) are let through unchanged : we need SOMEONE to
-    be able to sign up for free.
-
-    For an already-signed-in user (typically email/triage signup) who
-    is now trying to attach LinkedIn to their account : require payment
-    first. Connecting LinkedIn unlocks all sending (manual + batch);
-    the paywall sits at this connect step so users only pay when they
-    actually want to use the integration.
-    """
-    if user is None:
-        return  # first-time LinkedIn signup : let them through
-    if user_has_paid(user):
-        return
-    raise HTTPException(
-        status_code=status.HTTP_402_PAYMENT_REQUIRED,
-        detail={
-            "code": "payment_required",
-            "message": (
-                "Connecting LinkedIn is a paid feature. Upgrade once and "
-                "your LinkedIn account unlocks automatic outreach across "
-                "the whole workflow."
-            ),
-        },
-    )
+# Back-compat aliases : every send gate now means "paid AND connected".
+# Kept so existing call sites keep working without churn.
+def require_linkedin_connected(user: User) -> None:  # noqa: D401
+    """Alias of require_can_send_linkedin."""
+    require_can_send_linkedin(user)
 
 
-# Back-compat aliases : keep imports working until the call sites get
-# migrated. The "send" gate is now just "linkedin connected"; the
-# "auto outreach" gate is too (payment is collected at connect time).
 def require_paid_auto_outreach(user: User) -> None:  # noqa: D401
-    """Alias of require_linkedin_connected. Kept so existing imports don't
-    crash; payment is enforced at the connect-LinkedIn step, not on send."""
-    require_linkedin_connected(user)
+    """Alias of require_can_send_linkedin."""
+    require_can_send_linkedin(user)
 
 
 def require_linkedin_send(user: User) -> None:  # noqa: D401
-    """Alias of require_linkedin_connected (back-compat)."""
-    require_linkedin_connected(user)
+    """Alias of require_can_send_linkedin."""
+    require_can_send_linkedin(user)
 
 
 # ─── Access control ─────────────────────────────────────────────

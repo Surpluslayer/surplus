@@ -24,7 +24,6 @@ from sqlalchemy.orm import sessionmaker
 
 from backend import models
 from backend.auth import (
-    require_paid_to_connect_linkedin,
     user_can_send_linkedin,
     user_has_paid,
 )
@@ -132,24 +131,11 @@ def test_extractor_empty_payload_returns_none_keys():
     assert f["name"] == ""
 
 
-# ── B. Gate logic (the bits not already in test_demo_paywall.py) ──────
-
-def test_require_paid_to_connect_anonymous_signup_allowed():
-    """First-time LinkedIn signup carries no User row yet : must be
-    allowed through so SOMEONE can sign up for free."""
-    require_paid_to_connect_linkedin(None)  # no exception
-
-
-def test_require_paid_to_connect_unpaid_triage_user_gets_402(db):
-    """Triage-signup user (email-only, no Stripe) trying to attach
-    LinkedIn must hit the paywall with code=payment_required."""
-    u = models.User(name="Triage", email="t@e.com",
-                    unipile_account_id=None, linkedin_status="disconnected")
-    db.add(u); db.commit(); db.refresh(u)
-    with pytest.raises(HTTPException) as exc:
-        require_paid_to_connect_linkedin(u)
-    assert exc.value.status_code == 402
-    assert exc.value.detail["code"] == "payment_required"
+# ── B. Gate logic : send requires paid + connected (see test_demo_paywall) ──
+# Connecting LinkedIn is free for everyone now; the only paywall is Stripe,
+# enforced at send time. The send-gate truth table lives in
+# test_demo_paywall.py. Here we only assert the dedup payoff (section E)
+# keeps a returning paid user's send capability intact.
 
 
 # ── C. Dedup loop : the three fallback keys + priority ────────────────

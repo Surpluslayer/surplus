@@ -617,9 +617,8 @@ function Prospects({ profile, runResult, eventId, onError, onNext, locked = fals
   };
 
   // Unlock CTA routes to Stripe Checkout : payment is the conversion that
-  // clears the blur. (Connecting LinkedIn via Unipile happens at sign-in, so
-  // it can't gate this : an unpaid LinkedIn-authed user would never see the
-  // wall. Becoming a paying operator is the real unlock.)
+  // clears the blur. Connecting LinkedIn is free; Stripe is the single
+  // paywall, so becoming a paying operator is the real unlock.
   const openUnlockPaywall = () => {
     setPaywallKind("payment");
     setPaywallOpen(true);
@@ -810,14 +809,8 @@ function Prospects({ profile, runResult, eventId, onError, onNext, locked = fals
       const r = await api.startLinkedinAuth();
       if (r?.url) window.location.href = r.url;
     } catch (e) {
-      // Connect-LinkedIn is now the paywall : the backend returns 402
-      // payment_required for signed-in users who haven't paid. Route
-      // them to Stripe instead of showing a raw error.
-      if (e.status === 402 && (e.body?.detail?.code || e.body?.code) === "payment_required") {
-        setPaywallKind("payment");
-        setPaywallOpen(true);
-        return;
-      }
+      // Connecting LinkedIn is free for everyone : the paywall lives at send
+      // (Stripe), not here, so there's nothing to route to checkout.
       onError && onError("Could not start LinkedIn sign-in: " + e.message);
     }
   };
@@ -881,10 +874,10 @@ function Prospects({ profile, runResult, eventId, onError, onNext, locked = fals
         onClose={() => setPaywallOpen(false)}
         onSignIn={paywallKind === "payment" ? goToCheckout : connectLinkedIn}
         title={paywallKind === "payment"
-          ? "Upgrade to connect LinkedIn"
+          ? "Upgrade to send on LinkedIn"
           : "Connect LinkedIn to send"}
         sub={paywallKind === "payment"
-          ? "Connecting LinkedIn unlocks automatic outreach across your whole pool. One-time upgrade : your LinkedIn account stays on your LinkedIn, not ours."
+          ? "Your LinkedIn is connected : one upgrade unlocks sending across your whole pool, manual and autonomous. Your LinkedIn account stays on your LinkedIn, not ours."
           : "We use Unipile's hosted auth so the connection stays on your LinkedIn account."}
         ctaLabel={paywallKind === "payment"
           ? "Upgrade with Stripe"
