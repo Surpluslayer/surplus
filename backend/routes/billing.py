@@ -51,6 +51,33 @@ def _env(key: str) -> Optional[str]:
     return v or None
 
 
+# Internal placeholder email domains. We mint these on anonymous prepay
+# (routes/billing.py:checkout-session) and on triage-quick-start
+# (routes/auth.py:triage_quick_start) so every row has a unique-ish email,
+# but they're NOT real email addresses. Don't ever ship them to Stripe's
+# prefilled_email param — Jiahui flagged that surfacing
+# `prepay-b22b...@anonymous.surplus` in the Checkout email field makes
+# the form look broken / spammy. Stripe should ask the user for their
+# actual email instead.
+_PLACEHOLDER_EMAIL_DOMAINS = (
+    "anonymous.surplus",
+    "demo.surpluslayer.com",
+)
+
+
+def _is_real_email(email: Optional[str]) -> bool:
+    """True iff this email looks like one the user actually owns.
+    Rejects our internal placeholders (prepay-*, triage-*, demo-*)."""
+    if not email:
+        return False
+    e = email.strip().lower()
+    if "@" not in e:
+        return False
+    domain = e.rsplit("@", 1)[-1]
+    return not any(domain == d or domain.endswith("." + d)
+                   for d in _PLACEHOLDER_EMAIL_DOMAINS)
+
+
 def _stripe():
     """Lazy-import the SDK so the rest of the app boots even when the
     stripe package isn't installed (early dev)."""
@@ -135,7 +162,11 @@ def create_checkout_session(
         parsed = urlparse(payment_link)
         params = dict(parse_qsl(parsed.query))
         params["client_reference_id"] = str(user.id)
-        if user.email:
+        # Only ship REAL user-owned emails to Stripe's prefilled_email.
+        # Our internal placeholders (prepay-*, triage-*) would surface
+        # as junk in the Checkout email field and make the form look
+        # broken : Stripe should ask the user instead.
+        if _is_real_email(user.email):
             params["prefilled_email"] = user.email
         url = urlunparse(parsed._replace(query=urlencode(params)))
         resp = JSONResponse({"url": url})
@@ -152,12 +183,15 @@ def create_checkout_session(
     stripe = _stripe()
     success_url, cancel_url = _success_cancel_urls(request)
     try:
+        # Same placeholder-email guard as the Payment-Link path above :
+        # don't ship prepay-*/triage-* to Stripe as the customer email.
+        real_email = user.email if _is_real_email(user.email) else None
         session = stripe.checkout.Session.create(
             mode="payment",
             line_items=[{"price": price_id, "quantity": 1}],
             client_reference_id=str(user.id),
             customer=user.stripe_customer_id or None,
-            customer_email=user.email if not user.stripe_customer_id else None,
+            customer_email=real_email if not user.stripe_customer_id else None,
             success_url=success_url,
             cancel_url=cancel_url,
             metadata={"user_id": str(user.id)},
@@ -225,6 +259,23 @@ async def stripe_webhook(request: Request,
         cust = obj.get("customer")
         if cust and not user.stripe_customer_id:
             user.stripe_customer_id = cust
+        # Upgrade the user's email if they typed a real one at Checkout
+        # AND we currently have the prepay-* placeholder on file. Stripe
+        # surfaces the buyer email under `customer_details.email` (and
+        # historically also under `customer_email`). Either works.
+        stripe_email = (
+            (obj.get("customer_details") or {}).get("email")
+            or obj.get("customer_email")
+        )
+        if stripe_email and not _is_real_email(user.email):
+            print(f"  [billing.webhook] upgrading placeholder email "
+                  f"{user.email!r} → {stripe_email!r} for user.id={uid_int}")
+            user.email = stripe_email.strip().lower()
+        # Same for name : if we minted "Surplus user" earlier and the
+        # buyer supplied one at Checkout, prefer the real one.
+        stripe_name = (obj.get("customer_details") or {}).get("name")
+        if stripe_name and (user.name or "").strip() in ("", "Surplus user"):
+            user.name = stripe_name.strip()
         db.commit()
         print(f"  [billing.webhook] stamped paid_at on user.id={uid_int}")
 
