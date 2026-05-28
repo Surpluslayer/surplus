@@ -414,18 +414,18 @@ function Pipeline({ profile, eventId, onResult, onError, onDone }) {
         if (!cancelled) {
           if (e.status === 404) {
             onError && onError(
-              "Event not found : the backend probably redeployed and wiped " +
-              "the ephemeral SQLite store. Click Intake in the side rail to " +
-              "create a new event."
+              `Event not found (id=${eventId}). It may have been deleted, ` +
+              "or your cached session points at a stale event. Click Intake " +
+              "to start fresh."
             );
           } else {
-            onError && onError(`Prospecting failed: ${e.message}`);
+            onError && onError(`Prospecting failed (status ${e.status || "?"}): ${e.message}`);
           }
           setApiDone(true);
           notifyDevice("Prospecting failed", {
             body: e.status === 404
-              ? "Event not found : backend redeployed."
-              : `Pipeline error: ${e.message?.slice(0, 120) || "unknown"}`,
+              ? `Event id=${eventId} not found — start fresh from Intake.`
+              : `Pipeline error (status ${e.status || "?"}): ${e.message?.slice(0, 120) || "unknown"}`,
             tag: `prospect-${eventId}`,
           });
         }
@@ -717,18 +717,20 @@ function Prospects({ profile, runResult, eventId, onError, onNext, locked = fals
         setEditsById((cur) => ({ ...edits, ...cur }));  // don't clobber in-flight edits
         setProviderInfo({ provider: pv.provider, dry_run: pv.dry_run });
       } catch (e) {
-        // 404 here means the event no longer exists on the backend :
-        // almost always because Railway's container restarted and wiped
-        // the ephemeral SQLite file. Tell the operator what to do instead
-        // of leaving them staring at a bare red banner.
+        // 404 here means the event no longer exists on the backend.
+        // Surface the eventId so the operator can correlate with the
+        // address bar / their event list and confirm what's wrong instead
+        // of guessing.
         if (e.status === 404) {
           onError && onError(
-            "This event no longer exists on the server. The backend most " +
-            "likely redeployed and wiped its ephemeral SQLite store. Click " +
-            "Intake in the side rail and create a new event."
+            `This event (id=${eventId}) no longer exists on the server. ` +
+            "It may have been deleted, or your cached session points at a " +
+            "stale event ID. Click Intake to start fresh."
           );
         } else {
-          onError && onError(`Couldn't load outreach preview: ${e.message}`);
+          onError && onError(
+            `Couldn't load outreach preview (status ${e.status || "?"}): ${e.message}`
+          );
         }
       }
     })();
@@ -1374,9 +1376,12 @@ function Matching({ profile, eventId, onError, onNext, committedPath }) {
                 : "No RSVPs yet : flip prospects to RSVP'd below, then retry."
             );
           } else if (e.status === 404) {
-            setMatchError("Event not found : the backend may have redeployed and wiped the SQLite store. Restart from Intake.");
+            setMatchError(
+              `Event not found (id=${eventId}). It may have been deleted, ` +
+              "or your cached session points at a stale event. Click Intake to start fresh."
+            );
           } else {
-            setMatchError(`Matching failed: ${e.message}`);
+            setMatchError(`Matching failed (status ${e.status || "?"}): ${e.message}`);
           }
           setLoading(false);
         }
