@@ -23,7 +23,21 @@ if _RAW_DB_URL:
         _RAW_DB_URL = _RAW_DB_URL.replace("postgres://", "postgresql://", 1)
     DB_URL = _RAW_DB_URL
     DB_PATH = None  # not used in Postgres mode
-    ENGINE = create_engine(DB_URL, pool_pre_ping=True)
+    # Connection-pool sizing for prod : Railway Postgres free tier caps
+    # at ~20 concurrent connections. With 2 replicas × default SQLAlchemy
+    # (pool_size=5 + max_overflow=10 = 15 per replica) we'd silently push
+    # past that under burst load and start returning pool-exhaustion
+    # errors. 5+5 per replica = 20 total = under the cap with one slot
+    # to spare for the connection-pre-ping. pool_recycle=300 kills
+    # connections older than 5 min so Postgres / Railway side-disconnects
+    # don't surface as "connection invalidated" errors on the next query.
+    ENGINE = create_engine(
+        DB_URL,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=5,
+        pool_recycle=300,
+    )
 else:
     DB_PATH = Path(__file__).parent / "data" / "surplus.db"
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -52,25 +66,45 @@ def get_db():
 def init_db() -> None:
     """Create tables if they don't exist. Called on app startup.
 
-    Also runs lightweight in-place migrations for SQLite (no alembic):
-    - events.user_id   added when missing
-    - operator User row auto-created from UNIPILE_ACCOUNT_ID env var
-    - existing events with NULL user_id backfilled to the operator user
+    Also runs lightweight in-place migrations (no alembic). Each
+    _migrate_* function is wrapped in a try/except so one botched
+    migration doesn't kill the lifespan — important when two replicas
+    boot in parallel against the same Postgres : Postgres serializes
+    DDL but the "already exists" race surface is real. Failures get
+    logged loudly to Railway logs.
     """
     from . import models  # noqa: F401  (import registers the models)
-    Base.metadata.create_all(ENGINE)
-    _migrate_event_user_id()
-    _migrate_event_sources()
-    _migrate_event_yoe()
-    _migrate_prospect_connection_status()
-    _migrate_prospect_scholar_citations()
-    _migrate_user_voice_examples()
-    _migrate_user_unipile_account_id_nullable()
-    _migrate_event_triage_config()
-    _migrate_event_event_date()
-    _migrate_event_event_name()
-    _migrate_user_billing_columns()
-    _ensure_operator_user_and_backfill()
+    try:
+        Base.metadata.create_all(ENGINE)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [init_db] create_all failed: {type(exc).__name__}: {exc}")
+
+    migrations = [
+        _migrate_event_user_id,
+        _migrate_event_sources,
+        _migrate_event_yoe,
+        _migrate_prospect_connection_status,
+        _migrate_prospect_scholar_citations,
+        _migrate_user_voice_examples,
+        _migrate_user_unipile_account_id_nullable,
+        _migrate_event_triage_config,
+        _migrate_event_event_date,
+        _migrate_event_event_name,
+        _migrate_user_billing_columns,
+    ]
+    for migration in migrations:
+        try:
+            migration()
+        except Exception as exc:  # noqa: BLE001
+            # Most common failure mode : two replicas race the same ALTER
+            # and one returns "column already exists". That's benign — the
+            # other replica did the work. Log + continue.
+            print(f"  [init_db] {migration.__name__} failed (may be idempotent "
+                  f"race with sibling replica): {type(exc).__name__}: {exc}")
+    try:
+        _ensure_operator_user_and_backfill()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [init_db] operator backfill failed: {type(exc).__name__}: {exc}")
 
 
 def _migrate_event_event_name() -> None:
