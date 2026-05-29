@@ -61,8 +61,8 @@ async def prospect_only(
     """
     ev = get_owned_event(event_id, user, db)
     _wipe_prior_prospects(db, ev)
-    prospects = await run_prospect(db, ev, force_fresh=fresh)
-    return schemas.PipelineResult.build(ev, prospects)
+    prospects, failures = await run_prospect(db, ev, force_fresh=fresh)
+    return schemas.PipelineResult.build(ev, prospects, failures=failures)
 
 
 @router.post("/{event_id}/outreach", response_model=schemas.OutreachRunResult)
@@ -136,8 +136,8 @@ async def run(
         )
 
     _wipe_prior_prospects(db, ev)
-    prospects = await run_pipeline(db, ev, provider=provider)
-    return schemas.PipelineResult.build(ev, prospects)
+    prospects, failures = await run_pipeline(db, ev, provider=provider)
+    return schemas.PipelineResult.build(ev, prospects, failures=failures)
 
 
 @router.get("/{event_id}/prospects", response_model=schemas.PipelineResult)

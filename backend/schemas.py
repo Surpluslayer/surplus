@@ -197,13 +197,27 @@ class ProspectOut(BaseModel):
         )
 
 
+class FailureInfo(BaseModel):
+    """One reason a long-running pipeline (prospecting / matching / triage)
+    didn't return as much as it should have. The SPA reads `kind` to pick
+    user-visible copy (with a default fallback), so adding new kinds in
+    backend/agents/failure_log.py doesn't crash the frontend."""
+    kind: str
+    source: str = ""
+    detail: str = ""
+
+
 class PipelineResult(BaseModel):
     event: EventOut
     counts: dict[str, int]
     prospects: list[ProspectOut]
+    # Failures captured during this /prospect call. Empty when everything
+    # worked perfectly. When non-empty, the SPA shows a stacked warning
+    # strip above the prospect list explaining what didn't run and why.
+    failures: list[FailureInfo] = []
 
     @classmethod
-    def build(cls, ev, prospects) -> "PipelineResult":
+    def build(cls, ev, prospects, failures=None) -> "PipelineResult":
         rows = [ProspectOut.of(p, ev.threshold) for p in
                 sorted(prospects, key=lambda p: -p.fit_score)]
         counts = {
@@ -213,7 +227,11 @@ class PipelineResult(BaseModel):
             "rsvp": sum(r.status == "rsvp" for r in rows),
             "below": sum(r.status == "below" for r in rows),
         }
-        return cls(event=EventOut.of(ev), counts=counts, prospects=rows)
+        failure_payload = [FailureInfo(**f) if isinstance(f, dict)
+                           else FailureInfo(**f.to_dict())
+                           for f in (failures or [])]
+        return cls(event=EventOut.of(ev), counts=counts, prospects=rows,
+                   failures=failure_payload)
 
 
 # ── stage 03b: outreach run + preview + log ───────────────────────────────

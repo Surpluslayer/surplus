@@ -311,7 +311,12 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[di
     Returns up to `max_candidates` dicts. On any error, returns [] so the
     caller can fall through to another backend or the mock pool.
     """
+    from . import failure_log
     if not exa_available():
+        failure_log.report_failure(
+            failure_log.EXA_NO_KEY, source=source,
+            detail="EXA_API_KEY not set : skipping Exa web search.",
+        )
         return []
     if source not in ("linkedin", "github", "x", "scholar"):
         return []
@@ -387,13 +392,26 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[di
                                headers=headers, json=body)
     except Exception as exc:  # noqa: BLE001
         print(f"  [exa] {source} search failed: {type(exc).__name__}: {exc}")
+        failure_log.report_failure(
+            failure_log.EXA_ERROR, source=source,
+            detail=f"{type(exc).__name__}: {str(exc)[:160]}",
+        )
         return []
     if resp.status_code >= 400:
         print(f"  [exa] {source} search {resp.status_code}: {resp.text[:200]}")
+        failure_log.report_failure(
+            failure_log.classify_http_status(resp.status_code, "exa"),
+            source=source,
+            detail=f"Exa returned HTTP {resp.status_code}",
+        )
         return []
     try:
         data = resp.json()
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        failure_log.report_failure(
+            failure_log.EXA_ERROR, source=source,
+            detail=f"Couldn't parse Exa response: {type(exc).__name__}",
+        )
         return []
 
     results = data.get("results") or []

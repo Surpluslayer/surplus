@@ -547,6 +547,118 @@ function prospectRowStatus(p, threshold) {
 // operator) reveals the whole list.
 const FREE_PROSPECTS = 8;
 
+// ─── Failure-strip ────────────────────────────────────────────────────
+// Backend pipelines (prospecting, matching, triage) used to fail-open
+// silently when an upstream API rate-limited, timed out, or returned a
+// malformed response. The operator would see "0 candidates surfaced"
+// and have no idea whether their ICP was wrong or our LLM 429'd. The
+// /prospect endpoint now returns a `failures: FailureInfo[]` array; this
+// component translates each entry into operator-friendly copy.
+//
+// Adding a new failure kind in backend/agents/failure_log.py without
+// updating this map is safe : unknown kinds fall back to the generic
+// "Something didn't run — {detail}" line so we don't crash on schema drift.
+
+const FAILURE_COPY = {
+  anthropic_rate_limit: {
+    icon: "⚠️",
+    label: (f) => `Claude rate-limited ${f.source ? `'${f.source}'` : "us"} — fewer candidates than usual. Try again in ~30s, or upgrade your Anthropic tier.`,
+  },
+  anthropic_auth_error: {
+    icon: "🔑",
+    label: (f) => "Claude rejected our API key. Check ANTHROPIC_API_KEY on the server.",
+  },
+  anthropic_timeout: {
+    icon: "⏱",
+    label: (f) => `Claude took too long for the ${f.source || "scoring"} step — kept all candidates without re-checking relevance.`,
+  },
+  anthropic_error: {
+    icon: "⚠️",
+    label: (f) => `Claude error on '${f.source}' — fewer candidates than usual. ${f.detail || ""}`.trim(),
+  },
+  anthropic_parse_error: {
+    icon: "⚠️",
+    label: (f) => `Claude returned unexpected output for '${f.source}' — partial results only.`,
+  },
+  anthropic_no_key: {
+    icon: "🔑",
+    label: () => "ANTHROPIC_API_KEY not set on the server — running without LLM scoring.",
+  },
+  exa_rate_limit: {
+    icon: "⚠️",
+    label: (f) => `Exa rate-limited '${f.source}' web search — partial results from that source only.`,
+  },
+  exa_auth_error: {
+    icon: "🔑",
+    label: () => "Exa rejected our API key. Check EXA_API_KEY on the server.",
+  },
+  exa_error: {
+    icon: "⚠️",
+    label: (f) => `Exa search failed for '${f.source}' — no candidates from that source. ${f.detail || ""}`.trim(),
+  },
+  exa_no_key: {
+    icon: "🔑",
+    label: () => "EXA_API_KEY not set — running with LinkedIn-only discovery (less coverage).",
+  },
+  source_timeout: {
+    icon: "⏱",
+    label: (f) => `'${f.source}' source took too long and was skipped — no candidates from there.`,
+  },
+  source_crash: {
+    icon: "⚠️",
+    label: (f) => `'${f.source}' source crashed — no candidates from there. ${f.detail || ""}`.trim(),
+  },
+  unipile_rate_limit: {
+    icon: "⚠️",
+    label: () => "Unipile rate-limited us. LinkedIn outreach may be temporarily blocked.",
+  },
+  unipile_error: {
+    icon: "⚠️",
+    label: (f) => `Unipile error: ${f.detail || "unknown"}`,
+  },
+  no_matches: {
+    icon: "🔍",
+    label: (f) => f.detail || "No candidates matched your ICP. Try broadening role / seniority / city, or add GitHub / Scholar sources.",
+  },
+  dropped_no_linkedin: {
+    icon: "🔗",
+    label: (f) => f.detail || "Some candidates didn't have a LinkedIn URL — we can't reach out to them.",
+  },
+  config_missing: {
+    icon: "⚙️",
+    label: (f) => `Config missing: ${f.detail || "see server logs"}`,
+  },
+};
+
+function failureCopyFor(failure) {
+  const entry = FAILURE_COPY[failure.kind];
+  if (entry) return { icon: entry.icon, text: entry.label(failure) };
+  // Schema drift safety : show the raw detail rather than crashing if
+  // the backend ships a new kind without a frontend mapping.
+  return {
+    icon: "ℹ️",
+    text: failure.detail || `'${failure.kind}' from ${failure.source || "pipeline"}`,
+  };
+}
+
+function FailureStrip({ failures }) {
+  if (!Array.isArray(failures) || failures.length === 0) return null;
+  return (
+    <div className="failure-strip" role="status" aria-live="polite">
+      {failures.map((f, i) => {
+        const { icon, text } = failureCopyFor(f);
+        const isInfo = f.kind === "no_matches" || f.kind === "dropped_no_linkedin";
+        return (
+          <p key={i} className={`failure-line failure-${f.kind} ${isInfo ? "failure-info" : "failure-warn"}`}>
+            <span className="failure-icon">{icon}</span>
+            <span className="failure-text">{text}</span>
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 function Prospects({ profile, runResult, eventId, onError, onNext, locked = false }) {
   // Use real backend prospects when /run has resolved; fall back to mock
   // so this component still renders if someone navigates directly to it.
@@ -932,6 +1044,7 @@ function Prospects({ profile, runResult, eventId, onError, onNext, locked = fals
           </>
         )}
       </div>
+      <FailureStrip failures={runResult?.failures} />
 
       <div className="prospect-layout">
         <div className="prospect-list">

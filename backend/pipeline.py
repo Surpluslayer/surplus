@@ -34,13 +34,20 @@ async def run_prospect(
     db: Session,
     event: models.Event,
     force_fresh: bool = False,
-) -> list[models.Prospect]:
+) -> tuple[list[models.Prospect], list]:
     """Fan out, persist, score, set the floating threshold, mark approved/below.
 
     `force_fresh=True` bypasses the in-memory ICP cache in prospect().
     Use it when the user explicitly asks for new results (e.g. via
     `?fresh=true` on the route); default reuses the cached pool.
+
+    Returns (prospects, failures) where `failures` is a list of
+    FailureReason objects captured during the run — empty when nothing
+    failed, otherwise carries the categorized reasons (Anthropic 429,
+    Exa timeout, source crash, etc.) that the SPA surfaces to the
+    operator so they're never staring at "0 candidates" without context.
     """
+    from .agents import failure_log
     icp = {
         "role": event.role,
         "seniority": event.seniority,
@@ -51,7 +58,16 @@ async def run_prospect(
 
     from .agents.sources import adapters_for
     selected_adapters = adapters_for(getattr(event, "sources", None))
-    raw = await prospect(icp, adapters=selected_adapters, force_fresh=force_fresh)
+    with failure_log.collector_scope() as collector:
+        raw = await prospect(icp, adapters=selected_adapters, force_fresh=force_fresh)
+        # Special-case : pipeline ran clean but nobody matched. Operators
+        # confuse this with a real failure, so we tag it explicitly.
+        if not raw and len(collector) == 0:
+            collector.add(
+                failure_log.NO_MATCHES, source="prospect",
+                detail="No candidates matched your ICP. Try broadening role / "
+                       "seniority / city, or adding GitHub / Scholar sources.",
+            )
     prospects: list[models.Prospect] = []
     for r in raw:
         p = models.Prospect(
@@ -119,7 +135,7 @@ async def run_prospect(
         voice_examples_raw=voice_examples_raw,
     ))
 
-    return prospects
+    return prospects, collector.failures
 
 
 # ---------- outreach -------------------------------------------------------
@@ -247,7 +263,8 @@ def run_outreach_stage(
 
 async def run_pipeline(db: Session, event: models.Event, provider=None):
     """Facade : run /prospect then /outreach back-to-back. Same provider=
-    fallthrough as run_outreach_stage."""
-    await run_prospect(db, event)
+    fallthrough as run_outreach_stage. Returns (prospects, failures) so
+    callers can surface the same failure-strip as the /prospect-only path."""
+    _, failures = await run_prospect(db, event)
     run_outreach_stage(db, event, provider=provider)
-    return list(event.prospects)
+    return list(event.prospects), failures

@@ -35,6 +35,21 @@ export const SURPLUS_APP_CSS = `
   border:1px solid rgba(108,67,217,0.18); }
 .api-error { padding:10px 18px; background:#fff5f5; color:#b03030;
   border-bottom:1px solid #f3d6d6; font-size:13px; font-weight:500; }
+
+/* FailureStrip: surfaces partial-pipeline failures (rate limits, source
+   timeouts, no-matches) above the prospect list. Wired in by App.jsx
+   FailureStrip component reading runResult.failures. */
+.failure-strip { display:flex; flex-direction:column; gap:6px;
+  margin:10px 0 6px; }
+.failure-line { display:flex; gap:8px; align-items:flex-start;
+  padding:8px 12px; border-radius:8px; font-size:12.5px;
+  line-height:1.45; margin:0; }
+.failure-line.failure-warn { background:#fff8ed; color:#8a5a00;
+  border:1px solid #f1d9a3; }
+.failure-line.failure-info { background:#f1f6ff; color:#1c4d9e;
+  border:1px solid #c9dcfc; }
+.failure-icon { flex:0 0 auto; font-size:14px; line-height:1.2; }
+.failure-text { flex:1 1 auto; }
 .signin-modal-backdrop {
   position:fixed; inset:0; z-index:1000;
   display:flex; align-items:center; justify-content:center;

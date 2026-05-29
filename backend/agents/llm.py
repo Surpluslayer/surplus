@@ -317,6 +317,15 @@ def discover_candidates(source: str, icp: dict, max_candidates: int | None = Non
         cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
         print(f"  [llm] discover_candidates({source}) failed: {type(exc).__name__}: {exc}"
               + (f"  (cause: {type(cause).__name__}: {cause})" if cause else ""))
+        # Surface to the SPA via the failure-log contextvar so the
+        # operator can see whether it was a rate-limit, auth issue, or
+        # transport failure (instead of silently getting 0 candidates).
+        from . import failure_log
+        failure_log.report_failure(
+            failure_log.classify_anthropic_exception(exc),
+            source=source,
+            detail=f"{type(exc).__name__}: {str(exc)[:160]}",
+        )
         return []
 
     out: list[dict] = []
@@ -423,6 +432,12 @@ def judge_relevance_batch(candidates: list[dict], icp: dict) -> dict[str, tuple[
         cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
         print(f"  [llm] judge_relevance_batch failed: {type(exc).__name__}: {exc}"
               + (f"  (cause: {type(cause).__name__}: {cause})" if cause else ""))
+        from . import failure_log
+        failure_log.report_failure(
+            failure_log.classify_anthropic_exception(exc),
+            source="judge",
+            detail=f"{type(exc).__name__}: {str(exc)[:160]}",
+        )
         # Fail-closed: every candidate gets dropped with the error as reason.
         return {c["identity"]: (False, f"verdict error: {exc}") for c in candidates}
 

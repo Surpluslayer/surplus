@@ -111,8 +111,10 @@ async def _judge_all(candidates: list[dict], icp: dict) -> list[dict]:
     verdict per candidate. Wrapped in asyncio.wait_for so a slow Haiku
     response can't pin the whole /prospect call; on timeout we keep
     every surfaced candidate (fail-open here : discovery already
-    self-filters, the judge is a second pass).
+    self-filters, the judge is a second pass). Failure surfaced via
+    failure_log so the SPA can show the operator what happened.
     """
+    from . import failure_log
     timeout = _judge_timeout()
     try:
         verdicts = await asyncio.wait_for(
@@ -121,6 +123,19 @@ async def _judge_all(candidates: list[dict], icp: dict) -> list[dict]:
         )
     except asyncio.TimeoutError:
         print(f"  [llm] judge_relevance_batch exceeded {timeout}s : keeping all candidates")
+        failure_log.report_failure(
+            failure_log.ANTHROPIC_TIMEOUT, source="judge",
+            detail=f"Relevance check exceeded {timeout}s — keeping all candidates",
+        )
+        return candidates
+    except Exception as exc:  # noqa: BLE001
+        # Anthropic SDK exceptions (RateLimit, Authentication, etc.) land here.
+        kind = failure_log.classify_anthropic_exception(exc)
+        print(f"  [llm] judge_relevance_batch failed: {type(exc).__name__}: {exc}")
+        failure_log.report_failure(
+            kind, source="judge",
+            detail=f"{type(exc).__name__}: {str(exc)[:160]}",
+        )
         return candidates
     kept: list[dict] = []
     for c in candidates:
@@ -164,11 +179,15 @@ async def prospect(
     adapters = adapters or ALL_ADAPTERS
     timeout = _adapter_timeout()
 
+    from . import failure_log
+
     async def _bounded(adapter: SourceAdapter) -> list[dict]:
         # Each adapter gets its own wall-clock cap so one stuck call (often
         # Anthropic's web_search going into a multi-minute retry loop on the
         # server side) can't pin the whole pipeline. On timeout we treat that
         # source as "returned nothing" and continue with the others.
+        # Failures are also reported via failure_log so the SPA can show
+        # the operator which source(s) silently dropped out.
         a_start = time.time()
         try:
             result = await asyncio.wait_for(adapter.fetch(icp), timeout=timeout)
@@ -176,9 +195,23 @@ async def prospect(
             return result
         except asyncio.TimeoutError:
             print(f"  [adapter] {adapter.key} exceeded {timeout}s : skipped")
+            failure_log.report_failure(
+                failure_log.SOURCE_TIMEOUT, source=adapter.key,
+                detail=f"Source took longer than {timeout}s",
+            )
             return []
         except Exception as exc:  # noqa: BLE001
             print(f"  [adapter] {adapter.key} crashed: {type(exc).__name__}: {exc}")
+            # Distinguish Anthropic/Exa upstream failures from generic crashes.
+            kind = failure_log.SOURCE_CRASH
+            cls_name = type(exc).__name__
+            if "RateLimit" in cls_name or "429" in str(exc):
+                # Source-internal Anthropic 429 (web_search loop)
+                kind = failure_log.ANTHROPIC_RATE_LIMIT
+            failure_log.report_failure(
+                kind, source=adapter.key,
+                detail=f"{cls_name}: {str(exc)[:160]}",
+            )
             return []
 
     discover_start = time.time()
@@ -219,6 +252,11 @@ async def prospect(
         print(f"  [prospect] dropped {len(dropped_no_linkedin)} candidate(s) "
               f"with no LinkedIn URL: {dropped_no_linkedin[:5]}"
               f"{'…' if len(dropped_no_linkedin) > 5 else ''}")
+        failure_log.report_failure(
+            failure_log.DROPPED_NO_LINKEDIN, source="dedup",
+            detail=f"Dropped {len(dropped_no_linkedin)} candidate(s) without a "
+                   f"LinkedIn URL : we can't reach out to them.",
+        )
 
     # Run the judge unconditionally : it's the ICP gatekeeper that drops
     # off-topic candidates, not just cross-source dedup. Skipping it for
