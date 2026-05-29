@@ -42,8 +42,15 @@ from ..auth import (
     _load_user_by_session,
 )
 from ..db import get_db
+from ..rate_limit import per_ip_rate_limit
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
+
+# Anonymous checkout : per Tech-Week threat model, a bot creating prepay
+# users to spam the prepay-* email domain. 10/min per IP : generous for
+# legitimate retry patterns (Stripe redirect failures, refresh during
+# pay-flow) and tight enough to bound bot pressure.
+_rl_checkout = per_ip_rate_limit(limit=10, window_s=60, tag="checkout_session")
 
 
 def _env(key: str) -> Optional[str]:
@@ -110,7 +117,8 @@ def _success_cancel_urls(request: Request) -> tuple[str, str]:
     )
 
 
-@router.post("/checkout-session")
+@router.post("/checkout-session",
+             dependencies=[Depends(_rl_checkout)])
 def create_checkout_session(
     request: Request,
     db: DbSession = Depends(get_db),

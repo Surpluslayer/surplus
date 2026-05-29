@@ -52,9 +52,17 @@ from ..auth import (
 )
 from ..db import get_db
 from ..models import AuthState, Session, User
+from ..rate_limit import per_ip_rate_limit
 
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# Anonymous user-creation rate limit : ~5/min per IP. A real Tech Week
+# demo viewer clicking around does ~1/min ; a bot trying to fill up the
+# users table gets blocked at 6/min. Also applied to triage signup +
+# checkout-session (other anonymous routes that create users).
+_rl_triage_signup = per_ip_rate_limit(limit=5, window_s=60, tag="triage_signup")
+_rl_triage_signup_email = per_ip_rate_limit(limit=10, window_s=60, tag="triage_signup_email")
 
 
 # ─── Unipile config + HTTP helpers ─────────────────────────────────
@@ -714,7 +722,8 @@ async def linkedin_callback(
 # straight in the triage flow. They can attach an email later if they
 # want to recover the data across browsers.
 
-@router.post("/triage/quick-start")
+@router.post("/triage/quick-start",
+             dependencies=[Depends(_rl_triage_signup)])
 def triage_quick_start(db: DbSession = Depends(get_db)) -> JSONResponse:
     """Create an anonymous User row + session cookie. Caller reloads and
     lands in TriageApp (App.jsx routes there for users with no
@@ -749,7 +758,8 @@ class TriageSignupBody(BaseModel):
     email: str
 
 
-@router.post("/triage/signup")
+@router.post("/triage/signup",
+             dependencies=[Depends(_rl_triage_signup_email)])
 def triage_signup(
     body: TriageSignupBody,
     db: DbSession = Depends(get_db),

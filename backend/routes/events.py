@@ -5,7 +5,7 @@ cannot read or write someone else's event (404 in both not-found and
 not-owned cases : see auth.get_owned_event).
 """
 from __future__ import annotations
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status as http_status
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -13,6 +13,16 @@ from ..auth import current_user, get_owned_event
 from ..db import get_db
 
 router = APIRouter(prefix="/events", tags=["01 · intake"])
+
+
+# Per-user event quota : the EventCreate schema accepts {} (defaults match
+# the demo so the intake form's auto-submit "just works"). That's a
+# convenience for the demo, but it also lets a single authed user
+# spam-create thousands of demo-default events. Cap at 200 per user :
+# orders of magnitude more than any real operator needs at this stage,
+# but tight enough to make automated abuse pointless. Adjust if a real
+# customer ever hits the cap.
+EVENT_QUOTA_PER_USER = 200
 
 
 @router.post("", response_model=schemas.EventOut, status_code=201)
@@ -23,6 +33,25 @@ def create_event(
 ):
     """Define the event mechanism. Returns the profile + derived funnel target.
     The event is auto-stamped with the signed-in user's id."""
+    # Per-user quota guard. Counts events the user already owns ;
+    # rejects with 429 (rate limit) rather than 403 so the SPA can
+    # show a "you've hit your quota" message instead of "forbidden".
+    existing = (db.query(models.Event)
+                  .filter(models.Event.user_id == user.id)
+                  .count())
+    if existing >= EVENT_QUOTA_PER_USER:
+        raise HTTPException(
+            status_code=http_status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "code": "event_quota_exceeded",
+                "message": (
+                    f"You've reached the per-account cap of "
+                    f"{EVENT_QUOTA_PER_USER} events. Delete an old "
+                    f"event to make room, or contact us if you're "
+                    f"hitting this legitimately."
+                ),
+            },
+        )
     data = payload.model_dump()
     sponsors_payload = data.pop("sponsors", []) or []
     # Multi-select fields arrive as lists; the Event columns are CSV strings.
