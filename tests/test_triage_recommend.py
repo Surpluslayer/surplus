@@ -92,10 +92,14 @@ def test_fit_respects_custom_weights():
     (75, 59, "maybe"),            # just below accept confidence, still hits maybe band
     (60, 60, "maybe"),
     (55, 50, "maybe"),
-    (54, 50, "needs_review"),     # below maybe fit
+    # Weak fit below the maybe bar is auto-rejected (operator chose this over
+    # routing low-signal mediocre applicants to a human). Only a decent fit
+    # (>= maybe_fit_min) with too-low confidence stays needs_review.
+    (54, 50, "reject"),           # below maybe fit → soft reject, not review
     (30, 90, "reject"),
     (39, 50, "reject"),           # below reject threshold
-    (40, 30, "needs_review"),     # ambiguous mid-range, low confidence
+    (40, 30, "reject"),           # weak-fit dead-band → reject
+    (60, 30, "needs_review"),     # decent fit, confidence too low to call maybe
 ])
 def test_recommendation_buckets(fit, conf, expected):
     assert recommend.recommendation_from(fit, conf) == expected

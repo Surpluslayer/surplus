@@ -36,7 +36,7 @@ from ..triage.luma import (
     LumaEvent, LumaFetchError, TriageSuggestion,
     fetch_luma_event, suggest_triage_config,
 )
-from ..triage.rubric import synthesize_rubric
+from ..triage.rubric import synthesize_rubric, icp_from_event
 from ..triage.score import evaluate_all
 
 
@@ -90,6 +90,13 @@ class EvaluationOut(BaseModel):
     missing_info: list[str]
     suggested_review_action: str
     model_version: str
+    # Judge B (evidence auditor) outcome. verifier_ran is False for the clean
+    # majority (audit gated to risky applicants). When it ran, adjustments lists
+    # exactly what the deterministic consolidator changed (confidence caps,
+    # blocked accepts, forced reviews) and verifier_reason is the audit summary.
+    verifier_ran: bool = False
+    verifier_adjustments: list[str] = []
+    verifier_reason: str = ""
 
 
 class DecisionOut(BaseModel):
@@ -267,7 +274,8 @@ def upload_applicants(
     )
 
 
-async def _evaluate_event_async(event_id: int) -> None:
+async def _evaluate_event_async(event_id: int, *,
+                                force_reenrich: bool = False) -> None:
     """Background-task body : run rubric synth + per-applicant scoring on
     its own SessionLocal session so we don't tie up the request-scoped db.
 
@@ -289,8 +297,15 @@ async def _evaluate_event_async(event_id: int) -> None:
             print(f"  [triage.eval] event={event_id} has 0 applicants ; nothing to score")
             return
         print(f"  [triage.eval] event={event_id} scoring {len(applicants)} applicants")
-        rubric = synthesize_rubric(ev.id, ev.triage_config or "", applicants)
-        await evaluate_all(bg_db, ev, rubric)
+        # Anchor the inbound rubric to the operator's ICP from event setup
+        # (role / seniority / co_stage / format / city / yoe). This is the
+        # ICP → triage hook: the same profile the outbound curation path scores
+        # against now seeds the inbound rubric synthesis.
+        rubric = synthesize_rubric(
+            ev.id, ev.triage_config or "", applicants,
+            icp=icp_from_event(ev),
+        )
+        await evaluate_all(bg_db, ev, rubric, force_reenrich=force_reenrich)
         print(f"  [triage.eval] event={event_id} done")
     except Exception as exc:  # noqa: BLE001
         print(f"  [triage.evaluate_event_async] {event_id}: "
@@ -303,6 +318,7 @@ async def _evaluate_event_async(event_id: int) -> None:
 def re_evaluate(
     event_id: int,
     background_tasks: BackgroundTasks,
+    reenrich: bool = False,
     db: Session = Depends(get_db),
     user: models.User = Depends(current_user),
 ):
@@ -310,13 +326,20 @@ def re_evaluate(
     when the first pass failed (e.g. a model API hiccup) and the operator
     wants to retry without re-uploading the CSV.
 
+    By default this REUSES each applicant's frozen raw enrichment, so re-running
+    after a triage_config / ICP edit re-scores the SAME evidence deterministically
+    (only the rubric changes). Pass ?reenrich=true to also refresh the underlying
+    Unipile/Exa evidence — e.g. when an applicant updated their LinkedIn.
+
     Clears the rubric cache so a stale 'default rubric' from a failed run
     doesn't get reused."""
     ev = get_owned_event(event_id, user, db)
     from ..triage.rubric import _RUBRIC_CACHE
     _RUBRIC_CACHE.clear()
-    background_tasks.add_task(_evaluate_event_async, ev.id)
+    background_tasks.add_task(_evaluate_event_async, ev.id,
+                             force_reenrich=reenrich)
     return {"event_id": ev.id, "re_evaluation_started": True,
+            "reenrich": reenrich,
             "applicant_count": len(ev.applicants)}
 
 
@@ -438,6 +461,7 @@ def export_decisions_csv(
         "linkedin_url", "website",
         "fit_score", "confidence_score", "system_recommendation", "archetype",
         "one_sentence_summary",
+        "verifier_ran", "verifier_reason",
         "human_decision", "reviewer_notes", "reviewed_at",
     ])
     for a in rows:
@@ -451,6 +475,8 @@ def export_decisions_csv(
             (e.recommendation if e else ""),
             (e.archetype if e else ""),
             (e.one_sentence_summary if e else ""),
+            (bool(getattr(e, "verifier_ran", False)) if e else ""),
+            (getattr(e, "verifier_reason", "") or "" if e else ""),
             (d.human_decision if d else ""),
             (d.reviewer_notes if d else ""),
             (d.reviewed_at.isoformat() if d else ""),
@@ -487,6 +513,12 @@ def _applicant_out(a: models.Applicant) -> ApplicantOut:
                 missing = []
         except json.JSONDecodeError:
             missing = []
+        try:
+            adjustments = json.loads(getattr(ev, "verifier_adjustments", None) or "[]")
+            if not isinstance(adjustments, list):
+                adjustments = []
+        except json.JSONDecodeError:
+            adjustments = []
         evaluation = EvaluationOut(
             fit_score=ev.fit_score, confidence_score=ev.confidence_score,
             recommendation=ev.recommendation, archetype=ev.archetype,
@@ -501,6 +533,9 @@ def _applicant_out(a: models.Applicant) -> ApplicantOut:
             missing_info=[str(x) for x in missing],
             suggested_review_action=ev.suggested_review_action,
             model_version=ev.model_version,
+            verifier_ran=bool(getattr(ev, "verifier_ran", False)),
+            verifier_adjustments=[str(x) for x in adjustments],
+            verifier_reason=getattr(ev, "verifier_reason", "") or "",
         )
 
     decision: Optional[DecisionOut] = None

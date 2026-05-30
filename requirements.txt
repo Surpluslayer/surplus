@@ -2,6 +2,10 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.6
 sqlalchemy==2.0.35
 pydantic==2.9.2
+# Lets pydantic evaluate PEP-604 (`str | None`) field annotations on Python
+# <3.10. No-op on 3.10+ (prod). Without it, importing any BaseModel that uses
+# `X | None` fields raises TypeError at class-construction time on 3.9.
+eval_type_backport==0.3.1; python_version < "3.10"
 pytest==8.3.3
 httpx==0.27.2
 anthropic==0.42.0

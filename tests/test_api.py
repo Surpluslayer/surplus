@@ -2,6 +2,7 @@
 End-to-end API test : the full five-stage flow over HTTP, including the
 Unipile-backed outreach layer and the /webhooks/unipile auto-DM trigger.
 """
+from __future__ import annotations
 import hmac
 import hashlib
 import json

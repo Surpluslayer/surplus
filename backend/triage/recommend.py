@@ -17,9 +17,14 @@ Confidence is a HYBRID:
 So a sparse application never gets 'high confidence' even if Claude is
 bullish, and an inconsistent application can have confidence pulled
 down by the model.
+
+Thresholds are per-event: the rubric synthesizer sets them based on
+event format (casual mixer vs formal dinner vs invite-only). They're
+stored on the Rubric and passed into finalize(). The module-level
+DEFAULT_* constants are used only when rubric synthesis fails.
 """
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -38,12 +43,66 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "application_quality": 0.10,
 }
 
-# Recommendation thresholds. Operators can tune these later via config.
-ACCEPT_FIT_MIN = 75
-ACCEPT_CONFIDENCE_MIN = 60
-MAYBE_FIT_MIN = 55
-MAYBE_CONFIDENCE_MIN = 50
-REJECT_FIT_MAX = 40
+# Default thresholds — used only when rubric synthesis fails.
+# Calibrated for a mid-formality sponsored event. The rubric synthesizer
+# sets per-event thresholds based on event format; these are the fallback.
+DEFAULT_ACCEPT_FIT_MIN      = 75
+DEFAULT_ACCEPT_CONFIDENCE_MIN = 60
+DEFAULT_MAYBE_FIT_MIN       = 55
+DEFAULT_MAYBE_CONFIDENCE_MIN  = 50
+DEFAULT_REJECT_FIT_MAX      = 40
+
+# Keep old names as aliases so existing imports don't break.
+ACCEPT_FIT_MIN      = DEFAULT_ACCEPT_FIT_MIN
+ACCEPT_CONFIDENCE_MIN = DEFAULT_ACCEPT_CONFIDENCE_MIN
+MAYBE_FIT_MIN       = DEFAULT_MAYBE_FIT_MIN
+MAYBE_CONFIDENCE_MIN  = DEFAULT_MAYBE_CONFIDENCE_MIN
+REJECT_FIT_MAX      = DEFAULT_REJECT_FIT_MAX
+
+
+@dataclass(frozen=True)
+class Thresholds:
+    """Accept / maybe / reject cutoffs for one event.
+
+    All values 0-100. The rubric synthesizer outputs these based on
+    event format; finalize() passes them through to recommendation_from().
+    """
+    accept_fit_min:       int = DEFAULT_ACCEPT_FIT_MIN
+    accept_confidence_min: int = DEFAULT_ACCEPT_CONFIDENCE_MIN
+    maybe_fit_min:        int = DEFAULT_MAYBE_FIT_MIN
+    maybe_confidence_min:  int = DEFAULT_MAYBE_CONFIDENCE_MIN
+    reject_fit_max:       int = DEFAULT_REJECT_FIT_MAX
+
+    @classmethod
+    def default(cls) -> "Thresholds":
+        return cls()
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Thresholds":
+        """Parse from the rubric JSON. Unknown keys ignored; missing keys
+        fall back to defaults so partial rubric output still works."""
+        def _int(key: str, default: int) -> int:
+            try:
+                return max(0, min(100, int(d.get(key, default))))
+            except (TypeError, ValueError):
+                return default
+        return cls(
+            accept_fit_min=_int("accept_fit_min", DEFAULT_ACCEPT_FIT_MIN),
+            accept_confidence_min=_int("accept_confidence_min", DEFAULT_ACCEPT_CONFIDENCE_MIN),
+            maybe_fit_min=_int("maybe_fit_min", DEFAULT_MAYBE_FIT_MIN),
+            maybe_confidence_min=_int("maybe_confidence_min", DEFAULT_MAYBE_CONFIDENCE_MIN),
+            reject_fit_max=_int("reject_fit_max", DEFAULT_REJECT_FIT_MAX),
+        )
+
+    def as_dict(self) -> dict:
+        return {
+            "accept_fit_min": self.accept_fit_min,
+            "accept_confidence_min": self.accept_confidence_min,
+            "maybe_fit_min": self.maybe_fit_min,
+            "maybe_confidence_min": self.maybe_confidence_min,
+            "reject_fit_max": self.reject_fit_max,
+        }
+
 
 VALID_RECOMMENDATIONS: tuple[str, ...] = (
     "accept", "maybe", "reject", "needs_review",
@@ -74,8 +133,8 @@ def compute_confidence_floor(applicant) -> int:
 
     score = 0
     # Canonical fields contribute 10 each : 6 fields * 10 = max 60 here
-    for field in ("name", "email", "role", "company"):
-        if _get(field):
+    for f in ("name", "email", "role", "company"):
+        if _get(f):
             score += 10
     # LinkedIn URL + website are higher-value because they're verifiable
     if _get("linkedin_url"):
@@ -85,8 +144,6 @@ def compute_confidence_floor(applicant) -> int:
     # Raw application data : long-form answers are evidence of seriousness
     raw = _get("raw_application_data")
     if raw and raw not in ("{}", "[]"):
-        # Estimate richness by length : a real application has substantive
-        # answers; rejected rows are mostly empty or trivial.
         if len(raw) > 200:
             score += 15
         elif len(raw) > 50:
@@ -94,14 +151,62 @@ def compute_confidence_floor(applicant) -> int:
     return min(100, score)
 
 
+def confidence_floor_breakdown(applicant) -> str:
+    """Human-readable explanation of why the confidence floor is what it is.
+
+    Returns a compact string for the CSV 'evidence_summary' column so
+    reviewers can instantly see what data was available and what was missing.
+
+    Example: 'name✓ email✓ role✓ company✓ linkedin✓ website✗ answers✗ → 65'
+    """
+    def _get(name: str) -> str:
+        if isinstance(applicant, dict):
+            v = applicant.get(name)
+        else:
+            v = getattr(applicant, name, None)
+        return (v or "").strip() if isinstance(v, str) else (str(v).strip() if v else "")
+
+    parts = []
+    score = 0
+    for f in ("name", "email", "role", "company"):
+        if _get(f):
+            parts.append(f"{f}✓(+10)")
+            score += 10
+        else:
+            parts.append(f"{f}✗")
+
+    if _get("linkedin_url"):
+        parts.append("linkedin✓(+15)")
+        score += 15
+    else:
+        parts.append("linkedin✗")
+
+    if _get("website"):
+        parts.append("website✓(+10)")
+        score += 10
+    else:
+        parts.append("website✗")
+
+    raw = _get("raw_application_data")
+    if raw and raw not in ("{}", "[]"):
+        if len(raw) > 200:
+            parts.append("answers✓(+15)")
+            score += 15
+        elif len(raw) > 50:
+            parts.append("answers~(+8)")
+            score += 8
+        else:
+            parts.append("answers✗")
+    else:
+        parts.append("answers✗")
+
+    floor = min(100, score)
+    return " | ".join(parts) + f" → floor={floor}"
+
+
 def fit_from_dimensions(dimension_scores: dict[str, int],
                        weights: Optional[dict[str, float]] = None) -> int:
-    """Weighted sum of the 8 dimension scores -> overall fit_score 0-100.
-
-    Missing dimensions are treated as 0 (not skipped) : keeps the scale
-    consistent so a partially-scored applicant doesn't accidentally rank
-    higher than a fully-scored one.
-    """
+    """Weighted sum of the 8 dimension scores -> overall fit_score 0-100."""
     w = weights or DEFAULT_WEIGHTS
     total_weight = sum(w.values()) or 1.0
     raw = sum(int(dimension_scores.get(name, 0)) * weight
@@ -109,20 +214,30 @@ def fit_from_dimensions(dimension_scores: dict[str, int],
     return max(0, min(100, round(raw / total_weight)))
 
 
-def recommendation_from(fit_score: int, confidence_score: int) -> str:
+def recommendation_from(fit_score: int, confidence_score: int,
+                        thresholds: Optional[Thresholds] = None) -> str:
     """Bucket (fit, confidence) into accept | maybe | reject | needs_review."""
-    if fit_score >= ACCEPT_FIT_MIN and confidence_score >= ACCEPT_CONFIDENCE_MIN:
+    t = thresholds or Thresholds.default()
+    if fit_score >= t.accept_fit_min and confidence_score >= t.accept_confidence_min:
         return "accept"
-    if fit_score < REJECT_FIT_MAX:
+    if fit_score < t.reject_fit_max:
         return "reject"
-    if fit_score >= MAYBE_FIT_MIN and confidence_score >= MAYBE_CONFIDENCE_MIN:
+    if fit_score >= t.maybe_fit_min and confidence_score >= t.maybe_confidence_min:
         return "maybe"
+    # Weak fit that never reached the 'maybe' bar → soft reject, not a human
+    # review. An applicant this far below the maybe cutoff with no positive
+    # signal is just mediocre; routing them to a human is wasted effort.
+    if fit_score < t.maybe_fit_min:
+        return "reject"
+    # What remains is the genuine borderline: decent fit (>= maybe bar) but
+    # confidence too low to call it a 'maybe'. That one a human should see.
     return "needs_review"
 
 
 def finalize(applicant, dimension_scores: dict[str, int],
              llm_confidence: int,
-             weights: Optional[dict[str, float]] = None) -> RecommendationOutput:
+             weights: Optional[dict[str, float]] = None,
+             thresholds: Optional[Thresholds] = None) -> RecommendationOutput:
     """Combine LLM output + deterministic floor into the final triplet.
 
     The LLM can only LOWER confidence : if the data is rich (high floor)
@@ -136,5 +251,5 @@ def finalize(applicant, dimension_scores: dict[str, int],
     return RecommendationOutput(
         fit_score=fit,
         confidence_score=confidence,
-        recommendation=recommendation_from(fit, confidence),
+        recommendation=recommendation_from(fit, confidence, thresholds=thresholds),
     )

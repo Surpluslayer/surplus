@@ -53,12 +53,14 @@ _HEADER_MAP: dict[str, str] = {
     "organization": "company",
     "org": "company",
     "employer": "company",
-    # website
+    # website — note: bare "url" intentionally removed to avoid matching
+    # Luma's qr_code_url system column. Use more specific keys only.
     "website": "website",
     "company website": "website",
     "your website": "website",
-    "url": "website",
     "company url": "website",
+    "product url": "website",
+    "startup url": "website",
     # linkedin
     "linkedin": "linkedin_url",
     "linkedin url": "linkedin_url",
@@ -68,6 +70,28 @@ _HEADER_MAP: dict[str, str] = {
     "your linkedin": "linkedin_url",
     "linkedin username": "linkedin_url",
 }
+
+# Luma system columns that look like they could match canonical fields via
+# substring but must never be treated as applicant data.
+_SYSTEM_COLUMN_PREFIXES: tuple[str, ...] = (
+    "qr code",       # qr_code_url
+    "qr_code",
+    "guest id",
+    "ticket type",
+    "ticket name",
+    "checked in",
+    "approval status",
+    "utm ",
+    "amount",
+    "currency",
+    "coupon",
+    "eth address",
+    "solana address",
+    "survey response",
+    "instagram",     # instagram username ≠ name
+    "twitter",       # twitter handle ≠ name
+    "facebook",
+)
 
 CANONICAL_FIELDS: tuple[str, ...] = (
     "name", "email", "role", "company", "website", "linkedin_url",
@@ -89,6 +113,12 @@ _HEADER_MAP_SORTED = sorted(_HEADER_MAP.items(), key=lambda kv: -len(kv[0]))
 def _resolve_field(header: str) -> str | None:
     """Return the canonical field name for `header`, or None if unknown."""
     norm = _normalize_header(header)
+    # Block Luma system columns and known social/platform handles before
+    # attempting any match — they look like canonical fields via substring
+    # (e.g. qr_code_url → "url" → website; instagram username → "your name").
+    for prefix in _SYSTEM_COLUMN_PREFIXES:
+        if norm.startswith(prefix) or prefix in norm:
+            return None
     if norm in _HEADER_MAP:
         return _HEADER_MAP[norm]
     # Substring fallback : iterate by key length descending so the more
