@@ -132,6 +132,35 @@ def test_upload_persists_applicants(db, user_and_event):
     assert raw["Are you a creator?"] == "no"
 
 
+def test_upload_clips_overlong_fields_to_column_limits(db, user_and_event):
+    """Luma maps free-text survey answers ('what do you do') into role/company,
+    which can exceed VARCHAR(200). Postgres rejects the INSERT (hard 500);
+    SQLite silently accepts it. We clip the mapped, length-capped columns on
+    write so prod doesn't 500, while unmapped free-text columns are retained
+    verbatim in raw_application_data."""
+    from backend.routes.triage import upload_applicants, _APPLICANT_COL_MAXLEN
+    user, ev = user_and_event
+    long_role = "Founder and CEO — " + ("building AI-native event ops " * 20)
+    long_company = "A" * 400
+    long_name = "N" * 300
+    long_answer = "B" * 5000  # unmapped free-text column → kept verbatim
+    assert len(long_role) > 200 and len(long_company) > 200 and len(long_name) > 160
+    csv = (
+        "Name,Email,Job Title,Company,What are you building?\n"
+        f"{long_name},who@x.com,{long_role},{long_company},{long_answer}\n"
+    )
+    result = upload_applicants(ev.id, _bg_tasks(), _upload_file(csv), db, user)
+    assert result.inserted == 1
+    db.refresh(ev)
+    a = ev.applicants[0]
+    assert len(a.name) == _APPLICANT_COL_MAXLEN["name"] == 160
+    assert len(a.role) == _APPLICANT_COL_MAXLEN["role"] == 200
+    assert len(a.company) == _APPLICANT_COL_MAXLEN["company"] == 200
+    # Unmapped free-text survey answer preserved verbatim in the TEXT column.
+    raw = json.loads(a.raw_application_data)
+    assert raw["What are you building?"] == long_answer
+
+
 def test_upload_rejects_non_csv_content_type(db, user_and_event):
     from backend.routes.triage import upload_applicants
     user, ev = user_and_event

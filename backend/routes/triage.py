@@ -242,12 +242,15 @@ def upload_applicants(
     for row in parsed_rows:
         a = models.Applicant(
             event_id=ev.id,
-            name=row.get("name") or "",
-            email=row.get("email") or None,
-            role=row.get("role") or None,
-            company=row.get("company") or None,
-            website=row.get("website") or None,
-            linkedin_url=row.get("linkedin_url") or None,
+            name=_clip(row.get("name"), "name") or "",
+            email=_clip(row.get("email"), "email") or None,
+            role=_clip(row.get("role"), "role") or None,
+            company=_clip(row.get("company"), "company") or None,
+            website=_clip(row.get("website"), "website") or None,
+            linkedin_url=_clip(row.get("linkedin_url"), "linkedin_url") or None,
+            # Unmapped CSV columns (the long free-text survey answers) are
+            # retained verbatim here in an unbounded TEXT column — only the
+            # mapped, length-capped identifier fields above get clipped.
             raw_application_data=json.dumps(row.get("raw_application_data") or {}),
             created_at=now,
             updated_at=now,
@@ -488,6 +491,30 @@ def export_decisions_csv(
         media_type="text/csv",
         headers={"content-disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# Max lengths for the indexed Applicant string columns, read straight from the
+# model so they can't drift if a column is resized. Luma exports map free-text
+# survey answers ("what do you do") into role/company, which can blow past the
+# VARCHAR(200) cap — Postgres then rejects the INSERT with a hard 500 while
+# SQLite (local/tests) silently accepts it. We clip these mapped columns on
+# write; unmapped CSV columns are kept verbatim in raw_application_data (TEXT).
+_APPLICANT_COL_MAXLEN: dict[str, int] = {
+    c.name: c.type.length
+    for c in models.Applicant.__table__.columns
+    if getattr(c.type, "length", None)
+}
+
+
+def _clip(value: Optional[str], field: str) -> Optional[str]:
+    """Trim a string to its column's max length (no-op if it already fits or
+    the value is None)."""
+    if value is None:
+        return None
+    maxlen = _APPLICANT_COL_MAXLEN.get(field)
+    if maxlen is not None and len(value) > maxlen:
+        return value[:maxlen]
+    return value
 
 
 def _applicant_out(a: models.Applicant) -> ApplicantOut:

@@ -63,6 +63,22 @@ def get_db():
         db.close()
 
 
+def _is_benign_migration_error(exc: Exception) -> bool:
+    """True if a migration error is the expected idempotent race (the column
+    already exists because a sibling replica, or a previous boot, added it).
+
+    These surface differently per dialect — Postgres says "already exists" /
+    "duplicate column", SQLite says "duplicate column name". We match on the
+    message text because the SQLAlchemy/DBAPI error types don't distinguish
+    "already exists" from "real DDL failure" cleanly across drivers."""
+    msg = str(exc).lower()
+    benign_markers = (
+        "already exists",
+        "duplicate column",
+    )
+    return any(marker in msg for marker in benign_markers)
+
+
 def init_db() -> None:
     """Create tables if they don't exist. Called on app startup.
 
@@ -98,11 +114,25 @@ def init_db() -> None:
         try:
             migration()
         except Exception as exc:  # noqa: BLE001
-            # Most common failure mode : two replicas race the same ALTER
-            # and one returns "column already exists". That's benign — the
-            # other replica did the work. Log + continue.
-            print(f"  [init_db] {migration.__name__} failed (may be idempotent "
-                  f"race with sibling replica): {type(exc).__name__}: {exc}")
+            # Two replicas can race the same ALTER and one returns "column
+            # already exists" / "duplicate column". That's benign — the
+            # other replica did the work, so log + continue.
+            #
+            # Anything else (lock timeout, permission error, bad SQL, a
+            # rolled-back transaction) is a REAL failure that would silently
+            # ship a half-applied schema and 500 every write to the table.
+            # We learned this the hard way : a swallowed enrichment_raw
+            # migration left prod inserting into a missing column. Re-raise
+            # so the deploy fails its healthcheck loudly instead of serving
+            # a broken schema.
+            if _is_benign_migration_error(exc):
+                print(f"  [init_db] {migration.__name__} skipped (benign "
+                      f"idempotent race): {type(exc).__name__}: {exc}")
+                continue
+            print(f"  [init_db] {migration.__name__} FAILED with a non-benign "
+                  f"error — aborting startup so this doesn't silently ship a "
+                  f"broken schema: {type(exc).__name__}: {exc}")
+            raise
     try:
         _ensure_operator_user_and_backfill()
     except Exception as exc:  # noqa: BLE001
@@ -163,22 +193,27 @@ def _migrate_applicant_evaluation_verifier() -> None:
         return
     cols = {c["name"] for c in insp.get_columns("applicant_evaluations")}
     # SQLite wants a literal 0/1 default for BOOLEAN; Postgres accepts FALSE.
-    bool_default = "FALSE" if ENGINE.dialect.name == "postgresql" else "0"
+    is_pg = ENGINE.dialect.name == "postgresql"
+    bool_default = "FALSE" if is_pg else "0"
+    # Postgres supports IF NOT EXISTS, making each ALTER idempotent so racing
+    # replicas can't error. SQLite lacks it, but the inspect-guard covers the
+    # single-writer local case.
+    ine = "IF NOT EXISTS " if is_pg else ""
     with ENGINE.begin() as conn:
         if "verifier_ran" not in cols:
             conn.execute(text(
                 "ALTER TABLE applicant_evaluations "
-                f"ADD COLUMN verifier_ran BOOLEAN DEFAULT {bool_default}"
+                f"ADD COLUMN {ine}verifier_ran BOOLEAN DEFAULT {bool_default}"
             ))
         if "verifier_adjustments" not in cols:
             conn.execute(text(
                 "ALTER TABLE applicant_evaluations "
-                "ADD COLUMN verifier_adjustments TEXT DEFAULT '[]'"
+                f"ADD COLUMN {ine}verifier_adjustments TEXT DEFAULT '[]'"
             ))
         if "verifier_reason" not in cols:
             conn.execute(text(
                 "ALTER TABLE applicant_evaluations "
-                "ADD COLUMN verifier_reason TEXT DEFAULT ''"
+                f"ADD COLUMN {ine}verifier_reason TEXT DEFAULT ''"
             ))
 
 
@@ -195,9 +230,14 @@ def _migrate_applicant_enrichment_raw() -> None:
     cols = {c["name"] for c in insp.get_columns("applicants")}
     if "enrichment_raw" in cols:
         return
+    # Postgres supports IF NOT EXISTS, which makes the ALTER itself idempotent
+    # so two replicas racing this can't error. SQLite doesn't support it, but
+    # the inspect-guard above already covers the single-writer local case.
+    if_not_exists = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
     with ENGINE.begin() as conn:
         conn.execute(text(
-            "ALTER TABLE applicants ADD COLUMN enrichment_raw TEXT DEFAULT ''"
+            f"ALTER TABLE applicants ADD COLUMN {if_not_exists}"
+            "enrichment_raw TEXT DEFAULT ''"
         ))
 
 
