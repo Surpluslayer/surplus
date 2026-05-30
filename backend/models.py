@@ -224,7 +224,13 @@ class Applicant(Base):
     # Everything the CSV had that didn't map to a canonical field. JSON dict.
     raw_application_data: Mapped[str] = mapped_column(Text, default="{}")
     # Optional enrichment data (LinkedIn snippet, company info). JSON dict.
+    # Holds the reconciled EvidencePacket (derived from enrichment_raw each run).
     enrichment_data: Mapped[str] = mapped_column(Text, default="{}")
+    # Frozen RAW enrichment (RawEvidence.as_dict): the unreconciled Unipile/Exa
+    # output. Persisted on the FIRST evaluation and reused on every re-run so the
+    # non-deterministic network layer is captured once. reconcile + score then
+    # run deterministically off this. Empty "" means "never enriched yet".
+    enrichment_raw: Mapped[str] = mapped_column(Text, default="")
 
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=_utcnow)
@@ -276,6 +282,18 @@ class ApplicantEvaluation(Base):
     # JSON list of fields the scorer wishes it had
     missing_info: Mapped[str] = mapped_column(Text, default="[]")
     suggested_review_action: Mapped[str] = mapped_column(Text, default="")
+
+    # --- Judge B (evidence auditor) outcome -------------------------------
+    # The verifier is gated to risky applicants only (see should_verify), so
+    # verifier_ran is False for the clean majority. When it ran, the
+    # deterministic consolidator may have lowered confidence and/or downgraded
+    # an accept/maybe to needs_review — verifier_adjustments records exactly
+    # what it changed (JSON list of human-readable strings) and verifier_reason
+    # is Judge B's one-sentence audit summary. The final recommendation column
+    # above already reflects any downgrade.
+    verifier_ran: Mapped[bool] = mapped_column(default=False)
+    verifier_adjustments: Mapped[str] = mapped_column(Text, default="[]")
+    verifier_reason: Mapped[str] = mapped_column(Text, default="")
 
     model_version: Mapped[str] = mapped_column(String(40), default="")
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)

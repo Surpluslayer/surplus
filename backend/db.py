@@ -91,6 +91,8 @@ def init_db() -> None:
         _migrate_event_event_date,
         _migrate_event_event_name,
         _migrate_user_billing_columns,
+        _migrate_applicant_evaluation_verifier,
+        _migrate_applicant_enrichment_raw,
     ]
     for migration in migrations:
         try:
@@ -147,6 +149,56 @@ def _migrate_event_triage_config() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE events ADD COLUMN triage_config TEXT DEFAULT ''"))
+
+
+def _migrate_applicant_evaluation_verifier() -> None:
+    """Add the Judge B (evidence auditor) columns to applicant_evaluations:
+    verifier_ran (BOOLEAN), verifier_adjustments (TEXT JSON list), and
+    verifier_reason (TEXT). Existing rows pre-date the verifier, so they
+    default to 'did not run' — their recommendation came from Judge A +
+    the deterministic floor alone, which is still valid."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "applicant_evaluations" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("applicant_evaluations")}
+    # SQLite wants a literal 0/1 default for BOOLEAN; Postgres accepts FALSE.
+    bool_default = "FALSE" if ENGINE.dialect.name == "postgresql" else "0"
+    with ENGINE.begin() as conn:
+        if "verifier_ran" not in cols:
+            conn.execute(text(
+                "ALTER TABLE applicant_evaluations "
+                f"ADD COLUMN verifier_ran BOOLEAN DEFAULT {bool_default}"
+            ))
+        if "verifier_adjustments" not in cols:
+            conn.execute(text(
+                "ALTER TABLE applicant_evaluations "
+                "ADD COLUMN verifier_adjustments TEXT DEFAULT '[]'"
+            ))
+        if "verifier_reason" not in cols:
+            conn.execute(text(
+                "ALTER TABLE applicant_evaluations "
+                "ADD COLUMN verifier_reason TEXT DEFAULT ''"
+            ))
+
+
+def _migrate_applicant_enrichment_raw() -> None:
+    """Add applicants.enrichment_raw (TEXT, default '') to hold the frozen raw
+    enrichment (unreconciled Unipile/Exa output). Persisted once on first
+    evaluation and reused on re-runs so the inbound triage path is reproducible.
+    Existing rows default to '' = 'never enriched', so their next evaluation
+    enriches + persists as normal."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "applicants" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("applicants")}
+    if "enrichment_raw" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE applicants ADD COLUMN enrichment_raw TEXT DEFAULT ''"
+        ))
 
 
 def _migrate_user_billing_columns() -> None:

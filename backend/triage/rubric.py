@@ -24,20 +24,29 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..jsonx import extract_json
+from .recommend import Thresholds
 
 
 RUBRIC_MODEL = os.environ.get("TRIAGE_RUBRIC_MODEL", "claude-sonnet-4-6")
 RUBRIC_MAX_TOKENS = 2500
 RUBRIC_CACHE_TTL_S = 60 * 60 * 6  # 6h : refresh if the operator edits config
+# Sonnet rubric synth routinely takes 20-40s on Railway (TCP/TLS cold start
+# + model warmup). 30s hardcode was causing ~50% timeout rate in prod.
+RUBRIC_TIMEOUT_S = float(os.environ.get("TRIAGE_RUBRIC_TIMEOUT", "60"))
 
 
 @dataclass
 class Rubric:
     dimensions: list[dict]    # [{name, weight, rubric}, ...]
     hard_gates: list[str]
+    thresholds: Thresholds = None   # per-event accept/maybe/reject cutoffs
     notes: str = ""
     error: Optional[str] = None
     model_version: str = ""
+
+    def __post_init__(self):
+        if self.thresholds is None:
+            self.thresholds = Thresholds.default()
 
     def weights(self) -> dict[str, float]:
         """Normalized weight dict the recommend module expects."""
@@ -51,6 +60,7 @@ class Rubric:
         return json.dumps({
             "dimensions": self.dimensions,
             "hard_gates": self.hard_gates,
+            "thresholds": self.thresholds.as_dict(),
             "notes": self.notes,
             "model_version": self.model_version,
         })
@@ -78,12 +88,29 @@ _DIMENSION_NAMES: tuple[str, ...] = (
 _RUBRIC_SYSTEM = """You synthesize a scoring rubric for an event sponsor's applicant triage.
 
 The host has shared:
+  - the OPERATOR ICP : the structured ideal-attendee profile captured when the
+    event was created (ideal role, seniority, company stage, location, years of
+    experience, format). This is the operator's PRIMARY statement of who they
+    want in the room — the rubric MUST be anchored to it.
   - sponsor identity + what they're sponsoring
   - the event goal + format
   - an 'ideal attendee' description
   - hard filters (drop the applicant if these aren't met)
   - nice-to-have signals
   - anti-fit examples (categories of applicant the host does NOT want)
+
+HOW TO USE THE OPERATOR ICP
+  - ideal_role / ideal_seniority anchor role_relevance and (where relevant)
+    seniority expectations: an applicant matching the ICP role/seniority scores
+    high on role_relevance; a clear mismatch scores low.
+  - ideal_company_stage sets the correct answer for stage_relevance — do NOT
+    leave stage_relevance as 'any' when the ICP names a stage.
+  - city, when set, is a strong candidate for a location hard_gate
+    ('Must be based in <city>') UNLESS the format implies remote/virtual.
+  - The ICP CONSTRAINS but does not REPLACE sponsor_fit. A perfect-ICP applicant
+    who is useless to the sponsor still scores low on sponsor_fit. Keep both.
+  - If the ICP and the free-text triage_config conflict, prefer the triage_config
+    (it is the more specific, later signal) and note the conflict.
 
 Your job: produce a JSON rubric covering EXACTLY these 8 dimensions, each
 with a weight (0-1, sum to 1.0) and a 'rubric' field that tells the
@@ -123,6 +150,20 @@ KEY RULES
   - notes : 1-2 sentences for the human reviewer about how to interpret edge
     cases, especially borderline applicants.
 
+THRESHOLDS
+Set accept/maybe/reject cutoffs based on the event format:
+
+  Casual mixer / café / open coworking  →  accept_fit_min: 65, maybe_fit_min: 50, reject_fit_max: 35
+  Standard sponsored dinner / reception →  accept_fit_min: 72, maybe_fit_min: 55, reject_fit_max: 40
+  Exclusive/invite-only / small dinner  →  accept_fit_min: 78, maybe_fit_min: 60, reject_fit_max: 45
+
+  accept_confidence_min: always 60 (we need evidence to commit to an accept)
+  maybe_confidence_min:  always 45
+
+  Use your judgment — a 300-person mixer should accept more broadly than a
+  20-person intimate dinner. The thresholds determine what fraction of the
+  pool gets auto-accepted vs flagged for human review.
+
 OUTPUT FORMAT
 Return ONLY JSON. No prose, no markdown fences. Schema:
 
@@ -133,16 +174,54 @@ Return ONLY JSON. No prose, no markdown fences. Schema:
     ...8 dimensions...
   ],
   "hard_gates": ["...", "..."],
+  "thresholds": {
+    "accept_fit_min": 65,
+    "accept_confidence_min": 60,
+    "maybe_fit_min": 50,
+    "maybe_confidence_min": 45,
+    "reject_fit_max": 35
+  },
   "notes": "..."
 }"""
 
 
-def _build_user_message(triage_config: dict, pool_summary: dict) -> str:
+def icp_from_event(event) -> dict:
+    """The operator's structured ideal-attendee profile, captured at event setup.
+
+    These are the SAME canonical ICP fields the outbound curation path scores
+    against (see curation.scoring.ICP.from_event: role, seniority, co_stage).
+    Surfacing them here is the whole point of this hook — it anchors the INBOUND
+    triage rubric to the operator's stated ICP instead of relying only on the
+    free-text triage_config. Empty/blank fields are dropped so they don't dilute
+    the synthesis prompt.
+    """
+    def _g(name: str) -> str:
+        v = getattr(event, name, None)
+        return v.strip() if isinstance(v, str) else ("" if v is None else str(v))
+
+    icp = {
+        "ideal_role": _g("role"),
+        "ideal_seniority": _g("seniority"),
+        "ideal_company_stage": _g("co_stage"),
+        "event_format": _g("format"),
+        "city": _g("city"),
+        "yoe_buckets": _g("yoe"),
+        "event_goal": _g("goal"),
+    }
+    return {k: v for k, v in icp.items() if v}
+
+
+def _build_user_message(triage_config: dict, pool_summary: dict,
+                        icp: Optional[dict] = None) -> str:
     cfg = {k: v for k, v in triage_config.items() if k != "intake_snapshot"}
-    parts = ["TRIAGE CONFIG", json.dumps(cfg, indent=2),
-             "", "APPLICANT POOL SUMMARY",
-             json.dumps(pool_summary, indent=2),
-             "", "Generate the rubric JSON now."]
+    parts: list[str] = []
+    if icp:
+        parts += ["OPERATOR ICP (from event setup — anchor the rubric to this)",
+                  json.dumps(icp, indent=2), ""]
+    parts += ["TRIAGE CONFIG", json.dumps(cfg, indent=2),
+              "", "APPLICANT POOL SUMMARY",
+              json.dumps(pool_summary, indent=2),
+              "", "Generate the rubric JSON now."]
     return "\n".join(parts)
 
 
@@ -187,14 +266,21 @@ def _default_rubric(error: str = "") -> Rubric:
 
 
 def synthesize_rubric(event_id: int, triage_config_json: str,
-                     applicants: list) -> Rubric:
+                     applicants: list, *, icp: Optional[dict] = None) -> Rubric:
     """Run rubric synthesis for this event. Cached by (event_id, config_hash).
+
+    `icp` is the operator's structured ideal-attendee profile from event setup
+    (see icp_from_event). It anchors the synthesized rubric to the operator's
+    stated ICP; it is folded into the cache fingerprint so editing the event's
+    ICP invalidates a stale rubric just like editing triage_config does.
 
     Falls back to a generic equal-weight rubric on any failure so the
     scoring pipeline always has something to apply. Synthesis failures
     are logged + recorded on Rubric.error.
     """
-    cfg_hash = _config_hash(triage_config_json)
+    # Fingerprint config + ICP together so a change to EITHER busts the cache.
+    icp_blob = json.dumps(icp or {}, sort_keys=True)
+    cfg_hash = _config_hash((triage_config_json or "") + "\x00" + icp_blob)
     key = (event_id, cfg_hash)
     now = time.time()
     hit = _RUBRIC_CACHE.get(key)
@@ -212,7 +298,7 @@ def synthesize_rubric(event_id: int, triage_config_json: str,
         return rubric
 
     pool_summary = _summarize_pool(applicants)
-    user_msg = _build_user_message(triage_config, pool_summary)
+    user_msg = _build_user_message(triage_config, pool_summary, icp=icp)
 
     try:
         from anthropic import Anthropic
@@ -220,7 +306,7 @@ def synthesize_rubric(event_id: int, triage_config_json: str,
         resp = client.messages.create(
             model=RUBRIC_MODEL,
             max_tokens=RUBRIC_MAX_TOKENS,
-            timeout=30,
+            timeout=RUBRIC_TIMEOUT_S,
             system=[{"type": "text", "text": _RUBRIC_SYSTEM,
                      "cache_control": {"type": "ephemeral"}}],
             messages=[
@@ -248,6 +334,7 @@ def synthesize_rubric(event_id: int, triage_config_json: str,
     rubric = Rubric(
         dimensions=dims,
         hard_gates=[str(g) for g in (parsed.get("hard_gates") or []) if g],
+        thresholds=Thresholds.from_dict(parsed.get("thresholds") or {}),
         notes=str(parsed.get("notes") or ""),
         model_version=RUBRIC_MODEL,
     )
