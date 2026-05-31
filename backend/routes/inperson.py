@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -29,11 +29,30 @@ from ..agents.send_flow import route_and_send
 from ..auth import (
     current_user,
     get_owned_event,
-    require_linkedin_connected,
+    require_can_send_linkedin,
     require_outreach_enabled,
+    user_has_linkedin_connected,
 )
 from ..db import get_db
+from ..hosts import is_first_party, is_inperson_host, request_browser_host
 from ..providers import get_preview_provider, get_provider_for_user
+
+
+def _require_send_allowed(request: Request, user: models.User) -> None:
+    """Send gate for the in-person surface.
+
+    On the in-person host (event.surpluslayer.com) connecting LinkedIn + sending
+    are free : we only require a connected, active LinkedIn account (mechanically
+    needed to send). Real sends are still guarded by UNIPILE_DRY_RUN. On any
+    other host the full paywall (connected AND paid) applies, same as the
+    desktop product. Host is taken from a first-party Origin/X-Forwarded-Host so
+    a forged header on the apex can't claim the in-person exemption."""
+    host = request_browser_host(request)
+    if is_first_party(host) and is_inperson_host(host):
+        if not user_has_linkedin_connected(user):
+            require_can_send_linkedin(user)  # raises 402 linkedin_send_locked
+        return
+    require_can_send_linkedin(user)
 
 router = APIRouter(prefix="/api/inperson", tags=["in-person"])
 
@@ -272,18 +291,23 @@ def list_captures(
 @router.post("/captures/{prospect_id}/send")
 def send_capture(
     prospect_id: int,
+    request: Request,
     body: SendIn = SendIn(),
     db: Session = Depends(get_db),
     user: models.User = Depends(current_user),
 ):
     """Send the connect request / DM for ONE captured prospect, through the
-    SHARED warm/cold send helper. Honors operator note/message overrides."""
+    SHARED warm/cold send helper. Honors operator note/message overrides.
+
+    On the in-person host, connect + send are free (gate is connected-only);
+    on the apex the full send paywall applies. UNIPILE_DRY_RUN still governs
+    whether anything actually leaves the box."""
     p = _owned_prospect(db, prospect_id, user)
     if not p.linkedin_url:
         raise HTTPException(409, "capture has no linkedin_url")
 
     require_outreach_enabled()         # 503 when SURPLUS_KILL_OUTREACH is on
-    require_linkedin_connected(user)
+    _require_send_allowed(request, user)
     provider = get_provider_for_user(user)
 
     outcome = route_and_send(

@@ -45,7 +45,6 @@ from ..auth import (
     create_session,
     current_user,
     is_demo_user,
-    require_paid_to_connect_linkedin,
     revoke_session,
     set_last_account_cookie,
     set_session_cookie,
@@ -126,6 +125,22 @@ def _surplus_base_url(request: Request) -> str:
     if "surpluslayer.com" in host or "railway.app" in host:
         scheme = "https"
     return f"{scheme}://{host}"
+
+
+def _redirect_base(request: Request) -> str:
+    """Base URL the LinkedIn flow should return the user to.
+
+    Same as _surplus_base_url, EXCEPT: when the flow began on the in-person
+    host (event.surpluslayer.com), keep the success/failure redirects on that
+    host so the user stays on the in-person surface end-to-end instead of being
+    dropped on the apex and having to re-find their way back. Guarded to
+    first-party hosts so a forged Origin can't turn this into an open redirect.
+    """
+    from ..hosts import request_browser_host, is_inperson_host, is_first_party
+    host = request_browser_host(request)
+    if host and is_first_party(host) and is_inperson_host(host):
+        return f"https://{host}"
+    return _surplus_base_url(request)
 
 
 def _unipile_iso_timestamp(dt: datetime) -> str:
@@ -219,27 +234,24 @@ async def linkedin_start(
     db.add(auth_state)
     db.flush()  # populate auth_state.id without committing yet
 
-    base = _surplus_base_url(request)
+    base = _redirect_base(request)
     expires = _unipile_iso_timestamp(_utcnow() + timedelta(hours=1))
     failure_url = f"{base}/signin?error=linkedin_auth_failed"
 
-    # Stripe-first : require a paid signed-in user before we ever hit
-    # Unipile. Anonymous callers get 402 -> SPA opens Stripe Checkout
-    # (anon-friendly, mints user + session). Signed-in unpaid users get
-    # the same 402. By the time anyone reaches /hosted/accounts/link they
-    # already have paid_at stamped.
+    # Connect-first : signing in + connecting LinkedIn is FREE. The single
+    # paywall is at SEND (require_can_send_linkedin), not here. An anonymous
+    # caller starts the flow with no session : the callback mints the User
+    # when LinkedIn comes back.
     active_user = _load_user_by_session(
         db, (request.cookies.get(SESSION_COOKIE) or "").strip() or None
     )
-    require_paid_to_connect_linkedin(active_user)
 
-    # Pre-tag the AuthState with the signed-in user's id. After Stripe-first
-    # signup the prepay user row carries paid_at but no LinkedIn identifiers,
-    # so the callback's dedup-by-email/provider_id falls through. Without this
-    # pre-link the callback would CREATE a new User for the LinkedIn data and
-    # orphan the paid row. With it, the callback merges the LinkedIn fields
-    # into the prepay user, preserving paid_at and the existing session.
-    auth_state.user_id = active_user.id
+    # Pre-tag the AuthState with the signed-in user's id when we have one, so
+    # the callback merges the LinkedIn fields into the existing row (preserving
+    # paid_at / session) instead of creating a duplicate. Anonymous callers
+    # leave it None : the callback upserts by LinkedIn identifiers / email.
+    if active_user is not None:
+        auth_state.user_id = active_user.id
 
     returning = _resolve_returning_user(request, db)
 
@@ -298,23 +310,19 @@ async def linkedin_start_redirect(
     db.add(auth_state)
     db.flush()
 
-    base = _surplus_base_url(request)
+    base = _redirect_base(request)
     expires = _unipile_iso_timestamp(_utcnow() + timedelta(hours=1))
     failure_url = f"{base}/?error=linkedin_auth_failed"
 
-    # Stripe-first gate (same as POST /linkedin/start). Top-level browser
-    # navigation -> 303 back to the SPA with ?error=payment_required so the
-    # SPA can open Stripe Checkout instead of dropping the user on a raw
-    # 402 JSON page.
+    # Connect-first : connecting LinkedIn is free (paywall is at SEND). An
+    # anonymous caller just starts the flow; the callback mints the User.
     active_user = _load_user_by_session(
         db, (request.cookies.get(SESSION_COOKIE) or "").strip() or None
     )
-    from ..auth import user_has_paid as _user_has_paid
-    if active_user is None or not _user_has_paid(active_user):
-        return RedirectResponse(f"{base}/?error=payment_required", status_code=303)
-    # Pre-tag so the callback merges LinkedIn fields into the paid prepay
-    # row instead of orphaning it. See linkedin_start() for the rationale.
-    auth_state.user_id = active_user.id
+    # Pre-tag so the callback merges LinkedIn fields into the existing row
+    # instead of orphaning it. See linkedin_start() for the rationale.
+    if active_user is not None:
+        auth_state.user_id = active_user.id
 
     returning = _resolve_returning_user(request, db)
     if returning is not None:
@@ -583,7 +591,15 @@ async def linkedin_callback(
     to the account_id in the URL and upsert the User ourselves — the
     webhook is best-effort, not load-bearing.
     """
-    base_redirect = "/"
+    # Land the user back where they started. Unipile redirects to our
+    # success_redirect_url (already on the right host via _redirect_base), so
+    # this same-origin "/" stays on event.surpluslayer.com when the flow began
+    # there. Belt-and-suspenders: also honor the in-person host on this hop.
+    from ..hosts import request_browser_host, is_inperson_host, is_first_party
+    _h = request_browser_host(request)
+    base_redirect = (f"https://{_h}/"
+                     if _h and is_first_party(_h) and is_inperson_host(_h)
+                     else "/")
     error_redirect = "/signin?error=linkedin_callback_failed"
 
     auth_state = db.query(AuthState).filter(AuthState.state_token == state).first()

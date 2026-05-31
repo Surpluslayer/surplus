@@ -63,6 +63,15 @@ def _make_event(db, user):
     return out
 
 
+def _req(host="event.surpluslayer.com"):
+    """Minimal Starlette Request whose browser-host resolves to `host` (via the
+    Origin header), for exercising send_capture's host-aware send gate."""
+    from starlette.requests import Request
+    headers = [(b"origin", f"https://{host}".encode())] if host else []
+    return Request({"type": "http", "headers": headers, "method": "POST",
+                    "path": "/api/inperson/captures/1/send"})
+
+
 # ── /events : create-or-fetch idempotency ──────────────────────────────────
 
 def test_create_inperson_event_is_idempotent(db, user):
@@ -218,7 +227,7 @@ def test_send_capture_dry_run_cold_path(db, user):
                         source="scan", name="Maya Rodriguez"), db, user)
     p = db.query(models.Prospect).one()
 
-    out = send_capture(p.id, SendIn(note="see you next week!"), db, user)
+    out = send_capture(p.id, _req(), SendIn(note="see you next week!"), db, user)
     # Dry-run treats everyone as cold (is_relation False) -> send_connection.
     assert out["path_taken"] == "cold"
     assert out["dry_run"] is True
@@ -242,7 +251,7 @@ def test_send_capture_rejects_unowned(db, user):
                         linkedin_url="https://www.linkedin.com/in/z")
     db.add(p); db.commit()
     with pytest.raises(HTTPException) as ei:
-        send_capture(p.id, SendIn(), db, user)
+        send_capture(p.id, _req(), SendIn(), db, user)
     assert ei.value.status_code == 404
 
 
@@ -425,7 +434,7 @@ def test_send_capture_warm_dm_via_route(db, user, monkeypatch):
                         source="scan", name="Maya Rodriguez"), db, user)
     p = db.query(models.Prospect).one()
 
-    out = send_capture(p.id, SendIn(), db, user)
+    out = send_capture(p.id, _req(), SendIn(), db, user)
     assert out["path_taken"] == "warm"           # DM, not invite
     assert out["dry_run"] is True
     assert out["state"] == "dry_run_queued"
@@ -515,3 +524,88 @@ def test_captures_reflects_last_touch_and_reply(db, user):
     assert row["status"] == "rsvp"                       # reply flips to rsvp
     assert row["last_outreach"]["state"] == "message_replied"   # latest touch
     assert row["connection_status"] == "unknown"          # never relation-checked
+
+
+# ── free connect + host-scoped send gate ─────────────────────────────────────
+
+@pytest.fixture
+def connected_unpaid_user(db):
+    """LinkedIn connected, NOT paid : can send on the in-person host, blocked
+    on the apex."""
+    u = models.User(name="Unpaid", email="unpaid@example.com",
+                    unipile_account_id="unpaid_acct", linkedin_status="active",
+                    paid_at=None)
+    db.add(u); db.commit()
+    return u
+
+
+def _scan_one(db, user):
+    from backend.routes.inperson import scan_capture, ScanIn
+    ev = _make_event(db, user)
+    scan_capture(ScanIn(event_id=ev["event_id"],
+                        linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+                        source="scan", name="Maya Rodriguez"), db, user)
+    return db.query(models.Prospect).one()
+
+
+def test_send_free_on_inperson_host_for_connected_unpaid(db, connected_unpaid_user):
+    """Connected-but-unpaid user CAN send from event.surpluslayer.com."""
+    from backend.routes.inperson import send_capture, SendIn
+    p = _scan_one(db, connected_unpaid_user)
+    out = send_capture(p.id, _req("event.surpluslayer.com"), SendIn(),
+                       db, connected_unpaid_user)
+    assert out["state"] == "dry_run_queued"   # dry-run send went through
+
+
+def test_send_paywalled_on_apex_for_connected_unpaid(db, connected_unpaid_user):
+    """Same user is still paywalled (402) when the request is from the apex."""
+    from fastapi import HTTPException
+    from backend.routes.inperson import send_capture, SendIn
+    p = _scan_one(db, connected_unpaid_user)
+    with pytest.raises(HTTPException) as ei:
+        send_capture(p.id, _req("www.surpluslayer.com"), SendIn(),
+                     db, connected_unpaid_user)
+    assert ei.value.status_code == 402
+    assert ei.value.detail["code"] == "payment_required"
+
+
+def test_send_inperson_host_still_requires_linkedin_connection(db, user, monkeypatch):
+    """Even on the in-person host, a user with NO connected LinkedIn is asked
+    to connect (402 linkedin_send_locked) : connection is mechanically needed."""
+    from fastapi import HTTPException
+    from backend.routes.inperson import send_capture, SendIn
+    # Drop the user's LinkedIn connection.
+    user.unipile_account_id = None
+    user.linkedin_status = "disconnected"
+    db.commit()
+    p = _scan_one(db, user)  # _make_event still works; scan uses preview provider
+    with pytest.raises(HTTPException) as ei:
+        send_capture(p.id, _req("event.surpluslayer.com"), SendIn(), db, user)
+    assert ei.value.status_code == 402
+    assert ei.value.detail["code"] == "linkedin_send_locked"
+
+
+def test_linkedin_start_no_longer_requires_payment(db, monkeypatch):
+    """POST /linkedin/start used to 402 anonymous/unpaid callers (pay-first).
+    Connect is now free : the gate is removed. We stub the Unipile POST so no
+    network call happens and assert no 402 is raised before it."""
+    import asyncio
+    from starlette.requests import Request
+    import backend.routes.auth as auth_routes
+
+    monkeypatch.setenv("UNIPILE_DSN", "https://api.unipile.test")
+    monkeypatch.setenv("UNIPILE_API_KEY", "k")
+
+    async def _fake_post(dsn, api_key, body):
+        return 200, {"url": "https://unipile.test/hosted/abc"}
+    monkeypatch.setattr(auth_routes, "_post_hosted_link", _fake_post)
+
+    req = Request({"type": "http", "method": "POST",
+                   "path": "/api/auth/linkedin/start",
+                   "headers": [(b"origin", b"https://event.surpluslayer.com")],
+                   "query_string": b""})
+    # Anonymous caller (no session cookie) : previously 402, now succeeds.
+    resp = asyncio.run(auth_routes.linkedin_start(req, db))
+    import json
+    payload = json.loads(bytes(resp.body))
+    assert payload["url"] == "https://unipile.test/hosted/abc"
