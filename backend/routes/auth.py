@@ -765,6 +765,42 @@ def triage_quick_start(db: DbSession = Depends(get_db)) -> JSONResponse:
     return resp
 
 
+# ─── 3a'. In-person guest : zero-friction anonymous session ───────────
+#
+# For the phone-first in-person surface (event.surpluslayer.com). Lets a tester
+# use the capture flow without LinkedIn : creates a throwaway, LinkedIn-LESS User
+# + session so scan / resolve / draft / save all work. Real LinkedIn SENDS stay
+# blocked (no unipile_account_id -> the existing send gate / "Connect LinkedIn
+# to send" banner), so a guest can never send from anyone's account.
+#
+# Gated to the in-person host (X-Forwarded-Host aware) so this guest door only
+# exists on event.surpluslayer.com, never on the apex product.
+
+@router.post("/inperson/guest",
+             dependencies=[Depends(_rl_triage_signup)])
+def inperson_guest(request: Request, db: DbSession = Depends(get_db)) -> JSONResponse:
+    """Mint an anonymous, LinkedIn-less guest session for the in-person host.
+    403 on any non-in-person host so the apex product keeps its sign-in gate."""
+    from ..hosts import request_browser_host, is_inperson_host
+    host = request_browser_host(request)
+    if not is_inperson_host(host):
+        raise HTTPException(status_code=403,
+                            detail="guest access is only available on the in-person host")
+    tag = secrets.token_hex(6)
+    user = User(
+        name="Guest",
+        email=f"guest-{tag}@anonymous.surplus",
+        # NOTE: no unipile_account_id -> not LinkedIn-connected -> cannot send.
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    sess = create_session(db, user)
+    resp = JSONResponse({"ok": True, "user_id": user.id, "mode": "inperson_guest"})
+    set_session_cookie(resp, sess.session_token, host=host)
+    return resp
+
+
 # ─── 3b. Triage-only signup (no LinkedIn / no Unipile) ─────────────
 #
 # Customers who only want to use Applicant Triage (review Luma applicants)
