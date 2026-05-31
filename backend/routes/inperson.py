@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..agents import resolver
-from ..agents.outreach import compose_inperson
+from ..agents.outreach import compose
 from ..agents.send_flow import route_and_send
 from ..auth import (
     current_user,
@@ -242,7 +242,8 @@ def scan_capture(
     db.commit()
     db.refresh(p)
 
-    draft = compose_inperson(p, ev)
+    # ev.kind == "in_person", so compose() takes the warm "we just met" branch.
+    draft = compose(p, ev)
     return {
         "prospect": _capture_row(p),
         "resolve_failed": resolve_failed,
