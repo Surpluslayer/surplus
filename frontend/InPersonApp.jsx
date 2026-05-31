@@ -133,13 +133,29 @@ export default function InPersonApp() {
 
 function SignInBounce() {
   const [busy, setBusy] = useState(false);
+  // Mirror the desktop App's onSignIn: LinkedIn-connect is gated behind Stripe
+  // payment (pay-first product flow), so /linkedin/start returns 402
+  // payment_required for an anonymous / unpaid browser. Instead of dumping that
+  // JSON in an alert, fall back to Stripe Checkout : the checkout mints the
+  // account, and post-payment they come back signed-in + paid and can connect.
   const go = async () => {
     setBusy(true);
     try {
       const r = await api.startLinkedinAuth();
-      if (r?.url) window.location.href = r.url;
+      if (r?.url) { window.location.href = r.url; return; }
+      setBusy(false);
     } catch (e) {
-      alert("Could not start sign-in: " + (e.message || "unknown"));
+      const code = e?.body?.detail?.code || e?.body?.code;
+      if (e?.status === 402 || code === "payment_required") {
+        try {
+          const r = await api.startCheckout();
+          if (r?.url) { window.location.href = r.url; return; }
+        } catch (e2) {
+          alert("Could not start checkout: " + (e2.message || "unknown"));
+        }
+      } else {
+        alert("Could not start sign-in: " + (e.message || "unknown"));
+      }
       setBusy(false);
     }
   };
