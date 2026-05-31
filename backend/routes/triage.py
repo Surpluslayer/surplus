@@ -26,7 +26,8 @@ import io
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.orm import Session, selectinload
 
 from .. import models
 from ..auth import current_user, get_owned_event
@@ -362,7 +363,22 @@ def list_applicants(
     evaluations are present (so the review queue surfaces accepts first),
     falls back to created_at ascending."""
     ev = get_owned_event(event_id, user, db)
-    rows = list(ev.applicants)
+    # Eager-load evaluation + decision in a couple of IN-queries instead of
+    # lazy-loading per row. A real Luma event is 500+ applicants; the old
+    # `list(ev.applicants)` + per-row `a.evaluation`/`a.decision` access fired
+    # ~2 queries/row (~1k+ total), holding a pooled connection for seconds.
+    # The UI polls this on a timer while background scoring also holds a
+    # connection, so under contention the pool (size 5 + overflow 5) drained
+    # and requests 500'd with a QueuePool timeout. selectinload makes it O(1).
+    rows = (
+        db.query(models.Applicant)
+        .options(
+            selectinload(models.Applicant.evaluation),
+            selectinload(models.Applicant.decision),
+        )
+        .filter(models.Applicant.event_id == ev.id)
+        .all()
+    )
     rows.sort(key=lambda a: (
         -(a.evaluation.fit_score if a.evaluation else -1),
         a.created_at,
@@ -379,8 +395,15 @@ def get_evaluation_progress(
     """Poll endpoint : how many applicants have been scored vs. still pending.
     The UI calls this on a timer after upload to show progress."""
     ev = get_owned_event(event_id, user, db)
-    total = len(ev.applicants)
-    scored = sum(1 for a in ev.applicants if a.evaluation is not None)
+    # Two COUNT queries instead of loading every applicant + lazy-loading its
+    # evaluation. This endpoint is polled on a timer, so it must stay cheap —
+    # the old per-row version drained the connection pool on 500+ row events.
+    total = db.query(func.count(models.Applicant.id)).filter(
+        models.Applicant.event_id == ev.id
+    ).scalar() or 0
+    scored = db.query(func.count(models.ApplicantEvaluation.id)).filter(
+        models.ApplicantEvaluation.event_id == ev.id
+    ).scalar() or 0
     return EvaluationProgress(
         event_id=ev.id,
         total_applicants=total,
