@@ -1,5 +1,5 @@
 // Entry for the phone-first in-person surface (inperson.html). Served by
-// FastAPI for the app.surpluslayer.com host. A dedicated entry means the phone
+// FastAPI for the event.surpluslayer.com host. A dedicated entry means the phone
 // bundle never pulls the desktop pipeline App, and vice versa.
 import React from "react";
 import ReactDOM from "react-dom/client";
