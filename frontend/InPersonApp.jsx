@@ -17,7 +17,7 @@ import jsQR from "jsqr";
 import {
   Camera, Link2, Search, Send, Bookmark, ArrowLeft, Check, Loader2,
   QrCode, User, Users, RefreshCw, AlertCircle, ChevronRight, Activity,
-  LogOut,
+  LogOut, Mic, MicOff,
 } from "lucide-react";
 import { api } from "./lib/api.js";
 import { ensureNotifyPermission, notifyDevice } from "./lib/notify.js";
@@ -650,8 +650,11 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
       {/* Fun fact FIRST : it drives the draft, so it's the thing to fill in. */}
       <label className="ip-lbl">What you talked about
         <span className="ip-dim"> · personalizes the message</span></label>
-      <input className="ip-input" placeholder="e.g. from Ottawa · loves bagels · rock climbing"
-        value={note} onChange={(e) => setNote(e.target.value)} />
+      <div className="ip-microw">
+        <input className="ip-input" placeholder="e.g. from Ottawa · loves bagels · rock climbing"
+          value={note} onChange={(e) => setNote(e.target.value)} />
+        <MicButton value={note} onChange={setNote} title="Dictate the fun fact" />
+      </div>
       <button className="ip-btn block" onClick={repersonalize}
               disabled={!!busy || !(note || "").trim()}>
         {busy === "personalize" ? <Loader2 className="spin" size={16} />
@@ -673,8 +676,11 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
         value={draftMsg} onChange={(e) => setDraftMsg(e.target.value)} />
 
       <label className="ip-lbl">Private note <span className="ip-dim">· just for you, never sent</span></label>
-      <input className="ip-input" placeholder="reminder to self…"
-        value={privateNote} onChange={(e) => setPrivateNote(e.target.value)} />
+      <div className="ip-microw">
+        <input className="ip-input" placeholder="reminder to self…"
+          value={privateNote} onChange={(e) => setPrivateNote(e.target.value)} />
+        <MicButton value={privateNote} onChange={setPrivateNote} title="Dictate a private note" />
+      </div>
 
       {err && <div className="ip-err"><AlertCircle size={14} /> {err}</div>}
 
@@ -961,6 +967,63 @@ function CaptureDetail({ event, capture, onBack, canSend }) {
 
 // ── tiny shared bits ─────────────────────────────────────────────────────────
 
+// On-device dictation via the Web Speech API (SpeechRecognition). No API key,
+// no audio upload : the browser transcribes locally and we just append the
+// final text. Unsupported browsers (notably desktop Firefox) get `supported:
+// false` so the caller can hide the mic entirely. iOS Safari + Chrome (the
+// phone-first targets) support it.
+function useSpeechToText(onText) {
+  const SR = typeof window !== "undefined"
+    && (window.SpeechRecognition || window.webkitSpeechRecognition);
+  const recRef = useRef(null);
+  const [listening, setListening] = useState(false);
+  const onTextRef = useRef(onText);
+  onTextRef.current = onText;
+
+  useEffect(() => () => { try { recRef.current?.stop(); } catch {} }, []);
+
+  const toggle = useCallback(() => {
+    if (!SR) return;
+    if (listening) { try { recRef.current?.stop(); } catch {} return; }
+    const rec = new SR();
+    rec.lang = navigator.language || "en-US";
+    rec.interimResults = false;     // only commit finalized phrases
+    rec.continuous = false;          // one utterance per tap : phone-friendly
+    rec.onresult = (e) => {
+      const text = Array.from(e.results)
+        .map((r) => r[0]?.transcript || "").join(" ").trim();
+      if (text) onTextRef.current(text);
+    };
+    rec.onerror = () => setListening(false);
+    rec.onend = () => setListening(false);
+    recRef.current = rec;
+    try { rec.start(); setListening(true); } catch { setListening(false); }
+  }, [SR, listening]);
+
+  return { supported: !!SR, listening, toggle };
+}
+
+// A mic toggle that appends dictated text to a string field. `value`/`onChange`
+// mirror an input so the caller stays the source of truth. Renders nothing when
+// the browser can't transcribe, so existing typing UX is untouched.
+function MicButton({ value, onChange, title = "Dictate" }) {
+  const append = (text) => {
+    const cur = (value || "").trim();
+    onChange(cur ? `${cur} ${text}` : text);
+  };
+  const { supported, listening, toggle } = useSpeechToText(append);
+  if (!supported) return null;
+  return (
+    <button type="button"
+            className={`ip-mic${listening ? " on" : ""}`}
+            onClick={toggle}
+            title={listening ? "Stop dictation" : title}
+            aria-label={listening ? "Stop dictation" : title}>
+      {listening ? <MicOff size={16} /> : <Mic size={16} />}
+    </button>
+  );
+}
+
 function Centered({ children }) {
   return <div className="ip-centered">{children}</div>;
 }
@@ -1019,6 +1082,14 @@ const IP_CSS = `
 
 .ip-input { width:100%; padding:12px 13px; border:1px solid var(--ip-line);
   border-radius:11px; font-size:16px; background:#fff; color:var(--ip-ink); }
+.ip-microw { display:flex; gap:8px; align-items:stretch; }
+.ip-microw .ip-input { flex:1; min-width:0; }
+.ip-mic { flex-shrink:0; width:46px; display:flex; align-items:center; justify-content:center;
+  border:1px solid var(--ip-line); border-radius:11px; background:#fff; color:var(--ip-dim);
+  cursor:pointer; }
+.ip-mic.on { background:#fdecec; border-color:#f1b4b4; color:#a01818;
+  animation:ipmicpulse 1.1s ease-in-out infinite; }
+@keyframes ipmicpulse { 0%,100% { opacity:1; } 50% { opacity:.55; } }
 .ip-area { width:100%; padding:11px 13px; border:1px solid var(--ip-line);
   border-radius:11px; font-size:15px; line-height:1.4; resize:vertical; background:#fff;
   color:var(--ip-ink); font-family:inherit; }
