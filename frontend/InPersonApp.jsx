@@ -16,7 +16,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import jsQR from "jsqr";
 import {
   Camera, Link2, Search, Send, Bookmark, ArrowLeft, Check, Loader2,
-  QrCode, User, Users, RefreshCw, AlertCircle, ChevronRight,
+  QrCode, User, Users, RefreshCw, AlertCircle, ChevronRight, Activity,
 } from "lucide-react";
 import { api } from "./lib/api.js";
 import { ensureNotifyPermission, notifyDevice } from "./lib/notify.js";
@@ -60,10 +60,11 @@ export default function InPersonApp() {
   const [user, setUser] = useState(null);          // null=loading, undefined=out
   const [authError, setAuthError] = useState(null); // {status, message} for non-401 failures
   const [event, setEvent] = useState(loadActiveEvent);
-  const [tab, setTab] = useState("capture");       // "capture" | "people"
+  const [tab, setTab] = useState("capture");       // "capture" | "people" | "activity"
   const [result, setResult] = useState(null);      // scan result -> result screen
   const [openCapture, setOpenCapture] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [isOperator, setIsOperator] = useState(false);  // can see the Activity page
 
   useEffect(() => { ensureNotifyPermission(); }, []);
 
@@ -110,6 +111,21 @@ export default function InPersonApp() {
     return () => { cancelled = true; };
   }, [reloadKey]);
 
+  // The operator (env-var account) can see the Activity roll-up. We can't read
+  // the env var client-side, so probe the operator-only endpoint : 200 -> show
+  // the tab, 403/anything -> hide it. Connected users only (guests skip it).
+  useEffect(() => {
+    let cancelled = false;
+    if (!user || typeof user !== "object" || !user.unipile_account_id) {
+      setIsOperator(false);
+      return;
+    }
+    api.inpersonActivity()
+      .then(() => { if (!cancelled) setIsOperator(true); })
+      .catch(() => { if (!cancelled) setIsOperator(false); });
+    return () => { cancelled = true; };
+  }, [user]);
+
   const pickEvent = (ev) => { setEvent(ev); saveActiveEvent(ev); };
 
   if (user === null) {
@@ -135,7 +151,9 @@ export default function InPersonApp() {
         </div>
       )}
 
-      {!event ? (
+      {tab === "activity" && isOperator ? (
+        <ActivityScreen />
+      ) : !event ? (
         <Centered>
           <div className="ip-empty">
             <QrCode size={34} />
@@ -173,6 +191,12 @@ export default function InPersonApp() {
                   onClick={() => setTab("people")}>
             <Users size={20} /><span>People</span>
           </button>
+          {isOperator && (
+            <button className={tab === "activity" ? "on" : ""}
+                    onClick={() => setTab("activity")}>
+              <Activity size={20} /><span>Activity</span>
+            </button>
+          )}
         </nav>
       )}
     </div>
@@ -597,6 +621,74 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
   );
 }
 
+// ── activity : operator-only roll-up of ALL in-person captures ───────────────
+
+function ActivityScreen() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState("");
+
+  const load = useCallback(() => {
+    setErr("");
+    api.inpersonActivity()
+      .then(setData)
+      .catch((e) => setErr(e?.message || "Could not load activity"));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  if (err) return <div className="ip-screen"><div className="ip-err"><AlertCircle size={14} /> {err}</div></div>;
+  if (!data) return <Centered><Loader2 className="spin" size={24} /></Centered>;
+
+  return (
+    <div className="ip-screen">
+      <div className="ip-listhead">
+        <span>{data.capture_count} captures · {data.event_count} events (all)</span>
+        <button className="ip-iconbtn" onClick={load}><RefreshCw size={15} /></button>
+      </div>
+      {data.events.length === 0 && (
+        <div className="ip-dim ip-center" style={{ marginTop: 40 }}>
+          No in-person activity yet.
+        </div>
+      )}
+      {data.events.map((ev) => (
+        <div key={ev.event_id} className="ip-actgroup">
+          <div className="ip-actgroup-head">
+            <span className="ip-actgroup-label">{ev.label || `event #${ev.event_id}`}</span>
+            <span className="ip-actgroup-meta">
+              {ev.owner?.is_guest ? "guest" : (ev.owner?.name || "—")} · {ev.count}
+            </span>
+          </div>
+          {ev.captures.length === 0 && <div className="ip-dim" style={{ padding: "4px 2px 10px" }}>No captures.</div>}
+          <div className="ip-list">
+            {ev.captures.map((c) => {
+              const st = statusMeta(c.status);
+              const cc = connChip(c);
+              return (
+                <div key={c.prospect_id} className="ip-rowitem" style={{ cursor: "default" }}>
+                  <div className="ip-row-main">
+                    <div className="ip-row-name">{c.name}</div>
+                    <div className="ip-row-sub">
+                      {[c.role, c.company].filter(Boolean).join(" · ") || "—"}
+                    </div>
+                    <div className="ip-row-chips">
+                      <span className={`ip-st ${st.cls}`}>{st.label}</span>
+                      <span className={`ip-cc ${cc.cls}`}>{cc.label}</span>
+                      {c.conversion && <span className="ip-st st-rsvp">{c.conversion}</span>}
+                      {c.resolve_failed && <span className="ip-cc c-off">Unresolved</span>}
+                    </div>
+                  </div>
+                  <div className="ip-row-meta">
+                    {c.last_outreach ? outreachStateLabel(c.last_outreach.state) : ""}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── captures : the relationship manager ──────────────────────────────────────
 
 function connChip(c) {
@@ -891,6 +983,12 @@ const IP_CSS = `
 /* list */
 .ip-listhead { display:flex; justify-content:space-between; align-items:center;
   font-size:13px; color:var(--ip-dim); padding:2px 2px 10px; }
+.ip-actgroup { margin-bottom:16px; }
+.ip-actgroup-head { display:flex; justify-content:space-between; align-items:baseline;
+  padding:4px 2px 6px; border-bottom:1px solid var(--ip-line); margin-bottom:8px; }
+.ip-actgroup-label { font-weight:700; font-size:14px; }
+.ip-actgroup-meta { font-size:11px; color:var(--ip-dim); text-transform:uppercase;
+  letter-spacing:.02em; }
 .ip-iconbtn,.ip-rowitem { background:#fff; border:1px solid var(--ip-line); }
 .ip-iconbtn { border-radius:10px; padding:7px; color:var(--ip-dim); }
 .ip-list { display:flex; flex-direction:column; gap:8px; }

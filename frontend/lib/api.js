@@ -172,6 +172,9 @@ export const api = {
   // CRM list of every capture on this in_person event.
   inpersonCaptures: (eventId) =>
     request(`/api/inperson/events/${eventId}/captures`),
+  // Operator-only roll-up of ALL in-person captures across every event
+  // (guests included). 403 for non-operator, 404 off the in-person host.
+  inpersonActivity: () => request("/api/inperson/activity"),
   // Fire the connect-request / DM for one capture through the shared send
   // helper. Pass { note?, message? } to override the composed draft.
   inpersonSend: (prospectId, override = {}) =>
