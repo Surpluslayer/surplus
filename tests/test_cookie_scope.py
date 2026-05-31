@@ -50,3 +50,32 @@ def test_cookie_shared_across_subdomains_when_env_set(monkeypatch):
 def test_cookie_domain_blank_env_is_treated_as_unset(monkeypatch):
     sets, _ = _set_cookies(monkeypatch, "   ")
     assert all("Domain=" not in s for s in sets)
+
+
+def _set_with_host(monkeypatch, host):
+    monkeypatch.delenv("SESSION_COOKIE_DOMAIN", raising=False)  # no env : derive from host
+    r = Response()
+    auth.set_session_cookie(r, "tok", host=host)
+    return [v.decode() for k, v in r.raw_headers if k == b"set-cookie"][0]
+
+
+def test_cookie_domain_auto_derived_from_surpluslayer_host(monkeypatch):
+    # The whole point: no env var set, yet a *.surpluslayer.com request still
+    # gets a shared Domain so the LinkedIn callback cookie survives the next hop.
+    for host in ("event.surpluslayer.com", "www.surpluslayer.com", "surpluslayer.com"):
+        sc = _set_with_host(monkeypatch, host)
+        assert "Domain=.surpluslayer.com" in sc, host
+
+
+def test_cookie_host_only_for_non_first_party_hosts(monkeypatch):
+    for host in ("localhost", "surplus-production.up.railway.app", "surplus.fly.dev", None):
+        sc = _set_with_host(monkeypatch, host)
+        assert "Domain=" not in sc, host
+
+
+def test_env_override_still_wins_over_host(monkeypatch):
+    monkeypatch.setenv("SESSION_COOKIE_DOMAIN", ".surpluslayer.com")
+    r = Response()
+    auth.set_session_cookie(r, "tok", host="localhost")  # env wins despite host
+    sc = [v.decode() for k, v in r.raw_headers if k == b"set-cookie"][0]
+    assert "Domain=.surpluslayer.com" in sc

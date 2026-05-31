@@ -723,11 +723,14 @@ async def linkedin_callback(
     db.commit()
 
     response = RedirectResponse(base_redirect, status_code=303)
-    set_session_cookie(response, sess.session_token)
+    # Set the cookie Domain from the request host so the session is shared
+    # across *.surpluslayer.com : on event.surpluslayer.com a host-only cookie
+    # would be dropped on the next request and bounce the user back to login.
+    set_session_cookie(response, sess.session_token, host=_h)
     # Persist the account_id so the NEXT sign-in from this browser goes
     # through type=reconnect : no new Unipile seat, usually no LinkedIn 2FA.
     if user.unipile_account_id:
-        set_last_account_cookie(response, user.unipile_account_id)
+        set_last_account_cookie(response, user.unipile_account_id, host=_h)
     return response
 
 
@@ -931,5 +934,6 @@ def logout(
     token = request.cookies.get(SESSION_COOKIE)
     if token:
         revoke_session(db, token)
-    clear_session_cookie(response)
+    from ..hosts import request_browser_host
+    clear_session_cookie(response, host=request_browser_host(request))
     return JSONResponse({"ok": True})

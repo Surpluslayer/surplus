@@ -127,25 +127,40 @@ def create_session(db: DbSession, user: User) -> Session:
     return sess
 
 
-def _cookie_domain() -> Optional[str]:
+def _cookie_domain(host: Optional[str] = None) -> Optional[str]:
     """Domain attribute for our cookies.
 
-    Set SESSION_COOKIE_DOMAIN=.surpluslayer.com in prod so ONE login is shared
-    across every first-party subdomain (www / apex / event.surpluslayer.com) :
-    without it the cookie is host-only, so a session created on the apex isn't
-    sent to event.surpluslayer.com and the in-person surface sees an anonymous
-    visitor (-> 402 on sign-in). Leave it UNSET on localhost / *.railway.app /
-    *.fly.dev : a Domain that doesn't match the request host (or a bare host /
-    IP) makes the browser silently drop the cookie, which would lock everyone
-    out. Returns None when unset so set_cookie omits the attribute entirely."""
-    return (os.environ.get("SESSION_COOKIE_DOMAIN") or "").strip() or None
+    We want ONE login shared across every first-party subdomain (www / apex /
+    event.surpluslayer.com). A host-only cookie set during the LinkedIn callback
+    on event.surpluslayer.com would otherwise not be re-sent, so the SPA's next
+    api.me() 401s and bounces the user back to the login screen even though they
+    just authenticated.
+
+    Resolution order:
+      1. SESSION_COOKIE_DOMAIN env (explicit operator override; wins).
+      2. Auto-derived from the request `host`: any *.surpluslayer.com host (or
+         the bare apex) -> ".surpluslayer.com". This is the durable default :
+         no env var to forget or mis-set, and it can't lock anyone out because
+         it only ever returns a parent domain the request host is already under.
+      3. None (host-only) for localhost / *.railway.app / *.fly.dev / IPs, where
+         a non-matching Domain would make the browser silently drop the cookie.
+    """
+    env = (os.environ.get("SESSION_COOKIE_DOMAIN") or "").strip()
+    if env:
+        return env
+    h = (host or "").split(":")[0].strip().lower()
+    if h == "surpluslayer.com" or h.endswith(".surpluslayer.com"):
+        return ".surpluslayer.com"
+    return None
 
 
-def set_session_cookie(response: Response, session_token: str) -> None:
+def set_session_cookie(response: Response, session_token: str,
+                       host: Optional[str] = None) -> None:
     """Set the surplus session cookie. Lax SameSite so the LinkedIn-hosted-auth
     redirect (a top-level navigation back to our domain) carries the cookie.
-    Domain comes from SESSION_COOKIE_DOMAIN so the session is shared across
-    *.surpluslayer.com subdomains (see _cookie_domain)."""
+    Pass `host` (the request's user-facing host) so the cookie Domain is shared
+    across *.surpluslayer.com subdomains even without SESSION_COOKIE_DOMAIN set
+    (see _cookie_domain)."""
     secure = _session_cookie_secure()
     response.set_cookie(
         key=SESSION_COOKIE,
@@ -155,21 +170,22 @@ def set_session_cookie(response: Response, session_token: str) -> None:
         secure=secure,
         samesite="lax",
         path="/",
-        domain=_cookie_domain(),
+        domain=_cookie_domain(host),
     )
 
 
-def clear_session_cookie(response: Response) -> None:
+def clear_session_cookie(response: Response, host: Optional[str] = None) -> None:
     # Must clear with the SAME Domain it was set with, or the browser keeps the
     # cross-subdomain cookie and logout doesn't actually sign the user out.
     secure = _session_cookie_secure()
     response.delete_cookie(
         key=SESSION_COOKIE, path="/", secure=secure, httponly=True,
-        samesite="lax", domain=_cookie_domain(),
+        samesite="lax", domain=_cookie_domain(host),
     )
 
 
-def set_last_account_cookie(response: Response, account_id: str) -> None:
+def set_last_account_cookie(response: Response, account_id: str,
+                            host: Optional[str] = None) -> None:
     """Persist the Unipile account_id so the next sign-in can use
     type=reconnect. Lax SameSite so the Unipile→callback redirect carries it."""
     secure = _session_cookie_secure()
@@ -181,7 +197,7 @@ def set_last_account_cookie(response: Response, account_id: str) -> None:
         secure=secure,
         samesite="lax",
         path="/",
-        domain=_cookie_domain(),
+        domain=_cookie_domain(host),
     )
 
 

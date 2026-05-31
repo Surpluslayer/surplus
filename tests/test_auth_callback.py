@@ -79,3 +79,38 @@ def test_callback_unknown_state_redirects_not_500(client):
     r = client.get("/api/auth/linkedin/callback?state=nope")
     assert r.status_code == 303
     assert "error=linkedin_callback_failed" in r.headers["location"]
+
+
+def test_callback_on_event_host_sets_shared_domain_cookie(client, monkeypatch):
+    """The 'bounced back to login' bug: on event.surpluslayer.com the callback
+    must set the session cookie with Domain=.surpluslayer.com (auto-derived from
+    the host, no env var) so it survives the next request instead of being
+    dropped as host-only."""
+    monkeypatch.delenv("SESSION_COOKIE_DOMAIN", raising=False)
+    _seed_completed_auth(state="state_dom", account_id="acct_dom")
+    r = client.get(
+        "/api/auth/linkedin/callback?state=state_dom&account_id=acct_dom",
+        headers={"host": "event.surpluslayer.com",
+                 "origin": "https://event.surpluslayer.com"},
+    )
+    assert r.status_code == 303
+    sc = r.headers.get("set-cookie", "")
+    assert "surplus_session=" in sc
+    assert "Domain=.surpluslayer.com" in sc
+
+
+def test_session_recognized_after_callback_round_trip(monkeypatch):
+    """The full symptom: after the callback sets the cookie on the event host,
+    the SPA's very next api.me() must recognize the session (200), not 401 ->
+    bounce back to the login screen. Uses a real event.surpluslayer.com base_url
+    so the cookie jar enforces the Domain exactly like a browser would : a
+    host-only cookie (the bug) would NOT be re-sent and me() would 401."""
+    monkeypatch.delenv("SESSION_COOKIE_DOMAIN", raising=False)
+    uid = _seed_completed_auth(state="state_rt", account_id="acct_rt")
+    c = TestClient(app, base_url="https://event.surpluslayer.com",
+                   follow_redirects=False)
+    r = c.get("/api/auth/linkedin/callback?state=state_rt&account_id=acct_rt")
+    assert r.status_code == 303
+    me = c.get("/api/auth/me")
+    assert me.status_code == 200, me.text
+    assert me.json()["id"] == uid
