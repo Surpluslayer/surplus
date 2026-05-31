@@ -288,6 +288,64 @@ def list_captures(
             "captures": [_capture_row(p) for p in rows]}
 
 
+def _is_operator(user: models.User) -> bool:
+    """True when this session is the env-var operator account (the single owner
+    that rolls up all guest + regular in-person activity)."""
+    import os
+    op = (os.environ.get("UNIPILE_ACCOUNT_ID") or "").strip()
+    return bool(op) and (getattr(user, "unipile_account_id", None) == op)
+
+
+@router.get("/activity")
+def operator_activity(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Operator-only roll-up of ALL in-person captures across every in_person
+    event (guests included), for the activity page on the in-person host.
+
+    Gated to the operator account AND the in-person host : a regular signed-in
+    user (or a guest) gets 403, and it only answers on event.surpluslayer.com."""
+    host = request_browser_host(request)
+    if not is_inperson_host(host):
+        raise HTTPException(404, "not found")
+    if not _is_operator(user):
+        raise HTTPException(403, "operator access required")
+
+    events = (db.query(models.Event)
+                .filter(models.Event.kind == "in_person")
+                .all())
+    # Map owning user -> whether they're a guest (LinkedIn-less anonymous).
+    out_events: list[dict] = []
+    total = 0
+    for ev in sorted(events, key=lambda e: e.id, reverse=True):
+        caps = sorted(
+            ev.prospects,
+            key=lambda p: (p.captured_at or datetime.min.replace(tzinfo=timezone.utc)),
+            reverse=True,
+        )
+        owner = ev.user
+        is_guest = bool(owner is not None
+                        and not getattr(owner, "unipile_account_id", None)
+                        and (owner.email or "").endswith("@anonymous.surplus"))
+        total += len(caps)
+        out_events.append({
+            "event_id": ev.id,
+            "label": ev.label or ev.event_name or "",
+            "city": ev.city,
+            "owner": {
+                "user_id": getattr(owner, "id", None),
+                "name": getattr(owner, "name", None),
+                "is_guest": is_guest,
+            },
+            "captures": [_capture_row(p) for p in caps],
+            "count": len(caps),
+        })
+    return {"events": out_events, "event_count": len(out_events),
+            "capture_count": total}
+
+
 @router.post("/captures/{prospect_id}/send")
 def send_capture(
     prospect_id: int,

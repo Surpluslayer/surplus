@@ -24,6 +24,8 @@ def _env(monkeypatch):
     monkeypatch.delenv("UNIPILE_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("EXA_API_KEY", raising=False)
+    from backend import rate_limit
+    rate_limit._WINDOWS.clear()   # guest-mint quota must not leak across tests
     reset_db()
     yield
 
