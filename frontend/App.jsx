@@ -8,6 +8,8 @@ import {
 } from "lucide-react";
 import { api } from "./lib/api.js";
 import { identifyUser, resetAnalytics } from "./lib/analytics.js";
+import { ensureNotifyPermission, notifyDevice } from "./lib/notify.js";
+import { actionLabel, statusMeta } from "./lib/labels.js";
 import SharedIntake from "./SharedIntake.jsx";
 import {
   FORMATS,
@@ -180,45 +182,14 @@ const Chip = ({ active, onClick, children }) => (
 
 // "Send invite" for cold prospects, "Send message" for warm. "Reach out" is
 // the fallback before /check-connections finishes resolving the status.
-function actionLabel(connectionStatus, sending) {
-  if (connectionStatus === "connected") return sending ? "Sending message…" : "Send message";
-  if (connectionStatus === "not_connected") return sending ? "Sending invite…" : "Send invite";
-  return sending ? "Sending…" : "Reach out";
-}
+// actionLabel + statusMeta now live in ./lib/labels.js (shared with the
+// in-person surface); notifyDevice + ensureNotifyPermission in ./lib/notify.js.
 
 const fmtK = (v) => v >= 1000 ? `$${(v / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })}k` : `$${v}`;
 const fmtNum = (n) => n > 999 ? (n / 1000).toFixed(1) + "k" : "" + n;
 
 // Browser-notification helper. Returns the granted permission string (or
 // "unsupported" when the API isn't there at all : e.g., insecure context).
-// Best-effort: never throws, never blocks. The Notification API only fires
-// on https / localhost, so this silently no-ops on http deploys.
-async function ensureNotifyPermission() {
-  if (typeof window === "undefined" || !("Notification" in window)) return "unsupported";
-  if (Notification.permission === "granted") return "granted";
-  if (Notification.permission === "denied") return "denied";
-  try {
-    return await Notification.requestPermission();
-  } catch {
-    return "default";
-  }
-}
-
-// Fire a device notification. Suppressed when the tab is already focused :
-// the in-app UI already conveys completion in that case.
-function notifyDevice(title, options = {}) {
-  if (typeof window === "undefined" || !("Notification" in window)) return;
-  if (Notification.permission !== "granted") return;
-  if (typeof document !== "undefined" && document.visibilityState === "visible"
-      && document.hasFocus && document.hasFocus()) return;
-  try {
-    const n = new Notification(title, { icon: "/surplus-logo.png", ...options });
-    n.onclick = () => { try { window.focus(); n.close(); } catch {} };
-  } catch {
-    // Some browsers throw on iframe / insecure contexts : just swallow.
-  }
-}
-
 // ---- Stage 0: Intake ----------------------------------------
 // Toggle a value in/out of an array. Keeps at least one entry : clicking
 // the last selected chip is a no-op (the backend rejects empty selections
@@ -530,13 +501,6 @@ function Pipeline({ profile, eventId, onResult, onError, onDone }) {
 }
 
 // ---- Stage 2: Auto-outreach ---------------------------------
-function statusMeta(s) {
-  if (s === "rsvp") return { label: "RSVP'd", cls: "st-rsvp" };
-  if (s === "contacted") return { label: "Awaiting", cls: "st-contacted" };
-  if (s === "below") return { label: "Below threshold", cls: "st-below" };
-  return { label: s, cls: "" };
-}
-
 function prospectRowStatus(p, threshold) {
   if (p.score >= threshold) return { label: "Approved", cls: "st-approved" };
   return statusMeta(p.status);

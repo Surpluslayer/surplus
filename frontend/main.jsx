@@ -1,8 +1,23 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 
-import App from "./App.jsx";
 import { initAnalytics } from "./lib/analytics.js";
+
+// Phone-first in-person surface lives at /inperson (or ?surface=inperson). It's
+// a separate root from the desktop pipeline App : same origin, same session
+// cookie, but a one-handed capture UI.
+// In prod the server picks the shell by Host (app.surpluslayer.com serves the
+// dedicated inperson.html entry), so this index entry normally renders the
+// desktop App. We still detect it here for local dev / preview, where one Vite
+// server has no host routing : /inperson, ?surface=inperson, or an app.* host.
+function isInPersonSurface() {
+  try {
+    const { pathname, search, hostname } = window.location;
+    if (hostname.startsWith("app.")) return true;
+    if (pathname === "/inperson" || pathname.startsWith("/inperson/")) return true;
+    return new URLSearchParams(search).get("surface") === "inperson";
+  } catch { return false; }
+}
 
 // Boot PostHog before React mounts so autocapture + session replay catch
 // the very first interactions. No-op when no key is configured.
@@ -37,8 +52,17 @@ initAnalytics();
   }
 })();
 
-ReactDOM.createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+// Dynamic import so the phone surface (incl. the jsQR decoder) and the desktop
+// pipeline ship as separate chunks : a phone never downloads the desktop App,
+// and desktop never downloads jsQR.
+const load = isInPersonSurface()
+  ? () => import("./InPersonApp.jsx")
+  : () => import("./App.jsx");
+
+load().then(({ default: Root }) => {
+  ReactDOM.createRoot(document.getElementById("root")).render(
+    <React.StrictMode>
+      <Root />
+    </React.StrictMode>
+  );
+});

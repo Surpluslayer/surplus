@@ -150,6 +150,35 @@ export const api = {
   // PR E : download a CSV of all applicants + AI scores + operator decisions
   triageExportUrl: (id) => `/events/${id}/triage/export.csv`,
 
+  // ── in-person scan-to-connect (phone-first surface) ──────────────────
+  // Create-or-fetch the user's in_person Event by label. Returns { event_id }.
+  inpersonCreateEvent: (label, city = "") =>
+    request("/api/inperson/events", {
+      method: "POST", body: JSON.stringify({ label, city }),
+    }),
+  // Resolve-only : never creates a Prospect, never sends.
+  //   { method:"url", linkedin_url }            -> single high-confidence hit
+  //   { method:"text", name, title?, company? } -> ranked candidate list
+  inpersonResolve: (body) =>
+    request("/api/inperson/resolve", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+  // Capture a now-known linkedin_url as a pending Prospect + return a draft.
+  // Used by QR/paste (straight through) and by a CONFIRMED text candidate.
+  inpersonScan: (body) =>
+    request("/api/inperson/scan", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+  // CRM list of every capture on this in_person event.
+  inpersonCaptures: (eventId) =>
+    request(`/api/inperson/events/${eventId}/captures`),
+  // Fire the connect-request / DM for one capture through the shared send
+  // helper. Pass { note?, message? } to override the composed draft.
+  inpersonSend: (prospectId, override = {}) =>
+    request(`/api/inperson/captures/${prospectId}/send`, {
+      method: "POST", body: JSON.stringify(override),
+    }),
+
   // meta
   health: () => request("/api/health"),
 

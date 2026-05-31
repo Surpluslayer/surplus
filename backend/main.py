@@ -413,34 +413,77 @@ if _FRONTEND_DIST.is_dir():
     # no `signin` file exists. We need to explicitly fall back to
     # index.html for any unknown non-/api path so React Router can pick
     # up the route on the client.
+    import os
     from starlette.responses import FileResponse
     from starlette.exceptions import HTTPException as StarletteHTTPException
 
     def _no_store(response):
-        """Force revalidation of the SPA shell. index.html is the ONE file
-        Vite does not content-hash : its name is always index.html, and it's
-        what references the hashed JS/CSS bundle. If a browser or Cloudflare
-        caches it, the app keeps loading a stale bundle after a deploy (e.g.
-        an old build with no paywall-popup handling), so a fresh deploy never
-        reaches the user. The hashed assets stay cacheable : only the shell
-        is marked no-store."""
+        """Force revalidation of the SPA shell. index.html / inperson.html are
+        the files Vite does not content-hash : their names are stable, and they
+        reference the hashed JS/CSS bundle. If a browser or Cloudflare caches a
+        shell, the app keeps loading a stale bundle after a deploy, so a fresh
+        deploy never reaches the user. The hashed assets stay cacheable : only
+        the shells are marked no-store."""
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
         response.headers["Pragma"] = "no-cache"
 
+    # ── Host-based SPA routing ───────────────────────────────────────────
+    # Two front-ends ship from ONE build and ONE service, sharing the API
+    # (/api, /events, /webhooks resolve the same on every host because their
+    # routers are mounted above this static mount):
+    #
+    #   surpluslayer.com / www.        -> index.html     (the desktop pipeline)
+    #   app.surpluslayer.com           -> inperson.html  (phone-first capture)
+    #
+    # Vite's multi-page build emits both shells into dist/ referencing the same
+    # hashed /assets. We just pick which shell to serve as the SPA root + the
+    # client-side-route fallback, based on the request Host header. The host
+    # set is env-overridable; the `app.` prefix is the convention so preview
+    # subdomains (app.<env>.surpluslayer.com) Just Work.
+    _INPERSON_HOSTS = {
+        h.strip().lower()
+        for h in (os.environ.get("INPERSON_HOSTS") or "app.surpluslayer.com").split(",")
+        if h.strip()
+    }
+    _HAS_INPERSON_SHELL = (_FRONTEND_DIST / "inperson.html").is_file()
+
+    def _host_from_scope(scope) -> str:
+        for k, v in scope.get("headers") or []:
+            if k == b"host":
+                try:
+                    return v.decode("latin-1")
+                except Exception:
+                    return ""
+        return ""
+
+    def _shell_for_host(host: str) -> str:
+        h = (host or "").split(":")[0].lower()
+        if _HAS_INPERSON_SHELL and (h in _INPERSON_HOSTS or h.startswith("app.")):
+            return "inperson.html"
+        return "index.html"
+
     class SPAStaticFiles(StaticFiles):
         async def get_response(self, path: str, scope):
+            shell = _shell_for_host(_host_from_scope(scope))
+            # Serve the host's shell for the root AND for any client-side route
+            # (StaticFiles maps "/" -> path "" with html=True; we override so
+            # the app host gets inperson.html instead of index.html).
+            if path in ("", ".", "index.html"):
+                resp = FileResponse(str(_FRONTEND_DIST / shell))
+                _no_store(resp)
+                return resp
             try:
                 response = await super().get_response(path, scope)
             except StarletteHTTPException as exc:
                 # Only fall back for client-side routes (404 + non-API).
                 # Other status codes (405, etc.) bubble up unchanged.
                 if exc.status_code == 404 and not path.startswith("api/"):
-                    response = FileResponse(str(_FRONTEND_DIST / "index.html"))
-                    _no_store(response)
-                    return response
+                    resp = FileResponse(str(_FRONTEND_DIST / shell))
+                    _no_store(resp)
+                    return resp
                 raise
-            # The SPA shell is the only HTML the mount serves : keep it fresh
-            # so deploys take effect immediately. Hashed assets are untouched.
+            # Any HTML the mount serves is a shell : keep it fresh so deploys
+            # take effect immediately. Hashed assets are untouched.
             if getattr(response, "media_type", None) == "text/html":
                 _no_store(response)
             return response
