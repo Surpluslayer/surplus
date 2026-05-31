@@ -217,6 +217,14 @@ def _migrate_prospect_capture_fields() -> None:
             conn.execute(text(
                 f"ALTER TABLE prospects ADD COLUMN {ine}private_note VARCHAR(500)"
             ))
+        if "contact_type" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}contact_type VARCHAR(20)"
+            ))
+        if "next_step" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}next_step VARCHAR(300)"
+            ))
         if "captured_at" not in cols:
             conn.execute(text(
                 f"ALTER TABLE prospects ADD COLUMN {ine}captured_at TIMESTAMP"

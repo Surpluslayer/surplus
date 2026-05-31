@@ -78,6 +78,8 @@ class ScanIn(BaseModel):
     source: str                       # "scan" | "link" | "text"
     note: Optional[str] = None          # fun fact : personalizes the draft
     private_note: Optional[str] = None  # operator-only memo : never sent
+    contact_type: Optional[str] = None  # "sales"|"recruiting"|"follow_up"|"other"
+    next_step: Optional[str] = None     # follow-up woven into the first message
     # Optional enrichment carried over from a confirmed /resolve candidate so
     # the captured Prospect (and its draft) isn't just a bare handle.
     name: Optional[str] = None
@@ -129,6 +131,8 @@ def _capture_row(p: models.Prospect) -> dict:
         "captured_at": p.captured_at,
         "note": p.note,                      # fun fact (personalizes the draft)
         "private_note": p.private_note,       # operator-only memo (never sent)
+        "contact_type": p.contact_type,
+        "next_step": p.next_step,
         # No dedicated column : an unresolved capture is exactly one with no
         # provider id, so the UI can surface a "retry resolve" affordance.
         "resolve_failed": p.linkedin_provider_id is None,
@@ -266,6 +270,8 @@ def scan_capture(
     p.captured_at = datetime.now(timezone.utc)
     p.note = (body.note or None)                  # fun fact : drives the draft
     p.private_note = (body.private_note or None)   # operator-only : never sent
+    p.contact_type = (body.contact_type or None)
+    p.next_step = (body.next_step or None)         # woven into the first message
     db.commit()
     db.refresh(p)
 

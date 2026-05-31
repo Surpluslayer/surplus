@@ -147,6 +147,12 @@ class Prospect(Base):
     # channel ("scan" | "link" | "text").
     note: Mapped[Optional[str]] = mapped_column(String(300), default=None)
     private_note: Mapped[Optional[str]] = mapped_column(String(500), default=None)
+    # Optional, opt-in capture extras (in-person). `contact_type` tags what this
+    # person is to you ("sales" | "recruiting" | "follow_up" | "other") for
+    # later triage; `next_step` is the concrete follow-up to weave into the
+    # first message, e.g. "grab a coffee — book a time: <calendly link>".
+    contact_type: Mapped[Optional[str]] = mapped_column(String(20), default=None)
+    next_step: Mapped[Optional[str]] = mapped_column(String(300), default=None)
     captured_at: Mapped[Optional[datetime]] = mapped_column(default=None)
     source: Mapped[Optional[str]] = mapped_column(String(20), default=None)
 

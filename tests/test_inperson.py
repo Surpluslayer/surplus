@@ -267,6 +267,29 @@ def test_scan_repersonalizes_draft_and_stores_private_note(db, user):
     assert catered["prospect"]["private_note"] == "intro to Dana"
 
 
+def test_next_step_woven_into_first_message_and_contact_type_stored(db, user):
+    """An opt-in next step (e.g. a Calendly link) is woven into the first
+    message; contact_type is persisted for later triage but never sent."""
+    from backend.routes.inperson import scan_capture, ScanIn
+    ev = _make_event(db, user)
+    r = scan_capture(ScanIn(
+        event_id=ev["event_id"],
+        linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+        source="scan", name="Maya", note="from Ottawa",
+        contact_type="sales",
+        next_step="grab a coffee — book a time: calendly.com/me/15min",
+    ), db, user)
+    # The next step (with the link) shows up in the composed first message.
+    assert "calendly.com/me/15min" in r["draft_message"]
+    # Stored on the row + serialized, separate from the sent copy.
+    p = db.query(models.Prospect).one()
+    assert p.contact_type == "sales"
+    assert p.next_step.startswith("grab a coffee")
+    assert r["prospect"]["contact_type"] == "sales"
+    # contact_type is operator metadata : it must NOT leak into the note/message.
+    assert "sales" not in r["draft_note"].lower()
+
+
 def test_send_no_note_sends_bare_invite(db, user):
     """`no_note` sends a bare invite (empty note) regardless of any note text,
     so it dodges LinkedIn's 300-char cap. The post-accept DM is unaffected."""

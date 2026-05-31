@@ -425,7 +425,8 @@ def compose(
     # it : crucially the webhook auto-DM path (_trigger_auto_dm -> compose) so
     # an in-person prospect's post-accept DM is warm, not a cold re-pitch.
     in_person = (getattr(event, "kind", "") or "") == "in_person"
-    framing = (_framing_inperson(event, getattr(prospect, "note", None))
+    framing = (_framing_inperson(event, getattr(prospect, "note", None),
+                                 getattr(prospect, "next_step", None))
                if in_person else _framing(event))
 
     def _template() -> Message:
@@ -451,7 +452,8 @@ def _event_label(event) -> str:
             or getattr(event, "event_name", None) or "the event").strip()
 
 
-def _framing_inperson(event, note: str | None = None) -> str:
+def _framing_inperson(event, note: str | None = None,
+                      next_step: str | None = None) -> str:
     """Warm 'we just met' framing for the in-person scan-to-connect flow.
 
     The operator has ALREADY met this person face to face, so the note/DM read
@@ -478,6 +480,11 @@ def _framing_inperson(event, note: str | None = None) -> str:
             f"The specific thing you talked about: {note}. Open the connection "
             "note by referencing this directly (e.g. a fun fact like where "
             "they're from or a shared interest), so it feels personal.")
+    next_step = (next_step or "").strip()
+    if next_step:
+        parts.append(
+            f"For the first message, propose THIS specific next step: {next_step}. "
+            "Work it in naturally as the closing ask (include any link verbatim).")
     return " ".join(parts)
 
 
@@ -516,14 +523,20 @@ def _compose_inperson_template(prospect, event) -> Message:
 
     chat = (f"Love that you're {note}" if (note and is_fact)
             else "Enjoyed our chat" + (f" about {note}" if note else ""))
+    # The closing line is the operator's chosen next step when they set one
+    # (e.g. "grab a coffee — book a time: <calendly>"); otherwise the default
+    # light ask.
+    step = (getattr(prospect, "next_step", None) or "").strip()
+    closer = (f"Would love to {step}" if step else
+              "Worth grabbing 15 minutes next week to pick it back up? Happy to "
+              "work around your schedule, or just say the word if there's "
+              "something I can help with sooner.")
     message = "\n".join([
         f"Great to meet you at {label}, {first}.",
         "",
         chat + " : wanted to connect here so we can keep it going.",
         "",
-        "Worth grabbing 15 minutes next week to pick it back up? Happy to work "
-        "around your schedule, or just say the word if there's something I can "
-        "help with sooner.",
+        closer,
     ]).strip()
     return Message(note=connection, message=message)
 
