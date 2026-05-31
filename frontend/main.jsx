@@ -6,14 +6,14 @@ import { initAnalytics } from "./lib/analytics.js";
 // Phone-first in-person surface lives at /inperson (or ?surface=inperson). It's
 // a separate root from the desktop pipeline App : same origin, same session
 // cookie, but a one-handed capture UI.
-// In prod the server picks the shell by Host (app.surpluslayer.com serves the
+// In prod the server picks the shell by Host (event.surpluslayer.com serves the
 // dedicated inperson.html entry), so this index entry normally renders the
 // desktop App. We still detect it here for local dev / preview, where one Vite
-// server has no host routing : /inperson, ?surface=inperson, or an app.* host.
+// server has no host routing : /inperson, ?surface=inperson, or an event.* host.
 function isInPersonSurface() {
   try {
     const { pathname, search, hostname } = window.location;
-    if (hostname.startsWith("app.")) return true;
+    if (hostname.startsWith("event.")) return true;
     if (pathname === "/inperson" || pathname.startsWith("/inperson/")) return true;
     return new URLSearchParams(search).get("surface") === "inperson";
   } catch { return false; }

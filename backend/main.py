@@ -433,16 +433,16 @@ if _FRONTEND_DIST.is_dir():
     # routers are mounted above this static mount):
     #
     #   surpluslayer.com / www.        -> index.html     (the desktop pipeline)
-    #   app.surpluslayer.com           -> inperson.html  (phone-first capture)
+    #   event.surpluslayer.com         -> inperson.html  (phone-first capture)
     #
     # Vite's multi-page build emits both shells into dist/ referencing the same
     # hashed /assets. We just pick which shell to serve as the SPA root + the
     # client-side-route fallback, based on the request Host header. The host
-    # set is env-overridable; the `app.` prefix is the convention so preview
-    # subdomains (app.<env>.surpluslayer.com) Just Work.
+    # set is env-overridable; the `event.` prefix is the convention so preview
+    # subdomains (event.<env>.surpluslayer.com) Just Work.
     _INPERSON_HOSTS = {
         h.strip().lower()
-        for h in (os.environ.get("INPERSON_HOSTS") or "app.surpluslayer.com").split(",")
+        for h in (os.environ.get("INPERSON_HOSTS") or "event.surpluslayer.com").split(",")
         if h.strip()
     }
     _HAS_INPERSON_SHELL = (_FRONTEND_DIST / "inperson.html").is_file()
@@ -458,7 +458,7 @@ if _FRONTEND_DIST.is_dir():
 
     def _shell_for_host(host: str) -> str:
         h = (host or "").split(":")[0].lower()
-        if _HAS_INPERSON_SHELL and (h in _INPERSON_HOSTS or h.startswith("app.")):
+        if _HAS_INPERSON_SHELL and (h in _INPERSON_HOSTS or h.startswith("event.")):
             return "inperson.html"
         return "index.html"
 

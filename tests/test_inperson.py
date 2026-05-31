@@ -342,3 +342,176 @@ def test_route_and_send_warm_path_uses_send_message(db, user, monkeypatch):
     assert outcome.connection_status == "connected"
     # Warm path sends a DM : the dry-run chat payload carries the message text.
     assert outcome.res.payload.get("text") == outcome.final_message
+
+
+# ── #2 : resolve(text) returns a RANKED candidate list (mock Exa) ────────────
+
+def _fake_exa_client(results):
+    """A MagicMock standing in for httpx.Client returning these Exa results."""
+    from unittest.mock import MagicMock
+    resp = MagicMock(); resp.status_code = 200
+    resp.json.return_value = {"results": results}
+    client = MagicMock()
+    client.post.return_value = resp
+    client.__enter__.return_value = client
+    client.__exit__.return_value = None
+    return client
+
+
+def test_resolve_text_returns_ranked_candidates(db, user, monkeypatch):
+    from unittest.mock import patch
+    from backend.routes.inperson import resolve_identity, ResolveIn
+    monkeypatch.setenv("EXA_API_KEY", "test-key")   # exa_available() -> True
+    results = [
+        {"url": "https://www.linkedin.com/in/maya-rodriguez",
+         "title": "Maya Rodriguez - Staff Engineer at Acme | LinkedIn",
+         "text": "# Maya Rodriguez\nStaff Engineer | ML infra\nSan Francisco"},
+        {"url": "https://www.linkedin.com/in/maya-r",
+         "title": "Maya R - Engineer at Beta | LinkedIn",
+         "text": "# Maya R\nEngineer\nNYC"},
+    ]
+    with patch("httpx.Client", return_value=_fake_exa_client(results)):
+        out = resolve_identity(
+            ResolveIn(method="text", name="Maya Rodriguez",
+                      title="Staff Engineer", company="Acme"), db, user)
+    assert out["method"] == "text"
+    assert out["count"] == 2
+    # Ranked in Exa's order; each is a low-confidence candidate with a URL.
+    assert out["candidates"][0]["name"] == "Maya Rodriguez"
+    assert out["candidates"][0]["linkedin_url"] == "https://www.linkedin.com/in/maya-rodriguez"
+    assert out["candidates"][0]["confidence"] == "low"
+    assert all(c.get("linkedin_url") for c in out["candidates"])
+
+
+# ── #3 : free text cannot create a Prospect / send without /scan confirm ─────
+
+def test_text_resolve_creates_nothing_only_scan_confirms(db, user, monkeypatch):
+    from unittest.mock import patch
+    from backend.routes.inperson import resolve_identity, ResolveIn, scan_capture, ScanIn
+    monkeypatch.setenv("EXA_API_KEY", "test-key")
+    results = [{"url": "https://www.linkedin.com/in/maya-rodriguez",
+                "title": "Maya Rodriguez - Staff Engineer at Acme | LinkedIn",
+                "text": "# Maya Rodriguez\nStaff Engineer"}]
+    ev = _make_event(db, user)
+    with patch("httpx.Client", return_value=_fake_exa_client(results)):
+        out = resolve_identity(
+            ResolveIn(method="text", name="Maya Rodriguez"), db, user)
+    assert out["count"] == 1
+    # Resolving text must NOT create a Prospect or any OutreachLog.
+    assert db.query(models.Prospect).count() == 0
+    assert db.query(models.OutreachLog).count() == 0
+
+    # The ONLY way text becomes a Prospect: the user confirms a candidate,
+    # whose URL is then sent through /scan.
+    chosen = out["candidates"][0]
+    scan_capture(ScanIn(event_id=ev["event_id"], linkedin_url=chosen["linkedin_url"],
+                        source="text", name=chosen["name"]), db, user)
+    assert db.query(models.Prospect).count() == 1
+    p = db.query(models.Prospect).one()
+    assert p.status == "pending" and p.source == "text"
+    # /scan still does not send anything.
+    assert db.query(models.OutreachLog).count() == 0
+
+
+# ── #5 : send warm DM (via is_relation) through the /send route + log ────────
+
+def test_send_capture_warm_dm_via_route(db, user, monkeypatch):
+    from backend.providers.unipile import UnipileProvider
+    from backend.routes.inperson import scan_capture, ScanIn, send_capture, SendIn
+    monkeypatch.setattr(UnipileProvider, "is_relation", lambda self, url: True)
+    ev = _make_event(db, user)
+    scan_capture(ScanIn(event_id=ev["event_id"],
+                        linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+                        source="scan", name="Maya Rodriguez"), db, user)
+    p = db.query(models.Prospect).one()
+
+    out = send_capture(p.id, SendIn(), db, user)
+    assert out["path_taken"] == "warm"           # DM, not invite
+    assert out["dry_run"] is True
+    assert out["state"] == "dry_run_queued"
+    # OutreachLog row written for the send.
+    assert any(o.channel == "linkedin" for o in p.outreach)
+
+
+# ── #6 : new_relation matches the scan-created Prospect -> auto-DM ───────────
+
+def _seed_scanned(db, user, handle="maya-rodriguez", name="Maya Rodriguez"):
+    from backend.routes.inperson import scan_capture, ScanIn
+    ev = _make_event(db, user)
+    scan_capture(ScanIn(event_id=ev["event_id"],
+                        linkedin_url=f"https://www.linkedin.com/in/{handle}",
+                        source="scan", name=name, note="the latency demo"), db, user)
+    return ev, db.query(models.Prospect).one()
+
+
+def test_new_relation_matches_scan_prospect_fires_inperson_auto_dm(db, user, monkeypatch):
+    monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")   # deterministic template
+    from backend.providers.unipile import UnipileProvider
+    from backend.routes.webhooks import _apply_canonical_event, _trigger_auto_dm
+
+    _ev, p = _seed_scanned(db, user)
+    assert p.linkedin_provider_id == "dry_li_maya-rodriguez"
+
+    provider = UnipileProvider(dry_run=True, account_id="operator_acct")
+    # Simulated Unipile webhook : they accepted the invite.
+    canonical = provider.normalize_webhook(
+        {"event": "new_relation", "user_provider_id": "dry_li_maya-rodriguez"})
+    assert canonical.state == "invite_accepted"
+
+    applied, _reason, prospect = _apply_canonical_event(db, provider, canonical)
+    assert applied is True and prospect.id == p.id
+    assert prospect.connection_status == "connected"
+
+    _trigger_auto_dm(db, provider, prospect)
+    sent = [o for o in prospect.outreach if o.state == "message_sent"]
+    assert sent, "in-person auto-DM should have fired on accept"
+    # Warm in-person copy, not a cold re-pitch.
+    assert "meet you at NYC Tech Week" in sent[-1].body
+
+
+def test_unmatched_new_relation_fires_nothing(db, user):
+    from backend.providers.unipile import UnipileProvider
+    from backend.routes.webhooks import _apply_canonical_event
+
+    _ev, p = _seed_scanned(db, user)
+    before = db.query(models.OutreachLog).count()
+
+    provider = UnipileProvider(dry_run=True, account_id="operator_acct")
+    canonical = provider.normalize_webhook(
+        {"event": "new_relation", "user_provider_id": "dry_li_someone_else"})
+    applied, reason, prospect = _apply_canonical_event(db, provider, canonical)
+
+    assert applied is False and prospect is None      # no match
+    # Nothing written, nothing sent : the route would skip the auto-DM.
+    assert db.query(models.OutreachLog).count() == before
+    db.refresh(p)
+    assert p.status == "pending"                       # untouched
+
+
+# ── #7 : captures list reflects status, last touch, reply state ──────────────
+
+def test_captures_reflects_last_touch_and_reply(db, user):
+    from backend.providers.unipile import UnipileProvider
+    from backend.providers.base import CanonicalEvent
+    from backend.routes.webhooks import _apply_canonical_event
+    from backend.routes.inperson import list_captures
+    from datetime import datetime, timezone, timedelta
+
+    ev, p = _seed_scanned(db, user)
+    provider = UnipileProvider(dry_run=True, account_id="operator_acct")
+    pid = "dry_li_maya-rodriguez"
+    t0 = datetime.now(timezone.utc)
+
+    # DM sent, then they replied : feed both canonical events through the
+    # same path the webhook uses.
+    for i, state in enumerate(("message_sent", "message_replied")):
+        _apply_canonical_event(db, provider, CanonicalEvent(
+            event_id=0, prospect_id=0, state=state, provider="unipile",
+            provider_lead_id=pid, ts=t0 + timedelta(minutes=i),
+            body="hi" if state == "message_replied" else "", raw={}))
+
+    out = list_captures(ev["event_id"], db, user)
+    row = out["captures"][0]
+    assert row["status"] == "rsvp"                       # reply flips to rsvp
+    assert row["last_outreach"]["state"] == "message_replied"   # latest touch
+    assert row["connection_status"] == "unknown"          # never relation-checked

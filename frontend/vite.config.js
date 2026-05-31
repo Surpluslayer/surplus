@@ -22,7 +22,7 @@ export default defineConfig({
     emptyOutDir: true,
     // Multi-page: two HTML shells from one build, sharing the hashed /assets.
     //   index.html    -> desktop pipeline   (surpluslayer.com)
-    //   inperson.html -> phone-first capture (app.surpluslayer.com)
+    //   inperson.html -> phone-first capture (event.surpluslayer.com)
     // FastAPI picks which shell to serve per Host (backend/main.py).
     rollupOptions: {
       input: {
