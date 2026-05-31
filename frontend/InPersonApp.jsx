@@ -48,27 +48,50 @@ function pushRecentLabel(label) {
 
 export default function InPersonApp() {
   const [user, setUser] = useState(null);          // null=loading, undefined=out
+  const [authError, setAuthError] = useState(null); // {status, message} for non-401 failures
   const [event, setEvent] = useState(loadActiveEvent);
   const [tab, setTab] = useState("capture");       // "capture" | "people"
   const [result, setResult] = useState(null);      // scan result -> result screen
   const [openCapture, setOpenCapture] = useState(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => { ensureNotifyPermission(); }, []);
 
   useEffect(() => {
     let cancelled = false;
+    setUser(null); setAuthError(null);
     api.me()
-      .then((u) => { if (!cancelled) setUser(u || undefined); })
-      .catch(() => { if (!cancelled) setUser(undefined); });
+      .then((u) => {
+        if (cancelled) return;
+        // A 200 with a non-object body means the request didn't reach the API
+        // (e.g. it fell through to the SPA shell : 200 text/html -> null here).
+        // Treat that as an error to surface, NOT as "signed out", so we don't
+        // silently bounce an authenticated user back to the login screen.
+        if (u && typeof u === "object" && u.id) { setUser(u); return; }
+        setAuthError({ status: 200, message:
+          "Signed in, but /api/auth/me returned no account. The API request "
+          + "may not be reaching the server (got a non-JSON 200)." });
+        setUser(undefined);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        if (e?.status === 401) { setUser(undefined); return; }  // genuinely signed out
+        // Network / 5xx / CORS : don't pretend they're signed out.
+        setAuthError({ status: e?.status, message: e?.message || "Could not reach the server." });
+        setUser(undefined);
+      });
     return () => { cancelled = true; };
-  }, []);
+  }, [reloadKey]);
 
   const pickEvent = (ev) => { setEvent(ev); saveActiveEvent(ev); };
 
   if (user === null) {
     return <Centered><Loader2 className="spin" size={28} /></Centered>;
   }
-  if (user === undefined) return <SignInBounce />;
+  if (user === undefined) {
+    return <SignInBounce authError={authError}
+                         onRetry={() => setReloadKey((k) => k + 1)} />;
+  }
 
   const notConnected = !user.unipile_account_id;
 
@@ -131,7 +154,7 @@ export default function InPersonApp() {
 
 // ── sign-in bounce ───────────────────────────────────────────────────────────
 
-function SignInBounce() {
+function SignInBounce({ authError = null, onRetry = null }) {
   const [busy, setBusy] = useState(false);
   // Mirror the desktop App's onSignIn: LinkedIn-connect is gated behind Stripe
   // payment (pay-first product flow), so /linkedin/start returns 402
@@ -169,6 +192,21 @@ function SignInBounce() {
           <button className="ip-btn primary" onClick={go} disabled={busy}>
             {busy ? <Loader2 className="spin" size={16} /> : "Sign in with LinkedIn"}
           </button>
+          {authError && (
+            <div className="ip-warn" style={{ marginTop: 14, maxWidth: 340 }}>
+              <AlertCircle size={13} />
+              <span>
+                {authError.status === 200
+                  ? "We reached the server but couldn't read your account."
+                  : `Couldn't reach the account service${authError.status ? ` (${authError.status})` : ""}.`}
+                {onRetry && (
+                  <> {" "}
+                    <button className="ip-linkbtn" onClick={onRetry}>Retry</button>
+                  </>
+                )}
+              </span>
+            </div>
+          )}
         </div>
       </Centered>
     </div>
@@ -813,6 +851,9 @@ const IP_CSS = `
 .ip-warn,.ip-err,.ip-ok { font-size:13px; display:flex; gap:6px; align-items:center;
   margin-top:8px; padding:8px 11px; border-radius:10px; }
 .ip-warn { background:#fff6e5; color:#7a5200; }
+.ip-warn { text-align:left; }
+.ip-linkbtn { background:none; border:0; color:var(--ip-accent); font-weight:700;
+  text-decoration:underline; cursor:pointer; padding:0; font-size:13px; }
 .ip-err { background:#fdecec; color:#a01818; }
 .ip-ok { background:#e8f6ec; color:#1d7a37; }
 .ip-thread { background:#fff; border:1px solid var(--ip-line); border-radius:14px;
