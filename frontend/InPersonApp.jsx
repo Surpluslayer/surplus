@@ -60,24 +60,38 @@ export default function InPersonApp() {
   useEffect(() => {
     let cancelled = false;
     setUser(null); setAuthError(null);
-    api.me()
-      .then((u) => {
-        if (cancelled) return;
-        // A 200 with a non-object body means the request didn't reach the API
-        // (e.g. it fell through to the SPA shell : 200 text/html -> null here).
-        // Treat that as an error to surface, NOT as "signed out", so we don't
-        // silently bounce an authenticated user back to the login screen.
-        if (u && typeof u === "object" && u.id) { setUser(u); return; }
-        setAuthError({ status: 200, message:
-          "Signed in, but /api/auth/me returned no account. The API request "
-          + "may not be reaching the server (got a non-JSON 200)." });
-        setUser(undefined);
-      })
+    // On the in-person host we never park a tester at a sign-in wall : if there's
+    // no session, transparently mint a LinkedIn-less guest and continue. Real
+    // sends stay blocked (no connected LinkedIn -> the "Connect LinkedIn to
+    // send" banner). A genuine LinkedIn user keeps their session as-is.
+    const resolveUser = async () => {
+      try {
+        const u = await api.me();
+        if (u && typeof u === "object" && u.id) return u;
+        // 200-but-not-a-user : request didn't reach the API cleanly. Surface it.
+        throw Object.assign(new Error("non-account 200"), { _nonAccount: true });
+      } catch (e) {
+        if (e?.status === 401) {
+          // No session -> become a guest, then re-read me().
+          await api.inpersonGuest();
+          const u2 = await api.me();
+          if (u2 && typeof u2 === "object" && u2.id) return u2;
+          throw Object.assign(new Error("guest session not recognized"),
+                              { status: 200 });
+        }
+        throw e;
+      }
+    };
+    resolveUser()
+      .then((u) => { if (!cancelled) setUser(u); })
       .catch((e) => {
         if (cancelled) return;
-        if (e?.status === 401) { setUser(undefined); return; }  // genuinely signed out
-        // Network / 5xx / CORS : don't pretend they're signed out.
-        setAuthError({ status: e?.status, message: e?.message || "Could not reach the server." });
+        setAuthError({
+          status: e?.status,
+          message: e?._nonAccount
+            ? "Reached the server but couldn't read your account."
+            : (e?.message || "Could not reach the server."),
+        });
         setUser(undefined);
       });
     return () => { cancelled = true; };

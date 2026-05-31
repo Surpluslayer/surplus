@@ -187,6 +187,10 @@ export const api = {
   me: () => request("/api/auth/me"),
   // returns { url } : frontend sets window.location = url to begin the flow
   startLinkedinAuth: () => request("/api/auth/linkedin/start", { method: "POST" }),
+  // in-person guest : mint a LinkedIn-less anonymous session so the capture
+  // flow works on event.surpluslayer.com without signing in (real sends stay
+  // blocked until LinkedIn is connected). 403s on non-in-person hosts.
+  inpersonGuest: () => request("/api/auth/inperson/guest", { method: "POST" }),
   // billing : start a Stripe Checkout Session and return { url } to redirect to.
   startCheckout: () => request("/api/billing/checkout-session", { method: "POST" }),
   // Triage-only signup : no LinkedIn / Unipile required. Creates a User
