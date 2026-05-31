@@ -44,6 +44,16 @@ function pushRecentLabel(label) {
   } catch {}
 }
 
+// Guest mode lives at /guest (event.surpluslayer.com/guest). Anything under
+// that path opts into the auto-guest session; the bare host keeps the normal
+// LinkedIn sign-in gate.
+function isGuestPath() {
+  try {
+    const p = window.location.pathname || "";
+    return p === "/guest" || p.startsWith("/guest/");
+  } catch { return false; }
+}
+
 // ── root ───────────────────────────────────────────────────────────────────
 
 export default function InPersonApp() {
@@ -60,10 +70,11 @@ export default function InPersonApp() {
   useEffect(() => {
     let cancelled = false;
     setUser(null); setAuthError(null);
-    // On the in-person host we never park a tester at a sign-in wall : if there's
-    // no session, transparently mint a LinkedIn-less guest and continue. Real
-    // sends stay blocked (no connected LinkedIn -> the "Connect LinkedIn to
-    // send" banner). A genuine LinkedIn user keeps their session as-is.
+    // Guest mode is gated to the /guest path : event.surpluslayer.com/guest
+    // auto-mints a LinkedIn-less guest so a tester lands straight in the
+    // capture flow (real sends still blocked -> "Connect LinkedIn to send").
+    // Plain event.surpluslayer.com keeps the normal LinkedIn sign-in gate.
+    const guestMode = isGuestPath();
     const resolveUser = async () => {
       try {
         const u = await api.me();
@@ -72,7 +83,8 @@ export default function InPersonApp() {
         throw Object.assign(new Error("non-account 200"), { _nonAccount: true });
       } catch (e) {
         if (e?.status === 401) {
-          // No session -> become a guest, then re-read me().
+          if (!guestMode) throw e;            // root path : show the sign-in screen
+          // /guest : become a guest, then re-read me().
           await api.inpersonGuest();
           const u2 = await api.me();
           if (u2 && typeof u2 === "object" && u2.id) return u2;
@@ -86,6 +98,7 @@ export default function InPersonApp() {
       .then((u) => { if (!cancelled) setUser(u); })
       .catch((e) => {
         if (cancelled) return;
+        if (e?.status === 401) { setUser(undefined); return; }  // genuinely signed out
         setAuthError({
           status: e?.status,
           message: e?._nonAccount
