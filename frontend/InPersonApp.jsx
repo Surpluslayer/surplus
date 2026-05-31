@@ -577,6 +577,9 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
   // Once the operator hand-edits the draft, stop auto-recomposing so we never
   // clobber their wording. They can still personalize manually.
   const [draftEdited, setDraftEdited] = useState(false);
+  // Capture stays minimal for mobile : the note auto-personalizes from the fun
+  // fact, so the editable note + private memo hide behind a disclosure.
+  const [showMore, setShowMore] = useState(false);
   const stale = (note || "").trim() !== (draftFromNote || "").trim();
 
   // Persist the fun fact + private note onto the capture and RE-COMPOSE the
@@ -681,47 +684,59 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
             ? <div className="ip-dim ip-microw-hint"><Check size={13} /> Draft personalized</div>
             : null}
 
-      <label className="ip-lbl">Connection note
-        <span className="ip-dim"> · optional, ≤300</span></label>
-      <textarea className="ip-area" rows={3} maxLength={300}
-        value={draftNote}
-        onChange={(e) => { setDraftNote(e.target.value); setDraftEdited(true); }} />
+      {/* Everything below is OPTIONAL at capture : the note auto-personalizes
+          and the first message can be drafted later from People. Keep the
+          capture moment to person + fun fact + Connect. */}
+      <button className="ip-disclosure" onClick={() => setShowMore((s) => !s)}>
+        <ChevronRight size={15} className={showMore ? "rot" : ""} />
+        {showMore ? "Hide note & private memo" : "Customize note · add private memo"}
+      </button>
+      {showMore && (
+        <div className="ip-more">
+          <label className="ip-lbl">Connection note
+            <span className="ip-dim"> · optional, ≤300</span></label>
+          <textarea className="ip-area" rows={3} maxLength={300}
+            value={draftNote}
+            onChange={(e) => { setDraftNote(e.target.value); setDraftEdited(true); }} />
 
-      <label className="ip-lbl">First message
-        <span className="ip-dim"> · sent after they accept</span></label>
-      <textarea className="ip-area" rows={5}
-        value={draftMsg}
-        onChange={(e) => { setDraftMsg(e.target.value); setDraftEdited(true); }} />
-
-      <label className="ip-lbl">Private note <span className="ip-dim">· just for you, never sent</span></label>
-      <div className="ip-microw">
-        <input className="ip-input" placeholder="reminder to self…"
-          value={privateNote} onChange={(e) => setPrivateNote(e.target.value)} />
-        <MicButton value={privateNote} onChange={setPrivateNote} title="Dictate a private note" />
-      </div>
+          <label className="ip-lbl">Private note <span className="ip-dim">· just for you, never sent</span></label>
+          <div className="ip-microw">
+            <input className="ip-input" placeholder="reminder to self…"
+              value={privateNote} onChange={(e) => setPrivateNote(e.target.value)} />
+            <MicButton value={privateNote} onChange={setPrivateNote} title="Dictate a private note" />
+          </div>
+        </div>
+      )}
 
       {err && <div className="ip-err"><AlertCircle size={14} /> {err}</div>}
 
+      {/* Connect is the one obvious action. "Save for later" and the bare-invite
+          variant are secondary. The first message is drafted later in People. */}
       <div className="ip-actions">
-        <button className="ip-btn primary" onClick={save} disabled={!!busy}>
-          {busy === "save" ? <Loader2 className="spin" size={16} />
-            : <><Bookmark size={16} /> Save to review</>}
-        </button>
-        <button className="ip-btn ghost" onClick={() => send(false)}
+        <button className="ip-btn primary" onClick={() => send(false)}
                 disabled={!!busy || !canSend}
                 title={canSend ? "" : "Connect LinkedIn to send"}>
           {busy === "send" ? <Loader2 className="spin" size={16} />
-            : <><Send size={16} /> Send with note</>}
+            : <><Send size={16} /> Connect</>}
         </button>
-        <button className="ip-btn ghost" onClick={() => send(true)}
-                disabled={!!busy || !canSend}
-                title={canSend ? "Send a bare invite; the message goes out once accepted"
-                              : "Connect LinkedIn to send"}>
-          {busy === "nonote" ? <Loader2 className="spin" size={16} />
-            : <><Send size={16} /> Connect without note</>}
-        </button>
+        <div className="ip-actions-row">
+          <button className="ip-btn ghost sm" onClick={save} disabled={!!busy}>
+            {busy === "save" ? <Loader2 className="spin" size={15} />
+              : <><Bookmark size={15} /> Save for later</>}
+          </button>
+          <button className="ip-btn ghost sm" onClick={() => send(true)}
+                  disabled={!!busy || !canSend}
+                  title={canSend ? "Send a bare invite; the message goes out once accepted"
+                                : "Connect LinkedIn to send"}>
+            {busy === "nonote" ? <Loader2 className="spin" size={15} />
+              : "Connect, no note"}
+          </button>
+        </div>
       </div>
       {!canSend && <div className="ip-dim ip-center">Connect LinkedIn to send now.</div>}
+      <div className="ip-dim ip-center ip-laterhint">
+        Tweak the first message anytime from <b>People</b>.
+      </div>
     </div>
   );
 }
@@ -1128,7 +1143,15 @@ button.ip-microw-hint { cursor:pointer; }
 .ip-btn.sm { padding:10px 13px; font-size:13px; }
 .ip-btn.block { width:100%; }
 .ip-actions { display:flex; flex-direction:column; gap:9px; margin-top:16px; }
-.ip-actions .ip-btn { width:100%; }
+.ip-actions > .ip-btn { width:100%; }
+.ip-actions-row { display:flex; gap:9px; }
+.ip-actions-row .ip-btn { flex:1; }
+.ip-disclosure { display:flex; align-items:center; gap:6px; margin-top:14px;
+  background:none; border:0; color:var(--ip-accent); font-size:13px; font-weight:600;
+  padding:4px 0; cursor:pointer; }
+.ip-disclosure .rot { transform:rotate(90deg); }
+.ip-more { margin-top:4px; }
+.ip-laterhint { margin-top:10px; font-size:12px; }
 
 /* camera */
 .ip-cam { position:relative; margin-top:14px; border-radius:16px; overflow:hidden;
