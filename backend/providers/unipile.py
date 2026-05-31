@@ -142,12 +142,18 @@ class UnipileProvider(LinkedInProvider):
     # ---- send_connection -------------------------------------------------
 
     def _build_invite_payload(self, lead: LeadPayload, provider_id: str) -> dict:
-        """POST /api/v1/users/invite request body."""
-        return {
+        """POST /api/v1/users/invite request body.
+
+        An empty note means "connect without a note" : omit the `message` key
+        entirely so the invite goes out bare (LinkedIn rejects an empty-string
+        note, and sending no key is the documented way to skip it)."""
+        body = {
             "account_id": self.account_id or "<UNSET-UNIPILE_ACCOUNT_ID>",
             "provider_id": provider_id,
-            "message": lead.note,
         }
+        if (lead.note or "").strip():
+            body["message"] = lead.note
+        return body
 
     def send_connection(self, lead: LeadPayload) -> ProviderResult:
         handle = _linkedin_handle(lead.linkedin_url)

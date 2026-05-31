@@ -213,6 +213,10 @@ def _migrate_prospect_capture_fields() -> None:
             conn.execute(text(
                 f"ALTER TABLE prospects ADD COLUMN {ine}note VARCHAR(300)"
             ))
+        if "private_note" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}private_note VARCHAR(500)"
+            ))
         if "captured_at" not in cols:
             conn.execute(text(
                 f"ALTER TABLE prospects ADD COLUMN {ine}captured_at TIMESTAMP"

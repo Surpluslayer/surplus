@@ -240,6 +240,65 @@ def test_send_capture_dry_run_cold_path(db, user):
     assert any(o.channel == "linkedin" for o in p.outreach)
 
 
+def test_scan_repersonalizes_draft_and_stores_private_note(db, user):
+    """The fun fact (`note`) must drive the composed draft, and re-scanning
+    with an updated fact must re-personalize it. `private_note` is stored
+    separately and never feeds the draft."""
+    from backend.routes.inperson import scan_capture, ScanIn
+    ev = _make_event(db, user)
+    url = "https://www.linkedin.com/in/maya-rodriguez"
+
+    bare = scan_capture(ScanIn(event_id=ev["event_id"], linkedin_url=url,
+                               source="scan", name="Maya"), db, user)
+    catered = scan_capture(ScanIn(event_id=ev["event_id"], linkedin_url=url,
+                                  source="scan", name="Maya",
+                                  note="from Ottawa",
+                                  private_note="intro to Dana"), db, user)
+
+    # Re-scan with the fun fact changes the draft (re-personalized).
+    assert catered["draft_note"] != bare["draft_note"]
+    assert "Ottawa" in catered["draft_note"]
+    # Fun fact + private note land on the row, separately.
+    p = db.query(models.Prospect).one()
+    assert p.note == "from Ottawa"
+    assert p.private_note == "intro to Dana"
+    # The serialized capture exposes both.
+    assert catered["prospect"]["note"] == "from Ottawa"
+    assert catered["prospect"]["private_note"] == "intro to Dana"
+
+
+def test_send_no_note_sends_bare_invite(db, user):
+    """`no_note` sends a bare invite (empty note) regardless of any note text,
+    so it dodges LinkedIn's 300-char cap. The post-accept DM is unaffected."""
+    from backend.routes.inperson import scan_capture, ScanIn, send_capture, SendIn
+    ev = _make_event(db, user)
+    scan_capture(ScanIn(event_id=ev["event_id"],
+                        linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+                        source="scan", name="Maya", note="from Ottawa"), db, user)
+    p = db.query(models.Prospect).one()
+
+    out = send_capture(p.id, _req(), SendIn(no_note=True, note="ignored"), db, user)
+    assert out["path_taken"] == "cold"
+    assert out["note_preview"] == ""        # bare : no note attached
+
+
+def test_invite_payload_omits_message_when_note_blank(db, user):
+    """The Unipile invite body must OMIT the message key for a bare invite :
+    LinkedIn rejects an empty-string note, absent key = connect without note."""
+    from dataclasses import replace
+    from backend.providers.unipile import UnipileProvider
+    from backend.providers.base import LeadPayload
+    prov = UnipileProvider(dry_run=True)
+    lead = LeadPayload(
+        event_id=1, prospect_id=1, identity="x", first_name="M", last_name="R",
+        full_name="Maya R", linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+        company=None, position=None, note="", message="", works_on=None,
+        offers=None, seeks=None, fit_score=None, fit_reason=None, sources=None)
+    assert "message" not in prov._build_invite_payload(lead, "prov_1")
+    assert prov._build_invite_payload(replace(lead, note="hi there"),
+                                      "prov_1")["message"] == "hi there"
+
+
 def test_send_capture_rejects_unowned(db, user):
     from fastapi import HTTPException
     from backend.routes.inperson import send_capture, SendIn

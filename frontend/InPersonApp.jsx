@@ -567,18 +567,41 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
   const p = result.prospect || {};
   const [draftNote, setDraftNote] = useState(result.draft_note || "");
   const [draftMsg, setDraftMsg] = useState(result.draft_message || "");
-  const [note, setNote] = useState(p.note || "");
-  const [busy, setBusy] = useState("");          // "" | "send" | "save"
+  const [note, setNote] = useState(p.note || "");               // fun fact
+  const [privateNote, setPrivateNote] = useState(p.private_note || "");
+  const [busy, setBusy] = useState("");      // "" | "send" | "save" | "personalize" | "nonote"
   const [err, setErr] = useState("");
+  // The draft on screen was composed BEFORE the fun fact was typed. Track
+  // whether the saved fun fact still matches what produced the current draft.
+  const [draftFromNote, setDraftFromNote] = useState(p.note || "");
+  const stale = (note || "").trim() !== (draftFromNote || "").trim();
 
-  // Persist the (possibly edited) personal note back onto the capture via the
-  // /scan upsert. The edited DRAFT text isn't server-persistable yet (no PATCH
-  // endpoint) so we stash it locally for the captures detail to re-read.
-  const persistNote = async () => {
-    if ((note || "") === (p.note || "")) return;
+  // Persist the fun fact + private note onto the capture and RE-COMPOSE the
+  // draft from the just-saved fun fact. This is the fix for "the message won't
+  // personalize" : the draft is only as personal as the note it was built from,
+  // so saving the note has to refresh the draft.
+  const repersonalize = async () => {
+    setErr(""); setBusy("personalize");
+    try {
+      const r = await api.inpersonScan({
+        event_id: event.event_id, linkedin_url: p.linkedin_url,
+        source: p.source || "scan", note, private_note: privateNote,
+      });
+      setDraftNote(r.draft_note || "");
+      setDraftMsg(r.draft_message || "");
+      setDraftFromNote(note || "");
+    } catch (e) { setErr(e.message || "Couldn’t personalize"); }
+    finally { setBusy(""); }
+  };
+
+  // Lightweight persist (fun fact + private note) without forcing a recompose,
+  // for Save/Send when the operator already edited the draft by hand.
+  const persistNotes = async () => {
+    if ((note || "") === (p.note || "") &&
+        (privateNote || "") === (p.private_note || "")) return;
     await api.inpersonScan({
       event_id: event.event_id, linkedin_url: p.linkedin_url,
-      source: p.source || "scan", note,
+      source: p.source || "scan", note, private_note: privateNote,
     });
   };
   const stashDraft = () => {
@@ -590,16 +613,18 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
 
   const save = async () => {
     setErr(""); setBusy("save");
-    try { await persistNote(); stashDraft(); onDone(); }
+    try { await persistNotes(); stashDraft(); onDone(); }
     catch (e) { setErr(e.message || "Save failed"); setBusy(""); }
   };
-  const send = async () => {
-    setErr(""); setBusy("send");
+  // noNote=true -> send a BARE invite (no connection note). The personalized
+  // DM still fires automatically once they accept.
+  const send = async (noNote = false) => {
+    setErr(""); setBusy(noNote ? "nonote" : "send");
     try {
-      await persistNote();
-      const res = await api.inpersonSend(p.prospect_id, {
-        note: draftNote, message: draftMsg,
-      });
+      await persistNotes();
+      const res = await api.inpersonSend(p.prospect_id,
+        noNote ? { no_note: true, message: draftMsg }
+               : { note: draftNote, message: draftMsg });
       if (!res.dry_run && res.state) {
         notifyDevice(`${p.name}: ${outreachStateLabel(res.state)}`);
       }
@@ -622,17 +647,34 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
         )}
       </div>
 
-      <label className="ip-lbl">Connection note <span className="ip-dim">≤300</span></label>
+      {/* Fun fact FIRST : it drives the draft, so it's the thing to fill in. */}
+      <label className="ip-lbl">What you talked about
+        <span className="ip-dim"> · personalizes the message</span></label>
+      <input className="ip-input" placeholder="e.g. from Ottawa · loves bagels · rock climbing"
+        value={note} onChange={(e) => setNote(e.target.value)} />
+      <button className="ip-btn block" onClick={repersonalize}
+              disabled={!!busy || !(note || "").trim()}>
+        {busy === "personalize" ? <Loader2 className="spin" size={16} />
+          : <><RefreshCw size={15} /> {stale && draftNote ? "Update draft from this" : "Personalize draft"}</>}
+      </button>
+      {stale && (note || "").trim() && (
+        <div className="ip-warn"><AlertCircle size={13} /> Tap “Update draft” so
+          the message reflects what you just typed.</div>
+      )}
+
+      <label className="ip-lbl">Connection note
+        <span className="ip-dim"> · optional, ≤300</span></label>
       <textarea className="ip-area" rows={3} maxLength={300}
         value={draftNote} onChange={(e) => setDraftNote(e.target.value)} />
 
-      <label className="ip-lbl">First message</label>
+      <label className="ip-lbl">First message
+        <span className="ip-dim"> · sent after they accept</span></label>
       <textarea className="ip-area" rows={5}
         value={draftMsg} onChange={(e) => setDraftMsg(e.target.value)} />
 
-      <label className="ip-lbl">What you talked about <span className="ip-dim">(personalizes the invite)</span></label>
-      <input className="ip-input" placeholder="e.g. from Ottawa · loves bagels · rock climbing"
-        value={note} onChange={(e) => setNote(e.target.value)} />
+      <label className="ip-lbl">Private note <span className="ip-dim">· just for you, never sent</span></label>
+      <input className="ip-input" placeholder="reminder to self…"
+        value={privateNote} onChange={(e) => setPrivateNote(e.target.value)} />
 
       {err && <div className="ip-err"><AlertCircle size={14} /> {err}</div>}
 
@@ -641,11 +683,18 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
           {busy === "save" ? <Loader2 className="spin" size={16} />
             : <><Bookmark size={16} /> Save to review</>}
         </button>
-        <button className="ip-btn ghost" onClick={send}
+        <button className="ip-btn ghost" onClick={() => send(false)}
                 disabled={!!busy || !canSend}
                 title={canSend ? "" : "Connect LinkedIn to send"}>
           {busy === "send" ? <Loader2 className="spin" size={16} />
-            : <><Send size={16} /> Send now</>}
+            : <><Send size={16} /> Send with note</>}
+        </button>
+        <button className="ip-btn ghost" onClick={() => send(true)}
+                disabled={!!busy || !canSend}
+                title={canSend ? "Send a bare invite; the message goes out once accepted"
+                              : "Connect LinkedIn to send"}>
+          {busy === "nonote" ? <Loader2 className="spin" size={16} />
+            : <><Send size={16} /> Connect without note</>}
         </button>
       </div>
       {!canSend && <div className="ip-dim ip-center">Connect LinkedIn to send now.</div>}
@@ -821,11 +870,12 @@ function CaptureDetail({ event, capture, onBack, canSend }) {
     } catch {}
   }, [capture.prospect_id]);
 
-  const send = async () => {
-    setErr(""); setBusy("send");
+  const send = async (noNote = false) => {
+    setErr(""); setBusy(noNote ? "nonote" : "send");
     try {
       const override = {};
-      if (draftNote.trim()) override.note = draftNote;
+      if (noNote) override.no_note = true;
+      else if (draftNote.trim()) override.note = draftNote;
       if (draftMsg.trim()) override.message = draftMsg;
       const res = await api.inpersonSend(capture.prospect_id, override);
       setSent(res);
@@ -861,16 +911,19 @@ function CaptureDetail({ event, capture, onBack, canSend }) {
               <span className="ip-dim"> · {fmtTs(capture.last_outreach.ts)}</span>
             </div>
           : <div className="ip-dim">Nothing sent yet.</div>}
-        {capture.note && <div className="ip-privnote">“{capture.note}”</div>}
+        {capture.note && <div className="ip-privnote">Talked about: “{capture.note}”</div>}
+        {capture.private_note && (
+          <div className="ip-privnote">Private: “{capture.private_note}”</div>
+        )}
       </div>
 
       {isPending && (
         <>
-          <label className="ip-lbl">Connection note</label>
+          <label className="ip-lbl">Connection note <span className="ip-dim">· optional</span></label>
           <textarea className="ip-area" rows={3} maxLength={300}
             placeholder="Leave blank to use the agent draft"
             value={draftNote} onChange={(e) => setDraftNote(e.target.value)} />
-          <label className="ip-lbl">First message</label>
+          <label className="ip-lbl">First message <span className="ip-dim">· sent after they accept</span></label>
           <textarea className="ip-area" rows={4}
             placeholder="Leave blank to use the agent draft"
             value={draftMsg} onChange={(e) => setDraftMsg(e.target.value)} />
@@ -878,11 +931,21 @@ function CaptureDetail({ event, capture, onBack, canSend }) {
           {sent
             ? <div className="ip-ok"><Check size={15} /> {outreachStateLabel(sent.state)}
                 {sent.dry_run ? " (dry-run)" : ""} · {sent.path_taken}</div>
-            : <button className="ip-btn primary block" onClick={send}
-                      disabled={!!busy || !canSend}>
-                {busy === "send" ? <Loader2 className="spin" size={16} />
-                  : <><Send size={16} /> {actionLabel(capture.connection_status, false)}</>}
-              </button>}
+            : <>
+                <button className="ip-btn primary block" onClick={() => send(false)}
+                        disabled={!!busy || !canSend}>
+                  {busy === "send" ? <Loader2 className="spin" size={16} />
+                    : <><Send size={16} /> {actionLabel(capture.connection_status, false)}</>}
+                </button>
+                {capture.connection_status !== "connected" && (
+                  <button className="ip-btn ghost block" onClick={() => send(true)}
+                          disabled={!!busy || !canSend}
+                          title="Send a bare invite; the message goes out once accepted">
+                    {busy === "nonote" ? <Loader2 className="spin" size={16} />
+                      : <><Send size={16} /> Connect without note</>}
+                  </button>
+                )}
+              </>}
           {!canSend && <div className="ip-dim ip-center">Connect LinkedIn to send.</div>}
         </>
       )}

@@ -76,7 +76,8 @@ class ScanIn(BaseModel):
     event_id: int
     linkedin_url: str
     source: str                       # "scan" | "link" | "text"
-    note: Optional[str] = None
+    note: Optional[str] = None          # fun fact : personalizes the draft
+    private_note: Optional[str] = None  # operator-only memo : never sent
     # Optional enrichment carried over from a confirmed /resolve candidate so
     # the captured Prospect (and its draft) isn't just a bare handle.
     name: Optional[str] = None
@@ -87,6 +88,10 @@ class ScanIn(BaseModel):
 class SendIn(BaseModel):
     note: Optional[str] = None
     message: Optional[str] = None
+    # "Connect without a note" : send a BARE invite (dodges LinkedIn's 300-char
+    # note cap). The personalized DM still fires automatically once accepted.
+    # Takes precedence over `note`.
+    no_note: bool = False
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -122,6 +127,8 @@ def _capture_row(p: models.Prospect) -> dict:
         "connection_status": p.connection_status,
         "source": p.source,
         "captured_at": p.captured_at,
+        "note": p.note,                      # fun fact (personalizes the draft)
+        "private_note": p.private_note,       # operator-only memo (never sent)
         # No dedicated column : an unresolved capture is exactly one with no
         # provider id, so the UI can surface a "retry resolve" affordance.
         "resolve_failed": p.linkedin_provider_id is None,
@@ -257,11 +264,14 @@ def scan_capture(
     p.status = "pending"
     p.source = (body.source or "").strip() or None
     p.captured_at = datetime.now(timezone.utc)
-    p.note = (body.note or None)
+    p.note = (body.note or None)                  # fun fact : drives the draft
+    p.private_note = (body.private_note or None)   # operator-only : never sent
     db.commit()
     db.refresh(p)
 
     # ev.kind == "in_person", so compose() takes the warm "we just met" branch.
+    # p.note was just persisted, so the draft is composed FROM the fun fact :
+    # re-scanning with an updated note re-personalizes both halves.
     draft = compose(p, ev)
     return {
         "prospect": _capture_row(p),
@@ -368,9 +378,13 @@ def send_capture(
     _require_send_allowed(request, user)
     provider = get_provider_for_user(user)
 
+    # "Connect without a note" wins over any note text : send a bare invite.
+    # route_and_send treats note="" as an explicit empty note (vs None = use
+    # the composed draft), so the invite goes out with no note attached.
+    send_note = "" if body.no_note else (body.note or None)
     outcome = route_and_send(
         db, p, provider, p.event,
-        note=body.note or None,
+        note=send_note,
         message=body.message or None,
     )
     res = outcome.res

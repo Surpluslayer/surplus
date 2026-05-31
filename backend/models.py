@@ -139,11 +139,14 @@ class Prospect(Base):
     group_id: Mapped[Optional[int]] = mapped_column(default=None)
 
     # In-person capture fields (scan-to-connect). NULL for web-discovered
-    # prospects. `note` is the optional personal line the operator wants on the
-    # LinkedIn connect request (≤300 to fit LinkedIn's note cap); `captured_at`
-    # is when the row was scanned; `source` records the capture channel
-    # ("scan" | "link" | "text").
+    # prospects. `note` is the "fun fact" / what-you-talked-about line that
+    # PERSONALIZES the composed connection note + post-accept DM (≤300 to fit
+    # LinkedIn's note cap). `private_note` is a separate operator-only memo that
+    # is NEVER sent : it exists purely for the operator's own reference.
+    # `captured_at` is when the row was scanned; `source` records the capture
+    # channel ("scan" | "link" | "text").
     note: Mapped[Optional[str]] = mapped_column(String(300), default=None)
+    private_note: Mapped[Optional[str]] = mapped_column(String(500), default=None)
     captured_at: Mapped[Optional[datetime]] = mapped_column(default=None)
     source: Mapped[Optional[str]] = mapped_column(String(20), default=None)
 
