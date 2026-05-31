@@ -448,13 +448,32 @@ if _FRONTEND_DIST.is_dir():
     _HAS_INPERSON_SHELL = (_FRONTEND_DIST / "inperson.html").is_file()
 
     def _host_from_scope(scope) -> str:
-        for k, v in scope.get("headers") or []:
-            if k == b"host":
+        """The user-facing host. Behind Cloudflare / Railway the edge rewrites
+        the raw Host header to the origin's INTERNAL name (e.g.
+        surplus-production.up.railway.app), which would make us serve the
+        desktop shell on event.surpluslayer.com. The real host survives in
+        X-Forwarded-Host (set by the proxy) and on the Origin / Referer of the
+        navigation, so prefer those and fall back to Host last."""
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                   for k, v in (scope.get("headers") or [])}
+        # 1. X-Forwarded-Host : the proxy's record of the original Host. May be
+        #    a comma list (client, proxy1, ...) : take the first.
+        xfh = (headers.get("x-forwarded-host") or "").split(",")[0].strip()
+        if xfh:
+            return xfh
+        # 2. Origin / Referer : present on the SPA's own navigations.
+        for key in ("origin", "referer"):
+            val = headers.get(key) or ""
+            if val:
                 try:
-                    return v.decode("latin-1")
+                    from urllib.parse import urlsplit
+                    h = urlsplit(val).hostname
+                    if h:
+                        return h
                 except Exception:
-                    return ""
-        return ""
+                    pass
+        # 3. Raw Host (may be the rewritten internal name).
+        return headers.get("host") or ""
 
     def _shell_for_host(host: str) -> str:
         h = (host or "").split(":")[0].lower()
