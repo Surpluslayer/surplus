@@ -34,16 +34,28 @@ class Event(Base):
     user_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("users.id"), default=None, index=True
     )
-    # ICP
-    role: Mapped[str] = mapped_column(String(200))
+    # Event provenance. "planned" = the classic intake-form event that drives
+    # prospecting/outreach. "in_person" = a row created on the fly at a real
+    # event by the scan-to-connect entry point, where the only inputs are a
+    # human-readable label + city + the owning user; all the planning-only ICP
+    # fields below are defaulted so an in_person row needs none of them.
+    kind: Mapped[str] = mapped_column(String(20), default="planned")
+    # Free-text label for in_person events (e.g. "NYC Tech Week — Founders Inc
+    # mixer"). NULL for planned events, which use event_name instead.
+    label: Mapped[Optional[str]] = mapped_column(String(200), default=None)
+    # ICP. These are planning-only : required in spirit for a "planned" event
+    # but defaulted at the model level so an "in_person" row can omit every one
+    # of them (it only needs label + city + user_id). Existing planned-event
+    # creation still supplies real values via EventCreate.
+    role: Mapped[str] = mapped_column(String(200), default="")
     # seniority / co_stage / goal are multi-select on the frontend; stored
     # CSV-joined ("Senior,Staff+") in these String columns so we don't need a
     # migration. Widths bumped to fit the longest plausible CSV concatenation.
-    seniority: Mapped[str] = mapped_column(String(200))
-    co_stage: Mapped[str] = mapped_column(String(120))
+    seniority: Mapped[str] = mapped_column(String(200), default="")
+    co_stage: Mapped[str] = mapped_column(String(120), default="")
     # event shape
-    headcount: Mapped[int]
-    format: Mapped[str] = mapped_column(String(40))
+    headcount: Mapped[int] = mapped_column(default=0)
+    format: Mapped[str] = mapped_column(String(40), default="")
     city: Mapped[str] = mapped_column(String(80))
     # ISO-8601 date string (YYYY-MM-DD) for the event itself. Stored as
     # a string so the frontend's <input type="date"> value round-trips
@@ -52,9 +64,9 @@ class Event(Base):
     # Operator-supplied display name (e.g. "Founders Dinner · April"). Empty
     # when unset; the topbar falls back to "event #<id> · live" in that case.
     event_name: Mapped[str] = mapped_column(String(160), default="")
-    # goal + budget
-    goal: Mapped[str] = mapped_column(String(300))
-    budget: Mapped[int]
+    # goal + budget (planning-only : defaulted so in_person rows can omit them)
+    goal: Mapped[str] = mapped_column(String(300), default="")
+    budget: Mapped[int] = mapped_column(default=0)
     # which prospect sources to fan out across, CSV-joined. LinkedIn is
     # always forced in by adapters_for() regardless of what's stored here.
     sources: Mapped[str] = mapped_column(String(120), default="linkedin")
@@ -121,8 +133,19 @@ class Prospect(Base):
     fit_reason: Mapped[str] = mapped_column(Text, default="")
 
     # surfaced -> below | contacted | rsvp
+    # "pending" : scanned in person via scan-to-connect but not yet sent
+    # (awaiting the operator to fire the connect request from the entry point).
     status: Mapped[str] = mapped_column(String(20), default="surfaced")
     group_id: Mapped[Optional[int]] = mapped_column(default=None)
+
+    # In-person capture fields (scan-to-connect). NULL for web-discovered
+    # prospects. `note` is the optional personal line the operator wants on the
+    # LinkedIn connect request (≤300 to fit LinkedIn's note cap); `captured_at`
+    # is when the row was scanned; `source` records the capture channel
+    # ("scan" | "link" | "text").
+    note: Mapped[Optional[str]] = mapped_column(String(300), default=None)
+    captured_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+    source: Mapped[Optional[str]] = mapped_column(String(20), default=None)
 
     # LinkedIn connection state. Drives whether a "reach out" action sends a
     # connection request (cold) or a direct DM (warm). Default "unknown"

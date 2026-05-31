@@ -109,6 +109,8 @@ def init_db() -> None:
         _migrate_user_billing_columns,
         _migrate_applicant_evaluation_verifier,
         _migrate_applicant_enrichment_raw,
+        _migrate_event_kind_label,
+        _migrate_prospect_capture_fields,
     ]
     for migration in migrations:
         try:
@@ -165,6 +167,60 @@ def _migrate_event_event_date() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE events ADD COLUMN event_date VARCHAR(20) DEFAULT ''"))
+
+
+def _migrate_event_kind_label() -> None:
+    """Add events.kind (VARCHAR(20), default 'planned') and events.label
+    (VARCHAR(200), NULL) for the in-person scan-to-connect entry point.
+
+    Existing rows default to kind='planned' (the classic intake-form event),
+    so the new in_person path is purely additive : nothing about how planned
+    events are created/read changes. label is NULL for planned events, which
+    keep using event_name."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "events" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("events")}
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        if "kind" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE events ADD COLUMN {ine}kind "
+                "VARCHAR(20) DEFAULT 'planned'"
+            ))
+        if "label" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE events ADD COLUMN {ine}label VARCHAR(200)"
+            ))
+
+
+def _migrate_prospect_capture_fields() -> None:
+    """Add the in-person capture columns to prospects: note (VARCHAR(300),
+    NULL), captured_at (TIMESTAMP, NULL), source (VARCHAR(20), NULL).
+
+    All nullable / undefaulted : web-discovered prospects leave them NULL,
+    scan-to-connect rows fill them in. The "pending" status value needs no
+    DDL : status is already VARCHAR(20) and "pending" fits."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "prospects" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("prospects")}
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        if "note" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}note VARCHAR(300)"
+            ))
+        if "captured_at" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}captured_at TIMESTAMP"
+            ))
+        if "source" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}source VARCHAR(20)"
+            ))
 
 
 def _migrate_event_triage_config() -> None:
