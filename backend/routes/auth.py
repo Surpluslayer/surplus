@@ -571,6 +571,7 @@ async def linkedin_webhook(payload: dict, db: DbSession = Depends(get_db)) -> JS
 
 @router.get("/linkedin/callback")
 async def linkedin_callback(
+    request: Request,
     state: str = Query(...),
     account_id: Optional[str] = Query(None),
     db: DbSession = Depends(get_db),
