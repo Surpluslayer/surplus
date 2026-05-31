@@ -329,21 +329,9 @@ def outreach_preview(
     )
 
 
-def _refresh_connection_status(provider, prospect: models.Prospect) -> str:
-    """Live-check Unipile, write the result to the Prospect row, return the
-    new status. Called by anything that needs the freshest connection state
-    (the smart /invite endpoint, the bulk /check-connections endpoint)."""
-    from datetime import datetime, timezone
-    try:
-        connected = provider.is_relation(prospect.linkedin_url or "")
-    except Exception:
-        # Don't fail the action just because Unipile is flaky : keep the
-        # last known status. Caller sees the unchanged value and proceeds.
-        return prospect.connection_status or "unknown"
-    new_status = "connected" if connected else "not_connected"
-    prospect.connection_status = new_status
-    prospect.connection_checked_at = datetime.now(timezone.utc)
-    return new_status
+# Re-exported from the shared send helper : kept importable here because
+# /check-connections (below) and the historical call sites reference it.
+from ..agents.send_flow import _refresh_connection_status, route_and_send
 
 
 @router.post("/{event_id}/prospects/{prospect_id}/invite")
@@ -361,10 +349,9 @@ def send_connection_invite(
 
     The route name stays `/invite` for frontend compatibility, but it now
     handles both paths transparently. Updates Prospect.connection_status
-    on every call so the UI label can re-render.
+    on every call so the UI label can re-render. The warm/cold routing lives
+    in agents/send_flow.route_and_send, shared with the in-person /send route.
     """
-    import json as _json
-    from datetime import datetime, timezone
     ev = get_owned_event(event_id, user, db)
     p = db.get(models.Prospect, prospect_id)
     if not p or p.event_id != event_id:
@@ -375,56 +362,13 @@ def send_connection_invite(
     require_outreach_enabled()  # 503s when SURPLUS_KILL_OUTREACH is on
     require_linkedin_connected(user)
     provider = get_provider_for_user(user)
-    status = _refresh_connection_status(provider, p)
 
-    peers = [q.name for q in ev.prospects if q.id != p.id and
-             q.status in ("approved", "contacted", "rsvp")]
-    msg = compose(p, ev, peers=peers)
-    final_note = (override.note or msg.note).strip()
-    final_message = (override.message or msg.message).strip()
-
-    if status == "connected":
-        # Warm path: skip the invite, send the first DM directly. Resolve
-        # the provider_id if we don't have it cached (warm prospects often
-        # don't, since send_connection is where we usually cache it).
-        if not p.linkedin_provider_id or (
-            not provider.dry_run and p.linkedin_provider_id.startswith("dry_")
-        ):
-            try:
-                li_id = provider.resolve_linkedin_user(p.linkedin_url)
-                if li_id:
-                    p.linkedin_provider_id = li_id
-            except Exception as exc:  # noqa: BLE001
-                raise HTTPException(502, f"linkedin lookup failed: {exc}")
-
-        lead = provider.build_lead_payload(p, ev, note=msg.note, message=final_message)
-        res = provider.send_message(lead, linkedin_provider_id=p.linkedin_provider_id)
-        if not provider.dry_run and res.state == "message_sent":
-            p.status = "contacted"
-        path_taken = "warm"
-    else:
-        # Cold path (the historical default). LinkedIn caps notes at 300.
-        if len(final_note) > 300:
-            raise HTTPException(400, f"note exceeds LinkedIn's 300-char limit ({len(final_note)})")
-        lead = provider.build_lead_payload(p, ev, note=final_note, message=final_message)
-        res = provider.send_connection(lead)
-        if res.linkedin_provider_id:
-            p.linkedin_provider_id = res.linkedin_provider_id
-        if not provider.dry_run and res.state == "invite_sent":
-            p.status = "contacted"
-        path_taken = "cold"
-
-    db.add(models.OutreachLog(
-        prospect_id=p.id,
-        channel="linkedin",
-        state=res.state,
-        body=_json.dumps(res.payload, default=str)[:8000],
-        ts=datetime.now(timezone.utc),
-        provider=res.provider,
-        provider_lead_id=res.provider_lead_id,
-    ))
-    db.commit()
-
+    outcome = route_and_send(
+        db, p, provider, ev,
+        note=override.note or None,
+        message=override.message or None,
+    )
+    res = outcome.res
     return {
         "prospect_id": p.id,
         "prospect_name": p.name,
@@ -434,10 +378,10 @@ def send_connection_invite(
         "state": res.state,
         "provider_lead_id": res.provider_lead_id,
         "error": res.error,
-        "note_preview": final_note if path_taken == "cold" else None,
-        "message_preview": final_message,
-        "connection_status": status,
-        "path_taken": path_taken,
+        "note_preview": outcome.final_note if outcome.path_taken == "cold" else None,
+        "message_preview": outcome.final_message,
+        "connection_status": outcome.connection_status,
+        "path_taken": outcome.path_taken,
     }
 
 

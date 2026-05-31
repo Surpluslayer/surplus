@@ -432,6 +432,60 @@ def compose(
     return _compose_template(prospect, host_bio, framing)
 
 
+def inperson_framing(event) -> str:
+    """Warm framing for the in-person scan-to-connect flow : the operator has
+    ALREADY met this person face to face at the event, so the note/DM should
+    read as continuing a real conversation, not cold outreach."""
+    label = (getattr(event, "label", None)
+             or getattr(event, "event_name", None) or "the event").strip()
+    city = (getattr(event, "city", "") or "").strip()
+    where = label + (f" in {city}" if city else "")
+    return (
+        f"You just met this person face to face at {where}. Write a warm "
+        f"LinkedIn connection note and first message to continue that "
+        f"conversation. Reference that you just met in person, keep it "
+        f"friendly and specific, and do NOT pitch : this is a real connection, "
+        f"not a cold lead."
+    )
+
+
+def _compose_inperson_template(prospect, event) -> Message:
+    """Deterministic in-person draft : used offline (no API key) and as the
+    fallback when the LLM call fails. Reads naturally as a post-meeting note."""
+    first = (prospect.name or "there").split()[0]
+    label = (getattr(event, "label", None)
+             or getattr(event, "event_name", None) or "the event").strip()
+    note = _truncate_note(
+        f"Great meeting you at {label}, {first}. Let's stay connected here.")
+    message = "\n".join([
+        f"Great to meet you at {label}, {first}.",
+        "",
+        "Wanted to connect here so we can keep the conversation going. "
+        "Let me know if there's anything I can help with.",
+    ]).strip()
+    return Message(note=note, message=message)
+
+
+def compose_inperson(prospect, event,
+                    voice_examples_raw: str | None = None) -> Message:
+    """Build the in-person warm note + first DM for a scanned prospect.
+
+    Reuses the same Claude path as compose() (system prompt + voice matching +
+    JSON parsing), but swaps in the in-person warm framing. Falls back to the
+    deterministic in-person template on any LLM failure or when the LLM is
+    disabled, so /scan never depends on a model being reachable.
+    """
+    if (os.environ.get("OUTREACH_COMPOSE_DISABLE") or "").strip().lower() not in ("", "0", "false", "no"):
+        return _compose_inperson_template(prospect, event)
+
+    llm = _compose_via_claude(prospect, event, None, inperson_framing(event),
+                              voice_examples_raw=voice_examples_raw)
+    if llm is not None:
+        note, message = llm
+        return Message(note=_truncate_note(note), message=message)
+    return _compose_inperson_template(prospect, event)
+
+
 def compose_followup(prospect, event) -> str:
     """The follow-up DM sent N hours after the first post-accept message
     when the prospect hasn't replied. Lighter touch than the first DM :
