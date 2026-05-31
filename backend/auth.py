@@ -127,9 +127,25 @@ def create_session(db: DbSession, user: User) -> Session:
     return sess
 
 
+def _cookie_domain() -> Optional[str]:
+    """Domain attribute for our cookies.
+
+    Set SESSION_COOKIE_DOMAIN=.surpluslayer.com in prod so ONE login is shared
+    across every first-party subdomain (www / apex / event.surpluslayer.com) :
+    without it the cookie is host-only, so a session created on the apex isn't
+    sent to event.surpluslayer.com and the in-person surface sees an anonymous
+    visitor (-> 402 on sign-in). Leave it UNSET on localhost / *.railway.app /
+    *.fly.dev : a Domain that doesn't match the request host (or a bare host /
+    IP) makes the browser silently drop the cookie, which would lock everyone
+    out. Returns None when unset so set_cookie omits the attribute entirely."""
+    return (os.environ.get("SESSION_COOKIE_DOMAIN") or "").strip() or None
+
+
 def set_session_cookie(response: Response, session_token: str) -> None:
     """Set the surplus session cookie. Lax SameSite so the LinkedIn-hosted-auth
-    redirect (a top-level navigation back to our domain) carries the cookie."""
+    redirect (a top-level navigation back to our domain) carries the cookie.
+    Domain comes from SESSION_COOKIE_DOMAIN so the session is shared across
+    *.surpluslayer.com subdomains (see _cookie_domain)."""
     secure = _session_cookie_secure()
     response.set_cookie(
         key=SESSION_COOKIE,
@@ -139,13 +155,17 @@ def set_session_cookie(response: Response, session_token: str) -> None:
         secure=secure,
         samesite="lax",
         path="/",
+        domain=_cookie_domain(),
     )
 
 
 def clear_session_cookie(response: Response) -> None:
+    # Must clear with the SAME Domain it was set with, or the browser keeps the
+    # cross-subdomain cookie and logout doesn't actually sign the user out.
     secure = _session_cookie_secure()
     response.delete_cookie(
-        key=SESSION_COOKIE, path="/", secure=secure, httponly=True, samesite="lax"
+        key=SESSION_COOKIE, path="/", secure=secure, httponly=True,
+        samesite="lax", domain=_cookie_domain(),
     )
 
 
@@ -161,6 +181,7 @@ def set_last_account_cookie(response: Response, account_id: str) -> None:
         secure=secure,
         samesite="lax",
         path="/",
+        domain=_cookie_domain(),
     )
 
 
