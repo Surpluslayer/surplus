@@ -31,6 +31,45 @@ from .verify_score import VerifyResult
 _FLAGGED_CONFIDENCE_CEILING = 50
 
 
+def _auto_accept_ok(archetype: str, founder_corroborated: bool,
+                    dimension_scores: dict, policy: Optional[dict]) -> tuple[bool, str]:
+    """Data-driven instant-accept for corroborated, on-thesis founders.
+
+    This is the operator's headline rule made STRUCTURAL: a self-described
+    founder whose company is corroborated (email-domain match) AND who clears a
+    relevance bar (e.g. company_relevance/sponsor_fit) is admitted regardless of
+    the confidence gate — so a thin application can't bury a verified builder.
+
+    Gated hard on corroboration so an unverified 'I'm a founder' claim earns
+    nothing. Returns (eligible, reason). Pure no-op (False) when the event
+    carries no `auto_accept` policy, so the engine stays event-agnostic.
+
+    policy.auto_accept shape (all optional except it must exist)::
+
+        {"archetype": "founder",        # which archetype qualifies
+         "require_corroboration": true, # must have the domain/company tie
+         "min_dimension": {"company_relevance": 55}}  # on-thesis bar(s)
+    """
+    auto = (policy or {}).get("auto_accept") if policy else None
+    if not auto:
+        return False, ""
+    want = (auto.get("archetype") or "founder").strip().lower()
+    if (archetype or "").strip().lower() != want:
+        return False, ""
+    if auto.get("require_corroboration", True) and not founder_corroborated:
+        return False, ""
+    mind = auto.get("min_dimension") or {}
+    for k, v in mind.items():
+        if int((dimension_scores or {}).get(k, 0)) < int(v):
+            return False, ""
+    bits = [want]
+    if auto.get("require_corroboration", True):
+        bits.append("corroborated")
+    if mind:
+        bits.append("on-thesis (" + ", ".join(f"{k}≥{v}" for k, v in mind.items()) + ")")
+    return True, "auto-accepted: " + " ".join(bits)
+
+
 @dataclass(frozen=True)
 class FinalDecision:
     fit_score: int
@@ -79,13 +118,21 @@ def consolidate(applicant, dimension_scores: dict, llm_confidence: int,
         founder_corroborated=founder_corroborated, policy=priority_policy)
 
     if verify is None or not verify.ran:
+        rec = recommendation_from(adj_fit, base.confidence_score, thresholds=t)
+        reasons = list(priority_reasons)
+        # Auto-accept a corroborated, on-thesis founder even if the confidence
+        # gate would have left them a 'maybe'. No audit ran, so nothing blocks it.
+        ok, why = _auto_accept_ok(
+            archetype, founder_corroborated, dimension_scores, priority_policy)
+        if ok and rec != "accept":
+            rec = "accept"
+            reasons.append(why)
         return FinalDecision(
             fit_score=adj_fit,
             confidence_score=base.confidence_score,
-            recommendation=recommendation_from(
-                adj_fit, base.confidence_score, thresholds=t),
+            recommendation=rec,
             verifier_ran=False,
-            adjustments=tuple(priority_reasons),
+            adjustments=tuple(reasons),
         )
 
     fit = adj_fit
@@ -149,6 +196,17 @@ def consolidate(applicant, dimension_scores: dict, llm_confidence: int,
     elif recommendation == "maybe":
         if hard_failure:
             recommendation = "needs_review"
+
+    # Policy auto-accept for corroborated, on-thesis founders — but the audit
+    # still wins: we only upgrade a CLEAN packet. Any blocking flag or a manual
+    # -review request keeps the conservative verdict (preserves the safety
+    # asymmetry: the auditor can always PREVENT an accept).
+    ok, why = _auto_accept_ok(
+        archetype, founder_corroborated, dimension_scores, priority_policy)
+    if ok and recommendation != "accept" \
+            and not (block_accept or hard_failure or verify.force_manual_review):
+        recommendation = "accept"
+        adjustments.append(why)
 
     return FinalDecision(
         fit_score=fit,
