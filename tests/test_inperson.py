@@ -248,6 +248,81 @@ def test_send_capture_rejects_unowned(db, user):
 
 # ── shared helper directly : warm vs cold routing ──────────────────────────
 
+def _cold_event_and_prospect(db, user):
+    ev = models.Event(
+        user_id=user.id, kind="planned", role="Eng", seniority="Staff+",
+        co_stage="Seed", headcount=40, format="Sit-down dinner",
+        city="New York", goal="Hiring pipeline", budget=8000,
+    )
+    db.add(ev); db.flush()
+    p = models.Prospect(
+        event_id=ev.id, identity="maya-c", name="Maya Rodriguez",
+        role="Staff Engineer", company="Acme",
+        linkedin_url="https://www.linkedin.com/in/maya-rodriguez")
+    db.add(p); db.flush()
+    return ev, p
+
+
+def test_inperson_copy_differs_from_cold_copy(db, user, monkeypatch):
+    """compose() must write 'we just met' copy for in_person events, distinct
+    from the cold-invite copy for a planned event."""
+    monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")   # deterministic template
+    from backend.agents.outreach import compose
+
+    ev = _make_event(db, user)                            # in_person, label set
+    ip_event = db.get(models.Event, ev["event_id"])
+    p_ip = models.Prospect(
+        event_id=ip_event.id, identity="maya-ip", name="Maya Rodriguez",
+        role="Staff Engineer", company="Acme",
+        linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+        note="your work on vector DBs")
+    db.add(p_ip); db.flush()
+
+    _cold_ev, p_cold = _cold_event_and_prospect(db, user)
+
+    ip = compose(p_ip, ip_event)
+    cold = compose(p_cold, _cold_ev)
+
+    # Distinct copy on BOTH halves.
+    assert ip.note != cold.note
+    assert ip.message != cold.message
+    # In-person references the in-person meeting + the event label.
+    assert "NYC Tech Week" in ip.note
+    assert "meeting" in ip.note.lower() or "meet you" in ip.message.lower()
+    # prospect.note is woven into the in-person copy.
+    assert "vector DBs" in ip.note
+    # Still fits LinkedIn's connect-request cap.
+    assert len(ip.note) <= 300
+    # Cold copy is the invite framing, not a post-meeting note.
+    assert "vector DBs" not in cold.note
+
+
+def test_webhook_auto_dm_uses_inperson_copy(db, user, monkeypatch):
+    """The webhook auto-DM path (_trigger_auto_dm -> compose) must produce the
+    warm in-person DM for an in_person prospect, not a cold re-pitch."""
+    monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")
+    from backend.providers.unipile import UnipileProvider
+    from backend.routes.webhooks import _trigger_auto_dm
+
+    ip_event = db.get(models.Event, _make_event(db, user)["event_id"])
+    p = models.Prospect(
+        event_id=ip_event.id, identity="maya-w", name="Maya Rodriguez",
+        role="Staff Engineer", company="Acme",
+        linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+        linkedin_provider_id="dry_li_maya", note="the latency demo")
+    db.add(p); db.commit()
+
+    provider = UnipileProvider(dry_run=True, account_id="operator_acct")
+    _trigger_auto_dm(db, provider, p)
+
+    sent = [o for o in p.outreach if o.state == "message_sent"]
+    assert sent, "auto-DM should have logged a message_sent row"
+    body = sent[-1].body
+    # Warm in-person DM, referencing the meeting + the conversation note.
+    assert "meet you at NYC Tech Week" in body
+    assert "the latency demo" in body
+
+
 def test_route_and_send_warm_path_uses_send_message(db, user, monkeypatch):
     from backend.providers.unipile import UnipileProvider
     from backend.agents.send_flow import route_and_send

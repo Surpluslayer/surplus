@@ -418,10 +418,22 @@ def compose(
     """
     # `peers` is still accepted for callsite compatibility but intentionally
     # ignored : neither path names other attendees anymore.
-    framing = _framing(event)
+    #
+    # in_person events (the scan-to-connect entry point) get "we just met"
+    # framing + template instead of the cold-invite copy. This branch lives in
+    # compose() itself, NOT a separate function, so EVERY caller routes through
+    # it : crucially the webhook auto-DM path (_trigger_auto_dm -> compose) so
+    # an in-person prospect's post-accept DM is warm, not a cold re-pitch.
+    in_person = (getattr(event, "kind", "") or "") == "in_person"
+    framing = (_framing_inperson(event, getattr(prospect, "note", None))
+               if in_person else _framing(event))
+
+    def _template() -> Message:
+        return (_compose_inperson_template(prospect, event) if in_person
+                else _compose_template(prospect, host_bio, framing))
 
     if (os.environ.get("OUTREACH_COMPOSE_DISABLE") or "").strip().lower() not in ("", "0", "false", "no"):
-        return _compose_template(prospect, host_bio, framing)
+        return _template()
 
     llm = _compose_via_claude(prospect, event, host_bio, framing,
                               voice_examples_raw=voice_examples_raw)
@@ -429,61 +441,66 @@ def compose(
         note, message = llm
         # Hard-cap the note even if the model went over : LinkedIn rejects >300.
         return Message(note=_truncate_note(note), message=message)
-    return _compose_template(prospect, host_bio, framing)
+    return _template()
 
 
-def inperson_framing(event) -> str:
-    """Warm framing for the in-person scan-to-connect flow : the operator has
-    ALREADY met this person face to face at the event, so the note/DM should
-    read as continuing a real conversation, not cold outreach."""
-    label = (getattr(event, "label", None)
-             or getattr(event, "event_name", None) or "the event").strip()
+def _event_label(event) -> str:
+    """Human-readable place for in-person copy : the in_person Event's label,
+    falling back to event_name then a generic phrase."""
+    return (getattr(event, "label", None)
+            or getattr(event, "event_name", None) or "the event").strip()
+
+
+def _framing_inperson(event, note: str | None = None) -> str:
+    """Warm 'we just met' framing for the in-person scan-to-connect flow.
+
+    The operator has ALREADY met this person face to face, so the note/DM read
+    as continuing a real conversation, not cold outreach. `note` is the
+    operator's personal line about the conversation (prospect.note) : woven in
+    so the LLM can reference something concrete they actually talked about.
+    """
+    label = _event_label(event)
     city = (getattr(event, "city", "") or "").strip()
     where = label + (f" in {city}" if city else "")
-    return (
-        f"You just met this person face to face at {where}. Write a warm "
-        f"LinkedIn connection note and first message to continue that "
-        f"conversation. Reference that you just met in person, keep it "
-        f"friendly and specific, and do NOT pitch : this is a real connection, "
-        f"not a cold lead."
-    )
+    parts = [
+        f"You just met this person face to face at {where}.",
+        "Write a warm LinkedIn connection note and first message that continue "
+        "that conversation. Reference meeting in person, keep it specific and "
+        "friendly, and propose ONE concrete light next step (a quick call, a "
+        "follow-up). Do NOT re-pitch the event or sound like a cold lead.",
+    ]
+    note = (note or "").strip()
+    if note:
+        parts.append(
+            f"Something from the conversation you just had: {note}. "
+            "Reference it naturally if it fits.")
+    return " ".join(parts)
 
 
 def _compose_inperson_template(prospect, event) -> Message:
-    """Deterministic in-person draft : used offline (no API key) and as the
-    fallback when the LLM call fails. Reads naturally as a post-meeting note."""
+    """Deterministic in-person draft : used offline (no API key, dry-run) and
+    as the fallback when the LLM call fails. Reads as a post-meeting note and
+    weaves in prospect.note when present. Connection note is run through
+    _truncate_note so it always fits LinkedIn's connect-request cap."""
     first = (prospect.name or "there").split()[0]
-    label = (getattr(event, "label", None)
-             or getattr(event, "event_name", None) or "the event").strip()
-    note = _truncate_note(
-        f"Great meeting you at {label}, {first}. Let's stay connected here.")
+    label = _event_label(event)
+    note = (getattr(prospect, "note", None) or "").strip()
+    note_clause = f" Enjoyed talking about {note}." if note else ""
+
+    connection = _truncate_note(
+        f"Great meeting you at {label}, {first}.{note_clause} "
+        f"Let's stay connected here.")
     message = "\n".join([
         f"Great to meet you at {label}, {first}.",
         "",
-        "Wanted to connect here so we can keep the conversation going. "
-        "Let me know if there's anything I can help with.",
+        ("Enjoyed our chat" + (f" about {note}" if note else "")
+         + " : wanted to connect here so we can keep it going."),
+        "",
+        "Worth grabbing 15 minutes next week to pick it back up? Happy to work "
+        "around your schedule, or just say the word if there's something I can "
+        "help with sooner.",
     ]).strip()
-    return Message(note=note, message=message)
-
-
-def compose_inperson(prospect, event,
-                    voice_examples_raw: str | None = None) -> Message:
-    """Build the in-person warm note + first DM for a scanned prospect.
-
-    Reuses the same Claude path as compose() (system prompt + voice matching +
-    JSON parsing), but swaps in the in-person warm framing. Falls back to the
-    deterministic in-person template on any LLM failure or when the LLM is
-    disabled, so /scan never depends on a model being reachable.
-    """
-    if (os.environ.get("OUTREACH_COMPOSE_DISABLE") or "").strip().lower() not in ("", "0", "false", "no"):
-        return _compose_inperson_template(prospect, event)
-
-    llm = _compose_via_claude(prospect, event, None, inperson_framing(event),
-                              voice_examples_raw=voice_examples_raw)
-    if llm is not None:
-        note, message = llm
-        return Message(note=_truncate_note(note), message=message)
-    return _compose_inperson_template(prospect, event)
+    return Message(note=connection, message=message)
 
 
 def compose_followup(prospect, event) -> str:
