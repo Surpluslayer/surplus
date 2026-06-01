@@ -1,5 +1,7 @@
 # --- Stage 1: build the React frontend -------------------------------------
-FROM node:20-alpine AS frontend-build
+# Pinned to a specific minor (was node:20-alpine): the floating alpine tag moves
+# and has occasionally broken native builds. Bump deliberately.
+FROM node:20.18-alpine AS frontend-build
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm ci --no-audit --no-fund
@@ -8,7 +10,8 @@ RUN npm run build
 # output: /app/frontend/dist/
 
 # --- Stage 2: python runtime, serves API + built frontend ------------------
-FROM python:3.12-slim
+# Pinned minor (was python:3.12-slim) so the runtime can't shift under us.
+FROM python:3.12.8-slim
 
 # system deps that some pip packages occasionally need
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -39,5 +42,12 @@ ENV GIT_SHA=${GIT_SHA}
 ENV PORT=8000
 EXPOSE 8000
 
-# exec-form CMD so $PORT expands properly via sh
-CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT}"]
+# WEB_CONCURRENCY = number of worker processes. Sync route handlers make
+# blocking provider/LLM calls, so a single worker serializes concurrent users;
+# multiple workers are what keep the app responsive under load. Override per
+# instance size in Railway (rule of thumb ~2× vCPU). Keep DB_POOL_SIZE ×
+# WEB_CONCURRENCY under your Postgres connection cap (see backend/db.py).
+ENV WEB_CONCURRENCY=4
+
+# exec-form CMD so $PORT / $WEB_CONCURRENCY expand via sh
+CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT} --workers ${WEB_CONCURRENCY:-4} --timeout-keep-alive 30"]

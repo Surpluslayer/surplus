@@ -107,8 +107,15 @@ app.include_router(billing.router)
 
 
 @app.get("/api/health", tags=["meta"])
-def health():
+def health(deep: bool = False):
     """API discovery JSON. Moved from `/` so the frontend can own `/`.
+
+    Railway's healthcheck hits this on an interval and RESTARTS the container if
+    it fails — so the default response must be cheap and must NOT touch the DB
+    pool. Under load, a DB-probing healthcheck can fail on pool exhaustion and
+    trigger a restart loop that drops every in-flight request (looks like a hard
+    crash). The DB/integration probe (MAX(paid_at), pending count) only runs
+    with `?deep=1` for manual inspection; the platform healthcheck stays cheap.
 
     Reports which platform served the request and the live commit, so you
     can hit www.surpluslayer.com/api/health and tell what's deployed where
@@ -160,22 +167,25 @@ def health():
     # when the DB query fails so the healthcheck stays a 200.
     last_webhook_paid_at = None
     pending_replies_count = None
-    try:
-        from sqlalchemy import text
-        with ENGINE.connect() as conn:
-            row = conn.execute(text(
-                "SELECT MAX(paid_at) FROM users WHERE paid_at IS NOT NULL"
-            )).fetchone()
-            if row and row[0]:
-                last_webhook_paid_at = str(row[0])
-            row2 = conn.execute(text(
-                "SELECT COUNT(*) FROM pending_replies WHERE status = 'pending'"
-            )).fetchone()
-            if row2:
-                pending_replies_count = int(row2[0])
-    except Exception as exc:  # noqa: BLE001
-        # Don't fail the healthcheck on a DB blip ; surface it instead.
-        integrations["db_probe_error"] = f"{type(exc).__name__}"
+    if deep:
+        # Only on explicit ?deep=1 : never on the platform healthcheck path, so
+        # DB-pool exhaustion can't fail the healthcheck and trigger a restart.
+        try:
+            from sqlalchemy import text
+            with ENGINE.connect() as conn:
+                row = conn.execute(text(
+                    "SELECT MAX(paid_at) FROM users WHERE paid_at IS NOT NULL"
+                )).fetchone()
+                if row and row[0]:
+                    last_webhook_paid_at = str(row[0])
+                row2 = conn.execute(text(
+                    "SELECT COUNT(*) FROM pending_replies WHERE status = 'pending'"
+                )).fetchone()
+                if row2:
+                    pending_replies_count = int(row2[0])
+        except Exception as exc:  # noqa: BLE001
+            # Don't fail the probe on a DB blip ; surface it instead.
+            integrations["db_probe_error"] = f"{type(exc).__name__}"
 
     # Kill switch — operators flip this in Railway's env to halt all
     # outreach without a redeploy. Same mechanism as
