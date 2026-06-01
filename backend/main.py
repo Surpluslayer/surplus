@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .db import ENGINE, init_db
-from .routes import admin, auth, billing, curation, demo, events, inperson, pipeline, matching, roi, triage, webhooks
+from .routes import admin, auth, billing, curation, demo, draft, events, inperson, pipeline, matching, roi, triage, webhooks
 
 
 @asynccontextmanager
@@ -90,6 +90,7 @@ app.include_router(demo.router)
 app.include_router(events.router)
 app.include_router(pipeline.router)
 app.include_router(inperson.router)
+app.include_router(draft.router)
 app.include_router(matching.router)
 app.include_router(roi.router)
 app.include_router(triage.router)
