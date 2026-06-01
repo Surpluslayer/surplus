@@ -65,7 +65,8 @@ class LinkedInAdapter(SourceAdapter):
                 "name": r["name"],
                 "source": self.key,
             }
-            for key in ("role", "company", "seniority", "offers", "seeks"):
+            for key in ("role", "company", "seniority", "offers", "seeks",
+                        "headline", "description"):
                 if r.get(key):
                     entry[key] = r[key]
             url = r.get("linkedin_url")

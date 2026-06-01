@@ -98,7 +98,9 @@ def test_compose_user_message_includes_recipient_facts(fake_event, fake_prospect
     assert "Maya Rodriguez" in msg
     assert "Staff Infra Engineer" in msg
     assert "Lo91r" in msg
-    assert "observability" in msg
+    # Real headline is surfaced; ICP-derived works_on ("observability") is not.
+    assert "Distributed systems @ Lo91r" in msg
+    assert "observability" not in msg
 
 
 def test_compose_user_message_does_not_mention_peers(fake_event, fake_prospect):
@@ -124,6 +126,47 @@ def test_compose_user_message_omits_empty_optional_fields(fake_event):
     assert "What they work on" not in msg
     assert "Offers / strengths" not in msg
     assert "Headline" not in msg
+
+
+def test_compose_user_message_uses_real_linkedin_not_icp_guesses(fake_event):
+    """The prompt must ground on REAL LinkedIn data (About + recent posts)
+    and must NOT leak the ICP-derived guesses (works_on / offers / seeks),
+    which are what made past notes read generic."""
+    rich = SimpleNamespace(
+        name="Sam", role="Founding Engineer", company="Acme",
+        works_on="inference infra", offers="GPU scheduling depth",
+        seeks="design partners for an eval tool",
+        headline="Founding eng @ Acme",
+        bio="Previously led the inference platform at Bigco; now building "
+            "low-latency LLM serving.",
+        recent_activity="Just shipped a 3x faster KV-cache for our serving stack.",
+    )
+    msg = outreach._compose_user_message(
+        rich, fake_event, host_bio=None, framing="a dinner",
+    )
+    # Real profile + activity ARE present
+    assert "low-latency LLM serving" in msg
+    assert "3x faster KV-cache" in msg
+    # ICP-derived synthetic guesses are NOT
+    assert "design partners for an eval tool" not in msg
+    assert "GPU scheduling depth" not in msg
+    assert "inference infra" not in msg
+
+
+def test_compose_user_message_includes_event_brief(fake_prospect):
+    """The host's own description should reach the prompt and be flagged as
+    preferred over the canned framing."""
+    ev = SimpleNamespace(
+        role="ML engineers", seniority="Staff+", co_stage="Seed",
+        headcount=40, format="Dinner", city="SF", goal="Hiring pipeline",
+        budget=8000,
+        brief="An intimate dinner for founders building dev tools for AI agents.",
+    )
+    msg = outreach._compose_user_message(
+        fake_prospect, ev, host_bio=None, framing="a dinner",
+    )
+    assert "dev tools for AI agents" in msg
+    assert "WHAT THE HOST SAID" in msg
 
 
 def test_template_fallback_does_not_name_peers(fake_event, fake_prospect, monkeypatch):

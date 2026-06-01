@@ -86,6 +86,8 @@ async def run_prospect(
             scholar_citations=r["scholar_citations"],
             li_resolved=r["li_resolved"],
             linkedin_url=r.get("linkedin_url"),
+            headline=(r.get("headline") or None),
+            bio=(r.get("description") or None),
             sources=r["sources"],
             status="surfaced",
         )
@@ -110,29 +112,21 @@ async def run_prospect(
 
     db.commit()
 
-    # Kick off background compose for every prospect. By the time the
-    # operator clicks through to the auto-outreach screen, most messages
-    # are already in the per-(prospect, event) cache : the preview endpoint
-    # reads in <100ms instead of waiting for ~3-5s × N prospects.
-    # Fire-and-forget : prospecting returns immediately, compose runs on
-    # its own. The preview endpoint falls back to live compose for any
-    # cache miss, so a failed prefetch can't block outreach.
+    # Kick off background enrichment + compose for every prospect. By the
+    # time the operator clicks through to the auto-outreach screen, most
+    # messages are already in the per-(prospect, event) cache : the preview
+    # endpoint reads in <100ms instead of waiting for ~3-5s × N prospects.
     #
-    # IMPORTANT : resolve event.user.voice_examples HERE, while the request
-    # session is still open. The background task runs after FastAPI closes
-    # the session, so any ORM relationship lookup from inside the task
-    # raises DetachedInstanceError. We pass the raw JSON string in so the
-    # compose call doesn't need to lazy-load anything.
-    from .agents.outreach import prefetch_compose_all
-    voice_examples_raw = ""
-    try:
-        if event.user is not None:
-            voice_examples_raw = event.user.voice_examples or ""
-    except Exception:  # noqa: BLE001
-        voice_examples_raw = ""
-    asyncio.create_task(prefetch_compose_all(
-        list(prospects), event,
-        voice_examples_raw=voice_examples_raw,
+    # The orchestrator opens its OWN DB session (the request session is closed
+    # by the time it runs) and, when the host has a live LinkedIn connection,
+    # first grounds each prospect in their real profile + recent posts and
+    # samples the host's own voice — then composes. Fire-and-forget : a failed
+    # enrichment falls back to discovery-time (Exa) data, and a failed compose
+    # falls back to live compose in the preview endpoint, so neither can block
+    # outreach. We pass IDs (not ORM objects) so the task is session-safe.
+    from .agents.live_enrich import enrich_then_prefetch
+    asyncio.create_task(enrich_then_prefetch(
+        event.id, [p.id for p in prospects], getattr(event, "user_id", None),
     ))
 
     return prospects, collector.failures

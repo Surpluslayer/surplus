@@ -84,9 +84,12 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
   const set = (k, v) => setProfile((p) => ({ ...p, [k]: v }));
   const toggle = (k, v) => setProfile((p) => ({ ...p, [k]: toggleIn(p[k], v) }));
 
-  const applyExtractedProfile = (p, triageConfig) => {
+  const applyExtractedProfile = (p, triageConfig, rawText) => {
     setProfile((prev) => {
       const next = { ...prev };
+      // Keep the host's verbatim description so it persists onto the Event as
+      // `brief` at createEvent and feeds outreach compose with real context.
+      if (rawText && rawText.trim()) next.brief = rawText.trim();
       // Stash the rich ICP (anti-fit / nice-to-have / archetype_priority /
       // thresholds) the model captured beyond the chips. The form doesn't
       // render it, but it rides along in profile state and is persisted later
@@ -132,7 +135,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
         setDescribeError(`Couldn't read that (${res.error}). Try adding a bit more detail.`);
         return;
       }
-      applyExtractedProfile(res?.profile || {}, res?.triage_config || null);
+      applyExtractedProfile(res?.profile || {}, res?.triage_config || null, text);
       // Tell the host what we pulled beyond the chips (anti-fit, nice-to-haves,
       // archetype priority) so they trust nothing was dropped on the floor.
       const captured = Array.isArray(res?.captured) ? res.captured : [];
@@ -232,6 +235,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
         city: profile.city,
         event_date: profile.eventDate,
         event_name: profile.eventName,
+        brief: profile.brief || "",
         // Gap #4: roi.goal_cfg keys on the literal string; a CSV-joined
         // multi-goal silently misses the dict. Send only the primary.
         goal: profile.goal.slice(0, 1),

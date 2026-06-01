@@ -388,6 +388,110 @@ class UnipileProvider(LinkedInProvider):
             })
         return out
 
+    # ---- profile + voice enrichment -------------------------------------
+
+    def fetch_profile(self, linkedin_url: str) -> dict:
+        """GET /users/{handle} (+ their recent posts) -> grounding dict.
+
+        Pulls the prospect's live LinkedIn so outreach can reference real,
+        current specifics about THEM instead of ICP-derived guesses. Returns
+        only the fields we could resolve; network/parse errors degrade to {}
+        so the caller falls back to discovery-time (Exa) data."""
+        if self._dry_run:
+            return {
+                "headline": "[dry-run] Founding Engineer @ Acme",
+                "summary": "[dry-run] Building low-latency LLM serving; "
+                           "previously led inference infra at Bigco.",
+                "position": "Founding Engineer @ Acme",
+                "recent_posts": ["[dry-run] Shipped a 3x faster KV-cache today."],
+            }
+        handle = _linkedin_handle(linkedin_url)
+        if not handle or not (self.api_key and self.dsn and self.account_id):
+            return {}
+        data = self._get(f"/api/v1/users/{handle}",
+                         params={"account_id": self.account_id})
+        if not data:
+            return {}
+        out: dict = {}
+        headline = (data.get("headline") or data.get("occupation") or "").strip()
+        if headline:
+            out["headline"] = headline
+        summary = (data.get("summary") or data.get("about") or "").strip()
+        if summary:
+            out["summary"] = summary[:1200]
+        # Current position : first work-experience entry, else parsed headline.
+        exp = data.get("work_experience") or data.get("experience") or []
+        if isinstance(exp, list) and exp:
+            top = exp[0] or {}
+            title = (top.get("position") or top.get("title") or "").strip()
+            company = (top.get("company") or top.get("company_name") or "").strip()
+            pos = " @ ".join([s for s in (title, company) if s])
+            if pos:
+                out["position"] = pos
+        posts = self._fetch_recent_posts(handle)
+        if posts:
+            out["recent_posts"] = posts
+        return out
+
+    def _fetch_recent_posts(self, handle: str, limit: int = 3) -> list[str]:
+        """GET /users/{handle}/posts -> text of their last few posts.
+
+        Best-effort : a 404 (posts not exposed) or any error returns []."""
+        data = self._get(f"/api/v1/users/{handle}/posts",
+                         params={"account_id": self.account_id, "limit": limit})
+        items = (data.get("items") or data.get("posts") or []) if data else []
+        out: list[str] = []
+        for it in items[:limit]:
+            text = (it.get("text") or it.get("content") or it.get("commentary") or "").strip()
+            if text:
+                out.append(text[:500])
+        return out
+
+    def fetch_recent_sent_messages(self, limit: int = 20) -> list[str]:
+        """Sample the account owner's recent OUTBOUND messages to learn their
+        voice. Walks the most recent chats and collects messages we sent.
+
+        Bounded + best-effort : capped chat scan, errors degrade to []."""
+        if self._dry_run:
+            return [
+                "[dry-run] Hey {name}, loved your post on inference infra. "
+                "Building something similar, worth a quick chat?",
+            ]
+        if not (self.api_key and self.dsn and self.account_id):
+            return []
+        chats = self._get("/api/v1/chats",
+                         params={"account_id": self.account_id, "limit": 15})
+        chat_items = (chats.get("items") or chats.get("chats") or []) if chats else []
+        out: list[str] = []
+        for ch in chat_items:
+            chat_id = ch.get("id") or ch.get("chat_id")
+            if not chat_id:
+                continue
+            for m in self.fetch_thread(str(chat_id)):
+                if m.get("direction") == "outbound" and m.get("text"):
+                    out.append(m["text"].strip())
+                    if len(out) >= limit:
+                        return out
+        return out
+
+    def _get(self, path: str, params: dict) -> dict:
+        """GET helper for read-only enrichment calls. Returns {} on any
+        non-200 / network / parse error (callers all degrade gracefully)."""
+        import httpx
+        url = f"{self.dsn}{path}"
+        headers = {"X-API-KEY": self.api_key, "accept": "application/json"}
+        try:
+            with httpx.Client(timeout=12.0) as client:
+                resp = client.get(url, headers=headers, params=params)
+        except Exception:
+            return {}
+        if resp.status_code >= 400:
+            return {}
+        try:
+            return resp.json() if resp.text else {}
+        except Exception:
+            return {}
+
     # ---- HTTP plumbing (live mode only : never reached in dry-run) ------
 
     def _require_creds(self) -> None:

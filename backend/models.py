@@ -64,6 +64,12 @@ class Event(Base):
     # Operator-supplied display name (e.g. "Founders Dinner · April"). Empty
     # when unset; the topbar falls back to "event #<id> · live" in that case.
     event_name: Mapped[str] = mapped_column(String(160), default="")
+    # Host's plain-English description of the event : the "Describe your event"
+    # box from intake. Captures intent the chip fields can't (theme, who it's
+    # really for, the vibe). Fed into outreach compose so the LinkedIn message
+    # reflects what the host actually said, not just a canned per-goal template.
+    # Empty when the host skipped the describe box.
+    brief: Mapped[str] = mapped_column(Text, default="")
     # goal + budget (planning-only : defaulted so in_person rows can omit them)
     goal: Mapped[str] = mapped_column(String(300), default="")
     budget: Mapped[int] = mapped_column(default=0)
@@ -113,6 +119,22 @@ class Prospect(Base):
     works_on: Mapped[str] = mapped_column(String(60), default="general")
     offers: Mapped[str] = mapped_column(String(200), default="")
     seeks: Mapped[str] = mapped_column(String(200), default="")
+
+    # Discovery-time profile context, kept so outreach can ground on real
+    # specifics instead of a canned template. `headline` is the one-liner
+    # under the name (e.g. "Founding eng @ Acme · ex-Stripe"); `bio` is the
+    # longer profile snippet Exa returns (~500 chars). Both NULL for rows
+    # discovered before this column existed or via sources that don't carry
+    # them. Fed into compose() so the note references something true.
+    headline: Mapped[Optional[str]] = mapped_column(String(300), default=None)
+    bio: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    # Their recent LinkedIn posts/activity (newline-joined text), pulled live
+    # from Unipile so the note can reference something they actually said
+    # recently. NULL until enriched. `enriched_at` gates the lazy fetch : set
+    # once we've pulled the live profile so we never re-hit Unipile for the
+    # same person (cached). NULL = not yet enriched.
+    recent_activity: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    enriched_at: Mapped[Optional[datetime]] = mapped_column(default=None)
 
     # raw source signal
     gh_stars: Mapped[int] = mapped_column(default=0)
@@ -524,6 +546,12 @@ class User(Base):
     # compose falls back to the env-var defaults or just generic personalized
     # output. Set via POST /admin/voice-examples.
     voice_examples: Mapped[str] = mapped_column(Text, default="")
+    # When we last auto-synced voice_examples from this user's real LinkedIn
+    # sent-messages (via Unipile). NULL = never synced; gates the lazy pull so
+    # we don't re-scan their inbox on every compose. Manually-curated examples
+    # (set via POST /admin/voice-examples) leave this NULL and are never
+    # overwritten by the auto-sync.
+    voice_synced_at: Mapped[Optional[datetime]] = mapped_column(default=None)
 
     # ─── Billing ───────────────────────────────────────────────────────
     # Stripe customer id, set by the checkout webhook on first successful

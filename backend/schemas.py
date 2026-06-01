@@ -92,6 +92,9 @@ class EventCreate(BaseModel):
     event_date: str = ""
     # Operator-supplied display name. Empty falls back to "event #<id>".
     event_name: str = ""
+    # Host's plain-English event description (the intake "Describe your event"
+    # box). Optional; fed into outreach compose for richer context.
+    brief: str = ""
     goal: list[str] = ["Hiring pipeline"]
     budget: int = 8000
     # Which prospect sources to fan out across (LinkedIn always forced in
@@ -114,6 +117,7 @@ class EventOut(BaseModel):
     city: str
     event_date: str
     event_name: str
+    brief: str = ""
     goal: list[str]
     budget: int
     sources: list[str]
@@ -133,6 +137,7 @@ class EventOut(BaseModel):
             headcount=ev.headcount, format=ev.format, city=ev.city,
             event_date=getattr(ev, "event_date", "") or "",
             event_name=getattr(ev, "event_name", "") or "",
+            brief=getattr(ev, "brief", "") or "",
             goal=_split_csv(ev.goal),
             budget=ev.budget,
             sources=_split_csv(getattr(ev, "sources", None)) or ["linkedin"],

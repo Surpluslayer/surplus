@@ -124,6 +124,10 @@ def init_db() -> None:
         _migrate_applicant_enrichment_raw,
         _migrate_event_kind_label,
         _migrate_prospect_capture_fields,
+        _migrate_prospect_enrichment_text,
+        _migrate_event_brief,
+        _migrate_prospect_live_enrichment,
+        _migrate_user_voice_synced_at,
     ]
     for migration in migrations:
         try:
@@ -246,6 +250,86 @@ def _migrate_prospect_capture_fields() -> None:
             conn.execute(text(
                 f"ALTER TABLE prospects ADD COLUMN {ine}source VARCHAR(20)"
             ))
+
+
+def _migrate_prospect_enrichment_text() -> None:
+    """Add prospects.headline (VARCHAR(300), NULL) and prospects.bio (TEXT,
+    NULL) for the discovery-time profile context fed into outreach compose.
+
+    Both nullable / undefaulted : rows discovered before this column existed,
+    or via sources that don't carry a headline/bio, leave them NULL and
+    compose falls back to the chip fields it already used."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "prospects" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("prospects")}
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        if "headline" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}headline VARCHAR(300)"
+            ))
+        if "bio" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}bio TEXT"
+            ))
+
+
+def _migrate_prospect_live_enrichment() -> None:
+    """Add prospects.recent_activity (TEXT, NULL) and prospects.enriched_at
+    (TIMESTAMP, NULL) for the lazy live-LinkedIn enrichment cache.
+
+    Both nullable / undefaulted : enriched_at NULL means 'not yet pulled from
+    Unipile', which is the gate the lazy enrichment checks."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "prospects" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("prospects")}
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        if "recent_activity" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}recent_activity TEXT"
+            ))
+        if "enriched_at" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}enriched_at TIMESTAMP"
+            ))
+
+
+def _migrate_user_voice_synced_at() -> None:
+    """Add users.voice_synced_at (TIMESTAMP, NULL) : gates the lazy auto-sync
+    of voice_examples from the user's real LinkedIn sent-messages. NULL =
+    never synced."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "voice_synced_at" in cols:
+        return
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            f"ALTER TABLE users ADD COLUMN {ine}voice_synced_at TIMESTAMP"
+        ))
+
+
+def _migrate_event_brief() -> None:
+    """Add events.brief (TEXT, default '') for the host's plain-English event
+    description. Empty string for existing rows means 'no describe-box text';
+    outreach compose then relies on the per-goal framing template alone."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "events" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("events")}
+    if "brief" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text("ALTER TABLE events ADD COLUMN brief TEXT DEFAULT ''"))
 
 
 def _migrate_event_triage_config() -> None:

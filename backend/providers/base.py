@@ -174,6 +174,29 @@ class LinkedInProvider(abc.ABC):
         agent must override (Unipile does)."""
         return []
 
+    def fetch_profile(self, linkedin_url: str) -> dict:
+        """Fetch a person's live LinkedIn profile for outreach grounding.
+
+        Returns a dict with whatever the provider could resolve; absent
+        fields are simply omitted. Canonical keys:
+            headline       : str  - the one-liner under their name
+            summary        : str  - their "About" section
+            position       : str  - current title @ company
+            recent_posts   : list[str] - text of their last few posts/activity
+
+        Default returns {} : providers without a profile endpoint can't
+        enrich, and the caller falls back to discovery-time (Exa) data."""
+        return {}
+
+    def fetch_recent_sent_messages(self, limit: int = 20) -> list[str]:
+        """Return the text of the account owner's most recent OUTBOUND
+        LinkedIn messages, newest first. Used to derive the host's own
+        writing voice so composed outreach sounds like them.
+
+        Default returns [] : providers without message history can't sample
+        a voice, and the caller falls back to configured voice examples."""
+        return []
+
     def is_relation(self, linkedin_url: str) -> bool:
         """True if the operator's LinkedIn is already connected to this
         profile (warm) : drives the cold vs warm send routing. Default

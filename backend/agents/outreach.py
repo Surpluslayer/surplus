@@ -204,11 +204,14 @@ _COMPOSE_MAX_TOKENS = 800
 _COMPOSE_SYSTEM = """You are writing personalized LinkedIn outreach for an event invitation.
 
 You will produce two pieces:
-  - note: the LinkedIn connection request note. MAX 280 characters (LinkedIn hard limit is 300; we leave headroom). Reference one specific thing about the recipient. End with a low-pressure question.
+  - note: the LinkedIn connection request note. MAX 280 characters (LinkedIn hard limit is 300; we leave headroom). Reference one specific, concrete thing about THIS recipient (pulled from their profile bio / headline / what they work on), not a generic compliment. End with a low-pressure question.
   - message: the first DM sent right after the connection is accepted. 3-6 sentences. Recap the event framing, weave in their specific background (role, company, what they work on), end with a soft ask to share details.
 
 GROUND RULES
-  - Reference REAL things from the recipient's profile : their role, company, what they work on, what they offer. NEVER invent specifics (talks, projects, repos, articles) that aren't in the input.
+  - Reference REAL things about the recipient, drawn ONLY from the input: their role, company, About section, headline, and especially their recent LinkedIn posts. NEVER invent specifics (talks, projects, repos, articles) that aren't in the input.
+  - The note MUST anchor on one real, specific detail about this person. When "THEIR RECENT LINKEDIN POSTS" is present, lead with a concrete callback to one of them : that recency is what makes outreach feel personal instead of templated.
+  - If the only details you have are generic (e.g. just "Engineer" with no About / posts), keep the note short and honest rather than inventing a specific or padding with flattery.
+  - When "WHAT THE HOST SAID ABOUT THE EVENT" is present, ground the event framing in the host's actual words : it's more specific and trustworthy than the generic per-goal framing line.
   - Match LinkedIn DM tone: warm, direct, no buzzwords, no "I came across your profile" filler.
   - Don't use em-dashes (LinkedIn auto-mangles them). Colons or commas instead.
   - Don't say "as an AI", don't apologize for reaching out.
@@ -298,6 +301,13 @@ def _compose_user_message(prospect, event, host_bio, framing,
         parts += ["---", "</style_examples>", ""]
 
     parts += ["EVENT", f"Framing the host wants conveyed: {framing}"]
+    brief = (getattr(event, "brief", "") or "").strip()
+    if brief:
+        # The host's own words about the event : richer + more specific than
+        # the canned per-goal framing. Lead the model toward THIS, not the
+        # template, when they differ.
+        parts += ["", "WHAT THE HOST SAID ABOUT THE EVENT (their own words, "
+                  "prefer this over the generic framing):", brief]
     if host_bio:
         parts += ["", "HOST BIO", host_bio.strip()]
     if event.format:
@@ -305,14 +315,26 @@ def _compose_user_message(prospect, event, host_bio, framing,
     if event.city:
         parts.append(f"City: {event.city}")
 
+    # RECIPIENT context is REAL LinkedIn data only : headline, About, and
+    # recent posts pulled live from their profile (see live_enrich.py), with
+    # the Exa discovery snippet as fallback. We deliberately do NOT pass the
+    # ICP-derived works_on / offers / seeks here : those are matcher guesses,
+    # not facts about the person, and they're exactly what made past notes read
+    # generic ("I see you work on X, come to my dinner").
     parts += ["", "RECIPIENT", f"Name: {prospect.name}",
               f"Role: {prospect.role}", f"Company: {prospect.company}"]
-    if getattr(prospect, "works_on", None):
-        parts.append(f"What they work on: {prospect.works_on}")
-    if getattr(prospect, "offers", None):
-        parts.append(f"Offers / strengths: {prospect.offers}")
     if getattr(prospect, "headline", None):
         parts.append(f"Headline: {prospect.headline}")
+    bio = (getattr(prospect, "bio", "") or "").strip()
+    if bio:
+        parts.append(f"About: {bio}")
+    activity = (getattr(prospect, "recent_activity", "") or "").strip()
+    if activity:
+        # The strongest signal for a relevant note : something they actually
+        # posted recently. Lead the note with a specific callback to this.
+        parts += ["", "THEIR RECENT LINKEDIN POSTS (reference one specific, "
+                  "current detail from here in the note — this is what makes it "
+                  "land instead of reading generic):", activity]
 
     parts += ["", "Write the JSON now."]
     return "\n".join(parts)
