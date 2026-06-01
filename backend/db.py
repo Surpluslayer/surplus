@@ -23,19 +23,31 @@ if _RAW_DB_URL:
         _RAW_DB_URL = _RAW_DB_URL.replace("postgres://", "postgresql://", 1)
     DB_URL = _RAW_DB_URL
     DB_PATH = None  # not used in Postgres mode
-    # Connection-pool sizing for prod : Railway Postgres free tier caps
-    # at ~20 concurrent connections. With 2 replicas × default SQLAlchemy
-    # (pool_size=5 + max_overflow=10 = 15 per replica) we'd silently push
-    # past that under burst load and start returning pool-exhaustion
-    # errors. 5+5 per replica = 20 total = under the cap with one slot
-    # to spare for the connection-pre-ping. pool_recycle=300 kills
-    # connections older than 5 min so Postgres / Railway side-disconnects
-    # don't surface as "connection invalidated" errors on the next query.
+    # Connection-pool sizing for prod. The pool is PER WORKER PROCESS, so the
+    # ceiling that matters is:
+    #     WEB_CONCURRENCY × (DB_POOL_SIZE + DB_MAX_OVERFLOW)  ≤  Postgres max
+    # Exceed it and you get "QueuePool limit ... connection timed out" under
+    # burst load, which looks like a crash. Both are env-driven so you can tune
+    # for instance size / Postgres plan in Railway WITHOUT a code change.
+    #
+    # Defaults: 4 workers × (5 + 3) = 32 connections. Comfortably under a Pro
+    # Postgres connection cap; drop DB_POOL_SIZE (or WEB_CONCURRENCY) if you're
+    # on a smaller Postgres with a ~20 cap. pool_pre_ping survives idle
+    # disconnects; pool_recycle=300 kills connections older than 5 min so
+    # Railway/Postgres side-disconnects don't surface as "connection
+    # invalidated" on the next query.
+    def _int_env(name: str, default: int) -> int:
+        try:
+            return max(1, int((os.environ.get(name) or "").strip()))
+        except ValueError:
+            return default
+
     ENGINE = create_engine(
         DB_URL,
         pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=5,
+        pool_size=_int_env("DB_POOL_SIZE", 5),
+        max_overflow=_int_env("DB_MAX_OVERFLOW", 3),
+        pool_timeout=_int_env("DB_POOL_TIMEOUT", 10),
         pool_recycle=300,
     )
 else:

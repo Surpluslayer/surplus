@@ -13,11 +13,14 @@ anthropic==0.42.0
 # parsing). Triage uses it for the Luma CSV upload endpoint. App crashes at
 # import time without it.
 python-multipart==0.0.12
-numpy>=1.26
+# Pinned (was numpy>=1.26): a floating range lets a new numpy release break the
+# Railway build with no code change on our side. Pin for reproducible builds.
+numpy==2.4.6
 # psycopg2-binary: SQLAlchemy's Postgres driver. Required when DATABASE_URL
 # is set (Railway production). Local dev falls back to SQLite and doesn't
 # need this, but it's cheap to install and keeps deploy + local in sync.
-psycopg2-binary>=2.9.9
+# Pinned (was >=2.9.9) for the same build-reproducibility reason.
+psycopg2-binary==2.9.12
 
 # Stripe SDK for the billing module (checkout sessions + webhook signature verify).
 stripe==11.4.1
