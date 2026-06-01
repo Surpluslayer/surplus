@@ -209,4 +209,8 @@ export const api = {
   // so 'Triage mode' button can route straight into the flow with no form.
   triageQuickStart: () => request("/api/auth/triage/quick-start", { method: "POST" }),
   logout: () => request("/api/auth/logout", { method: "POST" }),
+  // Save the reusable scheduling link + reply-to email (set once, reused as the
+  // in-person next step). Pass only the field(s) you're changing.
+  updateScheduling: (body) =>
+    request("/api/auth/me/scheduling", { method: "PATCH", body: JSON.stringify(body) }),
 };

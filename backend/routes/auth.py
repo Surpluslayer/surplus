@@ -870,6 +870,8 @@ def me(user: User = Depends(current_user)) -> JSONResponse:
         "linkedin_public_id": user.linkedin_public_id,
         "linkedin_status": user.linkedin_status,
         "unipile_account_id": user.unipile_account_id,
+        # Saved-once scheduling/contact, auto-offered as the in-person next step.
+        "calendly_url": user.calendly_url,
         # True for sessions that entered via the hidden demo link. The SPA
         # uses this to hide demo-only surfaces (e.g. the ROI ledger stage).
         "is_demo": is_demo_user(user),
@@ -880,6 +882,41 @@ def me(user: User = Depends(current_user)) -> JSONResponse:
         "paid_at": user.paid_at.isoformat() if user.paid_at else None,
         "stripe_customer_id": user.stripe_customer_id,
     })
+
+
+class SchedulingBody(BaseModel):
+    # Both optional : send only what you're changing. Empty string clears.
+    calendly_url: Optional[str] = None
+    email: Optional[str] = None
+
+
+@router.patch("/me/scheduling")
+def update_scheduling(
+    body: SchedulingBody,
+    user: User = Depends(current_user),
+    db: DbSession = Depends(get_db),
+) -> JSONResponse:
+    """Save the user's reusable scheduling link + reply-to email (set once,
+    reused as the in-person next step). Light validation : a Calendly/booking
+    link should look like a URL; we normalize a bare host to https://."""
+    if body.calendly_url is not None:
+        url = body.calendly_url.strip()
+        if url:
+            if not url.startswith(("http://", "https://")):
+                url = "https://" + url
+            if "." not in url.split("//", 1)[-1]:
+                raise HTTPException(422, "calendly_url doesn't look like a link")
+            user.calendly_url = url[:300]
+        else:
+            user.calendly_url = None  # explicit clear
+    if body.email is not None:
+        email = body.email.strip()
+        if email and "@" not in email:
+            raise HTTPException(422, "email doesn't look like an email")
+        user.email = (email or None)
+    db.commit()
+    return JSONResponse({"ok": True, "calendly_url": user.calendly_url,
+                         "email": user.email})
 
 
 # ─── Startup backfill : repopulate dedup keys on existing User rows ──

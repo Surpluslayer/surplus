@@ -115,6 +115,7 @@ def init_db() -> None:
         _migrate_prospect_connection_status,
         _migrate_prospect_scholar_citations,
         _migrate_user_voice_examples,
+        _migrate_user_calendly_url,
         _migrate_user_unipile_account_id_nullable,
         _migrate_event_triage_config,
         _migrate_event_event_date,
@@ -388,6 +389,22 @@ def _migrate_user_voice_examples() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN voice_examples TEXT DEFAULT ''"))
+
+
+def _migrate_user_calendly_url() -> None:
+    """Add users.calendly_url (VARCHAR 300) for the saved scheduling link the
+    in-person flow auto-offers. Old rows get NULL (= not set up yet)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "calendly_url" in cols:
+        return
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            f"ALTER TABLE users ADD COLUMN {ine}calendly_url VARCHAR(300)"))
 
 
 def _migrate_event_yoe() -> None:

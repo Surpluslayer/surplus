@@ -219,6 +219,33 @@ def test_list_captures_returns_crm_rows(db, user):
 
 # ── /send : shared warm/cold helper, dry-run ───────────────────────────────
 
+def test_update_scheduling_saves_and_normalizes(db, user):
+    """The saved booking link + reply-to email persist on the user and a bare
+    host is normalized to https://. Junk is rejected; empty clears."""
+    import pytest as _pytest
+    from fastapi import HTTPException
+    from backend.routes.auth import update_scheduling, SchedulingBody
+
+    out = update_scheduling(
+        SchedulingBody(calendly_url="calendly.com/jane/15min", email="jane@x.com"),
+        user, db)
+    body = out.body.decode() if hasattr(out, "body") else ""
+    db.refresh(user)
+    assert user.calendly_url == "https://calendly.com/jane/15min"  # normalized
+    assert user.email == "jane@x.com"
+    assert "https://calendly.com/jane/15min" in body
+
+    # Junk link -> 422
+    with _pytest.raises(HTTPException) as ei:
+        update_scheduling(SchedulingBody(calendly_url="notaurl"), user, db)
+    assert ei.value.status_code == 422
+
+    # Empty string clears it
+    update_scheduling(SchedulingBody(calendly_url=""), user, db)
+    db.refresh(user)
+    assert user.calendly_url is None
+
+
 def test_send_capture_dry_run_cold_path(db, user):
     from backend.routes.inperson import scan_capture, ScanIn, send_capture, SendIn
     ev = _make_event(db, user)

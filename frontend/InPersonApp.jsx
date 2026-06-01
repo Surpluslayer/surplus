@@ -25,6 +25,7 @@ import { actionLabel, statusMeta, outreachStateLabel } from "./lib/labels.js";
 
 const ACTIVE_EVENT_KEY = "surplus_inperson_event";   // sessionStorage
 const RECENT_LABELS_KEY = "surplus_inperson_recent";  // localStorage
+const SETUP_SEEN_KEY = "surplus_inperson_setup_seen"; // localStorage : skip the one-time setup card
 
 function loadActiveEvent() {
   try { return JSON.parse(sessionStorage.getItem(ACTIVE_EVENT_KEY) || "null"); }
@@ -107,6 +108,8 @@ function InPersonAppInner() {
   const [openCapture, setOpenCapture] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [isOperator, setIsOperator] = useState(false);  // can see the Activity page
+  const [setupDone, setSetupDone] = useState(
+    () => { try { return localStorage.getItem(SETUP_SEEN_KEY) === "1"; } catch { return false; } });
 
   useEffect(() => { ensureNotifyPermission(); }, []);
 
@@ -209,7 +212,18 @@ function InPersonAppInner() {
         </div>
       )}
 
-      {tab === "activity" && isOperator ? (
+      {/* One-time setup : ask for the Calendly link + reply-to email up front so
+          the next step auto-fills later. Connected users only; dismissable. */}
+      {!notConnected && !setupDone && !user.calendly_url ? (
+        <SchedulingSetup
+          user={user}
+          onDone={(patch) => {
+            if (patch) setUser((u) => ({ ...u, ...patch }));
+            try { localStorage.setItem(SETUP_SEEN_KEY, "1"); } catch {}
+            setSetupDone(true);
+          }}
+        />
+      ) : tab === "activity" && isOperator ? (
         <ActivityScreen />
       ) : !event ? (
         <Centered>
@@ -223,6 +237,7 @@ function InPersonAppInner() {
         <ScanResult
           event={event}
           result={result}
+          user={user}
           canSend={!notConnected}
           onDone={() => { setResult(null); setTab("people"); }}
           onCancel={() => setResult(null)}
@@ -607,14 +622,72 @@ function TypeSearch({ onConfirm, busy }) {
 
 // ── scan result : draft + send / save ────────────────────────────────────────
 
-function ScanResult({ event, result, onDone, onCancel, canSend }) {
+// One-time setup : the user's reusable booking link + reply-to email, set up
+// front so "book a time" auto-fills as the next step on every capture.
+function SchedulingSetup({ user, onDone }) {
+  const [calendly, setCalendly] = useState(user?.calendly_url || "");
+  const [email, setEmail] = useState(user?.email || "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const save = async () => {
+    setErr(""); setBusy(true);
+    try {
+      const r = await api.updateScheduling({ calendly_url: calendly, email });
+      onDone({ calendly_url: r.calendly_url, email: r.email });
+    } catch (e) { setErr(e.message || "Couldn’t save"); setBusy(false); }
+  };
+
+  return (
+    <div className="ip-screen">
+      <div className="ip-person">
+        <div className="ip-person-name">Quick setup</div>
+        <div className="ip-person-sub">
+          Set these once — we’ll offer your booking link as the next step on every
+          person you capture.
+        </div>
+      </div>
+
+      <label className="ip-lbl">Your booking link
+        <span className="ip-dim"> · Calendly, Cal.com, etc.</span></label>
+      <input className="ip-input" inputMode="url" autoCapitalize="off"
+        placeholder="calendly.com/you/15min"
+        value={calendly} onChange={(e) => setCalendly(e.target.value)} />
+
+      <label className="ip-lbl">Reply-to email <span className="ip-dim">· optional</span></label>
+      <input className="ip-input" inputMode="email" autoCapitalize="off"
+        placeholder="you@example.com"
+        value={email} onChange={(e) => setEmail(e.target.value)} />
+
+      {err && <div className="ip-err"><AlertCircle size={14} /> {err}</div>}
+
+      <div className="ip-actions">
+        <button className="ip-btn primary lg" onClick={save} disabled={busy}>
+          {busy ? <Loader2 className="spin" size={18} /> : <><Check size={18} /> Save & continue</>}
+        </button>
+        <button className="ip-btn ghost sm" onClick={() => onDone(null)} disabled={busy}>
+          Skip for now
+        </button>
+      </div>
+      <div className="ip-dim ip-center ip-laterhint">
+        You can change this anytime — it just pre-fills the next step.
+      </div>
+    </div>
+  );
+}
+
+function ScanResult({ event, result, user, onDone, onCancel, canSend }) {
   const p = result.prospect || {};
+  // Default the next step to the user's saved booking link (set once up front),
+  // so "book a time" is pre-filled without retyping. Per-capture editable.
+  const defaultStep = (p.next_step
+    || (user?.calendly_url ? `book a time: ${user.calendly_url}` : "")) || "";
   const [draftNote, setDraftNote] = useState(result.draft_note || "");
   const [draftMsg, setDraftMsg] = useState(result.draft_message || "");
   const [note, setNote] = useState(p.note || "");               // fun fact
   const [privateNote, setPrivateNote] = useState(p.private_note || "");
   const [contactType, setContactType] = useState(p.contact_type || "");
-  const [nextStep, setNextStep] = useState(p.next_step || "");
+  const [nextStep, setNextStep] = useState(defaultStep);
   const [busy, setBusy] = useState("");      // "" | "send" | "save" | "personalize" | "nonote"
   const [err, setErr] = useState("");
   // The draft on screen was composed BEFORE the fun fact was typed. Track

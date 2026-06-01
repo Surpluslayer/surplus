@@ -481,6 +481,12 @@ class User(Base):
     # output. Set via POST /admin/voice-examples.
     voice_examples: Mapped[str] = mapped_column(Text, default="")
 
+    # ─── Scheduling / contact, set once and reused ──────────────────────
+    # The user's own Calendly (or any booking) link + reply-to email, set up
+    # front so the in-person flow can auto-offer "book a time" as the next step
+    # without retyping. `email` above doubles as the reply-to. Both optional.
+    calendly_url: Mapped[Optional[str]] = mapped_column(String(300), default=None)
+
     # ─── Billing ───────────────────────────────────────────────────────
     # Stripe customer id, set by the checkout webhook on first successful
     # payment. Indexed because the webhook path looks users up by it.
