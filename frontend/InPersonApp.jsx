@@ -166,8 +166,8 @@ export default function InPersonApp() {
 
       {notConnected && (
         <div className="ip-banner">
-          <AlertCircle size={14} /> Connect LinkedIn to send. You can still
-          scan and save captures.
+          <AlertCircle size={14} /> You can capture people now. Connect LinkedIn
+          when you’re ready to send.
         </div>
       )}
 
@@ -176,8 +176,9 @@ export default function InPersonApp() {
       ) : !event ? (
         <Centered>
           <div className="ip-empty">
-            <QrCode size={34} />
-            <p>Pick the event you’re at to start capturing.</p>
+            <QrCode size={40} />
+            <p className="ip-empty-title">Which event are you at?</p>
+            <p>Tap <b>Pick event</b> up top to start capturing people.</p>
           </div>
         </Centered>
       ) : result ? (
@@ -258,10 +259,11 @@ function SignInBounce({ authError = null, onRetry = null }) {
       <style>{IP_CSS}</style>
       <Centered>
         <div className="ip-empty">
-          <User size={34} />
-          <p>Sign in to capture connections at your event.</p>
-          <button className="ip-btn primary" onClick={go} disabled={busy}>
-            {busy ? <Loader2 className="spin" size={16} /> : "Sign in with LinkedIn"}
+          <QrCode size={40} />
+          <p className="ip-empty-title">Capture people you meet</p>
+          <p>Scan a LinkedIn QR, send a connection, and we’ll draft the message for you.</p>
+          <button className="ip-btn primary lg block" onClick={go} disabled={busy}>
+            {busy ? <Loader2 className="spin" size={18} /> : "Sign in with LinkedIn"}
           </button>
           {authError && (
             <div className="ip-warn" style={{ marginTop: 14, maxWidth: 340 }}>
@@ -310,9 +312,9 @@ function EventBar({ event, onPick, user, onSignOut }) {
   return (
     <div className="ip-eventbar">
       <div className="ip-eventhead">
-        <button className="ip-eventpick" onClick={() => setOpen((o) => !o)}>
+        <button className={`ip-eventpick${event ? "" : " empty"}`} onClick={() => setOpen((o) => !o)}>
           <span className="ip-eventlabel">
-            {event ? <><b>I’m at:</b> {event.label}</> : "Pick event"}
+            {event ? <><MapPin size={15} /> {event.label}</> : "Pick event to start →"}
           </span>
           <ChevronRight size={16} className={open ? "rot" : ""} />
         </button>
@@ -374,11 +376,14 @@ function CaptureScreen({ event, onResult }) {
 
   return (
     <div className="ip-screen">
+      <div className="ip-howto">
+        <b>1.</b> Add the person · <b>2.</b> Connect. That’s it.
+      </div>
       <div className="ip-seg">
-        {[["scan", "Scan", QrCode], ["paste", "Paste", Link2], ["type", "Type", Search]]
+        {[["scan", "Scan QR", QrCode], ["paste", "Paste link", Link2], ["type", "By name", Search]]
           .map(([k, lbl, Icon]) => (
             <button key={k} className={mode === k ? "on" : ""} onClick={() => setMode(k)}>
-              <Icon size={15} /> {lbl}
+              <Icon size={17} /> {lbl}
             </button>
           ))}
       </div>
@@ -481,9 +486,9 @@ function QrScanner({ onUrl, busy }) {
       <div className="ip-reticle" />
       <canvas ref={canvasRef} style={{ display: "none" }} />
       <div className="ip-camstatus">
-        {busy ? <><Loader2 className="spin" size={14} /> Capturing…</>
+        {busy ? <><Loader2 className="spin" size={14} /> Got it — saving…</>
           : status === "starting" ? "Starting camera…"
-          : (hint || "Point at a LinkedIn ‘My Code’ QR")}
+          : (hint || "Ask them to open their LinkedIn QR, then point here")}
       </div>
     </div>
   );
@@ -493,14 +498,14 @@ function PasteLink({ onSubmit, busy }) {
   const [url, setUrl] = useState("");
   return (
     <div className="ip-pad">
-      <label className="ip-lbl">LinkedIn profile link</label>
+      <label className="ip-lbl">Paste their LinkedIn link</label>
       <input className="ip-input" inputMode="url" autoCapitalize="off"
-        placeholder="https://www.linkedin.com/in/…"
+        placeholder="linkedin.com/in/…"
         value={url} onChange={(e) => setUrl(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter" && url.trim()) onSubmit(url.trim()); }} />
-      <button className="ip-btn primary block" disabled={busy || !url.trim()}
+      <button className="ip-btn primary block lg" disabled={busy || !url.trim()}
               onClick={() => onSubmit(url.trim())}>
-        {busy ? <Loader2 className="spin" size={16} /> : "Capture"}
+        {busy ? <Loader2 className="spin" size={18} /> : <><Check size={18} /> Add person</>}
       </button>
     </div>
   );
@@ -529,13 +534,14 @@ function TypeSearch({ onConfirm, busy }) {
 
   return (
     <div className="ip-pad">
-      {["name", "title", "company"].map((k) => (
-        <input key={k} className="ip-input" placeholder={k[0].toUpperCase() + k.slice(1)}
+      {[["name", "Full name (required)"], ["title", "Job title (optional)"],
+        ["company", "Company (optional)"]].map(([k, ph]) => (
+        <input key={k} className="ip-input" placeholder={ph}
           value={f[k]} onChange={(e) => setF((s) => ({ ...s, [k]: e.target.value }))}
           onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
       ))}
-      <button className="ip-btn block" disabled={searching || !f.name.trim()} onClick={search}>
-        {searching ? <Loader2 className="spin" size={16} /> : "Search LinkedIn"}
+      <button className="ip-btn block lg" disabled={searching || !f.name.trim()} onClick={search}>
+        {searching ? <Loader2 className="spin" size={18} /> : <><Search size={18} /> Find on LinkedIn</>}
       </button>
       {err && <div className="ip-err"><AlertCircle size={14} /> {err}</div>}
 
@@ -546,7 +552,7 @@ function TypeSearch({ onConfirm, busy }) {
       )}
       {cands?.length > 0 && (
         <div className="ip-cands">
-          <div className="ip-dim ip-confirm-hint">Tap the right person to confirm:</div>
+          <div className="ip-dim ip-confirm-hint">Which one is them? Tap to add:</div>
           {cands.map((c) => (
             <button key={c.linkedin_url} className="ip-cand" disabled={busy}
                     onClick={() => onConfirm(c)}>
@@ -763,11 +769,11 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
       {/* Connect is the one obvious action. "Save for later" and the bare-invite
           variant are secondary. The first message is drafted later in People. */}
       <div className="ip-actions">
-        <button className="ip-btn primary" onClick={() => send(false)}
+        <button className="ip-btn primary lg" onClick={() => send(false)}
                 disabled={!!busy || !canSend}
                 title={canSend ? "" : "Connect LinkedIn to send"}>
-          {busy === "send" ? <Loader2 className="spin" size={16} />
-            : <><Send size={16} /> Connect</>}
+          {busy === "send" ? <Loader2 className="spin" size={18} />
+            : <><Send size={18} /> Connect on LinkedIn</>}
         </button>
         <div className="ip-actions-row">
           <button className="ip-btn ghost sm" onClick={save} disabled={!!busy}>
@@ -1138,19 +1144,26 @@ const IP_CSS = `
 
 .ip-centered { flex:1; display:flex; align-items:center; justify-content:center; padding:24px; }
 .ip-empty { text-align:center; color:var(--ip-dim); display:flex; flex-direction:column;
-  align-items:center; gap:12px; }
-.ip-empty p { margin:0; }
+  align-items:center; gap:10px; max-width:300px; }
+.ip-empty p { margin:0; font-size:15px; line-height:1.45; }
+.ip-empty-title { font-size:19px; font-weight:800; color:var(--ip-ink); }
 
-.ip-banner { background:#fff6e5; color:#7a5200; font-size:13px; padding:8px 14px;
-  display:flex; gap:6px; align-items:center; }
+.ip-banner { background:#fff6e5; color:#7a5200; font-size:13px; padding:10px 14px;
+  display:flex; gap:7px; align-items:center; line-height:1.35; }
+
+.ip-howto { background:#eef4fb; color:#1c4f8a; font-size:13.5px; line-height:1.4;
+  padding:11px 14px; border-radius:12px; margin-bottom:12px; text-align:center; }
 
 /* event bar */
 .ip-eventbar { position:sticky; top:0; z-index:5; background:var(--ip-card);
   border-bottom:1px solid var(--ip-line); }
 .ip-eventhead { display:flex; align-items:center; gap:8px; padding-right:12px; }
 .ip-eventpick { flex:1; min-width:0; display:flex; align-items:center; justify-content:space-between;
-  padding:13px 16px; background:none; border:0; font-size:15px; color:var(--ip-ink); }
-.ip-eventlabel b { color:var(--ip-dim); font-weight:600; margin-right:4px; }
+  padding:14px 16px; background:none; border:0; font-size:15.5px; font-weight:600;
+  color:var(--ip-ink); }
+.ip-eventpick.empty { color:var(--ip-accent); }
+.ip-eventlabel { display:inline-flex; align-items:center; gap:6px; min-width:0;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ip-eventpick .rot { transform:rotate(90deg); }
 .ip-signout { flex-shrink:0; display:flex; align-items:center; gap:6px;
   background:none; border:1px solid var(--ip-line); border-radius:8px;
@@ -1168,14 +1181,16 @@ const IP_CSS = `
 /* screens */
 .ip-screen { flex:1; padding:14px 14px 88px; overflow-y:auto; }
 .ip-pad { display:flex; flex-direction:column; gap:10px; margin-top:12px; }
-.ip-seg { display:flex; gap:4px; background:#eceef1; border-radius:12px; padding:4px; }
-.ip-seg button { flex:1; border:0; background:none; padding:9px; border-radius:9px;
-  font-size:13px; font-weight:600; color:var(--ip-dim); display:flex; gap:5px;
-  align-items:center; justify-content:center; }
-.ip-seg button.on { background:#fff; color:var(--ip-ink); box-shadow:0 1px 3px rgba(0,0,0,.08); }
+.ip-seg { display:flex; gap:4px; background:#eceef1; border-radius:13px; padding:5px; }
+.ip-seg button { flex:1; border:0; background:none; padding:12px 6px; border-radius:10px;
+  font-size:13.5px; font-weight:600; color:var(--ip-dim); display:flex; gap:6px;
+  align-items:center; justify-content:center; transition:background .12s, color .12s; }
+.ip-seg button.on { background:#fff; color:var(--ip-accent); box-shadow:0 1px 4px rgba(0,0,0,.1); }
 
-.ip-input { width:100%; padding:12px 13px; border:1px solid var(--ip-line);
-  border-radius:11px; font-size:16px; background:#fff; color:var(--ip-ink); }
+.ip-input { width:100%; padding:14px; border:1px solid var(--ip-line);
+  border-radius:12px; font-size:16px; background:#fff; color:var(--ip-ink); min-height:52px; }
+.ip-input:focus, .ip-area:focus { outline:none; border-color:var(--ip-accent);
+  box-shadow:0 0 0 3px rgba(10,102,194,.12); }
 .ip-microw { display:flex; gap:8px; align-items:stretch; }
 .ip-microw-hint { display:inline-flex; align-items:center; gap:5px; margin-top:6px;
   font-size:12px; background:none; border:0; padding:0; cursor:inherit; }
@@ -1195,13 +1210,17 @@ button.ip-microw-hint { cursor:pointer; }
 .ip-lbl .ip-dim { font-weight:500; text-transform:none; letter-spacing:0; }
 
 /* buttons */
-.ip-btn { display:inline-flex; gap:7px; align-items:center; justify-content:center;
-  border:1px solid var(--ip-line); background:#fff; color:var(--ip-ink); border-radius:12px;
-  padding:13px 16px; font-size:15px; font-weight:600; cursor:pointer; }
-.ip-btn:disabled { opacity:.5; }
-.ip-btn.primary { background:var(--ip-accent); color:var(--ip-accent-ink); border-color:var(--ip-accent); }
+.ip-btn { display:inline-flex; gap:8px; align-items:center; justify-content:center;
+  border:1px solid var(--ip-line); background:#fff; color:var(--ip-ink); border-radius:13px;
+  padding:14px 16px; font-size:15px; font-weight:650; cursor:pointer; min-height:50px;
+  transition:transform .08s ease, filter .12s ease; }
+.ip-btn:active { transform:scale(.98); }
+.ip-btn:disabled { opacity:.45; }
+.ip-btn.primary { background:var(--ip-accent); color:var(--ip-accent-ink); border-color:var(--ip-accent);
+  box-shadow:0 2px 8px rgba(10,102,194,.25); }
 .ip-btn.ghost { background:#fff; }
-.ip-btn.sm { padding:10px 13px; font-size:13px; }
+.ip-btn.sm { padding:11px 13px; font-size:13.5px; min-height:44px; }
+.ip-btn.lg { padding:16px; font-size:16.5px; min-height:56px; border-radius:14px; }
 .ip-btn.block { width:100%; }
 .ip-actions { display:flex; flex-direction:column; gap:9px; margin-top:16px; }
 .ip-actions > .ip-btn { width:100%; }
@@ -1232,17 +1251,19 @@ button.ip-microw-hint { cursor:pointer; }
 .ip-cands { display:flex; flex-direction:column; gap:8px; margin-top:6px; }
 .ip-confirm-hint { margin:6px 0 2px; }
 .ip-cand { text-align:left; border:1px solid var(--ip-line); background:#fff;
-  border-radius:12px; padding:11px 13px; }
-.ip-cand-name { font-weight:700; font-size:15px; }
+  border-radius:13px; padding:14px; min-height:60px; }
+.ip-cand:active { background:#f4f8fd; }
+.ip-cand-name { font-weight:700; font-size:16px; }
 .ip-cand-sub { font-size:13px; color:var(--ip-dim); margin-top:2px; }
 .ip-cand-url { font-size:11px; color:var(--ip-accent); margin-top:3px; }
 
 /* result / detail */
 .ip-back { background:none; border:0; color:var(--ip-accent); font-size:14px;
   display:inline-flex; gap:5px; align-items:center; padding:2px 0 10px; }
-.ip-person { background:#fff; border:1px solid var(--ip-line); border-radius:14px; padding:14px; }
-.ip-person-name { font-size:19px; font-weight:800; }
-.ip-person-sub { font-size:13px; color:var(--ip-dim); margin-top:3px; }
+.ip-person { background:#fff; border:1px solid var(--ip-line); border-radius:16px;
+  padding:16px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
+.ip-person-name { font-size:21px; font-weight:800; }
+.ip-person-sub { font-size:13.5px; color:var(--ip-dim); margin-top:3px; }
 .ip-warn,.ip-err,.ip-ok { font-size:13px; display:flex; gap:6px; align-items:center;
   margin-top:8px; padding:8px 11px; border-radius:10px; }
 .ip-warn { background:#fff6e5; color:#7a5200; }
@@ -1268,10 +1289,11 @@ button.ip-microw-hint { cursor:pointer; }
 .ip-iconbtn,.ip-rowitem { background:#fff; border:1px solid var(--ip-line); }
 .ip-iconbtn { border-radius:10px; padding:7px; color:var(--ip-dim); }
 .ip-list { display:flex; flex-direction:column; gap:8px; }
-.ip-rowitem { display:flex; align-items:center; gap:10px; border-radius:13px;
-  padding:12px 13px; text-align:left; }
+.ip-rowitem { display:flex; align-items:center; gap:10px; border-radius:14px;
+  padding:14px; text-align:left; min-height:60px; }
+.ip-rowitem:active { background:#f4f8fd; }
 .ip-row-main { flex:1; min-width:0; }
-.ip-row-name { font-weight:700; font-size:15px; }
+.ip-row-name { font-weight:700; font-size:16px; }
 .ip-row-sub { font-size:12px; color:var(--ip-dim); margin-top:1px; white-space:nowrap;
   overflow:hidden; text-overflow:ellipsis; }
 .ip-row-chips { display:flex; flex-wrap:wrap; gap:5px; margin-top:6px; }
@@ -1292,8 +1314,10 @@ button.ip-microw-hint { cursor:pointer; }
 
 /* bottom tabs */
 .ip-tabs { position:sticky; bottom:0; display:flex; background:var(--ip-card);
-  border-top:1px solid var(--ip-line); padding-bottom:env(safe-area-inset-bottom); }
-.ip-tabs button { flex:1; border:0; background:none; padding:11px; display:flex;
-  flex-direction:column; align-items:center; gap:3px; font-size:11px; color:var(--ip-dim); }
+  border-top:1px solid var(--ip-line); padding-bottom:env(safe-area-inset-bottom);
+  box-shadow:0 -2px 10px rgba(0,0,0,.04); }
+.ip-tabs button { flex:1; border:0; background:none; padding:13px 8px; display:flex;
+  flex-direction:column; align-items:center; gap:4px; font-size:11.5px; font-weight:600;
+  color:var(--ip-dim); }
 .ip-tabs button.on { color:var(--ip-accent); }
 `;
