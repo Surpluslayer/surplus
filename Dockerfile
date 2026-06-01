@@ -43,11 +43,14 @@ ENV PORT=8000
 EXPOSE 8000
 
 # WEB_CONCURRENCY = number of worker processes. Sync route handlers make
-# blocking provider/LLM calls, so a single worker serializes concurrent users;
-# multiple workers are what keep the app responsive under load. Override per
-# instance size in Railway (rule of thumb ~2× vCPU). Keep DB_POOL_SIZE ×
-# WEB_CONCURRENCY under your Postgres connection cap (see backend/db.py).
-ENV WEB_CONCURRENCY=4
+# blocking provider/LLM calls, so multiple workers improve concurrency — BUT
+# each worker loads the full app (anthropic/numpy/sqlalchemy ≈ hundreds of MB),
+# so too many workers OOM a memory-limited instance and crash-loop on boot.
+# Default to 1 (the original, safe behavior); raise it deliberately in Railway
+# once you've confirmed the instance has RAM headroom (rule of thumb ~2× vCPU,
+# and watch memory). Keep DB_POOL_SIZE × WEB_CONCURRENCY under your Postgres
+# connection cap (see backend/db.py).
+ENV WEB_CONCURRENCY=1
 
 # exec-form CMD so $PORT / $WEB_CONCURRENCY expand via sh
-CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT} --workers ${WEB_CONCURRENCY:-4} --timeout-keep-alive 30"]
+CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT} --workers ${WEB_CONCURRENCY:-1} --timeout-keep-alive 30"]

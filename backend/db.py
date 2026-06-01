@@ -30,9 +30,10 @@ if _RAW_DB_URL:
     # burst load, which looks like a crash. Both are env-driven so you can tune
     # for instance size / Postgres plan in Railway WITHOUT a code change.
     #
-    # Defaults: 4 workers × (5 + 3) = 32 connections. Comfortably under a Pro
-    # Postgres connection cap; drop DB_POOL_SIZE (or WEB_CONCURRENCY) if you're
-    # on a smaller Postgres with a ~20 cap. pool_pre_ping survives idle
+    # Defaults: pool 5 + overflow 3 = 8 connections PER WORKER. With the default
+    # WEB_CONCURRENCY=1 that's 8 total; if you raise workers to N, the ceiling is
+    # N × 8 — keep it under your Postgres cap (drop DB_POOL_SIZE on a smaller
+    # ~20-conn Postgres). pool_pre_ping survives idle
     # disconnects; pool_recycle=300 kills connections older than 5 min so
     # Railway/Postgres side-disconnects don't surface as "connection
     # invalidated" on the next query.
