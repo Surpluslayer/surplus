@@ -343,6 +343,88 @@ def relationship_summary(prospect: Any, interactions: Any = None) -> dict:
     }
 
 
+# ── draft context (Milestone 4) ──────────────────────────────────────────
+
+
+def _relative_age(dt: Optional[datetime]) -> Optional[str]:
+    """Human "5 days ago" / "today" for a timestamp. None when unknown."""
+    dt = _as_aware(dt)
+    if dt is None:
+        return None
+    delta = datetime.now(timezone.utc) - dt
+    days = delta.days
+    if days <= 0:
+        return "today"
+    if days == 1:
+        return "yesterday"
+    if days < 14:
+        return f"{days} days ago"
+    if days < 60:
+        return f"{days // 7} weeks ago"
+    return f"{days // 30} months ago"
+
+
+def relationship_context(prospect: Any, interactions: Any = None,
+                         max_recent: int = 3) -> Optional[str]:
+    """A COMPACT, outbound-safe relationship brief for grounding a draft.
+
+    Returns a short plain-text block (the "good draft context" shape) or None
+    when there's no meaningful history yet (a brand-new capture). Designed to be
+    fed into compose() as background, NOT quoted verbatim.
+
+    SAFETY: deliberately omits the operator-only private_note and any timeline
+    item flagged private/team-internal — this block can influence outbound copy,
+    so it must never carry internal-only annotations. Bounded to a handful of
+    lines so we never dump a whole timeline into the prompt.
+
+    Integration points:
+      - in-person /scan (routes/inperson.py) — wired.
+      - the post-accept auto-DM (routes/webhooks._trigger_auto_dm) and the
+        future draft route (PR #215 agents/draft.py) — pass the result as
+        compose(..., relationship_ctx=relationship_context(p, ...)). TODO once
+        those paths can cheaply fetch interactions.
+    """
+    summary = relationship_summary(prospect, interactions)
+    stage = summary["relationship_stage"]
+
+    # No meaningful history : a bare/fresh capture with nothing to add.
+    meaningful = (
+        stage not in {"captured"}
+        or summary["next_step"] or summary["contact_type"]
+        or summary["latest_outreach_status"] or summary["conversion_status"]
+        or bool(interactions)
+    )
+    if not meaningful:
+        return None
+
+    lines = ["PRIOR RELATIONSHIP (background only, do not quote verbatim):"]
+    if summary["source_event_title"]:
+        lines.append(f"- Captured at {summary['source_event_title']}")
+    if summary["contact_type"]:
+        lines.append(f"- Contact type: {summary['contact_type']}")
+    if summary["next_step"]:
+        lines.append(f"- Planned next step: {summary['next_step']}")
+    if summary["last_touch_type"]:
+        age = _relative_age(summary["last_touch_at"])
+        touch = summary["last_touch_type"].replace("_", " ")
+        lines.append(f"- Last touch: {touch}" + (f" ({age})" if age else ""))
+    lines.append(f"- Conversion state: {summary['conversion_status'] or 'none'}")
+    lines.append(f"- Relationship stage: {stage}")
+
+    # A few recent, non-private timeline summaries for texture.
+    recent = [
+        it for it in build_timeline(prospect, interactions)
+        if it["occurred_at"] is not None
+        and not it["metadata"].get("private")
+        and (it["summary"] or "").strip()
+    ]
+    if recent:
+        lines.append("- Recent touches:")
+        for it in recent[-max_recent:]:
+            lines.append(f"    · {(it['summary'] or '').strip()[:120]}")
+    return "\n".join(lines)
+
+
 # ── DB-aware helpers (Milestone 3) ───────────────────────────────────────
 # These touch the database; the pure functions above do not. Kept here so the
 # whole relationship read/write surface lives in one module.

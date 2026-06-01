@@ -283,7 +283,8 @@ def _get_voice_examples(event, voice_examples_raw: str | None = None) -> list[st
 
 
 def _compose_user_message(prospect, event, host_bio, framing,
-                         voice_examples: list[str] | None = None) -> str:
+                         voice_examples: list[str] | None = None,
+                         relationship_ctx: str | None = None) -> str:
     """Pack everything the model needs to ground its output. Only facts we
     actually have go in : if a field is empty we omit it so Claude doesn't
     feel obligated to mention 'unknown'. Peer names are deliberately NOT
@@ -336,12 +337,19 @@ def _compose_user_message(prospect, event, host_bio, framing,
                   "current detail from here in the note — this is what makes it "
                   "land instead of reading generic):", activity]
 
+    # Prior relationship history (compact, outbound-safe : never carries the
+    # operator-only private_note). Background grounding, not to be quoted.
+    ctx = (relationship_ctx or "").strip()
+    if ctx:
+        parts += ["", ctx]
+
     parts += ["", "Write the JSON now."]
     return "\n".join(parts)
 
 
 def _compose_via_claude(prospect, event, host_bio, framing,
-                       voice_examples_raw: str | None = None) -> tuple[str, str] | None:
+                       voice_examples_raw: str | None = None,
+                       relationship_ctx: str | None = None) -> tuple[str, str] | None:
     """One Haiku call. Returns (note, message) or None on any failure
     (network, parse, missing fields). Caller falls back to the template."""
     if not (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
@@ -361,7 +369,8 @@ def _compose_via_claude(prospect, event, host_bio, framing,
                 {"role": "user",
                  "content": _compose_user_message(prospect, event,
                                                   host_bio, framing,
-                                                  voice_examples=_get_voice_examples(event, voice_examples_raw))},
+                                                  voice_examples=_get_voice_examples(event, voice_examples_raw),
+                                                  relationship_ctx=relationship_ctx)},
                 # Prefill with "{" so Haiku stays in JSON mode.
                 {"role": "assistant", "content": "{"},
             ],
@@ -420,6 +429,7 @@ def compose(
     peers: list[str] | None = None,
     host_bio: str | None = None,
     voice_examples_raw: str | None = None,
+    relationship_ctx: str | None = None,
 ) -> Message:
     """Build the connection note + post-accept DM for a prospect.
 
@@ -459,7 +469,8 @@ def compose(
         return _template()
 
     llm = _compose_via_claude(prospect, event, host_bio, framing,
-                              voice_examples_raw=voice_examples_raw)
+                              voice_examples_raw=voice_examples_raw,
+                              relationship_ctx=relationship_ctx)
     if llm is not None:
         note, message = llm
         # Hard-cap the note even if the model went over : LinkedIn rejects >300.

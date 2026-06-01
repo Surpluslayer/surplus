@@ -281,8 +281,13 @@ def scan_capture(
 
     # ev.kind == "in_person", so compose() takes the warm "we just met" branch.
     # p.note was just persisted, so the draft is composed FROM the fun fact :
-    # re-scanning with an updated note re-personalizes both halves.
-    draft = compose(p, ev)
+    # re-scanning with an updated note re-personalizes both halves. On a re-scan
+    # of someone with prior history, ground the draft in that history too (None
+    # on a first capture, so the common path is unchanged). Outbound-safe : the
+    # context block never carries the operator-only private_note.
+    rel_ctx = relationships.relationship_context(
+        p, relationships.fetch_interactions(db, p))
+    draft = compose(p, ev, relationship_ctx=rel_ctx)
     return {
         "prospect": _capture_row(p),
         "resolve_failed": resolve_failed,
