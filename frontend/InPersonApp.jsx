@@ -676,104 +676,106 @@ function SchedulingSetup({ user, onDone }) {
   );
 }
 
+// Intent presets. The chip VALUE is stored on the capture (contact_type) and the
+// LABEL is the intent string the draft engine steers on (Sales / Networking /
+// Hiring / Vibes). "Other" reveals a freeform box whose text IS the intent.
+const INTENTS = [["sales", "Sales"], ["networking", "Networking"],
+                 ["hiring", "Hiring"], ["vibes", "Vibes"], ["other", "Other"]];
+
+function initialsOf(name) {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "?";
+  return ((parts[0][0] || "") + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
+}
+
 function ScanResult({ event, result, user, onDone, onCancel, canSend }) {
   const p = result.prospect || {};
-  // Default the next step to the user's saved booking link (set once up front),
-  // so "book a time" is pre-filled without retyping. Per-capture editable.
-  const defaultStep = (p.next_step
-    || (user?.calendly_url ? `book a time: ${user.calendly_url}` : "")) || "";
-  const [draftNote, setDraftNote] = useState(result.draft_note || "");
-  const [draftMsg, setDraftMsg] = useState(result.draft_message || "");
-  const [note, setNote] = useState(p.note || "");               // fun fact
-  const [privateNote, setPrivateNote] = useState(p.private_note || "");
-  const [contactType, setContactType] = useState(p.contact_type || "");
-  const [nextStep, setNextStep] = useState(defaultStep);
-  const [busy, setBusy] = useState("");      // "" | "send" | "save" | "personalize" | "nonote"
+  const headline = [p.role, p.company].filter(Boolean).join(" · ");
+  const knownIntent = INTENTS.some(([v]) => v === p.contact_type) ? p.contact_type : "";
+
+  const [intent, setIntent] = useState(knownIntent);   // chip value, "" = none
+  const [otherText, setOtherText] = useState("");        // freeform when intent === "other"
+  const [context, setContext] = useState(p.note || ""); // "what stuck"
+  const [typing, setTyping] = useState(!!(p.note || "")); // reveal the type-it field
+  const [draftNote, setDraftNote] = useState("");
+  const [draftMsg, setDraftMsg] = useState("");
+  const [showPreview, setShowPreview] = useState(false);
+  const [drafting, setDrafting] = useState(false);
+  const [busy, setBusy] = useState("");   // "" | "send" | "save" | "nonote"
   const [err, setErr] = useState("");
-  // The draft on screen was composed BEFORE the fun fact was typed. Track
-  // whether the saved fun fact still matches what produced the current draft.
-  const [draftFromNote, setDraftFromNote] = useState(p.note || "");
-  const [draftFromStep, setDraftFromStep] = useState(p.next_step || "");
-  // Once the operator hand-edits the draft, stop auto-recomposing so we never
-  // clobber their wording. They can still personalize manually.
-  const [draftEdited, setDraftEdited] = useState(false);
-  // Capture stays minimal for mobile : the optional extras (note, private memo,
-  // first message, contact type, next step) all hide behind a disclosure.
-  const [showMore, setShowMore] = useState(false);
-  // Re-compose when EITHER the fun fact or the next step moved the draft out of
-  // sync : both feed the composed copy.
-  const stale = (note || "").trim() !== (draftFromNote || "").trim()
-             || (nextStep || "").trim() !== (draftFromStep || "").trim();
 
-  // Persist the fun fact + private note onto the capture and RE-COMPOSE the
-  // draft from the just-saved fun fact. This is the fix for "the message won't
-  // personalize" : the draft is only as personal as the note it was built from,
-  // so saving the note has to refresh the draft.
-  const repersonalize = useCallback(async () => {
-    setErr(""); setBusy("personalize");
+  // Dictation feeds the same "what stuck" field. Appends finalized phrases.
+  const stt = useSpeechToText((t) => { setTyping(true); setContext((c) => (c ? `${c} ${t}` : t)); });
+
+  // The intent string the engine steers on : the freeform text for "Other",
+  // else the preset label. Defaults to Networking when nothing's picked.
+  const effectiveIntent = intent === "other"
+    ? (otherText.trim() || "Other")
+    : (INTENTS.find(([v]) => v === intent)?.[1] || "Networking");
+
+  // Key identifying what produced the current draft, so we know when it's stale.
+  const draftKeyRef = useRef(null);
+  const curKey = () => JSON.stringify([effectiveIntent, context.trim()]);
+  const isStale = () => draftKeyRef.current !== curKey();
+
+  const genDraft = async () => {
+    setDrafting(true); setErr("");
     try {
-      const r = await api.inpersonScan({
-        event_id: event.event_id, linkedin_url: p.linkedin_url,
-        source: p.source || "scan", note, private_note: privateNote,
-        contact_type: contactType || undefined, next_step: nextStep || undefined,
+      const d = await api.draftConnect({
+        contact: { name: p.name || "", headline },
+        intent: effectiveIntent, context,
       });
-      setDraftNote(r.draft_note || "");
-      setDraftMsg(r.draft_message || "");
-      setDraftFromNote(note || "");
-      setDraftFromStep(nextStep || "");
-      setDraftEdited(false);
-    } catch (e) { setErr(e.message || "Couldn’t personalize"); }
-    finally { setBusy(""); }
-  }, [event.event_id, p.linkedin_url, p.source, note, privateNote,
-      contactType, nextStep]);
+      setDraftNote(d.connection_note || "");
+      setDraftMsg(d.first_message || "");
+      draftKeyRef.current = curKey();
+      return d;
+    } catch (e) { setErr(e.message || "Couldn’t draft"); throw e; }
+    finally { setDrafting(false); }
+  };
 
-  // Quick + frictionless : auto-personalize ~0.7s after the fun fact stops
-  // changing, so the operator never has to tap a button. We only do this while
-  // the draft is untouched (draftEdited=false) so hand-edits are never lost, and
-  // only when the note actually moved the draft out of sync (stale).
-  useEffect(() => {
-    if (draftEdited || busy || !stale) return;
-    const t = setTimeout(() => { repersonalize(); }, 700);
-    return () => clearTimeout(t);
-  }, [note, stale, draftEdited, busy, repersonalize]);
+  const togglePreview = () => {
+    const next = !showPreview;
+    setShowPreview(next);
+    if (next && (isStale() || !draftMsg)) genDraft().catch(() => {});
+  };
 
-  // Lightweight persist (fun fact + private note) without forcing a recompose,
-  // for Save/Send when the operator already edited the draft by hand.
-  const persistNotes = async () => {
-    if ((note || "") === (p.note || "") &&
-        (privateNote || "") === (p.private_note || "") &&
-        (contactType || "") === (p.contact_type || "") &&
-        (nextStep || "") === (p.next_step || "")) return;
+  // Persist "what stuck" (note) + the chosen intent (contact_type) onto the
+  // capture. Idempotent upsert; skip when nothing changed.
+  const persist = async () => {
+    if ((context || "") === (p.note || "") && (intent || "") === (p.contact_type || "")) return;
     await api.inpersonScan({
       event_id: event.event_id, linkedin_url: p.linkedin_url,
-      source: p.source || "scan", note, private_note: privateNote,
-      contact_type: contactType || undefined, next_step: nextStep || undefined,
+      source: p.source || "scan", note: context, contact_type: intent || undefined,
     });
   };
-  const stashDraft = () => {
+  const stashDraft = (note, msg) => {
     try {
       sessionStorage.setItem(`ip_draft_${p.prospect_id}`,
-        JSON.stringify({ draftNote, draftMsg }));
+        JSON.stringify({ draftNote: note, draftMsg: msg }));
     } catch {}
   };
 
   const save = async () => {
     setErr(""); setBusy("save");
-    try { await persistNotes(); stashDraft(); onDone(); }
+    try { await persist(); stashDraft(draftNote, draftMsg); onDone(); }
     catch (e) { setErr(e.message || "Save failed"); setBusy(""); }
   };
-  // noNote=true -> send a BARE invite (no connection note). The personalized
-  // DM still fires automatically once they accept.
-  const send = async (noNote = false) => {
+
+  // Connect. We need a draft : if the operator never opened the preview (or it's
+  // stale), generate it on the fly so the note + first message reflect their
+  // intent. noNote sends a bare invite; the first message still fires on accept.
+  const connect = async (noNote = false) => {
     setErr(""); setBusy(noNote ? "nonote" : "send");
     try {
-      await persistNotes();
-      const res = await api.inpersonSend(p.prospect_id,
-        noNote ? { no_note: true, message: draftMsg }
-               : { note: draftNote, message: draftMsg });
-      if (!res.dry_run && res.state) {
-        notifyDevice(`${p.name}: ${outreachStateLabel(res.state)}`);
+      await persist();
+      let note = draftNote, msg = draftMsg;
+      if (isStale() || !msg) {
+        const d = await genDraft();
+        note = d.connection_note || ""; msg = d.first_message || "";
       }
+      const res = await api.inpersonSend(p.prospect_id,
+        noNote ? { no_note: true, message: msg } : { note, message: msg });
+      if (!res.dry_run && res.state) notifyDevice(`${p.name}: ${outreachStateLabel(res.state)}`);
       onDone();
     } catch (e) { setErr(e.message || "Send failed"); setBusy(""); }
   };
@@ -782,123 +784,102 @@ function ScanResult({ event, result, user, onDone, onCancel, canSend }) {
     <div className="ip-screen ip-result">
       <button className="ip-back" onClick={onCancel}><ArrowLeft size={18} /> Back</button>
 
-      <div className="ip-person">
-        <div className="ip-person-name">{p.name || "Unknown"}</div>
-        <div className="ip-person-sub">
-          {[p.role, p.company].filter(Boolean).join(" · ") || p.linkedin_url}
+      <div className="ip-person ip-person-row">
+        <div className="ip-avatar">{initialsOf(p.name)}</div>
+        <div className="ip-person-id">
+          <div className="ip-person-name">{p.name || "Unknown"}</div>
+          <div className="ip-person-sub">{headline || p.linkedin_url}</div>
         </div>
-        {result.resolve_failed && (
-          <div className="ip-warn"><AlertCircle size={13} /> Couldn’t resolve on
-            LinkedIn — saved anyway, retry from People.</div>
-        )}
       </div>
+      {result.resolve_failed && (
+        <div className="ip-warn"><AlertCircle size={13} /> Couldn’t resolve on
+          LinkedIn — saved anyway, retry from People.</div>
+      )}
 
-      {/* Fun fact FIRST : it drives the draft, so it's the thing to fill in.
-          The draft auto-updates as you type/dictate : no button to tap. */}
-      <label className="ip-lbl">What you talked about
-        <span className="ip-dim"> · personalizes the message</span></label>
-      <div className="ip-microw">
-        <input className="ip-input" placeholder="e.g. from Ottawa · loves bagels · rock climbing"
-          value={note} onChange={(e) => setNote(e.target.value)} />
-        <MicButton value={note} onChange={setNote} title="Dictate the fun fact" />
+      {/* Why connect? : intent is the strongest lever on the draft. */}
+      <label className="ip-lbl">Why connect?</label>
+      <div className="ip-chiprow">
+        {INTENTS.map(([v, lbl]) => (
+          <button key={v} type="button"
+                  className={`ip-chip${intent === v ? " on" : ""}`}
+                  onClick={() => setIntent(intent === v ? "" : v)}>
+            {lbl}
+          </button>
+        ))}
       </div>
-      {busy === "personalize"
-        ? <div className="ip-dim ip-microw-hint"><Loader2 className="spin" size={13} /> Personalizing…</div>
-        : draftEdited
-          ? <button className="ip-linkbtn ip-microw-hint" onClick={repersonalize}
-                    disabled={!(note || "").trim()}>
-              <RefreshCw size={12} /> Re-personalize from the fun fact
-            </button>
-          : (draftFromNote || "").trim()
-            ? <div className="ip-dim ip-microw-hint"><Check size={13} /> Draft personalized</div>
-            : null}
+      {intent === "other" && (
+        <input className="ip-input" autoFocus
+          placeholder="e.g. mentor, press, advice on fundraising…"
+          value={otherText} onChange={(e) => setOtherText(e.target.value)} />
+      )}
 
-      {/* Everything below is OPTIONAL at capture : the note auto-personalizes
-          and the first message can be drafted later from People. Keep the
-          capture moment to person + fun fact + Connect. */}
-      <button className="ip-disclosure" onClick={() => setShowMore((s) => !s)}>
-        <ChevronRight size={15} className={showMore ? "rot" : ""} />
-        {showMore ? "Hide extras" : "Add more · message, type, next step"}
-      </button>
-      {showMore && (
-        <div className="ip-more">
-          {/* Who is this to you : tags the capture for later triage. */}
-          <label className="ip-lbl">This person is…</label>
-          <div className="ip-chiprow">
-            {[["sales", "Sales"], ["recruiting", "Recruiting"],
-              ["follow_up", "Follow-up"], ["other", "Other"]].map(([v, lbl]) => (
-              <button key={v} type="button"
-                      className={`ip-chip${contactType === v ? " on" : ""}`}
-                      onClick={() => setContactType(contactType === v ? "" : v)}>
-                {lbl}
-              </button>
-            ))}
-          </div>
-
-          {/* Next step : woven into the first message. Quick presets for the
-              common call/coffee ask; the input takes a Calendly link or text. */}
-          <label className="ip-lbl">Next step
-            <span className="ip-dim"> · added to the first message</span></label>
-          <div className="ip-chiprow">
-            {["grab a coffee", "hop on a quick call", "follow up next week"].map((preset) => (
-              <button key={preset} type="button"
-                      className={`ip-chip${nextStep === preset ? " on" : ""}`}
-                      onClick={() => { setNextStep(preset); }}>
-                {preset}
-              </button>
-            ))}
-          </div>
-          <div className="ip-microw">
-            <input className="ip-input" placeholder="…or paste a Calendly link"
-              value={nextStep} onChange={(e) => setNextStep(e.target.value)} />
-            <MicButton value={nextStep} onChange={setNextStep} title="Dictate the next step" />
-          </div>
-
-          <label className="ip-lbl">Connection note
-            <span className="ip-dim"> · optional, ≤300</span></label>
-          <textarea className="ip-area" rows={3} maxLength={300}
-            value={draftNote}
-            onChange={(e) => { setDraftNote(e.target.value); setDraftEdited(true); }} />
-
-          <label className="ip-lbl">First message
-            <span className="ip-dim"> · sent after they accept</span></label>
-          <textarea className="ip-area" rows={5}
-            value={draftMsg}
-            onChange={(e) => { setDraftMsg(e.target.value); setDraftEdited(true); }} />
-
-          <label className="ip-lbl">Private note <span className="ip-dim">· just for you, never sent</span></label>
-          <div className="ip-microw">
-            <input className="ip-input" placeholder="reminder to self…"
-              value={privateNote} onChange={(e) => setPrivateNote(e.target.value)} />
-            <MicButton value={privateNote} onChange={setPrivateNote} title="Dictate a private note" />
-          </div>
-        </div>
+      {/* What stuck? : the talked-about detail that personalizes the draft. */}
+      <label className="ip-lbl">What stuck?</label>
+      {stt.supported && (
+        <button type="button" className={`ip-talkbtn${stt.listening ? " on" : ""}`}
+                onClick={stt.toggle}>
+          <Mic size={18} /> {stt.listening ? "Listening… tap to stop" : "Tap to talk"}
+        </button>
+      )}
+      <div className="ip-talkhint">
+        {stt.supported && !typing && (
+          <>or <button type="button" className="ip-linkbtn"
+                       onClick={() => setTyping(true)}>type it</button> · </>)}
+        <span className="ip-dim">“from Ottawa · just raised · loves climbing”</span>
+      </div>
+      {(typing || !stt.supported) && (
+        <input className="ip-input ip-stuck-input"
+          placeholder="from Ottawa · just raised · loves climbing"
+          value={context} onChange={(e) => setContext(e.target.value)} />
       )}
 
       {err && <div className="ip-err"><AlertCircle size={14} /> {err}</div>}
 
-      {/* Connect is the one obvious action. "Save for later" and the bare-invite
-          variant are secondary. The first message is drafted later in People. */}
-      <div className="ip-actions">
-        <button className="ip-btn primary lg" onClick={() => send(false)}
-                disabled={!!busy || !canSend}
-                title={canSend ? "" : "Connect LinkedIn to send"}>
-          {busy === "send" ? <Loader2 className="spin" size={18} />
-            : <><Send size={18} /> Connect on LinkedIn</>}
-        </button>
-        <div className="ip-actions-row">
-          <button className="ip-btn ghost sm" onClick={save} disabled={!!busy}>
-            {busy === "save" ? <Loader2 className="spin" size={15} />
-              : <><Bookmark size={15} /> Save for later</>}
-          </button>
-          <button className="ip-btn ghost sm" onClick={() => send(true)}
-                  disabled={!!busy || !canSend}
-                  title={canSend ? "Send a bare invite; the message goes out once accepted"
-                                : "Connect LinkedIn to send"}>
-            {busy === "nonote" ? <Loader2 className="spin" size={15} />
-              : "Connect, no note"}
-          </button>
+      <button className="ip-btn primary lg block ip-connectbtn" onClick={() => connect(false)}
+              disabled={!!busy || !canSend}
+              title={canSend ? "" : "Connect LinkedIn to send"}>
+        {busy === "send" ? <Loader2 className="spin" size={18} />
+          : <><Send size={18} /> Connect on LinkedIn</>}
+      </button>
+
+      {/* Preview note + follow-up : drafts (or re-drafts) on open, editable. */}
+      <button className="ip-btn ghost block ip-previewtoggle" onClick={togglePreview}>
+        <ChevronRight size={15} className={showPreview ? "rot" : ""} /> Preview note + follow-up
+      </button>
+      {showPreview && (
+        <div className="ip-preview">
+          {drafting ? (
+            <div className="ip-dim ip-microw-hint" style={{ padding: "10px 2px" }}>
+              <Loader2 className="spin" size={14} /> Drafting…
+            </div>
+          ) : (
+            <>
+              <label className="ip-lbl">Connection note</label>
+              <textarea className="ip-area" rows={3} maxLength={300}
+                value={draftNote} onChange={(e) => setDraftNote(e.target.value)} />
+              <label className="ip-lbl">First message
+                <span className="ip-dim"> · sent after they accept</span></label>
+              <textarea className="ip-area" rows={5}
+                value={draftMsg} onChange={(e) => setDraftMsg(e.target.value)} />
+              <button className="ip-linkbtn ip-microw-hint" onClick={() => genDraft().catch(() => {})}>
+                <RefreshCw size={12} /> Regenerate
+              </button>
+            </>
+          )}
         </div>
+      )}
+
+      <div className="ip-actions-row" style={{ marginTop: 12 }}>
+        <button className="ip-btn ghost sm" onClick={save} disabled={!!busy}>
+          {busy === "save" ? <Loader2 className="spin" size={15} />
+            : <><Bookmark size={15} /> Save for later</>}
+        </button>
+        <button className="ip-btn ghost sm" onClick={() => connect(true)}
+                disabled={!!busy || !canSend}
+                title={canSend ? "Send a bare invite; the message goes out once accepted"
+                              : "Connect LinkedIn to send"}>
+          {busy === "nonote" ? <Loader2 className="spin" size={15} /> : "Connect, no note"}
+        </button>
       </div>
       {!canSend && <div className="ip-dim ip-center">Connect LinkedIn to send now.</div>}
       <div className="ip-dim ip-center ip-laterhint">
@@ -1287,7 +1268,29 @@ const IP_CSS = `
   padding:5px 11px; font-size:12px; color:var(--ip-ink); cursor:pointer; }
 .ip-chip.on { background:var(--ip-accent); color:var(--ip-accent-ink);
   border-color:var(--ip-accent); }
-.ip-chiprow { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:4px; }
+.ip-chip { padding:7px 14px; font-size:13.5px; }
+.ip-chiprow { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:4px; }
+
+/* connect screen : avatar header, talk button, intent + preview */
+.ip-person-row { display:flex; gap:12px; align-items:center; }
+.ip-person-id { min-width:0; }
+.ip-avatar { flex-shrink:0; width:46px; height:46px; border-radius:50%;
+  background:#e7f0fb; color:var(--ip-accent); font-weight:800; font-size:15px;
+  display:flex; align-items:center; justify-content:center; letter-spacing:.02em; }
+.ip-talkbtn { width:100%; display:flex; gap:9px; align-items:center; justify-content:center;
+  padding:15px; border:1px solid var(--ip-line); border-radius:12px; background:#f1f5fb;
+  color:var(--ip-ink); font-size:15px; font-weight:600; cursor:pointer; min-height:54px; }
+.ip-talkbtn:active { transform:scale(.99); }
+.ip-talkbtn.on { background:#fdecec; border-color:#f1b4b4; color:#a01818;
+  animation:ipmicpulse 1.1s ease-in-out infinite; }
+.ip-talkhint { text-align:center; font-size:12.5px; color:var(--ip-dim); margin-top:7px; }
+.ip-stuck-input { margin-top:8px; }
+.ip-linkbtn { background:none; border:0; padding:0; color:var(--ip-accent);
+  font:inherit; cursor:pointer; text-decoration:underline; display:inline-flex;
+  gap:4px; align-items:center; }
+.ip-connectbtn { margin-top:16px; }
+.ip-previewtoggle { justify-content:center; margin-top:10px; font-weight:600; color:var(--ip-ink); }
+.ip-preview { margin-top:2px; }
 
 /* screens */
 .ip-screen { flex:1; padding:14px 14px 88px; overflow-y:auto; }

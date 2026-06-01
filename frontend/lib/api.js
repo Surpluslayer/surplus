@@ -213,4 +213,9 @@ export const api = {
   // in-person next step). Pass only the field(s) you're changing.
   updateScheduling: (body) =>
     request("/api/auth/me/scheduling", { method: "PATCH", body: JSON.stringify(body) }),
+  // Intent-steered "connect" draft : { contact, sender?, intent, context }
+  // -> { connection_note, first_message }. Sender + booking link default to the
+  // signed-in user server-side.
+  draftConnect: (body) =>
+    request("/api/draft", { method: "POST", body: JSON.stringify(body) }),
 };
