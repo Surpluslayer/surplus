@@ -190,6 +190,51 @@ def _latest_outreach(prospect: Any):
     return max(logs, key=lambda o: _as_aware(getattr(o, "ts", None)) or _FAR_FUTURE)
 
 
+# Placeholder column defaults that mean "nothing was enriched" : surfacing them
+# as real signal would be noise, so we treat them as empty.
+_ENRICHMENT_PLACEHOLDERS = {"general", "unknown", ""}
+
+
+def _enriched(val: Any) -> Optional[str]:
+    """Like _clean, but also drops the schema-default placeholders so an
+    un-enriched row reads as None rather than 'general'."""
+    s = _clean(val)
+    if s is None or s.lower() in _ENRICHMENT_PLACEHOLDERS:
+        return None
+    return s
+
+
+def _identity(prospect: Any) -> dict:
+    """Who this person IS, assembled from the scan / LinkedIn enrichment that
+    already lives on the Prospect row (headline, bio, what they work on, recent
+    activity). Every field is optional : a bare capture yields a sparse dict, not
+    a crash. The relationship layer consumes this; it never re-fetches it."""
+    return {
+        "name": _clean(getattr(prospect, "name", None)),
+        "role": _clean(getattr(prospect, "role", None)),
+        "company": _clean(getattr(prospect, "company", None)),
+        "headline": _enriched(getattr(prospect, "headline", None)),
+        "works_on": _enriched(getattr(prospect, "works_on", None)),
+        "bio": _enriched(getattr(prospect, "bio", None)),
+        "recent_activity": _enriched(getattr(prospect, "recent_activity", None)),
+    }
+
+
+def _how_we_met(prospect: Any) -> dict:
+    """The meeting context : where, when, how we captured them, and what was
+    actually talked about (the public note). This is the 'how we met' header the
+    timeline opens with — distinct from the chronological capture *item*."""
+    event = getattr(prospect, "event", None)
+    return {
+        "event_id": getattr(event, "id", None),
+        "event_title": _event_title(event),
+        "event_city": _clean(getattr(event, "city", None)),
+        "captured_at": _as_aware(getattr(prospect, "captured_at", None)),
+        "via": _clean(getattr(prospect, "source", None)),   # scan | link | text
+        "context": _clean(getattr(prospect, "note", None)),  # the fun-fact note
+    }
+
+
 def relationship_summary(prospect: Any) -> dict:
     """Deterministic, ML-free snapshot of where this relationship stands.
 
@@ -243,4 +288,7 @@ def relationship_summary(prospect: Any) -> dict:
         "source_event_id": getattr(event, "id", None),
         "source_event_title": _event_title(event),
         "has_private_note": bool(_clean(getattr(prospect, "private_note", None))),
+        # who they are (LinkedIn enrichment) + how we met (capture context).
+        "identity": _identity(prospect),
+        "how_we_met": _how_we_met(prospect),
     }

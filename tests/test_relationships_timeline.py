@@ -198,3 +198,52 @@ def test_summary_last_touch_tracks_latest_timestamped_item():
     s = rel.relationship_summary(p)
     # invite at 2 days ago is more recent than capture at 5 days ago.
     assert s["last_touch_type"] == "invite_sent"
+
+
+# ── identity ("who they are", from LinkedIn enrichment) ──────────────────
+
+def test_summary_identity_surfaces_enrichment():
+    p = _prospect(headline="Founding eng @ Acme · ex-Stripe",
+                  works_on="inference infra", bio="Builds fast LLM serving.",
+                  recent_activity="Posted about KV-cache eviction.")
+    ident = rel.relationship_summary(p)["identity"]
+    assert ident["name"] == "Maya Rodriguez"
+    assert ident["headline"] == "Founding eng @ Acme · ex-Stripe"
+    assert ident["works_on"] == "inference infra"
+    assert ident["bio"] == "Builds fast LLM serving."
+    assert ident["recent_activity"] == "Posted about KV-cache eviction."
+
+
+def test_summary_identity_drops_placeholder_defaults():
+    # works_on defaults to "general", bio/headline default to None : an
+    # un-enriched row must read as empty, not surface the placeholder.
+    p = _prospect(works_on="general", headline=None, bio=None, recent_activity=None)
+    ident = rel.relationship_summary(p)["identity"]
+    assert ident["works_on"] is None
+    assert ident["headline"] is None
+
+
+# ── how_we_met (capture context) ──────────────────────────────────────────
+
+def test_summary_how_we_met_captures_context():
+    p = _prospect(event=_event(event_name="Founders Dinner", city="SF"),
+                  source="scan", note="talked KV-cache", captured_at=_dt(3))
+    hwm = rel.relationship_summary(p)["how_we_met"]
+    assert hwm["event_title"] == "Founders Dinner"
+    assert hwm["event_city"] == "SF"
+    assert hwm["via"] == "scan"
+    assert hwm["context"] == "talked KV-cache"
+    assert hwm["captured_at"].tzinfo is not None
+
+
+def test_summary_how_we_met_handles_bare_capture():
+    bare = SimpleNamespace(id=9, name="Sam", role=None, company=None, event=None,
+                           captured_at=None, source=None, note=None,
+                           private_note=None, contact_type=None, next_step=None,
+                           connection_status="unknown", outreach=[], conversion=None,
+                           linkedin_url=None, headline=None, bio=None,
+                           recent_activity=None, works_on=None)
+    hwm = rel.relationship_summary(bare)["how_we_met"]
+    assert hwm["event_title"] is None
+    assert hwm["context"] is None
+    assert hwm["captured_at"] is None
