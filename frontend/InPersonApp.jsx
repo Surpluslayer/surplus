@@ -12,7 +12,7 @@
 //   - current_user session: api.me(); bounce to LinkedIn sign-in if unauthed
 //
 // Mounted by main.jsx when the path is /inperson (or ?surface=inperson).
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, Component } from "react";
 import jsQR from "jsqr";
 import {
   Camera, Link2, Search, Send, Bookmark, ArrowLeft, Check, Loader2,
@@ -58,9 +58,47 @@ function isGuestPath() {
   } catch { return false; }
 }
 
-// ── root ───────────────────────────────────────────────────────────────────
+// ── error boundary ──────────────────────────────────────────────────────────
+// Without this, ANY render throw blanks the whole app to a white screen with no
+// message (a classic "loads, then goes blank after picking an event"). This
+// catches it and shows the actual error + a reload, so failures are visible and
+// reportable instead of silent.
+class IpErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) {
+    console.error("[InPersonApp] render error", error, info?.componentStack);
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="ip-root">
+        <style>{IP_CSS}</style>
+        <Centered>
+          <div className="ip-empty">
+            <AlertCircle size={34} />
+            <p className="ip-empty-title">Something broke on this screen</p>
+            <p style={{ fontSize: 13, wordBreak: "break-word" }}>
+              {String(this.state.error?.message || this.state.error)}
+            </p>
+            <button className="ip-btn primary lg block"
+                    onClick={() => window.location.reload()}>Reload</button>
+          </div>
+        </Centered>
+      </div>
+    );
+  }
+}
 
 export default function InPersonApp() {
+  return (
+    <IpErrorBoundary>
+      <InPersonAppInner />
+    </IpErrorBoundary>
+  );
+}
+
+function InPersonAppInner() {
   const [user, setUser] = useState(null);          // null=loading, undefined=out
   const [authError, setAuthError] = useState(null); // {status, message} for non-401 failures
   const [event, setEvent] = useState(loadActiveEvent);
