@@ -28,3 +28,10 @@ frontend/*.code-workspace
 # matching library cache + outputs
 .cache/
 data/matches/
+
+# Triage batch scaffolding (local/Fly one-off; CSV holds applicant PII)
+batch_input.csv
+Dockerfile.batch
+Dockerfile.batch.dockerignore
+fly.batch.toml
+/tmp_results/

@@ -43,5 +43,56 @@ def extract_json(text: str) -> Optional[dict[str, Any]]:
         try:
             return json.loads(text[start : end + 1])
         except json.JSONDecodeError:
-            return None
+            pass
+    # Last resort: the object was TRUNCATED (e.g. the model hit max_tokens
+    # mid-value, leaving no closing brace). Salvage the largest valid prefix by
+    # cutting back to the last completed top-level member and closing the object.
+    if start != -1:
+        recovered = _recover_truncated_object(text[start:])
+        if recovered is not None:
+            return recovered
+    return None
+
+
+def _recover_truncated_object(s: str) -> Optional[dict[str, Any]]:
+    """Best-effort parse of a JSON object whose tail was cut off.
+
+    Walks the string tracking string-literal state and brace/bracket depth,
+    remembering each index where a top-level member completes (a comma at
+    depth 1). On failure to parse the whole thing, we cut at the last such
+    boundary and append the missing closing braces. This salvages the early,
+    high-value fields (e.g. `dimensions`) and only drops the incomplete trailing
+    field (typically verbose `notes`). Returns None if nothing parses.
+    """
+    in_str = False
+    esc = False
+    depth = 0
+    member_ends: list[int] = []   # indices just AFTER a completed depth-1 member
+    for i, ch in enumerate(s):
+        if esc:
+            esc = False
+            continue
+        if ch == "\\" and in_str:
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth == 1:
+                member_ends.append(i + 1)   # a nested obj/array member just closed
+        elif ch == "," and depth == 1:
+            member_ends.append(i)           # scalar/string member completed
+    # Try cutting at each boundary from the latest backward, closing braces.
+    for cut in reversed(member_ends):
+        candidate = s[:cut].rstrip().rstrip(",") + "}"
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
     return None

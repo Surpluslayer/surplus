@@ -62,6 +62,12 @@ def _candidate_score(cand: CompanyCandidate) -> float:
     if cand.matches_email_domain:       score += 3.0   # email domain = company website
     if cand.matches_work_experience:    score += 2.0   # LinkedIn work history
     if cand.matches_linkedin_headline:  score += 2.0   # headline mention
+    # LLM identity match : only set in the no-hard-tie ambiguous zone, where it is
+    # the strongest signal available (a reasoned read of the full descriptions).
+    # Weighted on par with a soft structural tie so it decisively breaks the
+    # website/follower noise that was picking the wrong same-named company, but
+    # selection on it alone is capped to medium confidence below.
+    if cand.matches_llm_identity:       score += 2.5
     if cand.matches_claimed_company:    score += 1.0   # name-only match (weak)
     if cand.website:                    score += 1.0
     if cand.location:                   score += 0.5
@@ -81,6 +87,9 @@ def _candidate_reason(cand: CompanyCandidate, score: float) -> str:
     if cand.matches_email_domain:      pos.append("matches applicant email domain")
     if cand.matches_work_experience:   pos.append("matches LinkedIn work experience")
     if cand.matches_linkedin_headline: pos.append("matches LinkedIn headline")
+    if cand.matches_llm_identity:
+        pos.append("LLM identity match"
+                   + (f": {cand.llm_identity_reason}" if cand.llm_identity_reason else ""))
     if not pos and cand.matches_claimed_company:
         pos.append("company-name match only")
     base = "; ".join(pos) or "no applicant-company evidence"
@@ -98,10 +107,16 @@ class SelectedCompany:
     source: str = ""
     confidence: str = "low"   # high | medium | low
     reason: str = ""
+    # What the company ACTUALLY does, from the fetched homepage / LinkedIn company
+    # description. Carried through to the scorer so company_relevance is judged on
+    # the real product, not the applicant's self-claimed industry or "AI" headline.
+    description: str = ""
+    industry: str = ""
 
     def as_dict(self) -> dict:
         return {"name": self.name, "url": self.url, "source": self.source,
-                "confidence": self.confidence, "reason": self.reason}
+                "confidence": self.confidence, "reason": self.reason,
+                "description": self.description, "industry": self.industry}
 
 
 @dataclass
@@ -228,17 +243,31 @@ def reconcile(applicant, claims: Claims, raw: RawEvidence,
             conf = "medium"
         else:
             conf = "low"
+        # A pick that rests on the LLM identity judgment (no hard/soft structural
+        # tie of its own) is a reasoned inference, not a verified link — never let
+        # it read as "high". Cap at medium so downstream treats it as corroborated-
+        # but-not-confirmed.
+        structural_tie = (selected_cand.matches_person_name
+                          or selected_cand.matches_submitted_domain
+                          or selected_cand.matches_email_domain
+                          or selected_cand.matches_work_experience
+                          or selected_cand.matches_linkedin_headline)
+        if conf == "high" and selected_cand.matches_llm_identity and not structural_tie:
+            conf = "medium"
         selected = SelectedCompany(
             name=selected_cand.name,
             url=selected_cand.website or selected_cand.linkedin_url,
             source=selected_cand.source,
             confidence=conf,
             reason=_candidate_reason(selected_cand, top_score),
+            description=(selected_cand.description or "").strip()[:600],
+            industry=(selected_cand.industry or "").strip(),
         )
 
     rejected = [
         {"name": c.name, "url": c.website or c.linkedin_url, "source": c.source,
-         "reason": _candidate_reason(c, _candidate_score(c))}
+         "reason": _candidate_reason(c, _candidate_score(c)),
+         "description": (c.description or "").strip()[:300]}
         for c in scored if c is not selected_cand
     ]
 
@@ -299,7 +328,18 @@ def reconcile(applicant, claims: Claims, raw: RawEvidence,
     elif candidates:
         review_reasons.append("company candidates found but none could be resolved")
     if not person.work_experience_found and person.found:
-        review_reasons.append("LinkedIn work experience missing")
+        # A substantial profile (headline + followers) that came back with an
+        # empty work-experience array is almost always a LinkedIn soft-throttle
+        # (the experience section is stripped under load), NOT a person with no
+        # track record. Forcing manual_review here was tanking corroborated
+        # founders like Harpriya (a16z-speedrun headline, 2k followers, work=[]).
+        # Downgrade to a warning so the scorer treats it as an unverified data
+        # gap (lower confidence) rather than disconfirming legitimacy.
+        if getattr(person, "work_unreliable", False):
+            warnings.append("linkedin work experience missing but profile is "
+                            "substantial → likely throttle-stripped, not absent")
+        else:
+            review_reasons.append("LinkedIn work experience missing")
     # Founder claim with no external support.
     claims_founder = "found" in (claims.claimed_role or "").lower() \
         or "founder" in (person.headline or "").lower()

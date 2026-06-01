@@ -28,7 +28,7 @@ from .recommend import Thresholds
 
 
 RUBRIC_MODEL = os.environ.get("TRIAGE_RUBRIC_MODEL", "claude-sonnet-4-6")
-RUBRIC_MAX_TOKENS = 2500
+RUBRIC_MAX_TOKENS = int(os.environ.get("TRIAGE_RUBRIC_MAX_TOKENS", "4500"))
 RUBRIC_CACHE_TTL_S = 60 * 60 * 6  # 6h : refresh if the operator edits config
 # Sonnet rubric synth routinely takes 20-40s on Railway (TCP/TLS cold start
 # + model warmup). 30s hardcode was causing ~50% timeout rate in prod.

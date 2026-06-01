@@ -214,6 +214,64 @@ def fit_from_dimensions(dimension_scores: dict[str, int],
     return max(0, min(100, round(raw / total_weight)))
 
 
+def apply_archetype_priority(
+    fit_score: int,
+    archetype: str,
+    *,
+    founder_corroborated: bool = False,
+    policy: Optional[dict] = None,
+) -> tuple[int, list[str]]:
+    """Deterministic, DATA-DRIVEN fit nudge based on the applicant's archetype
+    and the event's priority policy (carried on triage_config). Event-agnostic:
+    with no policy this is a pure no-op, so the generic engine is unchanged.
+
+    Why this exists: prose in the rubric ('prioritize founders, down-weight
+    investors') is soft guidance the LLM can ignore — a well-credentialed VC at a
+    famous fund can still out-score a scrappy founder on raw dimensions. This makes
+    the operator's priority STRUCTURAL: a deterministic post-adjustment the model
+    can't wash out.
+
+    policy shape (all keys optional)::
+
+        {
+          "boost": {"founder": 10},   # +N fit for these archetypes
+          "cap":   {"investor": 70},  # ceiling fit for these archetypes
+          "require_corroboration_for_boost": true  # founders need a real
+                                                    # company tie to earn the boost
+        }
+
+    The founder boost is gated on `founder_corroborated` (e.g. a self-described
+    founder whose email domain matches their claimed company) so we reward real
+    builders, never an unverified 'I'm a founder' claim. Returns (adjusted_fit,
+    reasons) where reasons explains every adjustment for the audit trail.
+    """
+    if not policy:
+        return fit_score, []
+    fit = fit_score
+    reasons: list[str] = []
+    arch = (archetype or "").strip().lower()
+    boost = policy.get("boost") or {}
+    cap = policy.get("cap") or {}
+    require_corrob = policy.get("require_corroboration_for_boost", True)
+
+    if arch in boost:
+        gated_out = (arch == "founder" and require_corrob and not founder_corroborated)
+        if gated_out:
+            reasons.append("founder boost withheld (no corroborating company/domain)")
+        else:
+            amt = int(boost[arch])
+            fit = min(100, fit + amt)
+            reasons.append(f"{arch} priority boost +{amt}")
+
+    if arch in cap:
+        ceil = int(cap[arch])
+        if fit > ceil:
+            reasons.append(f"{arch} fit capped to {ceil} (deprioritized vs founders)")
+            fit = ceil
+
+    return max(0, min(100, fit)), reasons
+
+
 def recommendation_from(fit_score: int, confidence_score: int,
                         thresholds: Optional[Thresholds] = None) -> str:
     """Bucket (fit, confidence) into accept | maybe | reject | needs_review."""

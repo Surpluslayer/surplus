@@ -65,6 +65,8 @@ You'll receive:
       * the applicant's own claims (role, company, project, reason for attending)
       * LinkedIn person evidence (headline, work history, name-match)
       * a SELECTED company (the reconciler's best guess) with a confidence level
+        AND a description of what that company actually does (from its website /
+        company profile) — use this to judge relevance, not the headline
       * REJECTED company candidates — alternatives that were considered and why
         they lost. These exist because company-name collisions are common.
       * contradictions, missing data, warnings, and a manual-review flag
@@ -96,6 +98,16 @@ GROUND RULES
   - Person-company evidence beats event-theme convenience. A company that merely
     looks on-theme for the event, but has no tie to THIS applicant, is NOT
     evidence the applicant belongs.
+  - JUDGE company_relevance / sponsor_fit FROM WHAT THE COMPANY ACTUALLY DOES,
+    not from the applicant's headline or self-claimed industry. When the packet
+    gives a "WHAT THE COMPANY ACTUALLY DOES" description, that product reality is
+    authoritative. A headline that says "AI" over a company whose description is a
+    marketplace, agency, dev-shop, consultancy, school, ecommerce, real-estate,
+    staffing, or other non-AI/non-thesis business does NOT make it on-thesis —
+    score company_relevance/sponsor_fit on the description, and call out the
+    headline-vs-product mismatch in why_not_fit. Only credit a company as
+    on-thesis (e.g. AI/voice/agents for an AI event) when its actual product
+    supports it; "AI" appearing only in the headline or self-claim is not enough.
   - If manual_review_required is true OR identity/company confidence is low OR
     there are contradictions, your confidence MUST be ≤ 55.
   - If SELF_TITLED_PROFILE is flagged, the LinkedIn evidence confirms identity
@@ -103,6 +115,14 @@ GROUND RULES
     let LinkedIn alone lift sponsor_fit/company_relevance above 60 unless the
     application answers or a corroborating website independently substantiate the
     company. Your confidence MUST be ≤ 60.
+  - If WORK_HISTORY_UNRELIABLE is flagged, the empty work-experience is a DATA
+    GAP from a LinkedIn throttle, NOT evidence of an empty career. Do NOT cap
+    seriousness_legitimacy for the missing history and do NOT treat it like
+    SELF_TITLED. Instead, lower CONFIDENCE (the track record is unverified) while
+    still crediting whatever DOES corroborate the applicant — headline, email
+    domain matching the company site, follower count, application answers. A
+    founder corroborated those ways can still be a confident fit; just keep
+    confidence modest (≤ 70) to reflect the unverified work history.
   - Apply the rubric's hard_gates literally. If the applicant violates a
     hard gate, cap sponsor_fit + event_fit at 30.
   - Apply the rubric's anti-fit guidance literally. If the applicant matches
@@ -202,6 +222,16 @@ def _render_packet(packet) -> str:
                      "(job title == company name) and there is no About text. This "
                      "profile confirms the person's NAME but not a verified track "
                      "record — treat as weak legitimacy evidence.")
+    if pe.get("linkedin_work_unreliable"):
+        lines.append("  - WORK_HISTORY_UNRELIABLE: the profile is clearly "
+                     "substantial (real headline + follower count) but its "
+                     "work-experience section came back EMPTY — the signature of "
+                     "a LinkedIn soft-throttle that strips the experience list, "
+                     "NOT a person with no track record. Treat the missing work "
+                     "history as an UNVERIFIED DATA GAP: lower your CONFIDENCE, but "
+                     "do NOT count it against the applicant's legitimacy. A founder "
+                     "corroborated by headline/email-domain/company-site can still "
+                     "be a confident fit despite this gap.")
 
     lines.append("")
     lines.append(f"identity_confidence: {d.get('identity_confidence')} | "
@@ -212,6 +242,12 @@ def _render_packet(packet) -> str:
     if sel:
         lines.append(f"SELECTED company: {sel['name']} ({sel.get('url') or 'no url'}) "
                      f"[{sel['confidence']} confidence] — {sel['reason']}")
+        if sel.get("industry"):
+            lines.append(f"  - industry (from company profile): {sel['industry']}")
+        if sel.get("description"):
+            lines.append(
+                f"  - WHAT THE COMPANY ACTUALLY DOES (from its website/company "
+                f"profile, NOT the applicant's headline): {sel['description']}")
     else:
         lines.append("SELECTED company: NONE could be resolved from evidence.")
 
@@ -220,8 +256,10 @@ def _render_packet(packet) -> str:
         lines.append("REJECTED company candidates (consider whether one of these "
                      "actually fits the applicant better):")
         for r in rejected[:4]:
+            desc = (r.get("description") or "").strip()
+            tail = f" — does: {desc}" if desc else ""
             lines.append(f"  - {r['name']} ({r.get('url') or 'no url'}) "
-                         f"[{r.get('source')}] — {r['reason']}")
+                         f"[{r.get('source')}] — {r['reason']}{tail}")
 
     if d.get("contradictions"):
         lines.append("")
@@ -332,9 +370,33 @@ def score_applicant(applicant: models.Applicant, rubric: Rubric,
     return _coerce(parsed, full)
 
 
+def _founder_domain_corroborated(applicant, packet) -> bool:
+    """True when the applicant's email domain matches their claimed company —
+    the operator's strongest 'real founder' signal ('they say they founded X and
+    have an @X email'). Free-mail domains (gmail etc.) never corroborate. Checks
+    the submitted website and the reconciler's selected company URL. Independent
+    of LinkedIn, so it survives a throttled/empty work-history pull.
+    """
+    from .enrich import _email_domain, _domain, _domains_match
+    email_dom = _email_domain(getattr(applicant, "email", "") or "")
+    if not email_dom:
+        return False
+    company_domains: list[str] = []
+    site = getattr(applicant, "website", "") or ""
+    if site:
+        company_domains.append(_domain(site))
+    if packet is not None and not packet.is_empty():
+        sel = (packet.as_dict().get("selected_company") or {})
+        if sel.get("url"):
+            company_domains.append(_domain(sel["url"]))
+    return any(cd and _domains_match(email_dom, cd) for cd in company_domains)
+
+
 def persist_evaluation(db, applicant: models.Applicant, event_id: int,
                       score: ScoreResult, rubric: Rubric, *,
                       verify: Optional[VerifyResult] = None,
+                      founder_corroborated: bool = False,
+                      priority_policy: Optional[dict] = None,
                       ) -> models.ApplicantEvaluation:
     """Write (or update) the ApplicantEvaluation row for this applicant.
 
@@ -344,6 +406,10 @@ def persist_evaluation(db, applicant: models.Applicant, event_id: int,
     lower confidence, block an accept, force review — never upgrade it. When
     `verify` is None (clean applicant, audit skipped) consolidate() is exactly
     finalize() wrapped, so behaviour is unchanged for the common case.
+
+    `founder_corroborated` / `priority_policy` make the operator's archetype
+    priority (boost founders, cap investors) a deterministic fit adjustment —
+    see recommend.apply_archetype_priority.
     """
     from .consolidate import consolidate  # lazy : breaks import cycle
 
@@ -351,7 +417,10 @@ def persist_evaluation(db, applicant: models.Applicant, event_id: int,
                         llm_confidence=score.confidence,
                         weights=rubric.weights(),
                         thresholds=rubric.thresholds,
-                        verify=verify)
+                        verify=verify,
+                        archetype=score.archetype,
+                        founder_corroborated=founder_corroborated,
+                        priority_policy=priority_policy)
 
     existing = applicant.evaluation
     if existing is None:
@@ -402,6 +471,7 @@ async def evaluate_all(db, event: models.Event, rubric: Rubric, *,
     endpoint) can render progress.
     """
     from .answers import parse_claims
+    from .disambiguate import disambiguate_company
     from .enrich import enrich_applicant, RawEvidence
     from .reconcile import reconcile
     from .verify_score import should_verify, verify_score
@@ -411,11 +481,20 @@ async def evaluate_all(db, event: models.Event, rubric: Rubric, *,
         return {"total": 0, "scored": 0, "failed": 0}
 
     triage_config = _safe_json_load(getattr(event, "triage_config", None))
+    # Operator's archetype-priority policy (boost founders / cap investors), made
+    # structural via consolidate(). Absent → no-op, generic scoring unchanged.
+    _priority_policy = (triage_config.get("archetype_priority")
+                        if isinstance(triage_config, dict) else None)
     scored = 0
     failed = 0
     sem = asyncio.Semaphore(SCORE_CONCURRENCY)
+    # Family A — second-pass recovery. Applicants whose work-experience came back
+    # throttle-stripped (work_unreliable) on a FRESH fetch are collected here; we
+    # never cache that stripped pull, and after the main pass cools down we re-fetch
+    # them at low concurrency to try to recover the real history.
+    deferred: list[models.Applicant] = []
 
-    async def _one(a: models.Applicant):
+    async def _one(a: models.Applicant, *, is_retry: bool = False):
         nonlocal scored, failed
         async with sem:
             try:
@@ -424,15 +503,34 @@ async def evaluate_all(db, event: models.Event, rubric: Rubric, *,
                 # only hit the Unipile/Exa network on first eval or a forced refresh.
                 raw = None
                 persisted = (getattr(a, "enrichment_raw", "") or "").strip()
-                if persisted and not force_reenrich:
+                if persisted and not force_reenrich and not is_retry:
                     try:
                         raw = RawEvidence.from_dict(json.loads(persisted))
                     except (json.JSONDecodeError, TypeError, ValueError):
                         raw = None  # corrupt cache → fall through to re-enrich
+                fresh_fetch = raw is None
                 if raw is None:
                     raw = await enrich_applicant(a, claims)
-                    if not raw.is_empty():
+                    # Do NOT cache a throttle-stripped pull (work_unreliable): it
+                    # would freeze the empty work-history forever, so every future
+                    # run reconciles the SAME gutted evidence. Leave enrichment_raw
+                    # unset so the second pass (and later runs) re-fetch and can
+                    # recover the real history once the account cools down.
+                    if not raw.is_empty() and not raw.person.work_unreliable:
                         a.enrichment_raw = json.dumps(raw.as_dict())
+                    # Queue a freshly-stripped applicant for one cooled-down retry.
+                    if (fresh_fetch and not is_retry
+                            and raw.person.work_unreliable):
+                        deferred.append(a)
+                # Company disambiguation : when >=2 same-named candidates and no
+                # hard structural tie resolves the winner (the Kyndred case), ask
+                # Claude which company is actually THIS person's, identity-only.
+                # Runs on fresh enrichment only — a cached pull already carries any
+                # prior llm_identity flag, so re-runs stay free + deterministic.
+                if fresh_fetch and not raw.is_empty():
+                    await asyncio.to_thread(
+                        disambiguate_company, claims, raw.person,
+                        raw.company_candidates)
                 packet = reconcile(a, claims, raw, triage_config)
                 if not packet.is_empty():
                     a.enrichment_data = json.dumps(packet.as_dict())
@@ -440,13 +538,17 @@ async def evaluate_all(db, event: models.Event, rubric: Rubric, *,
                     score_applicant, a, rubric, packet,
                 )
                 _write_debug_artifact(a, claims, raw, packet, result)
+                # On the second pass these applicants were already counted in the
+                # first pass (the row is re-derived/overwritten, not added), so
+                # only move the scored/failed tallies on the initial pass.
                 if result.error:
-                    failed += 1
+                    if not is_retry:
+                        failed += 1
                     # Surface the per-applicant error in logs : without this a
                     # silent "(scoring failed)" evaluation row gives no hint
                     # whether it was a network error, a JSON parse, or a key.
                     print(f"  [triage.score] {a.id} ({a.name}): {result.error}")
-                else:
+                elif not is_retry:
                     scored += 1
                 # Judge B (evidence auditor) — gated to risky applicants only so
                 # the expensive Sonnet call is bounded. We skip it on a scoring
@@ -470,13 +572,40 @@ async def evaluate_all(db, event: models.Event, rubric: Rubric, *,
                               f"auditing — {', '.join(audit_reasons)}")
                         verify = await asyncio.to_thread(
                             verify_score, a, packet, result)
-                persist_evaluation(db, a, event.id, result, rubric, verify=verify)
+                persist_evaluation(
+                    db, a, event.id, result, rubric, verify=verify,
+                    founder_corroborated=_founder_domain_corroborated(a, packet),
+                    priority_policy=_priority_policy)
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 print(f"  [triage.score] {a.id} ({a.name}): "
                       f"{type(exc).__name__}: {exc}")
 
     await asyncio.gather(*[_one(a) for a in applicants], return_exceptions=True)
+
+    # ── Family A : second-pass recovery for throttle-stripped applicants ──────
+    # During the main pass these were scored from a soft-throttled 200 (empty
+    # work-experience). We didn't cache that pull, so here we let the account pool
+    # cool down, then re-enrich them at LOW concurrency (gentler on the account)
+    # and re-score. If the history comes back, the cache now holds the good pull
+    # and the verdict is grounded in a real track record; if it's still stripped,
+    # nothing is cached and the (already conservative) first-pass score stands.
+    if deferred and not force_reenrich:
+        retry_targets = list({id(a): a for a in deferred}.values())
+        cooldown = float(os.environ.get("TRIAGE_RETRY_COOLDOWN_SECS", "20"))
+        print(f"  [triage.score] second pass: {len(retry_targets)} throttle-stripped "
+              f"applicant(s), cooling down {cooldown:.0f}s before re-enrich")
+        await asyncio.sleep(cooldown)
+        retry_sem = asyncio.Semaphore(
+            int(os.environ.get("TRIAGE_RETRY_CONCURRENCY", "1")))
+
+        async def _retry_one(a: models.Applicant):
+            async with retry_sem:
+                await _one(a, is_retry=True)
+
+        await asyncio.gather(*[_retry_one(a) for a in retry_targets],
+                             return_exceptions=True)
+
     db.commit()
     return {"total": len(applicants), "scored": scored, "failed": failed}
 

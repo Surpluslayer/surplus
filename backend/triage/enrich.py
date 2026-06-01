@@ -38,6 +38,7 @@ import itertools
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
@@ -92,6 +93,75 @@ def _people_search_account_id() -> str | None:
     the search subscription); falls back to the round-robin pool if unset."""
     pinned = (os.environ.get("UNIPILE_PEOPLE_SEARCH_ACCOUNT_ID") or "").strip()
     return pinned or _next_account_id()
+
+
+# ── Per-account rate budget ────────────────────────────────────────────────
+# The single biggest cause of stripped-200s (empty work-experience on a 200) is
+# hammering ONE LinkedIn account too fast: under sustained load LinkedIn quietly
+# drops the expensive experience section. The fix is to PACE each account — never
+# fire two profile fetches on the same account_id within UNIPILE_MIN_FETCH_INTERVAL
+# seconds. This is keyed BY ACCOUNT, so adding more accounts to the pool linearly
+# raises throughput (each gets its own budget) instead of just throttling N
+# accounts at once. Thread-safe because fetches run under asyncio.to_thread.
+_RATE_LOCK = threading.Lock()
+_ACCOUNT_NEXT_OK: dict[str, float] = {}   # account_id -> earliest monotonic ts
+
+
+def _account_min_interval() -> float:
+    try:
+        return max(0.0, float(os.environ.get("UNIPILE_MIN_FETCH_INTERVAL", "3.0")))
+    except (TypeError, ValueError):
+        return 3.0
+
+
+def _pace_account(account_id: str | None) -> None:
+    """Block until this account is allowed to fetch again, then reserve its next
+    slot. Reserving INSIDE the lock (before sleeping outside it) means concurrent
+    threads queue deterministically rather than all racing the same instant."""
+    if not account_id:
+        return
+    interval = _account_min_interval()
+    if interval <= 0:
+        return
+    with _RATE_LOCK:
+        now = time.monotonic()
+        earliest = _ACCOUNT_NEXT_OK.get(account_id, 0.0)
+        start = max(now, earliest)
+        _ACCOUNT_NEXT_OK[account_id] = start + interval
+    wait = start - time.monotonic()
+    if wait > 0:
+        time.sleep(wait)
+
+
+# ── LinkedIn URL helpers ───────────────────────────────────────────────────
+
+# Locale/path suffixes LinkedIn appends after the public identifier. A naive
+# "last path segment" parse turns .../in/yahal/en into the slug 'en' (→ 422/404).
+_LINKEDIN_URL_SUFFIXES: frozenset[str] = frozenset({
+    "en", "de", "fr", "es", "it", "pt", "nl", "zh", "ja", "ko", "ru",
+    "detail", "overlay", "recent-activity", "details",
+})
+
+
+def _linkedin_slug(linkedin_url: str) -> str:
+    """Extract the public-identifier slug from a LinkedIn profile URL.
+
+    Robust to trailing slashes, query strings, and locale/path suffixes
+    (.../in/yahal/en → 'yahal', not 'en'). Prefers the segment immediately
+    after '/in/'; falls back to the last meaningful segment otherwise."""
+    raw = (linkedin_url or "").split("?")[0].split("#")[0].rstrip("/")
+    if not raw:
+        return ""
+    segments = [s for s in raw.split("/") if s]
+    if "in" in segments:
+        i = segments.index("in")
+        if i + 1 < len(segments):
+            return segments[i + 1]
+    # No '/in/' marker: walk back from the end past known locale/path suffixes.
+    for seg in reversed(segments):
+        if seg.lower() not in _LINKEDIN_URL_SUFFIXES:
+            return seg
+    return segments[-1] if segments else ""
 
 
 # ── Name helpers ──────────────────────────────────────────────────────────
@@ -216,6 +286,15 @@ class PersonEvidence:
     # "Paysfer eMart @ Paysfer eMart") and there's no About text. Such profiles
     # confirm a name, not a track record — the scorer treats them as weak legitimacy.
     self_titled: bool = False
+    # True when the fetch SUCCEEDED (200) and the profile is clearly substantial
+    # (has a headline + a real follower count) yet the work-experience array came
+    # back EMPTY. That combination is the signature of a LinkedIn soft-throttle
+    # (the expensive experience section is stripped under load) — NOT a genuinely
+    # empty profile. Downstream must treat the missing work as UNVERIFIED (lower
+    # confidence), never as disconfirming evidence the person is fake. This is the
+    # Harpriya case: headline 'CEO @ Hotbox, backed by a16z speedrun', 2k followers,
+    # work=[]. A real empty profile has ~no followers and usually no headline.
+    work_unreliable: bool = False
     # high = real work experience; medium = profile found but only headline/about;
     # low/"" = no usable profile. Lets reconcile weigh incomplete-but-valid profiles.
     evidence_level: str = ""
@@ -233,6 +312,7 @@ class PersonEvidence:
             "linkedin_current_company": self.current_company,
             "linkedin_headline_company": self.headline_company,
             "linkedin_self_titled": self.self_titled,
+            "linkedin_work_unreliable": self.work_unreliable,
             "evidence_level": self.evidence_level,
             "fetch_status": self.fetch_status,
             "profile_url": self.profile_url,
@@ -270,6 +350,7 @@ class PersonEvidence:
             headline_company=str(d.get("linkedin_headline_company") or ""),
             matches_name=bool(d.get("linkedin_profile_matches_name", False)),
             self_titled=bool(d.get("linkedin_self_titled", False)),
+            work_unreliable=bool(d.get("linkedin_work_unreliable", False)),
             evidence_level=str(d.get("evidence_level") or ""),
             fetch_status=str(d.get("fetch_status") or ""),
             warnings=[str(x) for x in (d.get("warnings") or [])],
@@ -298,6 +379,12 @@ class CompanyCandidate:
     # Set later by the reconciler (needs event/rubric context).
     matches_luma_industry: bool = False
     matches_event_theme: bool = False
+    # Set by the LLM disambiguator (disambiguate.py) ONLY in the ambiguous
+    # no-hard-tie case : Claude read the full candidate descriptions and judged
+    # THIS is the company the applicant actually runs/works at. Identity judgment
+    # only — never event fit. reconcile rewards it but caps confidence at medium.
+    matches_llm_identity: bool = False
+    llm_identity_reason: str = ""
     warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -319,6 +406,8 @@ class CompanyCandidate:
             "matches_email_domain": self.matches_email_domain,
             "matches_luma_industry": self.matches_luma_industry,
             "matches_event_theme": self.matches_event_theme,
+            "matches_llm_identity": self.matches_llm_identity,
+            "llm_identity_reason": self.llm_identity_reason,
             "warnings": list(self.warnings),
         }
 
@@ -349,6 +438,8 @@ class CompanyCandidate:
             matches_email_domain=bool(d.get("matches_email_domain", False)),
             matches_luma_industry=bool(d.get("matches_luma_industry", False)),
             matches_event_theme=bool(d.get("matches_event_theme", False)),
+            matches_llm_identity=bool(d.get("matches_llm_identity", False)),
+            llm_identity_reason=str(d.get("llm_identity_reason") or ""),
             warnings=[str(x) for x in (d.get("warnings") or [])],
         )
 
@@ -398,9 +489,47 @@ def _fetch_person_unipile(linkedin_url: str,
     incomplete* result (evidence_level=medium), not a failure."""
     ev = PersonEvidence()
     dsn, api_key = _unipile_dsn(), _unipile_api_key()
-    slug = (linkedin_url or "").rstrip("/").split("/")[-1].split("?")[0]
+    slug = _linkedin_slug(linkedin_url)
 
-    result = unipile_adapter.fetch_profile(dsn, api_key, _next_account_id, slug)
+    # Pace every account fetch_profile pulls (initial + its own 404/429 rotations)
+    # so no single account is fired faster than its rate budget. Keyed by account,
+    # so a bigger pool = proportionally more throughput.
+    def _paced_next() -> str | None:
+        aid = _next_account_id()
+        _pace_account(aid)
+        return aid
+
+    result = unipile_adapter.fetch_profile(dsn, api_key, _paced_next, slug)
+
+    # Soft-throttle repair: LinkedIn often returns a 200 with the EXPERIENCE
+    # section stripped when an account is under sustained load. That looks like
+    # 'success' but yields empty work history, which starves founders of
+    # corroboration (their companies are small/unknown, so without work-exp their
+    # confidence gets capped — the Harpriya failure).
+    #
+    # An immediate in-line retry only helps when there is ANOTHER account to
+    # rotate to: re-hitting the SAME hot account just burns its budget harder and
+    # almost always returns the same stripped body. So we only retry-in-place when
+    # the pool has >1 account. With a single account we DON'T retry here — the real
+    # recovery is the spaced second pass in evaluate_all (cooldown + low
+    # concurrency), which gives the account time to actually recover.
+    _pool_size = len(_unipile_account_ids())
+    _empty_exp_retries = (int(os.environ.get("UNIPILE_EMPTY_EXP_RETRIES", "2"))
+                          if _pool_size > 1 else 0)
+    _attempt = 0
+    while (result.ok and not (result.body or {}).get("work_experience")
+           and _attempt < _empty_exp_retries):
+        _attempt += 1
+        retry = unipile_adapter.fetch_profile(dsn, api_key, _paced_next, slug)
+        if retry.ok and (retry.body or {}).get("work_experience"):
+            print(f"  [unipile.profile] {slug} → empty work-exp repaired on "
+                  f"retry {_attempt}")
+            result = retry
+            break
+        # keep the best (a still-ok body) so we don't downgrade a 200 to nothing
+        if retry.ok:
+            result = retry
+
     ev.fetch_status = result.status
     if not result.ok:
         print(f"  [unipile.profile] {slug} → {result.status} "
@@ -470,8 +599,21 @@ def _fetch_person_unipile(linkedin_url: str,
         ev.evidence_level = "low"
     if ev.found and not ev.matches_name:
         ev.warnings.append("profile_name_mismatch")
+    # Soft-throttle signature: a successful 200 whose work-exp array is empty,
+    # yet the profile is plainly substantial (has a headline AND a real follower
+    # count). That is the Harpriya case — the experience section was stripped
+    # under load, NOT genuinely absent. Mark it UNRELIABLE so downstream treats
+    # missing work as an unverified data gap (lower confidence) instead of as
+    # disconfirming evidence (manual_review / tanked legitimacy). A real empty
+    # profile has ~no followers and usually no headline, so it won't trip this.
+    ev.work_unreliable = (
+        ev.found and not ev.work_experience_found
+        and bool(ev.headline) and ev.followers >= 30)
     if ev.found and not ev.work_experience_found:
-        ev.warnings.append("no_work_experience")
+        if ev.work_unreliable:
+            ev.warnings.append("work_experience_throttle_stripped")
+        else:
+            ev.warnings.append("no_work_experience")
     if ev.self_titled:
         ev.warnings.append("self_titled_profile")
     print(f"  [unipile.profile] {slug} → {'ok' if ev.found else 'empty'} "
