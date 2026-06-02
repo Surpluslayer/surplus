@@ -77,6 +77,38 @@ def _text_of(block: Any) -> str:
     return getattr(block, "text", None) or (block.get("text", "") if isinstance(block, dict) else "")
 
 
+def _serialize_block(block: Any) -> dict:
+    """Normalize one assistant content block to a clean dict for echoing back.
+
+    We can't hand the raw SDK block objects back into the next messages.create
+    call : the Anthropic SDK (0.85) re-serializes them with by_alias and chokes
+    on None-valued optional fields ("by_alias: NoneType cannot be converted to
+    PyBool"). Rebuilding only the fields the API needs sidesteps that entirely
+    and keeps the thread minimal.
+    """
+    t = _block_type(block)
+    if t == "text":
+        return {"type": "text", "text": _text_of(block)}
+    if t == "tool_use":
+        name = getattr(block, "name", None) or (block.get("name") if isinstance(block, dict) else "")
+        bid = getattr(block, "id", None) or (block.get("id") if isinstance(block, dict) else "")
+        binput = getattr(block, "input", None)
+        if binput is None and isinstance(block, dict):
+            binput = block.get("input", {})
+        return {"type": "tool_use", "id": bid, "name": name, "input": dict(binput or {})}
+    # Unknown/other block types (e.g. thinking) : pass through if already a dict,
+    # else best-effort model_dump, else drop to a text stub.
+    if isinstance(block, dict):
+        return block
+    dump = getattr(block, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump(exclude_none=True)
+        except Exception:  # noqa: BLE001
+            pass
+    return {"type": "text", "text": _text_of(block)}
+
+
 def run_agent(
     *,
     system: str,
@@ -138,9 +170,13 @@ def run_agent(
             return run
 
         content = list(getattr(resp, "content", None) or [])
-        # Echo the assistant turn back verbatim so the next call has the full
-        # thread (the SDK accepts its own content blocks on the way back in).
-        messages.append({"role": "assistant", "content": content})
+        # Echo the assistant turn back as clean dicts so the next call has the
+        # full thread. We rebuild the blocks rather than pass the raw SDK
+        # objects, which fail re-serialization (see _serialize_block).
+        messages.append({
+            "role": "assistant",
+            "content": [_serialize_block(b) for b in content] or [{"type": "text", "text": ""}],
+        })
 
         # Capture any natural-language text the model emitted this turn.
         text = "\n".join(_text_of(b) for b in content if _block_type(b) == "text").strip()
