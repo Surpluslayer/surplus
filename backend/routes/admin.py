@@ -493,6 +493,18 @@ def merge_users(
     if dst.paid_at is None and src.paid_at is not None:
         billing_copied = True
 
+    # Dedup-key heal : the whole point of recovery. Fill any NULL dedup key on
+    # the survivor from the source so the NEXT logged-out re-auth matches by
+    # linkedin_provider_id (re-points onto this row) instead of minting yet
+    # another duplicate. Gap-fill only : never clobber a value the survivor
+    # already has. (Common case: survivor is the new live row WITH keys and
+    # src is the legacy NULL row, so this is a no-op : but when the operator
+    # keeps the legacy row as survivor, this is what stops re-orphaning.)
+    keys_to_backfill = [
+        attr for attr in ("linkedin_provider_id", "linkedin_public_id", "email")
+        if getattr(dst, attr) is None and getattr(src, attr) is not None
+    ]
+
     moved = dict(before["from"]["owns"])  # counts that WILL move
 
     if body.dry_run:
@@ -500,6 +512,7 @@ def merge_users(
             "dry_run": True,
             "would_move": moved,
             "would_copy_billing": billing_copied,
+            "would_backfill_keys": keys_to_backfill,
             "from": before["from"],
             "to": before["to"],
         }
@@ -529,6 +542,10 @@ def merge_users(
         if dst.stripe_customer_id is None:
             dst.stripe_customer_id = src.stripe_customer_id
 
+    # Heal the survivor's NULL dedup keys from the source (gap-fill only).
+    for attr in keys_to_backfill:
+        setattr(dst, attr, getattr(src, attr))
+
     db.delete(src)
     db.commit()
 
@@ -536,5 +553,6 @@ def merge_users(
         "dry_run": False,
         "moved": moved,
         "billing_copied": billing_copied,
+        "keys_backfilled": keys_to_backfill,
         "survivor": _user_summary(db, dst),
     }

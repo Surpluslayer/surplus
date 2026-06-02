@@ -126,6 +126,54 @@ def test_does_not_clobber_existing_survivor_billing(db):
     assert survivor.stripe_customer_id == "cus_survivor"
 
 
+def test_backfills_null_dedup_keys_onto_survivor(db):
+    """If the survivor row has NULL dedup keys but the source has them, the
+    merge must copy them forward : otherwise the survivor re-orphans on the
+    next logged-out re-auth (provider-id dedup can't match a NULL)."""
+    now = datetime.now(timezone.utc)
+    # Survivor = the row we keep, but it's missing the stable LinkedIn keys.
+    survivor = models.User(
+        unipile_account_id="new_live_acct", name="Jia",
+        linkedin_provider_id=None, linkedin_public_id=None)
+    # Source = legacy row that happens to carry the keys.
+    source = models.User(
+        unipile_account_id="old_acct", name="Jia (old)",
+        linkedin_provider_id="ACoAA_jia_stable",
+        linkedin_public_id="jiahui-jin")
+    db.add_all([survivor, source]); db.flush()
+    db.add(models.Event(
+        role="founders", seniority="Senior", co_stage="Seed", headcount=30,
+        format="Mixer", city="NYC", goal="connect", budget=0, threshold=60,
+        user_id=source.id))
+    db.commit()
+
+    res = merge_users(MergeUsersBody(
+        from_user_id=source.id, to_user_id=survivor.id, dry_run=False),
+        db=db, _=None)
+
+    assert set(res["keys_backfilled"]) == {"linkedin_provider_id",
+                                           "linkedin_public_id"}
+    healed = db.get(models.User, survivor.id)
+    assert healed.linkedin_provider_id == "ACoAA_jia_stable"
+    assert healed.linkedin_public_id == "jiahui-jin"
+
+
+def test_does_not_clobber_survivor_keys(db):
+    """Gap-fill only : a survivor that already has keys keeps its own."""
+    survivor = models.User(
+        unipile_account_id="new_live_acct", name="Jia",
+        linkedin_provider_id="ACoAA_keep_me")
+    source = models.User(
+        unipile_account_id="old_acct", name="Jia (old)",
+        linkedin_provider_id="ACoAA_stale")
+    db.add_all([survivor, source]); db.commit()
+
+    merge_users(MergeUsersBody(
+        from_user_id=source.id, to_user_id=survivor.id, dry_run=False),
+        db=db, _=None)
+    assert db.get(models.User, survivor.id).linkedin_provider_id == "ACoAA_keep_me"
+
+
 def test_rejects_self_merge(db):
     old, _new = _seed_orphan_and_survivor(db)
     with pytest.raises(Exception):
