@@ -180,6 +180,56 @@ def run_followups(
     }
 
 
+# ── Billing status : read-only paid-user audit ──────────────────────────
+#
+# Diagnostic for "are payments landing?". paid_at is stamped ONLY by the
+# Stripe checkout.session.completed webhook (routes/billing.py), so this
+# answers "who did the app unlock", NOT "who sent money" — if the webhook
+# isn't wired, paid users show paid=0 here while Stripe shows real charges.
+# That gap is the signal the webhook is misconfigured. Gated by ADMIN_TOKEN.
+
+
+@router.get("/billing-status")
+def billing_status(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """Return a roll-up of billing state across all users + the paid rows.
+
+    Read-only. `paid` = rows with paid_at set (app-side unlock). `has_customer`
+    = rows with a stripe_customer_id (Stripe round-trip reached us at least
+    once). A nonzero gap between Stripe's dashboard and `paid` here means the
+    webhook isn't stamping.
+    """
+    total = db.query(models.User).count()
+    paid_rows = (
+        db.query(models.User)
+        .filter(models.User.paid_at.isnot(None))
+        .order_by(models.User.paid_at.desc())
+        .all()
+    )
+    has_customer = (
+        db.query(models.User)
+        .filter(models.User.stripe_customer_id.isnot(None))
+        .count()
+    )
+    return {
+        "total_users": total,
+        "paid_count": len(paid_rows),
+        "has_stripe_customer_count": has_customer,
+        "paid_users": [
+            {
+                "id": u.id,
+                "name": u.name,
+                "email": u.email,
+                "paid_at": u.paid_at.isoformat() if u.paid_at else None,
+                "stripe_customer_id": u.stripe_customer_id,
+            }
+            for u in paid_rows
+        ],
+    }
+
+
 # ── Pending AI replies : list, approve, reject ──────────────────────────
 
 @router.get("/pending-replies", response_model=list[PendingReplyOut])
