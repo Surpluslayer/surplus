@@ -141,8 +141,18 @@ def run_agent(
     if client is None:
         try:
             from anthropic import Anthropic
-            client = Anthropic()
-        except Exception as exc:  # noqa: BLE001 : no SDK / no key -> fail soft
+            # Reuse llm._api_key(): it strips the trailing newline Railway's
+            # dashboard appends to env vars, which otherwise makes httpx reject
+            # every request with LocalProtocolError ("Illegal header value").
+            # max_retries=2 absorbs a single 429/5xx blip mid-loop.
+            from .llm import _api_key
+            key = _api_key()
+            if not key:
+                run.error = "ANTHROPIC_API_KEY not set"
+                run.stop_reason = "no_client"
+                return run
+            client = Anthropic(api_key=key, max_retries=2)
+        except Exception as exc:  # noqa: BLE001 : no SDK -> fail soft
             run.error = f"{type(exc).__name__}: {exc}"
             run.stop_reason = "no_client"
             return run
