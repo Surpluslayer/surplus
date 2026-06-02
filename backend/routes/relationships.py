@@ -150,6 +150,21 @@ def contact_detail(
     }
 
 
+@router.post("/agent/run")
+def run_relationship_agent(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Run the propose-only relationship agent over the caller's own contact
+    spine. The agent loops — surveys contacts, reads histories, and stages
+    next-step / draft-message proposals — but NEVER sends or writes: it
+    returns suggestions for the host to approve. Owner-scoped (it only ever
+    sees this user's contacts)."""
+    from ..agents.relationship_agent import run_relationship_agent as _run
+    res = _run(db, user.id)
+    return res.as_dict()
+
+
 @router.get("/prospects/{prospect_id}/timeline")
 def prospect_timeline(
     prospect_id: int,
