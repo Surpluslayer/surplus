@@ -54,4 +54,14 @@ def send_and_log(
     ))
     if commit:
         db.commit()
+        # Spine: a successful send is a real outbound touch, so ensure the
+        # recipient exists as a durable Contact (idempotent, fail-soft, no-op
+        # without a strong identity key). Only when commit=True : link_contact
+        # commits internally, which would break a caller batching with
+        # commit=False (e.g. the cron follow-up).
+        if not res.error:
+            from .relationships import link_contact
+            owner_id = getattr(prospect.event, "user_id", None)
+            if owner_id is not None:
+                link_contact(db, prospect, owner_id)
     return res

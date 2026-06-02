@@ -20,6 +20,8 @@ import {
   LogOut, Mic, MicOff, MapPin,
 } from "lucide-react";
 import { api } from "./lib/api.js";
+import ContactsButton from "./components/ContactsButton.jsx";
+import ContactsPage from "./components/ContactsPage.jsx";
 import { ensureNotifyPermission, notifyDevice } from "./lib/notify.js";
 import { actionLabel, statusMeta, outreachStateLabel } from "./lib/labels.js";
 
@@ -103,6 +105,9 @@ function InPersonAppInner() {
   const [authError, setAuthError] = useState(null); // {status, message} for non-401 failures
   const [event, setEvent] = useState(loadActiveEvent);
   const [tab, setTab] = useState("capture");       // "capture" | "people" | "activity"
+  // Top-level surface toggle, same idea as the desktop shell : "flow" = the
+  // capture surface, "crm" = the durable cross-event relationship spine.
+  const [view, setView] = useState("flow");        // "flow" | "crm"
   const [result, setResult] = useState(null);      // scan result -> result screen
   const [openCapture, setOpenCapture] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -200,16 +205,22 @@ function InPersonAppInner() {
     <div className="ip-root">
       <style>{IP_CSS}</style>
 
-      <EventBar event={event} onPick={pickEvent} user={user} onSignOut={signOut} />
+      <EventBar event={event} onPick={pickEvent} user={user} onSignOut={signOut}
+                crmActive={view === "crm"}
+                onToggleCrm={() => setView((v) => (v === "crm" ? "flow" : "crm"))} />
 
-      {notConnected && (
+      {notConnected && view !== "crm" && (
         <div className="ip-banner">
           <AlertCircle size={14} /> You can capture people now. Connect LinkedIn
           when you’re ready to send.
         </div>
       )}
 
-      {tab === "activity" && isOperator ? (
+      {view === "crm" ? (
+        <div style={{ padding: "16px 14px 90px", overflowY: "auto", flex: 1 }}>
+          <ContactsPage />
+        </div>
+      ) : tab === "activity" && isOperator ? (
         <ActivityScreen />
       ) : !event ? (
         <Centered>
@@ -242,17 +253,17 @@ function InPersonAppInner() {
 
       {!result && !openCapture && (
         <nav className="ip-tabs">
-          <button className={tab === "capture" ? "on" : ""}
-                  onClick={() => setTab("capture")}>
+          <button className={view === "flow" && tab === "capture" ? "on" : ""}
+                  onClick={() => { setView("flow"); setTab("capture"); }}>
             <Camera size={20} /><span>Capture</span>
           </button>
-          <button className={tab === "people" ? "on" : ""}
-                  onClick={() => setTab("people")}>
+          <button className={view === "flow" && tab === "people" ? "on" : ""}
+                  onClick={() => { setView("flow"); setTab("people"); }}>
             <Users size={20} /><span>People</span>
           </button>
           {isOperator && (
-            <button className={tab === "activity" ? "on" : ""}
-                    onClick={() => setTab("activity")}>
+            <button className={view === "flow" && tab === "activity" ? "on" : ""}
+                    onClick={() => { setView("flow"); setTab("activity"); }}>
               <Activity size={20} /><span>Activity</span>
             </button>
           )}
@@ -326,7 +337,7 @@ function SignInBounce({ authError = null, onRetry = null }) {
 
 // ── event bar ────────────────────────────────────────────────────────────────
 
-function EventBar({ event, onPick, user, onSignOut }) {
+function EventBar({ event, onPick, user, onSignOut, crmActive, onToggleCrm }) {
   const [open, setOpen] = useState(!event);
   const [label, setLabel] = useState("");
   const [busy, setBusy] = useState(false);
@@ -356,16 +367,21 @@ function EventBar({ event, onPick, user, onSignOut }) {
           </span>
           <ChevronRight size={16} className={open ? "rot" : ""} />
         </button>
-        {onSignOut && (
-          <button className="ip-signout"
-                  title={user?.unipile_account_id
-                    ? `Sign out${user?.name ? ` (${user.name})` : ""}`
-                    : "Sign out of guest"}
-                  onClick={onSignOut}>
-            <LogOut size={15} />
-            <span>{user?.unipile_account_id ? "Sign out" : "Guest"}</span>
-          </button>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {user && <ContactsButton variant="inperson"
+                                   active={crmActive}
+                                   onClick={onToggleCrm} />}
+          {onSignOut && (
+            <button className="ip-signout"
+                    title={user?.unipile_account_id
+                      ? `Sign out${user?.name ? ` (${user.name})` : ""}`
+                      : "Sign out of guest"}
+                    onClick={onSignOut}>
+              <LogOut size={15} />
+              <span>{user?.unipile_account_id ? "Sign out" : "Guest"}</span>
+            </button>
+          )}
+        </div>
       </div>
       {open && (
         <div className="ip-eventmenu">

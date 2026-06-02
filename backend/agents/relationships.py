@@ -518,3 +518,176 @@ def add_note(db, prospect, owner_user_id: int, summary: str,
     db.commit()
     db.refresh(ri)
     return ri
+
+
+# ── contact-centric read model (the durable-person projection) ───────────
+# Everything above answers "what is this ONE per-event record (Prospect)?" The
+# functions below answer "what is this DURABLE PERSON (Contact)?" by rolling up
+# every linked Prospect. Surplus's atomic unit is the shared event, so a Contact
+# is a *projection* over its per-event Prospect rows — never a parallel store.
+# Event/Prospect/OutreachLog stay the source of truth; this is a read view.
+
+# Strength ordering for the strongest stage a relationship has reached across all
+# the events we've shared with one person. Higher wins. "stale" is an overlay (a
+# fresh event un-stales someone), so it ranks below any live stage.
+_STAGE_RANK = {
+    "stale": 0,
+    "captured": 1,
+    "contacted": 2,
+    "replied": 3,
+    "converted": 4,
+}
+
+# Sorts never-touched rows to the END when ordering newest-touch-first.
+_MIN_DT = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _strongest_stage(stages) -> Optional[str]:
+    best, best_rank = None, -1
+    for s in stages:
+        r = _STAGE_RANK.get(s, -1)
+        if r > best_rank:
+            best, best_rank = s, r
+    return best
+
+
+def list_contacts(db, user_id: int) -> list:
+    """Every durable Contact owned by one user (the 'who I've met' inventory).
+    Returns [] on any error so a broken read never sinks the page."""
+    from .. import models
+    try:
+        return (db.query(models.Contact)
+                  .filter(models.Contact.user_id == user_id)
+                  .all())
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def fetch_contact_interactions(db, contact) -> list:
+    """Every stored RelationshipInteraction for a durable Contact, de-duped.
+
+    A note may be tied to the Contact directly (contact_id) OR to any of its
+    linked per-event Prospect rows (prospect_id). We union both and de-dup by
+    interaction id, so a contact-scoped note shows up once — not once per linked
+    Prospect. Returns [] on any error."""
+    from .. import models
+    from sqlalchemy import or_
+    try:
+        prospect_ids = [p.id for p in (getattr(contact, "prospects", None) or [])]
+        clauses = [models.RelationshipInteraction.contact_id == contact.id]
+        if prospect_ids:
+            clauses.append(
+                models.RelationshipInteraction.prospect_id.in_(prospect_ids))
+        rows = (db.query(models.RelationshipInteraction)
+                  .filter(or_(*clauses))
+                  .all())
+        seen, deduped = set(), []
+        for ri in rows:
+            rid = getattr(ri, "id", None)
+            if rid in seen:
+                continue
+            seen.add(rid)
+            deduped.append(ri)
+        return deduped
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def contact_events(db, contact) -> list[dict]:
+    """One row per shared event (per linked Prospect) : where we met / re-touched
+    this person, plus where that per-event relationship stands. The 'events we've
+    shared' breakdown behind a Contact, newest touch first."""
+    rows = []
+    for p in (getattr(contact, "prospects", None) or []):
+        event = getattr(p, "event", None)
+        summary = relationship_summary(p, fetch_interactions(db, p))
+        rows.append({
+            "prospect_id": getattr(p, "id", None),
+            "event_id": getattr(event, "id", None),
+            "event_title": _event_title(event),
+            "event_city": _clean(getattr(event, "city", None)),
+            "relationship_stage": summary["relationship_stage"],
+            "captured_at": _as_aware(getattr(p, "captured_at", None)),
+            "last_touch_at": summary["last_touch_at"],
+            "status": _clean(getattr(p, "status", None)),
+            "connection_status": _clean(getattr(p, "connection_status", None)),
+            "contact_type": summary["contact_type"],
+            "next_step": summary["next_step"],
+        })
+    rows.sort(key=lambda r: r["last_touch_at"] or _MIN_DT, reverse=True)
+    return rows
+
+
+def contact_summary(db, contact) -> dict:
+    """A durable-person rollup across every event we've shared : who they are,
+    when we first met, how many events, the strongest stage reached, the freshest
+    touch, and the open next step. The Pillar-1 'who I've met' card."""
+    prospects = list(getattr(contact, "prospects", None) or [])
+    events = contact_events(db, contact)
+
+    stages = [e["relationship_stage"] for e in events]
+    first_touches = [e["captured_at"] for e in events if e["captured_at"]]
+    last_touches = [e["last_touch_at"] for e in events if e["last_touch_at"]]
+    next_steps = [e["next_step"] for e in events if e["next_step"]]
+    contact_types = [e["contact_type"] for e in events if e["contact_type"]]
+    connected = any(e["connection_status"] == "connected" for e in events)
+
+    # Identity : prefer a linked Prospect carrying real enrichment, else the
+    # first one; fall back to the Contact's own stored fields.
+    identity: dict = {}
+    for p in prospects:
+        cand = _identity(p)
+        identity = identity or cand
+        if cand.get("headline") or cand.get("company"):
+            identity = cand
+            break
+
+    return {
+        "contact_id": getattr(contact, "id", None),
+        "name": _clean(getattr(contact, "name", None)) or identity.get("name"),
+        "company": _clean(getattr(contact, "company", None)) or identity.get("company"),
+        "linkedin_url": _clean(getattr(contact, "linkedin_url", None)),
+        "primary_identity_key": _clean(getattr(contact, "primary_identity_key", None)),
+        "identity": identity,
+        "is_connection": connected,
+        "n_events": len(events),
+        "first_met_at": min(first_touches) if first_touches else None,
+        "last_touch_at": max(last_touches) if last_touches else None,
+        "relationship_stage": _strongest_stage(stages),
+        "contact_types": sorted({c for c in contact_types}),
+        "next_step": next_steps[0] if next_steps else None,
+        "event_ids": [e["event_id"] for e in events if e["event_id"] is not None],
+    }
+
+
+def contact_timeline(db, contact) -> list[dict]:
+    """The unified chronological (oldest-first) timeline for a durable person :
+    every derived touch from each linked per-event Prospect (annotated with which
+    event it came from), unioned with the contact's stored interactions fetched
+    ONCE.
+
+    Each per-event timeline is built with interactions=None and the contact-level
+    interactions are added a single time, so a contact-scoped note appears once,
+    not once per linked Prospect."""
+    items: list[dict] = []
+    for p in (getattr(contact, "prospects", None) or []):
+        event = getattr(p, "event", None)
+        eid = getattr(event, "id", None)
+        etitle = _event_title(event)
+        for it in build_timeline(p, None):
+            it["metadata"] = {
+                **it["metadata"],
+                "event_id": eid,
+                "event_title": etitle,
+                "prospect_id": getattr(p, "id", None),
+            }
+            items.append(it)
+
+    for ri in fetch_contact_interactions(db, contact):
+        items.append(_interaction_item(ri))
+
+    items.sort(key=lambda it: (
+        it["occurred_at"] or _FAR_FUTURE,
+        _SOURCE_RANK.get(it["source_type"], 99),
+    ))
+    return items

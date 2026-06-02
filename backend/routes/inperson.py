@@ -279,6 +279,11 @@ def scan_capture(
     db.commit()
     db.refresh(p)
 
+    # Spine: an in-person capture is a real "we met" touch, so link this person
+    # to their durable Contact (idempotent, fail-soft, no-op without a strong
+    # identity key) so they show up in the cross-event relationship graph.
+    relationships.link_contact(db, p, user.id)
+
     # ev.kind == "in_person", so compose() takes the warm "we just met" branch.
     # p.note was just persisted, so the draft is composed FROM the fun fact :
     # re-scanning with an updated note re-personalizes both halves. On a re-scan

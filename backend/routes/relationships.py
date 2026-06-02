@@ -27,6 +27,15 @@ router = APIRouter(prefix="/api/relationships", tags=["relationships"])
 _MIN_DT = datetime.min.replace(tzinfo=timezone.utc)
 
 
+def _owned_contact(db: Session, contact_id: int, user: models.User) -> models.Contact:
+    """Fetch a Contact, requiring `user` to own it. 404 in both the not-found
+    and not-owned cases so we never leak another user's relationship graph."""
+    c = db.get(models.Contact, contact_id)
+    if c is None or getattr(c, "user_id", None) != user.id:
+        raise HTTPException(404, "contact not found")
+    return c
+
+
 def _owned_prospect(db: Session, prospect_id: int, user: models.User) -> models.Prospect:
     """Fetch a Prospect, requiring `user` to own its event. 404 in both the
     not-found and not-owned cases so we never leak another user's prospects."""
@@ -103,6 +112,42 @@ def list_relationships(
     rows.sort(key=lambda r: r["relationship_summary"]["last_touch_at"] or _MIN_DT,
               reverse=True)
     return {"count": len(rows), "relationships": rows}
+
+
+@router.get("/contacts")
+def list_contacts(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """The durable 'who I've met' inventory : one row per Contact (the cross-event
+    person), rolled up over every event we've shared with them. This is the
+    contact-centric counterpart to /prospects (which is per-event-record).
+
+    Owner-scoped : only the caller's own Contacts are reachable. Newest touch
+    first, so the people you've engaged most recently surface at the top.
+    """
+    rows = []
+    for c in relationships.list_contacts(db, user.id):
+        rows.append(relationships.contact_summary(db, c))
+    rows.sort(key=lambda r: r["last_touch_at"] or _MIN_DT, reverse=True)
+    return {"count": len(rows), "contacts": rows}
+
+
+@router.get("/contacts/{contact_id}")
+def contact_detail(
+    contact_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """The full durable-person profile for one owned Contact : the rollup summary,
+    the per-event breakdown ('events we've shared'), and the unified cross-event
+    timeline."""
+    c = _owned_contact(db, contact_id, user)
+    return {
+        "contact_summary": relationships.contact_summary(db, c),
+        "events": relationships.contact_events(db, c),
+        "timeline": relationships.contact_timeline(db, c),
+    }
 
 
 @router.get("/prospects/{prospect_id}/timeline")

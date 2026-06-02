@@ -7,6 +7,8 @@ import {
   CornerDownRight, LogOut, GraduationCap, Link2, Loader2, Lock, CreditCard
 } from "lucide-react";
 import { api } from "./lib/api.js";
+import ContactsButton from "./components/ContactsButton.jsx";
+import ContactsPage from "./components/ContactsPage.jsx";
 import { identifyUser, resetAnalytics } from "./lib/analytics.js";
 import { ensureNotifyPermission, notifyDevice } from "./lib/notify.js";
 import { actionLabel, statusMeta } from "./lib/labels.js";
@@ -2276,6 +2278,11 @@ export default function App() {
   //   "matching"  : stage 04. Renders the legacy Matching component.
   //   "roi"       : stage 05. Renders the legacy ROI component.
   const [stage, setStage] = useState("intake");
+  // Top-level surface toggle. "flow" = the event pipeline (intake → matching);
+  // "crm" = the durable cross-event relationship spine (ContactsPage). The
+  // topbar button flips between them; jumping to any pipeline stage returns
+  // to "flow" so the rail bubbles always do what they say.
+  const [view, setView] = useState("flow");
   const [eventId, setEventId] = useState(null);
   // Profile captured from SharedIntake's submit. Stage02 hands it to the
   // existing Pipeline component + derives the triage_config payload from
@@ -2482,8 +2489,15 @@ export default function App() {
         onStageJump={(idx) => {
           const name = STAGE_NAMES[idx];
           if (name) setStage(name);
+          // Any rail jump implies "show me the pipeline" : leave the CRM.
+          setView("flow");
         }}
+        view={view}
+        onToggleView={() => setView((v) => (v === "crm" ? "flow" : "crm"))}
       >
+        {view === "crm" ? (
+          <ContactsPage />
+        ) : (
         <StageErrorBoundary
           key={stage}
           onReset={() => {
@@ -2560,6 +2574,7 @@ export default function App() {
             />
           )}
         </StageErrorBoundary>
+        )}
       </UnifiedShell>
     );
   }
@@ -2781,6 +2796,7 @@ function InboundReviewWithAdvance({ eventId, onAdvance }) {
   );
 }
 
+
 // Shell for the unified intake → stage 02 → ... flow. Reuses
 // SURPLUS_APP_CSS classes so it looks identical to the legacy shells.
 // Injects TRIAGE_CSS too so UploadStep renders correctly when stage 02
@@ -2790,7 +2806,7 @@ function InboundReviewWithAdvance({ eventId, onAdvance }) {
 function UnifiedShell({
   user, onLogout, apiError, onClearError, children,
   stageIdx = 0, mutedIds = [], eventName, eventId, onStageJump,
-  stages = VISIBLE_STAGES,
+  stages = VISIBLE_STAGES, view = "flow", onToggleView,
 }) {
   const noop = () => {};
   return (
@@ -2823,6 +2839,13 @@ function UnifiedShell({
             maxReached={stages.length ? Math.max(...stages.map((s) => s.id)) : 0}
             mutedIds={mutedIds}
           />
+          {user && (
+            <ContactsButton
+              variant="desktop"
+              active={view === "crm"}
+              onClick={onToggleView}
+            />
+          )}
           {user && <UserMenu user={user} onLogout={onLogout} />}
         </header>
         {apiError && (

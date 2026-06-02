@@ -190,6 +190,12 @@ export const api = {
       method: "POST", body: JSON.stringify(override),
     }),
 
+  // ── relationship CRM : the durable "who I've met" spine across events ──
+  // Contact-centric read model (one row per durable person, rolled up over
+  // every event you've shared with them). Owner-scoped server-side.
+  listContacts: () => request("/api/relationships/contacts"),
+  getContact: (contactId) => request(`/api/relationships/contacts/${contactId}`),
+
   // meta
   health: () => request("/api/health"),
 

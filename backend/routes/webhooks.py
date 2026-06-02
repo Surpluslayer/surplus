@@ -113,6 +113,14 @@ def _apply_canonical_event(
         prospect.connection_status = "connected"
         prospect.connection_checked_at = datetime.now(timezone.utc)
 
+    # Spine: every applied funnel event is a real touch, so ensure this person
+    # exists as a durable Contact (idempotent, fail-soft, no-op without a strong
+    # identity key). This is the "auto-populate once they connect" hook : an
+    # invite_accepted lands here and the person enters the cross-event graph.
+    owner_id = getattr(getattr(prospect, "event", None), "user_id", None)
+    if owner_id is not None:
+        relationships.link_contact(db, prospect, owner_id)
+
     db.commit()
     return True, "applied", prospect
 
