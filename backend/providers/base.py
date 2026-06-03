@@ -16,9 +16,40 @@ strings should ever appear.
 """
 from __future__ import annotations
 import abc
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
+
+
+# ── Outbound copy hygiene ────────────────────────────────────────────
+# Em/en/figure dashes are a giveaway that copy was machine-written and read
+# stiff in a LinkedIn note. We replace them with a comma so every message
+# that leaves the box reads human. ASCII hyphen-minus ("co-founder") is
+# deliberately left alone. Applied in LeadPayload.__post_init__ so EVERY
+# send path (invite note, post-accept DM, follow-up, AI auto-reply) is
+# covered : they all build a LeadPayload before hitting a provider.
+_DASH_RE = re.compile(r"\s*[—–―−]\s*")
+
+
+def strip_em_dashes(text: Optional[str]) -> Optional[str]:
+    """Replace em/en/figure dashes (and the unicode minus) with ', ' so
+    outbound copy reads human. Tight ('a—b') and spaced ('a — b') dashes
+    both collapse to a comma. Leaves the ASCII hyphen-minus untouched.
+
+    Surgical: if the text contains no dash it is returned byte-for-byte
+    unchanged (we must not reflow the app's intentional ' : ' style or any
+    other spacing). Only the comma artifacts that the replacement itself
+    could create are tidied."""
+    if not text or not _DASH_RE.search(text):
+        return text
+    out = _DASH_RE.sub(", ", text)
+    out = re.sub(r",\s*,", ", ", out)        # collapse commas adjacent to a dash
+    out = re.sub(r"\s+,", ",", out)          # tighten space before the new comma
+    out = re.sub(r"[ \t]{2,}", " ", out)     # collapse the odd double space
+    out = re.sub(r"^\s*,\s*", "", out)       # leading comma artifact
+    out = re.sub(r"\s*,\s*$", "", out)       # trailing comma artifact
+    return out.strip()
 
 
 # The full canonical state machine. Webhooks must normalize into these.
@@ -60,6 +91,13 @@ class LeadPayload:
     fit_score: Optional[int] = None
     fit_reason: Optional[str] = None
     sources: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        # Last line of defense: strip em/en dashes from everything we send,
+        # no matter which composer produced it. frozen=True, so mutate via
+        # object.__setattr__.
+        object.__setattr__(self, "note", strip_em_dashes(self.note) or "")
+        object.__setattr__(self, "message", strip_em_dashes(self.message) or "")
 
 
 @dataclass(frozen=True)

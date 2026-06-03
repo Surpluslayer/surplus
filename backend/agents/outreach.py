@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 
 from .. import config
 from ..jsonx import extract_json
+from ..providers.base import strip_em_dashes
 
 
 # ---- compose result cache + prefetch -------------------------------------
@@ -465,8 +466,15 @@ def compose(
         return (_compose_inperson_template(prospect, event) if in_person
                 else _compose_template(prospect, host_bio, framing))
 
+    def _clean(msg: Message) -> Message:
+        # Strip em/en dashes from EVERY compose path (template + LLM) so the
+        # operator's /outreach/preview shows exactly what the LeadPayload
+        # send-gate will transmit : preview == sent.
+        return Message(note=strip_em_dashes(msg.note),
+                       message=strip_em_dashes(msg.message))
+
     if (os.environ.get("OUTREACH_COMPOSE_DISABLE") or "").strip().lower() not in ("", "0", "false", "no"):
-        return _template()
+        return _clean(_template())
 
     llm = _compose_via_claude(prospect, event, host_bio, framing,
                               voice_examples_raw=voice_examples_raw,
@@ -474,8 +482,8 @@ def compose(
     if llm is not None:
         note, message = llm
         # Hard-cap the note even if the model went over : LinkedIn rejects >300.
-        return Message(note=_truncate_note(note), message=message)
-    return _template()
+        return _clean(Message(note=_truncate_note(note), message=message))
+    return _clean(_template())
 
 
 def _event_label(event) -> str:
