@@ -77,7 +77,7 @@ def get_preview_provider(user) -> LinkedInProvider:
     never touch the network, so a NULL account_id is safe here.
 
     Do NOT use this for real-send routes : gate those with
-    auth.require_linkedin_send() so a not-connected user gets a 402 paywall.
+    auth.require_can_send_linkedin() so a not-connected user gets a 402 paywall.
     """
     if getattr(user, "unipile_account_id", None):
         return get_provider_for_user(user)

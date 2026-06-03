@@ -17,9 +17,6 @@ from sqlalchemy.orm import sessionmaker
 from backend import models, schemas
 from backend.auth import (
     require_can_send_linkedin,
-    require_linkedin_connected,    # back-compat alias → require_can_send_linkedin
-    require_linkedin_send,         # back-compat alias → require_can_send_linkedin
-    require_paid_auto_outreach,    # back-compat alias → require_can_send_linkedin
     user_can_send_linkedin,
     user_has_paid,
     user_has_linkedin_connected,
@@ -147,25 +144,6 @@ def test_send_gate_paid_but_unconnected_user_gets_linkedin_locked(db):
 def test_send_gate_noop_for_paid_connected_user(db):
     """Signed in on LinkedIn AND paid Stripe : sends freely, no paywall."""
     assert require_can_send_linkedin(_connected_user(db)) is None
-
-
-# Back-compat aliases all forward to the same unified gate.
-
-def test_aliases_block_connected_unpaid_user(db):
-    user = _connected_unpaid_user(db)
-    for gate in (require_linkedin_connected, require_paid_auto_outreach,
-                 require_linkedin_send):
-        with pytest.raises(HTTPException) as ei:
-            gate(user)
-        assert ei.value.status_code == 402
-        assert ei.value.detail["code"] == "payment_required"
-
-
-def test_aliases_noop_for_paid_connected_user(db):
-    user = _connected_user(db)
-    for gate in (require_linkedin_connected, require_paid_auto_outreach,
-                 require_linkedin_send):
-        assert gate(user) is None
 
 
 # ── real-send route paywalls the demo user ──────────────────────────────

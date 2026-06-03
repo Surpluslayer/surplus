@@ -12,7 +12,7 @@ Public surface:
   POST /api/billing/webhook
     Auth: signature-verified against STRIPE_WEBHOOK_SECRET.
     Handles checkout.session.completed : stamps users.paid_at +
-    stripe_customer_id so require_linkedin_send() lets the user through.
+    stripe_customer_id so require_can_send_linkedin() lets the user through.
 
 Env vars (all required for prod, all optional for local dev) :
   STRIPE_SECRET_KEY      : sk_live_... / sk_test_...

@@ -11,7 +11,7 @@ outreach (preview included).
 What's intentionally NOT possible from a demo session: firing real LinkedIn
 outreach. The demo user has no connected LinkedIn account (unipile_account_id
 is NULL), so every real send route hits the paywall (HTTP 402 via
-auth.require_linkedin_send) instead of spending anyone's LinkedIn quota or
+auth.require_can_send_linkedin) instead of spending anyone's LinkedIn quota or
 DMing from a real account. To actually send, the visitor signs in with their
 own LinkedIn and upgrades.
 

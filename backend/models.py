@@ -570,7 +570,7 @@ class User(Base):
         String(120), default=None, index=True,
     )
     # When the user's most recent Stripe Checkout completed. NULL = never
-    # paid (or refunded out). require_linkedin_send() blocks real LinkedIn
+    # paid (or refunded out). require_can_send_linkedin() blocks real LinkedIn
     # sends when NULL : free tier can browse + run prospecting + see
     # composed previews, paid tier unlocks the actual outreach.
     paid_at: Mapped[Optional[datetime]] = mapped_column(default=None)

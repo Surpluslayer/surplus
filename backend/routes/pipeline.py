@@ -21,9 +21,8 @@ from .. import models, schemas
 from ..auth import (
     current_user,
     get_owned_event,
-    require_linkedin_connected,
+    require_can_send_linkedin,
     require_outreach_enabled,
-    require_paid_auto_outreach,
 )
 from ..db import get_db
 from ..pipeline import run_prospect, run_outreach_stage, run_pipeline
@@ -95,7 +94,7 @@ def outreach_only(
         raise HTTPException(409, "no approved prospects to contact : "
                                  "threshold may be too high for the pool")
 
-    require_paid_auto_outreach(user)
+    require_can_send_linkedin(user)
     provider = get_provider_for_user(user)
     if not provider.dry_run and not confirm_live_batch:
         raise HTTPException(
@@ -127,7 +126,7 @@ async def run(
     """
     ev = get_owned_event(event_id, user, db)
 
-    require_paid_auto_outreach(user)
+    require_can_send_linkedin(user)
     provider = get_provider_for_user(user)
     if not provider.dry_run and not confirm_live_batch:
         raise HTTPException(
@@ -360,7 +359,7 @@ def send_connection_invite(
         raise HTTPException(409, "prospect has no linkedin_url")
 
     require_outreach_enabled()  # 503s when SURPLUS_KILL_OUTREACH is on
-    require_linkedin_connected(user)
+    require_can_send_linkedin(user)
     provider = get_provider_for_user(user)
 
     outcome = route_and_send(
@@ -411,7 +410,7 @@ def send_direct_message(
         raise HTTPException(409, "prospect has no linkedin_url")
 
     require_outreach_enabled()  # 503s when SURPLUS_KILL_OUTREACH is on
-    require_linkedin_connected(user)
+    require_can_send_linkedin(user)
     provider = get_provider_for_user(user)
 
     # Resolve & cache the linkedin provider id. Re-resolve when going live if
