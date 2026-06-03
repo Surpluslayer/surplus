@@ -101,18 +101,21 @@ def _decision(classification: str, draft: str = "Dinner is at 7pm."):
 
 # ── Auto-send path ──────────────────────────────────────────────────────
 
-def test_clarifying_class_auto_sends(db):
+def test_clarifying_class_queues_while_kill_switch_active(db):
+    # KILL SWITCH: AUTO_SEND_CLASSES is empty, so even a clarifying message
+    # queues for human approval instead of auto-sending. Nothing leaves the
+    # host's LinkedIn. When the kill switch is lifted, restore the auto_sent
+    # assertion below.
     _ev, p = _seed_prospect(db)
     with patch("backend.routes.webhooks.decide_reply",
                return_value=_decision("clarifying")):
         result = _handle_ai_reply(db, get_provider(), p, _canonical())
-    assert result["action"] == "auto_sent"
+    assert result["action"] == "queued"
     assert result["classification"] == "clarifying"
     db.expire_all()
     states = [o.state for o in db.get(models.Prospect, p.id).outreach]
-    assert "auto_reply_sent" in states
-    # No PendingReply row when we auto-send (cleanup removed the audit dup)
-    assert db.query(models.PendingReply).count() == 0
+    assert "auto_reply_sent" not in states
+    assert db.query(models.PendingReply).count() == 1
 
 
 def test_loop_guard_queues_after_first_auto_reply(db):

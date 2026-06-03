@@ -176,10 +176,13 @@ def test_decide_reply_omits_relationship_block_by_default():
 
 # ── should_auto_send() gate ─────────────────────────────────────────────
 
-def test_should_auto_send_true_for_clarifying_first_time():
+def test_should_auto_send_off_while_kill_switch_active():
+    # KILL SWITCH: AUTO_SEND_CLASSES is empty, so even a clarifying first-time
+    # reply must NOT auto-send : it queues for human approval instead. When the
+    # kill switch is lifted (AUTO_SEND_CLASSES grows back), flip this assertion.
     d = ReplyDecision(classification="clarifying", draft_text="hi",
                       reasoning="r")
-    assert should_auto_send(d, prior_auto_send_count=0) is True
+    assert should_auto_send(d, prior_auto_send_count=0) is False
 
 
 def test_should_auto_send_false_after_loop_guard():
@@ -207,10 +210,11 @@ def test_should_auto_send_false_when_decision_has_error():
     assert should_auto_send(d, prior_auto_send_count=0) is False
 
 
-def test_auto_send_classes_is_intentionally_narrow():
-    """Spec contract: only 'clarifying' auto-sends in v1. If this set grows,
-    the trust review goes with it : fail loudly to force the conversation."""
-    assert AUTO_SEND_CLASSES == frozenset({"clarifying"})
+def test_auto_send_classes_killed():
+    """KILL SWITCH: AUTO_SEND_CLASSES is empty : nothing auto-sends, every
+    inbound reply queues to PendingReply for human approval. To restore v1
+    behavior, set it back to frozenset({"clarifying"}) and update this test."""
+    assert AUTO_SEND_CLASSES == frozenset()
 
 
 # ── pending-reply admin endpoints ──────────────────────────────────────

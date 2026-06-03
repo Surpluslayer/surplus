@@ -388,9 +388,11 @@ def test_inperson_copy_differs_from_cold_copy(db, user, monkeypatch):
     assert "vector DBs" not in cold.note
 
 
-def test_webhook_auto_dm_uses_inperson_copy(db, user, monkeypatch):
-    """The webhook auto-DM path (_trigger_auto_dm -> compose) must produce the
-    warm in-person DM for an in_person prospect, not a cold re-pitch."""
+def test_webhook_auto_dm_disabled_by_kill_switch(db, user, monkeypatch):
+    """KILL SWITCH: auto_dm_after_accept is hard-off, so _trigger_auto_dm is a
+    no-op : it returns None and logs nothing, so no unattended DM leaves the
+    host's LinkedIn on invite_accepted. When the kill switch is lifted, restore
+    the warm-copy assertions."""
     monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")
     from backend.providers.unipile import UnipileProvider
     from backend.routes.webhooks import _trigger_auto_dm
@@ -404,14 +406,8 @@ def test_webhook_auto_dm_uses_inperson_copy(db, user, monkeypatch):
     db.add(p); db.commit()
 
     provider = UnipileProvider(dry_run=True, account_id="operator_acct")
-    _trigger_auto_dm(db, provider, p)
-
-    sent = [o for o in p.outreach if o.state == "message_sent"]
-    assert sent, "auto-DM should have logged a message_sent row"
-    body = sent[-1].body
-    # Warm in-person DM, referencing the meeting + the conversation note.
-    assert "meet you at NYC Tech Week" in body
-    assert "the latency demo" in body
+    assert _trigger_auto_dm(db, provider, p) is None
+    assert [o for o in p.outreach if o.state == "message_sent"] == []
 
 
 def test_route_and_send_warm_path_uses_send_message(db, user, monkeypatch):
@@ -553,11 +549,11 @@ def test_new_relation_matches_scan_prospect_fires_inperson_auto_dm(db, user, mon
     assert applied is True and prospect.id == p.id
     assert prospect.connection_status == "connected"
 
-    _trigger_auto_dm(db, provider, prospect)
-    sent = [o for o in prospect.outreach if o.state == "message_sent"]
-    assert sent, "in-person auto-DM should have fired on accept"
-    # Warm in-person copy, not a cold re-pitch.
-    assert "meet you at NYC Tech Week" in sent[-1].body
+    # KILL SWITCH: the accept still applies (status flips to connected) but the
+    # auto-DM no longer fires : no unattended message leaves the host's LinkedIn.
+    # When the kill switch is lifted, restore the message_sent + warm-copy checks.
+    assert _trigger_auto_dm(db, provider, prospect) is None
+    assert [o for o in prospect.outreach if o.state == "message_sent"] == []
 
 
 def test_unmatched_new_relation_fires_nothing(db, user):

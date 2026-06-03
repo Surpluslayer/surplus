@@ -37,7 +37,7 @@ from ..jsonx import extract_json
 # Classifications the orchestrator is willing to auto-send. Hard-coded
 # (not env-driven) on purpose : changing this is a policy decision that
 # should require a code review, not an env flip.
-AUTO_SEND_CLASSES: frozenset[str] = frozenset({"clarifying"})
+AUTO_SEND_CLASSES: frozenset[str] = frozenset()  # KILL SWITCH: AI auto-reply disabled; everything queues to PendingReply for human approval. Was {"clarifying"}.
 
 # All valid classifications. The agent's output is validated against this set;
 # unknown classes are coerced to "ambiguous" so they queue rather than crash.

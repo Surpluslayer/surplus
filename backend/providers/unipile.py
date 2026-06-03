@@ -116,7 +116,11 @@ class UnipileProvider(LinkedInProvider):
 
     @property
     def auto_dm_after_accept(self) -> bool:
-        return True
+        # KILL SWITCH: post-accept auto-DM disabled. Previously returned True,
+        # which fired an unattended DM from the host's LinkedIn on every
+        # invite_accepted. Hard-off so it can't be re-enabled by an env flip;
+        # manual sends are unaffected. Flip back to True to restore.
+        return False
 
     # ---- payload building ------------------------------------------------
 
