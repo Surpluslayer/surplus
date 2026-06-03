@@ -299,7 +299,8 @@ def _location_matches(snippet: str, aliases: tuple[str, ...]) -> bool:
     return not has_location_line
 
 
-def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[dict]:
+def discover_via_exa(source: str, icp: dict, max_candidates: int = 5,
+                     city_hard_filter: bool = True) -> list[dict]:
     """
     Search Exa for one source's candidates matching the ICP.
 
@@ -375,7 +376,9 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5) -> list[di
     # Production 400s without the array : `Invalid input: expected array,
     # received string at "includeText"`. We still truncate the phrase to
     # 5 words to satisfy the "single phrase ≤ 5 words" length cap.
-    if city_cfg and source == "linkedin":
+    # `city_hard_filter=False` lets the caller relax this brittle text match
+    # (the city stays in the neural query) when the strict pass returned zero.
+    if city_hard_filter and city_cfg and source == "linkedin":
         phrase = " ".join((city_cfg.get("include_text") or "").split()[:5])
         if phrase:
             body["includeText"] = [phrase]

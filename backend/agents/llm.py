@@ -266,12 +266,34 @@ def discover_candidates(source: str, icp: dict, max_candidates: int | None = Non
             return out
         # Exa is configured but returned nothing for this ICP. Do NOT fall
         # through to Claude + web_search here: that call takes 60-110s, but
-        # prospector.py caps each adapter at 30s (PROSPECTING_ADAPTER_TIMEOUT,
+        # prospector.py caps each adapter at 30-60s (PROSPECTING_ADAPTER_TIMEOUT,
         # lowered from 120s so one stuck source can't pin the pipeline). The
         # fallback is therefore guaranteed to be killed mid-flight, producing
         # a misleading "source took too long" instead of an honest empty pool.
-        # Return [] so the source resolves fast. The Claude fallback below is
-        # reachable only when Exa is NOT configured at all.
+        #
+        # Instead, relax the query and retry Exa : each call is <1s so this
+        # stays fast. The usual culprit for an empty linkedin result is the
+        # city `includeText` hard-filter dropping every profile whose text
+        # doesn't literally contain the city phrase. Relax that first (city
+        # stays in the neural query), then drop the city entirely. Return []
+        # only when even the relaxed passes miss.
+        if icp.get("city"):
+            if source == "linkedin":
+                out = exa.discover_via_exa(
+                    source, icp, max_candidates, city_hard_filter=False)
+                if out:
+                    print(f"  [llm] {source}: strict-city Exa empty, "
+                          "relaxed includeText filter recovered "
+                          f"{len(out)} candidates")
+                    return out
+            no_city = {k: v for k, v in icp.items() if k != "city"}
+            out = exa.discover_via_exa(source, no_city, max_candidates)
+            if out:
+                print(f"  [llm] {source}: city-scoped Exa empty, dropped city "
+                      f"and recovered {len(out)} candidates")
+                return out
+        # The Claude fallback below is reachable only when Exa is NOT
+        # configured at all; with Exa present we always short-circuit here.
         return []
 
     tool = _SOURCE_TOOL[source]

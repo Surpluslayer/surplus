@@ -527,3 +527,56 @@ def test_discover_candidates_returns_exa_results_when_present(monkeypatch):
 
     out = llm.discover_candidates("linkedin", {"role": "founder"})
     assert out == [{"name": "Ada", "profile_url": "https://x/in/ada"}]
+
+
+def test_discover_candidates_relaxes_city_filter_when_strict_empty(monkeypatch):
+    """The strict city includeText filter is the usual cause of an empty Exa
+    result. When it zeroes out, we retry with city_hard_filter=False (city
+    stays in the neural query) and return those candidates instead of mock."""
+    from backend.agents import llm
+
+    monkeypatch.setattr(exa, "exa_available", lambda: True)
+
+    calls = []
+
+    def fake_discover(source, icp, max_candidates=5, city_hard_filter=True):
+        calls.append({"city": icp.get("city"), "hard": city_hard_filter})
+        # Strict pass (hard filter on, city present) finds nothing; the
+        # relaxed pass (hard filter off) recovers a real candidate.
+        if city_hard_filter and icp.get("city"):
+            return []
+        return [{"name": "Real Person", "identity": "real-person"}]
+
+    monkeypatch.setattr(exa, "discover_via_exa", fake_discover)
+    monkeypatch.setattr(
+        llm, "_client",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("relaxation recovered : Claude must not run")))
+
+    out = llm.discover_candidates("linkedin", {"role": "founder", "city": "NYC"})
+    assert out == [{"name": "Real Person", "identity": "real-person"}]
+    # Strict pass ran first, then the relaxed (hard filter off) pass.
+    assert calls[0] == {"city": "NYC", "hard": True}
+    assert calls[1]["hard"] is False
+
+
+def test_discover_candidates_drops_city_when_relaxed_still_empty(monkeypatch):
+    """If relaxing the hard filter still finds nobody, drop the city entirely
+    before giving up (last resort, still fast Exa calls)."""
+    from backend.agents import llm
+
+    monkeypatch.setattr(exa, "exa_available", lambda: True)
+
+    def fake_discover(source, icp, max_candidates=5, city_hard_filter=True):
+        # Anything with a city set is empty; only the city-dropped query hits.
+        if icp.get("city"):
+            return []
+        return [{"name": "Anywhere Person", "identity": "anywhere"}]
+
+    monkeypatch.setattr(exa, "discover_via_exa", fake_discover)
+    monkeypatch.setattr(
+        llm, "_client",
+        lambda: (_ for _ in ()).throw(AssertionError("Claude must not run")))
+
+    out = llm.discover_candidates("linkedin", {"role": "founder", "city": "NYC"})
+    assert out == [{"name": "Anywhere Person", "identity": "anywhere"}]
