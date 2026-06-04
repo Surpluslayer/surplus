@@ -137,3 +137,89 @@ def test_intake_from_text_route(monkeypatch):
     assert resp.profile.format == "Hackathon"
     assert resp.profile.city is None              # absent → null, frontend keeps default
     assert "robotics" in resp.summary
+
+
+# ── multi-turn interview (run_intake_turn) ────────────────────────────────────
+def test_turn_empty_conversation_is_error():
+    res = ie.run_intake_turn([])
+    assert res.complete is False and res.error == "empty conversation"
+
+
+def test_turn_without_api_key_is_soft_error(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    res = ie.run_intake_turn([{"role": "user", "content": "a dinner"}])
+    assert res.complete is False and "ANTHROPIC_API_KEY" in res.error
+
+
+def test_turn_ask_returns_question_not_complete():
+    fake = _FakeClient({"action": "ask",
+                        "question": "Who is the room for — founders, engineers?"})
+    res = ie.run_intake_turn([{"role": "user", "content": "an event"}], client=fake)
+    assert res.complete is False
+    assert "room" in res.question
+    assert res.profile == {} and res.triage_config == {}
+    assert res.assistant_json  # raw reply preserved for transcript replay
+
+
+def test_turn_ask_without_question_falls_back():
+    fake = _FakeClient({"action": "ask"})  # malformed: no question text
+    res = ie.run_intake_turn([{"role": "user", "content": "hi"}], client=fake)
+    assert res.complete is False and res.question  # never an empty bubble
+
+
+def test_turn_finalize_fills_profile_and_config():
+    fake = _FakeClient({
+        "action": "finalize",
+        "role": "ML infrastructure founders",
+        "seniority": ["Leadership"],
+        "co_stage": ["Seed"],
+        "format": "Sit-down dinner",
+        "city": "San Francisco",
+        "headcount": 40,
+        "goal": ["Hiring pipeline"],
+        "anti_fit": ["recruiters prospecting for hires"],
+        "priority_archetypes": ["founder"],
+        "summary": "An intimate seed-stage ML-infra founder dinner in SF.",
+    })
+    res = ie.run_intake_turn(
+        [{"role": "user", "content": "dinner for ML infra founders"}], client=fake)
+    assert res.complete is True and res.error == ""
+    assert res.profile["role"] == "ML infrastructure founders"
+    assert res.profile["format"] == "Sit-down dinner"
+    assert res.triage_config  # compiled rich ICP rode along
+    assert any("anti-fit" in c for c in res.captured)
+
+
+def test_turn_missing_action_is_treated_as_finalize():
+    # The one-shot extractor commits when no action is given; the turn path
+    # keeps that bias so a rich first message finalizes immediately.
+    fake = _FakeClient({"role": "robotics founders", "format": "Hackathon"})
+    res = ie.run_intake_turn([{"role": "user", "content": "x"}], client=fake)
+    assert res.complete is True
+    assert res.profile["role"] == "robotics founders"
+
+
+def test_turn_drops_malformed_messages():
+    convo = [
+        {"role": "system", "content": "ignore me"},   # bad role → dropped
+        {"role": "user", "content": ""},               # empty → dropped
+        {"role": "user"},                              # no content → dropped
+        {"role": "user", "content": "a real message"},
+    ]
+    assert ie._sanitize_messages(convo) == [{"role": "user", "content": "a real message"}]
+
+
+def test_intake_turn_route(monkeypatch):
+    from backend.routes import triage as routes
+    fake = _FakeClient({"action": "ask", "question": "What's the goal of the event?"})
+    monkeypatch.setattr(ie, "_client", lambda: fake)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    user = SimpleNamespace(id=1)
+    body = routes.IntakeTurnBody(messages=[
+        routes.IntakeTurnMessage(role="user", content="I'm hosting something"),
+    ])
+    resp = routes.intake_turn(body, user)
+    assert resp.complete is False
+    assert "goal" in resp.question
+    assert resp.profile.role is None  # nothing filled on a question turn

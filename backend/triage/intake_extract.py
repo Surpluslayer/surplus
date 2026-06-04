@@ -121,6 +121,136 @@ _SYSTEM = (
 )
 
 
+# Multi-turn variant of the system prompt. Everything about the vocabulary and
+# the field contract is identical to the one-shot _SYSTEM (we reuse it verbatim);
+# this only layers an ask/finalize protocol on top so the model can hold a short
+# back-and-forth before committing. The normalization on finalize is the SAME
+# code path as the one-shot, so the chat produces a chip profile + triage_config
+# the form auto-fills exactly as `extract_intake_profile` does today.
+_TURN_PROTOCOL = (
+    "\n\nThis is an ongoing, continuous conversation that spans many turns. On "
+    "EACH turn reply with ONLY a JSON object, no prose, in one of two shapes:\n"
+    '  1. When an ESSENTIAL detail is genuinely missing: '
+    '{"action": "ask", "question": "<one short, specific question>"}\n'
+    '  2. Otherwise: {"action": "finalize", <all the profile + curation fields '
+    "described above>}\n\n"
+    "Ask a question ONLY when you truly can't tell who the room is for or what "
+    "the host wants out of it. If you have enough, finalize. Prefer finalizing.\n\n"
+    "IMPORTANT, this is a LIVE form the host keeps editing by talking to you:\n"
+    "  - The conversation does NOT end when you finalize. The host will keep "
+    "refining ('make it 60 seats', 'change the goal to fundraising', 'actually "
+    "they're more senior'). Treat every new message as an edit to the current "
+    "picture and finalize AGAIN.\n"
+    "  - Each finalize REPLACES the whole form, so ALWAYS include the COMPLETE "
+    "profile reflecting everything said so far, not just the latest change. "
+    "Carry forward every field the host already established and apply their new "
+    "tweak on top.\n"
+    "  - In the 'summary' field, describe the current room in one short sentence "
+    "so the host can confirm the change landed."
+)
+
+_TURN_SYSTEM = _SYSTEM + _TURN_PROTOCOL
+
+# Defensive caps on the conversation we'll accept from the client. The route is
+# auth-gated, but a runaway transcript shouldn't be able to balloon a prompt.
+_MAX_TURN_MESSAGES = 40
+_MAX_TURN_CHARS = 6_000
+
+
+@dataclass
+class IntakeTurnResult:
+    """Outcome of one multi-turn interview turn.
+
+    When `complete` is False, `question` holds the next thing to ask and the
+    rest is empty. When `complete` is True, `profile` / `triage_config` /
+    `captured` / `summary` carry the SAME shapes `extract_intake_profile`
+    returns, so the caller fills the form identically. `assistant_json` is the
+    raw model reply : the frontend feeds it back as the assistant turn so the
+    next call sees a coherent history. Never set on error-only results."""
+    complete: bool = False
+    question: str = ""
+    profile: dict = field(default_factory=dict)
+    triage_config: dict = field(default_factory=dict)
+    summary: str = ""
+    captured: list[str] = field(default_factory=list)
+    assistant_json: str = ""
+    error: str = ""
+
+
+def _sanitize_messages(messages: object) -> list[dict]:
+    """Coerce a client-supplied transcript into Anthropic-style message dicts,
+    dropping anything malformed. Keeps only the trailing _MAX_TURN_MESSAGES and
+    truncates over-long content so a hostile/runaway transcript can't bloat the
+    prompt."""
+    if not isinstance(messages, (list, tuple)):
+        return []
+    out: list[dict] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        content = m.get("content")
+        if role not in ("user", "assistant") or not isinstance(content, str):
+            continue
+        content = content.strip()
+        if not content:
+            continue
+        out.append({"role": role, "content": content[:_MAX_TURN_CHARS]})
+    return out[-_MAX_TURN_MESSAGES:]
+
+
+def run_intake_turn(messages: list[dict], *, client=None) -> IntakeTurnResult:
+    """One turn of the multi-turn intake interview. Never raises.
+
+    `messages` is the running history as Anthropic-style dicts
+    ([{"role": "user", "content": "..."}, {"role": "assistant", ...}, ...]).
+    Returns an IntakeTurnResult: either a clarifying `.question` (complete=False)
+    or a finalized chip `.profile` + rich `.triage_config` (complete=True),
+    normalized through the exact same path as the one-shot extractor."""
+    convo = _sanitize_messages(messages)
+    if not convo:
+        return IntakeTurnResult(error="empty conversation")
+    if not (os.environ.get("ANTHROPIC_API_KEY") or "").strip() and client is None:
+        return IntakeTurnResult(error="ANTHROPIC_API_KEY unset")
+    try:
+        cli = client or _client()
+        resp = cli.messages.create(
+            model=INTAKE_MODEL,
+            max_tokens=INTAKE_MAX_TOKENS,
+            system=_TURN_SYSTEM,
+            messages=convo,
+        )
+        body = "".join(getattr(b, "text", "") for b in resp.content)
+    except Exception as exc:  # noqa: BLE001
+        return IntakeTurnResult(error=f"{type(exc).__name__}: {exc}")
+
+    data = extract_json(body)
+    if not isinstance(data, dict):
+        return IntakeTurnResult(error="model did not return JSON",
+                                assistant_json=body)
+    action = str(data.get("action") or "").lower()
+    if action == "ask":
+        q = str(data.get("question") or "").strip()
+        # An "ask" with no question is useless : fall back to a generic nudge so
+        # the UI never shows an empty assistant bubble.
+        return IntakeTurnResult(
+            complete=False, assistant_json=body,
+            question=q or "Tell me a bit more about who this event is for.")
+    # Anything that isn't an explicit ask is treated as a finalize (the one-shot
+    # extractor has the same bias toward committing).
+    profile = _normalize_profile(data)
+    triage_config, captured = _build_triage_config(data, profile)
+    summary = data.get("summary")
+    return IntakeTurnResult(
+        complete=True,
+        profile=profile,
+        triage_config=triage_config,
+        captured=captured,
+        summary=summary.strip() if isinstance(summary, str) else "",
+        assistant_json=body,
+    )
+
+
 @dataclass
 class IntakeExtractResult:
     """Outcome of one extraction.

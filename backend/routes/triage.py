@@ -38,7 +38,7 @@ from ..triage.luma import (
     fetch_luma_event, suggest_triage_config,
 )
 from ..triage.rubric import synthesize_rubric, icp_from_event
-from ..triage.intake_extract import extract_intake_profile
+from ..triage.intake_extract import extract_intake_profile, run_intake_turn
 from ..triage.score import evaluate_all
 
 
@@ -243,6 +243,60 @@ def intake_from_text(
         triage_config=result.triage_config,
         captured=result.captured,
         summary=result.summary,
+        error=result.error,
+    )
+
+
+class IntakeTurnMessage(BaseModel):
+    """One transcript turn. `role` is the speaker; `content` is what they said
+    (for the assistant, the raw JSON it returned last turn so the model sees a
+    coherent history)."""
+    role: str
+    content: str
+
+
+class IntakeTurnBody(BaseModel):
+    messages: list[IntakeTurnMessage] = []
+
+
+class IntakeTurnResponse(BaseModel):
+    """One interview turn. When `complete` is False the host should keep
+    chatting (`question` is the next thing to ask). When True, `profile` /
+    `triage_config` / `captured` / `summary` fill the form exactly like the
+    one-shot path. `assistant_json` is the raw model reply : the frontend stores
+    it as the assistant turn so the next call has a coherent history."""
+    complete: bool = False
+    question: str = ""
+    profile: IntakeProfile = IntakeProfile()
+    triage_config: dict = {}
+    captured: list[str] = []
+    summary: str = ""
+    assistant_json: str = ""
+    error: str = ""
+
+
+@router.post("/intake/turn", response_model=IntakeTurnResponse)
+def intake_turn(
+    body: IntakeTurnBody,
+    user: models.User = Depends(current_user),
+):
+    """Run one turn of the multi-turn intake interview.
+
+    Same contract as /intake/from-text on finalize (chip profile + rich
+    triage_config the form auto-fills), but conversational : the model may ask a
+    clarifying question first instead of committing. Stateless : the client owns
+    the transcript and replays it each turn (in-memory, nothing persisted).
+    Auth-gated so anonymous traffic can't use us as a free LLM proxy. Fail-soft :
+    a missing key / model error returns complete=False + error, never a 500."""
+    result = run_intake_turn([m.model_dump() for m in body.messages])
+    return IntakeTurnResponse(
+        complete=result.complete,
+        question=result.question,
+        profile=IntakeProfile(**result.profile),
+        triage_config=result.triage_config,
+        captured=result.captured,
+        summary=result.summary,
+        assistant_json=result.assistant_json,
         error=result.error,
     )
 

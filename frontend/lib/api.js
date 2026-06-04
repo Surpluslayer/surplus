@@ -47,6 +47,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ description }),
     }),
+  // Multi-turn intake interview. The client owns the transcript and replays it
+  // each turn ([{role, content}, ...], assistant turns carry the raw JSON the
+  // model returned). Returns either a clarifying { question } (complete=false)
+  // or a finalized { profile, triage_config, captured, summary } that fills the
+  // form just like intakeFromText. Stateless : nothing is persisted server-side.
+  intakeTurn: (messages) =>
+    request("/events/intake/turn", {
+      method: "POST",
+      body: JSON.stringify({ messages }),
+    }),
 
   // 02 prospecting
   runProspect: (id) => request(`/events/${id}/prospect`, { method: "POST" }),

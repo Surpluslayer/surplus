@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { ArrowRight, CornerDownRight, Loader2, AlertCircle, Link2, Check, Sparkles } from "lucide-react";
+import { ArrowRight, CornerDownRight, Loader2, AlertCircle, Link2, Check, Sparkles, X } from "lucide-react";
 import { api } from "./lib/api.js";
 
 // Unified intake form for the merged app. Mode-less : both downstream
@@ -71,15 +71,27 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
   const [lumaError, setLumaError] = useState(null);
   const [lumaImported, setLumaImported] = useState(null);
 
-  // "Describe your event" : the host types a sentence and we parse it into the
-  // form's chips (api.intakeFromText → /events/intake/from-text). Mode-less :
-  // nothing is persisted, we only fill the profile state for the operator to
-  // edit. Only fields the model returned are applied, so the form's defaults
-  // survive for anything the description didn't mention.
-  const [describeText, setDescribeText] = useState("");
-  const [describing, setDescribing] = useState(false);
-  const [describeError, setDescribeError] = useState(null);
-  const [describeSummary, setDescribeSummary] = useState(null);
+  // "Describe your event" : a multi-turn interview (api.intakeTurn →
+  // /events/intake/turn). The host chats; the model either asks one clarifying
+  // question or finalizes, at which point we snap the result onto the form's
+  // chips. Mode-less : nothing is persisted server-side and the transcript
+  // lives only in this component's state (cleared on refresh). Only fields the
+  // model returned are applied, so the form's defaults survive anything the
+  // conversation didn't mention.
+  //
+  // Each chatLog entry carries `text` (shown in the bubble) and `content` (sent
+  // back to the model as that turn's message : for the assistant, the raw JSON
+  // it returned, so the next turn sees a coherent history).
+  const [chatLog, setChatLog] = useState([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatError, setChatError] = useState(null);
+  // The interview is a floating widget : a launcher bubble (bottom-right) opens
+  // a panel over the form. Closed by default so the form is the first thing the
+  // host sees; the panel writes its result onto the form behind it. The chat is
+  // CONTINUOUS : it never locks after a finalize — the host keeps refining and
+  // each finalize re-syncs the form, so this is a live editing conversation.
+  const [chatOpen, setChatOpen] = useState(false);
 
   const set = (k, v) => setProfile((p) => ({ ...p, [k]: v }));
   const toggle = (k, v) => setProfile((p) => ({ ...p, [k]: toggleIn(p[k], v) }));
@@ -120,31 +132,65 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
     });
   };
 
-  const handleDescribe = async () => {
-    setDescribeError(null);
-    setDescribeSummary(null);
-    const text = (describeText || "").trim();
-    if (!text) {
-      setDescribeError("Describe your event in a sentence or two first.");
-      return;
-    }
-    setDescribing(true);
+  const resetChat = () => {
+    setChatLog([]);
+    setChatInput("");
+    setChatError(null);
+  };
+
+  const handleChatSend = async () => {
+    setChatError(null);
+    const text = (chatInput || "").trim();
+    if (!text || chatBusy) return;
+    // Append the host's turn first so the bubble shows immediately, then replay
+    // the whole transcript to the model. `content` is what the model sees;
+    // `text` is what we render (identical for the host).
+    const userTurn = { role: "user", text, content: text };
+    const nextLog = [...chatLog, userTurn];
+    setChatLog(nextLog);
+    setChatInput("");
+    setChatBusy(true);
     try {
-      const res = await api.intakeFromText(text);
-      if (res?.error && (!res.profile || Object.keys(res.profile).every((k) => res.profile[k] == null))) {
-        setDescribeError(`Couldn't read that (${res.error}). Try adding a bit more detail.`);
+      const res = await api.intakeTurn(
+        nextLog.map((m) => ({ role: m.role, content: m.content })),
+      );
+      if (res?.error && !res?.complete && !res?.question) {
+        setChatError(`Couldn't read that (${res.error}). Try rephrasing.`);
         return;
       }
-      applyExtractedProfile(res?.profile || {}, res?.triage_config || null, text);
-      // Tell the host what we pulled beyond the chips (anti-fit, nice-to-haves,
-      // archetype priority) so they trust nothing was dropped on the floor.
-      const captured = Array.isArray(res?.captured) ? res.captured : [];
-      const base = res?.summary || "Filled in the fields below — review and tweak before continuing.";
-      setDescribeSummary(captured.length ? `${base} (Also captured: ${captured.join("; ")}.)` : base);
+      if (res?.complete) {
+        // The host's combined words become the Event `brief` (persisted at
+        // createEvent, feeds outreach compose with real context). Each finalize
+        // re-applies the COMPLETE picture, so refinements ('make it 60 seats')
+        // re-sync the form on top of what's already there.
+        const brief = nextLog
+          .filter((m) => m.role === "user")
+          .map((m) => m.text)
+          .join("\n");
+        applyExtractedProfile(res.profile || {}, res.triage_config || null, brief);
+        const captured = Array.isArray(res.captured) ? res.captured : [];
+        const base =
+          res.summary || "Updated the form — tell me anything you'd like to change.";
+        const summary = captured.length
+          ? `${base} (Also captured: ${captured.join("; ")}.)`
+          : base;
+        // `finalized` marks this as a turn that synced the form, so the bubble
+        // can show a "✓ form updated" caption. The conversation stays open.
+        setChatLog([
+          ...nextLog,
+          { role: "assistant", text: summary, content: res.assistant_json || summary, finalized: true },
+        ]);
+      } else {
+        const q = res?.question || "Tell me a bit more about who this event is for.";
+        setChatLog([
+          ...nextLog,
+          { role: "assistant", text: q, content: res?.assistant_json || q },
+        ]);
+      }
     } catch (err) {
-      setDescribeError(err?.message || "Could not generate from that description.");
+      setChatError(err?.message || "Could not reach the interviewer. Try again.");
     } finally {
-      setDescribing(false);
+      setChatBusy(false);
     }
   };
 
@@ -257,47 +303,9 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
         <h1>Define the event</h1>
       </header>
 
-      {/* "Describe your event" : natural-language fast-path. Sits at the very
-          top because it's the primary way to fill the form — the host types a
-          sentence and we snap it onto the A/B/C chips below. */}
-      <div className="luma-quick" style={{ flexWrap: "wrap", alignItems: "flex-start" }}>
-        <Sparkles size={14} aria-hidden className="luma-quick-icon" />
-        <label htmlFor="describe-event" className="luma-quick-label">
-          Describe it
-        </label>
-        <textarea
-          id="describe-event"
-          className="text-in luma-quick-input"
-          style={{ minHeight: 48, resize: "vertical", flex: "1 1 320px" }}
-          rows={2}
-          value={describeText}
-          onChange={(e) => setDescribeText(e.target.value)}
-          placeholder="e.g. Intimate dinner for seed-stage ML infra founders in SF, ~40 seats, no recruiters."
-        />
-        <button
-          type="button"
-          className="btn-primary luma-quick-btn"
-          onClick={handleDescribe}
-          disabled={describing || !describeText.trim()}
-        >
-          {describing ? (
-            <><Loader2 className="spin" size={14} /> Reading</>
-          ) : (
-            <>Fill form <Sparkles size={14} /></>
-          )}
-        </button>
-        <span className="hint luma-quick-hint">*we&apos;ll fill the fields below — edit anything after</span>
-      </div>
-      {describeError && (
-        <div className="api-error" role="alert" style={{ marginTop: 4 }}>
-          <AlertCircle size={14} /> {describeError}
-        </div>
-      )}
-      {describeSummary && !describeError && (
-        <div className="luma-ok-banner" style={{ marginTop: 4 }}>
-          <Check size={14} /> {describeSummary}
-        </div>
-      )}
+      {/* The "Describe it" interview is a floating widget rendered at the end
+          of this component (see <IntakeChatWidget> below) so it overlays the
+          form rather than pushing it down. */}
 
       {/* One-line Luma pre-fill row. Sits above the form so the three
           A/B/C cards stay on screen without extra scrolling. Styled as
@@ -440,6 +448,163 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
           ) : (
             <>Continue <ArrowRight size={16} /></>
           )}
+        </button>
+      </div>
+
+      {/* ── Floating "Describe it" interview ──────────────────────────────
+          Fixed bottom-right: a launcher bubble toggles a chat panel that
+          overlays the form. The conversation lives in component state and,
+          on finalize, writes the chips behind the panel via applyExtracted-
+          Profile. Closed by default so the form stays the primary surface. */}
+      <div
+        className="intake-chat-fab"
+        style={{
+          position: "fixed", right: 24, bottom: 24, zIndex: 60,
+          display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 12,
+        }}
+      >
+        {chatOpen && (
+          <div
+            className="intake-chat-panel card"
+            role="dialog"
+            aria-label="Describe your event"
+            style={{
+              width: 360, maxWidth: "calc(100vw - 32px)",
+              maxHeight: "min(70vh, 560px)",
+              display: "flex", flexDirection: "column",
+              boxShadow: "0 16px 48px rgba(0,0,0,0.28)",
+              borderRadius: 14, overflow: "hidden", padding: 0,
+            }}
+          >
+            <div
+              style={{
+                display: "flex", alignItems: "center", gap: 8,
+                padding: "12px 14px",
+                borderBottom: "1px solid rgba(127,127,127,0.18)",
+              }}
+            >
+              <Sparkles size={15} className="luma-quick-icon" aria-hidden />
+              <strong style={{ flex: 1, fontSize: 14 }}>Describe your event</strong>
+              {chatLog.length > 0 && (
+                <button type="button" className="btn-link" onClick={resetChat} style={{ fontSize: 12 }}>
+                  Start over
+                </button>
+              )}
+              <button
+                type="button" aria-label="Close"
+                onClick={() => setChatOpen(false)}
+                style={{ background: "none", border: "none", cursor: "pointer", padding: 2, lineHeight: 0, color: "inherit" }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div
+              className="intake-chat-log"
+              style={{
+                flex: 1, minHeight: 120, overflowY: "auto",
+                padding: 12, display: "flex", flexDirection: "column", gap: 6,
+              }}
+            >
+              {chatLog.length === 0 && !chatBusy && (
+                <p className="hint" style={{ margin: 0, fontSize: 13, lineHeight: 1.5 }}>
+                  Tell me about your event in a sentence — who it&apos;s for, the vibe,
+                  roughly how many seats. I&apos;ll ask if I need more, then fill the
+                  form for you.
+                </p>
+              )}
+              {chatLog.map((m, i) => (
+                <React.Fragment key={i}>
+                  <div
+                    className={`intake-chat-bubble intake-chat-${m.role}`}
+                    style={{
+                      alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                      maxWidth: "85%", padding: "6px 10px", borderRadius: 10,
+                      fontSize: 13, lineHeight: 1.4, whiteSpace: "pre-wrap",
+                      background: m.role === "user" ? "var(--accent, #2563eb)" : "rgba(127,127,127,0.12)",
+                      color: m.role === "user" ? "#fff" : "inherit",
+                    }}
+                  >
+                    {m.text}
+                  </div>
+                  {m.finalized && (
+                    <span
+                      style={{
+                        alignSelf: "flex-start", display: "inline-flex", alignItems: "center",
+                        gap: 4, fontSize: 11, color: "var(--accent, #2563eb)", marginTop: -2,
+                      }}
+                    >
+                      <Check size={12} /> form updated
+                    </span>
+                  )}
+                </React.Fragment>
+              ))}
+              {chatBusy && (
+                <div
+                  className="intake-chat-bubble intake-chat-assistant"
+                  style={{ alignSelf: "flex-start", padding: "6px 10px", fontSize: 13, opacity: 0.6 }}
+                >
+                  <Loader2 className="spin" size={13} /> thinking…
+                </div>
+              )}
+            </div>
+
+            {chatError && (
+              <div className="api-error" role="alert" style={{ margin: "0 12px 8px" }}>
+                <AlertCircle size={14} /> {chatError}
+              </div>
+            )}
+
+            {/* Input never locks : the host keeps refining and each finalize
+                re-syncs the form behind the panel. */}
+            <div
+              style={{
+                display: "flex", gap: 8, padding: 12,
+                borderTop: "1px solid rgba(127,127,127,0.18)",
+              }}
+            >
+              <textarea
+                id="describe-event"
+                className="text-in"
+                style={{ minHeight: 40, resize: "none", flex: 1 }}
+                rows={2}
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleChatSend();
+                  }
+                }}
+                placeholder={chatLog.length === 0 ? "Describe your event…" : "Refine or ask…"}
+                /* eslint-disable-next-line jsx-a11y/no-autofocus */
+                autoFocus
+              />
+              <button
+                type="button" className="btn-primary"
+                onClick={handleChatSend}
+                disabled={chatBusy || !chatInput.trim()}
+                style={{ alignSelf: "stretch" }}
+              >
+                {chatBusy ? <Loader2 className="spin" size={14} /> : <ArrowRight size={14} />}
+              </button>
+            </div>
+          </div>
+        )}
+
+        <button
+          type="button"
+          className="btn-primary intake-chat-launch"
+          onClick={() => setChatOpen((o) => !o)}
+          aria-expanded={chatOpen}
+          style={{
+            borderRadius: 999, padding: "12px 18px",
+            display: "flex", alignItems: "center", gap: 8,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.28)",
+          }}
+        >
+          {chatOpen ? <X size={16} /> : <Sparkles size={16} />}
+          {chatOpen ? "Close" : chatLog.length > 0 ? "Refine event" : "Describe it"}
         </button>
       </div>
     </div>
