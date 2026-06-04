@@ -205,7 +205,7 @@ _COMPOSE_MAX_TOKENS = 800
 _COMPOSE_SYSTEM = """You are writing personalized LinkedIn outreach for an event invitation.
 
 You will produce two pieces:
-  - note: the LinkedIn connection request note. MAX 280 characters (LinkedIn hard limit is 300; we leave headroom). Reference one specific, concrete thing about THIS recipient (pulled from their profile bio / headline / what they work on), not a generic compliment. End with a low-pressure question.
+  - note: the LinkedIn connection request note. MAX 280 characters (LinkedIn hard limit is 300; we leave headroom). Reference one specific, concrete thing about THIS recipient (pulled from their profile bio / headline / what they work on), not a generic compliment. End with a low-pressure question about the EVENT (e.g. "want me to send the details?" / "worth a look?").
   - message: the first DM sent right after the connection is accepted. 3-6 sentences. Recap the event framing, weave in their specific background (role, company, what they work on), end with a soft ask to share details.
 
 GROUND RULES
@@ -218,6 +218,7 @@ GROUND RULES
   - Don't say "as an AI", don't apologize for reaching out.
   - Do NOT name other attendees / confirmed peers, even if you could. Keep it focused on the recipient and the event itself.
   - For the note: skip the greeting if you'd be over 280 chars; cut filler before content.
+  - NEVER ask to get on a call. No "hop on a call", "jump on a call", "quick call", "phone", "Zoom", or scheduling a call of any kind, in EITHER the note or the message. The ask is always about the event itself (sending details / coming along), never a call.
 
 VOICE MATCHING
 If the user message includes a `<style_examples>` block, those are real past
@@ -227,7 +228,8 @@ outreach messages the host has written. Mirror their:
   - opener style (e.g. "Hi <name>," vs "Hey <name>:" vs "Quick one for you,")
   - closer style (e.g. "Worth a chat?" vs "Open to it?" vs "Let me know.")
 Do NOT copy specific facts from the examples (different recipient, different
-event). Match the *voice*, not the content.
+event). Match the *voice*, not the content. Even if an example asks to get on a
+call, do NOT carry that over : the no-call rule above always wins.
 
 OUTPUT FORMAT
 Return ONLY a JSON object. No prose, no markdown fences. Schema:
