@@ -132,12 +132,6 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
     });
   };
 
-  const resetChat = () => {
-    setChatLog([]);
-    setChatInput("");
-    setChatError(null);
-  };
-
   const handleChatSend = async () => {
     setChatError(null);
     const text = (chatInput || "").trim();
@@ -158,16 +152,23 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
         setChatError(`Couldn't read that (${res.error}). Try rephrasing.`);
         return;
       }
+      // The host's combined words become the Event `brief` (persisted at
+      // createEvent, feeds outreach compose with real context).
+      const brief = nextLog
+        .filter((m) => m.role === "user")
+        .map((m) => m.text)
+        .join("\n");
+      // Apply whatever the model extracted THIS turn — even on an 'ask' turn it
+      // returns the fields it already learned, so the form fills incrementally
+      // (e.g. the host names the event, we set it now instead of waiting for a
+      // full finalize). applyExtractedProfile only writes truthy fields, so a
+      // mostly-empty partial profile is a safe no-op.
+      if (res?.profile) {
+        applyExtractedProfile(res.profile, res.triage_config || null, brief);
+      }
       if (res?.complete) {
-        // The host's combined words become the Event `brief` (persisted at
-        // createEvent, feeds outreach compose with real context). Each finalize
-        // re-applies the COMPLETE picture, so refinements ('make it 60 seats')
-        // re-sync the form on top of what's already there.
-        const brief = nextLog
-          .filter((m) => m.role === "user")
-          .map((m) => m.text)
-          .join("\n");
-        applyExtractedProfile(res.profile || {}, res.triage_config || null, brief);
+        // Each finalize re-applies the COMPLETE picture, so refinements
+        // ('make it 60 seats') re-sync the form on top of what's already there.
         const captured = Array.isArray(res.captured) ? res.captured : [];
         const base =
           res.summary || "Updated the form — tell me anything you'd like to change.";
@@ -485,11 +486,6 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
             >
               <Sparkles size={15} className="luma-quick-icon" aria-hidden />
               <strong style={{ flex: 1, fontSize: 14 }}>Describe your event</strong>
-              {chatLog.length > 0 && (
-                <button type="button" className="btn-link" onClick={resetChat} style={{ fontSize: 12 }}>
-                  Start over
-                </button>
-              )}
               <button
                 type="button" aria-label="Close"
                 onClick={() => setChatOpen(false)}

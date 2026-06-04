@@ -131,7 +131,12 @@ _TURN_PROTOCOL = (
     "\n\nThis is an ongoing, continuous conversation that spans many turns. On "
     "EACH turn reply with ONLY a JSON object, no prose, in one of two shapes:\n"
     '  1. When an ESSENTIAL detail is genuinely missing: '
-    '{"action": "ask", "question": "<one short, specific question>"}\n'
+    '{"action": "ask", "question": "<one short, specific question>", '
+    "<PLUS every profile field you have ALREADY learned so far>}\n"
+    "     Even while asking, ALWAYS include the fields you can already fill "
+    "(event_name, city, headcount, format, role, ...). The form fills "
+    "incrementally as the host talks, so never drop a detail they gave you "
+    "just because you still need one more.\n"
     '  2. Otherwise: {"action": "finalize", <all the profile + curation fields '
     "described above>}\n\n"
     "Ask a question ONLY when you truly can't tell who the room is for or what "
@@ -231,10 +236,16 @@ def run_intake_turn(messages: list[dict], *, client=None) -> IntakeTurnResult:
     action = str(data.get("action") or "").lower()
     if action == "ask":
         q = str(data.get("question") or "").strip()
+        # An "ask" turn still carries whatever chip fields the model already
+        # learned, so the form fills incrementally (e.g. the host names the
+        # event up front : we set it now instead of waiting for a full
+        # finalize). Only the chip subset : the rich triage_config is compiled
+        # at finalize, not on every partial turn.
+        partial = _normalize_profile(data)
         # An "ask" with no question is useless : fall back to a generic nudge so
         # the UI never shows an empty assistant bubble.
         return IntakeTurnResult(
-            complete=False, assistant_json=body,
+            complete=False, assistant_json=body, profile=partial,
             question=q or "Tell me a bit more about who this event is for.")
     # Anything that isn't an explicit ask is treated as a finalize (the one-shot
     # extractor has the same bias toward committing).
