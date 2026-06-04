@@ -19,47 +19,11 @@ data + configured voice examples — so a demo never shows "[dry-run]" text.
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime, timezone
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
-
-
-# ── Voice-sample relevance (deterministic) ──────────────────────────────
-# The host's outbound messages include Surplus's OWN auto-composed sends. If
-# those land in the voice pool the composer learns to imitate its own
-# templates (a self-reinforcing loop), so we drop anything Surplus has sent on
-# the host's behalf. Everything else the host actually typed is kept.
-_VOICE_MIN_LEN = 25      # original noise gate : skip one-word replies
-
-
-def _norm(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "").strip().lower())
-
-
-def _relevant_voice_samples(messages, sent_bodies) -> list[str]:
-    """Filter raw outbound messages down to host-authored ones.
-
-    Drops anything Surplus itself sent (matched against the host's OutreachLog
-    bodies) plus trivially-short noise; keeps everything else verbatim.
-    """
-    sent_norm = {_norm(b) for b in (sent_bodies or set()) if (b or "").strip()}
-    seen: set[str] = set()
-    out: list[str] = []
-    for m in messages or []:
-        t = (m or "").strip()
-        if not t or len(t) <= _VOICE_MIN_LEN:
-            continue
-        n = _norm(t)
-        if n in sent_norm:      # our own automation output : never voice
-            continue
-        if n in seen:           # collapse exact repeats
-            continue
-        seen.add(n)
-        out.append(t)
-    return out
 
 
 def enrich_prospect(prospect, provider) -> bool:
@@ -98,18 +62,13 @@ def enrich_prospect(prospect, provider) -> bool:
     return True
 
 
-def sync_host_voice(user, provider, sent_bodies=None) -> None:
+def sync_host_voice(user, provider) -> None:
     """Auto-populate user.voice_examples from the host's real LinkedIn sent
     messages so composed outreach matches their voice. Idempotent via
     voice_synced_at.
 
     Never clobbers manually-curated examples : if voice_examples is already
     set, we just stamp voice_synced_at so the auto-sync stays out of the way.
-
-    sent_bodies : the host's own OutreachLog bodies (what Surplus has sent on
-    their behalf). Passed by the caller (which holds the DB session) so we can
-    drop our own automated sends from the voice pool : otherwise the composer
-    learns to imitate its own templates.
     """
     if getattr(user, "voice_synced_at", None) is not None:
         return
@@ -117,35 +76,15 @@ def sync_host_voice(user, provider, sent_bodies=None) -> None:
         user.voice_synced_at = _utcnow()
         return
     try:
-        # Over-fetch : relevance filtering below will discard most of these,
-        # so pull a wide sample to still land ~8 good ones.
-        msgs = provider.fetch_recent_sent_messages(limit=40)
+        msgs = provider.fetch_recent_sent_messages(limit=8)
     except Exception:  # noqa: BLE001
         msgs = []
-    samples = _relevant_voice_samples(msgs, sent_bodies)[:8]
+    # Keep substantive messages only : one-word replies ("thanks!", "sounds
+    # good") are noise for voice matching.
+    samples = [m.strip() for m in (msgs or []) if len(m.strip()) > 25][:8]
     if samples:
         user.voice_examples = json.dumps(samples)
     user.voice_synced_at = _utcnow()
-
-
-def _host_sent_bodies(db, user) -> set[str]:
-    """Every message body Surplus has sent on this host's behalf (across all
-    their events' prospects). Used to drop our own automated sends from the
-    voice pool. Best-effort : any failure returns an empty set."""
-    if user is None or getattr(user, "id", None) is None:
-        return set()
-    try:
-        from .. import models
-        rows = (db.query(models.OutreachLog.body)
-                  .join(models.Prospect,
-                        models.OutreachLog.prospect_id == models.Prospect.id)
-                  .join(models.Event,
-                        models.Prospect.event_id == models.Event.id)
-                  .filter(models.Event.user_id == user.id)
-                  .all())
-        return {r[0] for r in rows if r and r[0]}
-    except Exception:  # noqa: BLE001
-        return set()
 
 
 def _live_provider_for_user(user):
@@ -190,8 +129,7 @@ async def enrich_then_prefetch(event_id: int, prospect_ids: list[int],
             provider = _live_provider_for_user(user) if user else None
             if provider is not None:
                 try:
-                    sync_host_voice(user, provider,
-                                    sent_bodies=_host_sent_bodies(db, user))
+                    sync_host_voice(user, provider)
                 except Exception:  # noqa: BLE001
                     pass
             prospects = (db.query(models.Prospect)
