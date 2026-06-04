@@ -30,9 +30,21 @@ from __future__ import annotations
 import hmac
 import hashlib
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
+
+# A message is a "bare link" when, after stripping every URL out of it, there
+# are no remaining word characters : i.e. it's nothing but one or more links
+# (e.g. "https://join.surpluslayer.com/"). These carry zero voice signal, so
+# they're dropped before they ever reach the host's voice_examples.
+_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+
+
+def _is_bare_link(text: str) -> bool:
+    without_urls = _URL_RE.sub(" ", text or "")
+    return not re.search(r"\w", without_urls)
 
 from .base import (
     LinkedInProvider,
@@ -478,7 +490,10 @@ class UnipileProvider(LinkedInProvider):
                 continue
             for m in self.fetch_thread(str(chat_id)):
                 if m.get("direction") == "outbound" and m.get("text"):
-                    out.append(m["text"].strip())
+                    text = m["text"].strip()
+                    if _is_bare_link(text):
+                        continue  # zero voice signal : drop it
+                    out.append(text)
                     if len(out) >= limit:
                         return out
         return out
