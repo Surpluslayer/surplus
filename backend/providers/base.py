@@ -25,17 +25,24 @@ from typing import Optional
 # ── Outbound copy hygiene ────────────────────────────────────────────
 # Em/en/figure dashes are a giveaway that copy was machine-written and read
 # stiff in a LinkedIn note. We replace them with a comma so every message
-# that leaves the box reads human. ASCII hyphen-minus ("co-founder") is
-# deliberately left alone. Applied in LeadPayload.__post_init__ so EVERY
-# send path (invite note, post-accept DM, follow-up, AI auto-reply) is
-# covered : they all build a LeadPayload before hitting a provider.
-_DASH_RE = re.compile(r"\s*[—–―−]\s*")
+# that leaves the box reads human. Applied in LeadPayload.__post_init__ so
+# EVERY send path (invite note, post-accept DM, follow-up, AI auto-reply)
+# is covered : they all build a LeadPayload before hitting a provider.
+#
+# Two cases collapse to a comma:
+#   1. Real em/en/figure dashes (and the unicode minus), tight or spaced.
+#   2. An ASCII hyphen-minus used AS a dash, i.e. surrounded by whitespace
+#      ("Vancouver - let's ..."). A *spaced* hyphen is the same machine-copy
+#      tell as an em dash. A hyphen WITHOUT surrounding spaces ("co-founder")
+#      is a real hyphenated word and is deliberately left untouched.
+_DASH_RE = re.compile(r"\s*[—–―−]\s*|\s+-\s+")
 
 
 def strip_em_dashes(text: Optional[str]) -> Optional[str]:
-    """Replace em/en/figure dashes (and the unicode minus) with ', ' so
-    outbound copy reads human. Tight ('a—b') and spaced ('a — b') dashes
-    both collapse to a comma. Leaves the ASCII hyphen-minus untouched.
+    """Replace em/en/figure dashes (and the unicode minus), plus a spaced
+    ASCII hyphen used as a dash, with ', ' so outbound copy reads human.
+    Tight ('a—b') and spaced ('a — b' / 'a - b') dashes collapse to a comma.
+    A hyphen inside a word ('co-founder') is left untouched.
 
     Surgical: if the text contains no dash it is returned byte-for-byte
     unchanged (we must not reflow the app's intentional ' : ' style or any
@@ -50,6 +57,63 @@ def strip_em_dashes(text: Optional[str]) -> Optional[str]:
     out = re.sub(r"^\s*,\s*", "", out)       # leading comma artifact
     out = re.sub(r"\s*,\s*$", "", out)       # trailing comma artifact
     return out.strip()
+
+
+# ── No-call hygiene ──────────────────────────────────────────────────
+# Outreach must never propose a phone / video call. A host's own past
+# messages (used as voice examples) routinely close with "open to a quick
+# call soon?", and the model copies that closer verbatim into nearly every
+# note. The compose prompt forbids it, but a prompt rule can't be trusted
+# against an example the model is literally shown. This is the deterministic
+# backstop: drop the call ask at the clause level so the rest of the
+# sentence ("Let's stay in touch") survives. Applied in
+# LeadPayload.__post_init__, so EVERY send path is covered.
+_CALL_ASK_RE = re.compile(
+    r"""(?ix)
+    (?:
+        (?:hop|jump|get|grab|getting)\s+on\s+(?:a\s+)?(?:quick\s+|short\s+|brief\s+)?call\b
+      | grab\s+(?:a\s+)?(?:quick\s+|short\s+|brief\s+)?call\b
+      | \b(?:quick|short|brief|phone|video|catch[-\s]?up)\s+call\b
+      | give\s+(?:you|me)\s+a\s+call\b
+      | \ba\s+call\s+(?:soon|sometime|this\s+week|next\s+week)\b
+      | \bcall\s+(?:soon|sometime|this\s+week|next\s+week)\b
+      | (?:let['’]?s|love\s+to|happy\s+to|able\s+to|can\s+we|could\s+we|we\s+could|wanna|want\s+to)\s+(?:quickly\s+)?call\b
+      | \bcalling\s+works\b
+      | \bzoom\b
+      | video\s+chat\b
+    )
+    """,
+)
+
+
+def strip_call_asks(text: Optional[str]) -> Optional[str]:
+    """Remove any call ask from outbound copy, surgically.
+
+    Works clause-by-clause: within each sentence, drop only the comma-clause
+    that proposes a call, keeping the rest. If a whole sentence is nothing but
+    a call ask, drop the sentence. A trailing '?' left behind by removing the
+    asking clause is downgraded to '.' so we don't end on a dangling question.
+
+    Returns the text unchanged when no call ask is present (byte-for-byte)."""
+    if not text or not _CALL_ASK_RE.search(text):
+        return text
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    kept_sentences: list[str] = []
+    for sent in sentences:
+        m = re.search(r"([.!?]+)\s*$", sent)
+        term = m.group(1) if m else ""
+        core = sent[: m.start()] if m else sent
+        clauses = [c.strip() for c in core.split(",")]
+        kept = [c for c in clauses if c and not _CALL_ASK_RE.search(c)]
+        if not kept:
+            continue  # the whole sentence was the call ask
+        # If the dropped clause was the one carrying the '?', the survivors
+        # are statements : end on a period, not a dangling question mark.
+        if term == "?" and _CALL_ASK_RE.search(clauses[-1]):
+            term = "."
+        kept_sentences.append(", ".join(kept) + (term or "."))
+    result = " ".join(kept_sentences).strip()
+    return result or text  # never blank out the whole message
 
 
 # The full canonical state machine. Webhooks must normalize into these.
@@ -96,8 +160,10 @@ class LeadPayload:
         # Last line of defense: strip em/en dashes from everything we send,
         # no matter which composer produced it. frozen=True, so mutate via
         # object.__setattr__.
-        object.__setattr__(self, "note", strip_em_dashes(self.note) or "")
-        object.__setattr__(self, "message", strip_em_dashes(self.message) or "")
+        object.__setattr__(
+            self, "note", strip_call_asks(strip_em_dashes(self.note)) or "")
+        object.__setattr__(
+            self, "message", strip_call_asks(strip_em_dashes(self.message)) or "")
 
 
 @dataclass(frozen=True)

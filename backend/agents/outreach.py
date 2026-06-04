@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 
 from .. import config
 from ..jsonx import extract_json
-from ..providers.base import strip_em_dashes
+from ..providers.base import strip_call_asks, strip_em_dashes
 
 
 # ---- compose result cache + prefetch -------------------------------------
@@ -205,8 +205,8 @@ _COMPOSE_MAX_TOKENS = 800
 _COMPOSE_SYSTEM = """You are writing personalized LinkedIn outreach for an event invitation.
 
 You will produce two pieces:
-  - note: the LinkedIn connection request note. MAX 280 characters (LinkedIn hard limit is 300; we leave headroom). Reference one specific, concrete thing about THIS recipient (pulled from their profile bio / headline / what they work on), not a generic compliment. End with a low-pressure question about the EVENT (e.g. "want me to send the details?" / "worth a look?").
-  - message: the first DM sent right after the connection is accepted. 3-6 sentences. Recap the event framing, weave in their specific background (role, company, what they work on), end with a soft ask to share details.
+  - note: the LinkedIn connection request note. MAX 280 characters (LinkedIn hard limit is 300; we leave headroom). Reference one specific, concrete thing about THIS recipient (pulled from their profile bio / headline / what they work on), not a generic compliment. End with a low-pressure close that is EITHER a light question about the EVENT ("want me to send the details?" / "worth a look?") OR a simple stay-in-touch line ("let's stay in touch." / "let's keep the conversation going."). The close is ALWAYS about the event or staying connected, NEVER a proposal to meet, call, or talk live.
+  - message: the first DM sent right after the connection is accepted. 3-6 sentences. Recap the event framing, weave in their specific background (role, company, what they work on), end with a soft ask to share event details, never a proposal to talk live.
 
 GROUND RULES
   - Reference REAL things about the recipient, drawn ONLY from the input: their role, company, About section, headline, and especially their recent LinkedIn posts. NEVER invent specifics (talks, projects, repos, articles) that aren't in the input.
@@ -226,10 +226,13 @@ outreach messages the host has written. Mirror their:
   - sentence rhythm and length
   - vocabulary choices (avoid words they don't use)
   - opener style (e.g. "Hi <name>," vs "Hey <name>:" vs "Quick one for you,")
-  - closer style (e.g. "Worth a chat?" vs "Open to it?" vs "Let me know.")
+  - closer style (e.g. "Worth a look?" vs "Open to it?" vs "Let me know.")
 Do NOT copy specific facts from the examples (different recipient, different
-event). Match the *voice*, not the content. Even if an example asks to get on a
-call, do NOT carry that over : the no-call rule above always wins.
+event). Match the *voice*, not the content. The host's examples will OFTEN
+close with a call ask ("open to a quick call?", "grab a quick call?", "calling
+works too"). That is exactly the pattern you must NOT reproduce : keep their
+warmth and rhythm, but REWRITE the closer as an event / stay-in-touch line.
+The no-call rule above always wins over anything in the examples.
 
 OUTPUT FORMAT
 Return ONLY a JSON object. No prose, no markdown fences. Schema:
@@ -469,11 +472,11 @@ def compose(
                 else _compose_template(prospect, host_bio, framing))
 
     def _clean(msg: Message) -> Message:
-        # Strip em/en dashes from EVERY compose path (template + LLM) so the
-        # operator's /outreach/preview shows exactly what the LeadPayload
-        # send-gate will transmit : preview == sent.
-        return Message(note=strip_em_dashes(msg.note),
-                       message=strip_em_dashes(msg.message))
+        # Strip em/en dashes AND call asks from EVERY compose path (template +
+        # LLM) so the operator's /outreach/preview shows exactly what the
+        # LeadPayload send-gate will transmit : preview == sent.
+        return Message(note=strip_call_asks(strip_em_dashes(msg.note)),
+                       message=strip_call_asks(strip_em_dashes(msg.message)))
 
     if (os.environ.get("OUTREACH_COMPOSE_DISABLE") or "").strip().lower() not in ("", "0", "false", "no"):
         return _clean(_template())
