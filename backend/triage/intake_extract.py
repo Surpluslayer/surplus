@@ -95,7 +95,10 @@ _SYSTEM = (
     "'dinner' to 'Sit-down dinner', 'happy hour'/'meetup'/'mixer' to 'Mixer', "
     "'panel'/'talk' to 'Workshop'.\n"
     "  city: str — host city if stated.\n"
-    "  event_name: str — only if the host gives an explicit name.\n"
+    "  event_name: str — the host's explicit name if they give one; "
+    "OTHERWISE propose a short, natural title from the description "
+    "(e.g. 'SF ML-Infra Founders Dinner', 'Seed FinTech Roundtable'). Keep it "
+    "under ~6 words, no quotes. Always include this field.\n"
     "  headcount: int — number of seats/guests if stated (0-%d).\n" % _HEADCOUNT_MAX +
     "  " + _opts("goal: [str]", GOALS) + " — the host's objective. 'recruiting'/"
     "'hiring' -> 'Hiring pipeline', 'raising'/'investors' -> 'Fundraising', "
