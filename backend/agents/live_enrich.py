@@ -19,16 +19,7 @@ data + configured voice examples — so a demo never shows "[dry-run]" text.
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
-
-
-def _live_reads_disabled() -> bool:
-    """Master kill switch for ALL live LinkedIn reads (host voice + recipient
-    enrichment). Set LIVE_ENRICH_DISABLE=1 to stop reading LinkedIn entirely
-    without touching dry_run (so manual sends still work). Off by default."""
-    return (os.environ.get("LIVE_ENRICH_DISABLE") or "").strip().lower() \
-        not in ("", "0", "false", "no")
 
 
 def _utcnow() -> datetime:
@@ -99,8 +90,6 @@ def sync_host_voice(user, provider) -> None:
 def _live_provider_for_user(user):
     """Return a LIVE (non-dry-run) provider for this user, or None when live
     enrichment isn't possible (no connected account / dry-run / misconfig)."""
-    if _live_reads_disabled():        # master kill switch : never read LinkedIn
-        return None
     if not getattr(user, "unipile_account_id", None):
         return None
     try:
