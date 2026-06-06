@@ -553,11 +553,27 @@ def _strongest_stage(stages) -> Optional[str]:
 
 def list_contacts(db, user_id: int) -> list:
     """Every durable Contact owned by one user (the 'who I've met' inventory).
-    Returns [] on any error so a broken read never sinks the page."""
+    Returns [] on any error so a broken read never sinks the page.
+
+    Eager-loads the whole read tree (prospects -> event / outreach / conversion)
+    in a handful of batched queries instead of lazy-loading per row. The
+    contact-centric rollup (contact_summary -> contact_events ->
+    relationship_summary) touches every one of these per prospect, so without
+    this the page fires ~5 queries PER prospect (N+1) and a user with dozens of
+    contacts waits tens of seconds. selectinload keeps it to ~5 queries total."""
     from .. import models
+    from sqlalchemy.orm import selectinload
     try:
         return (db.query(models.Contact)
                   .filter(models.Contact.user_id == user_id)
+                  .options(
+                      selectinload(models.Contact.prospects)
+                        .selectinload(models.Prospect.event),
+                      selectinload(models.Contact.prospects)
+                        .selectinload(models.Prospect.outreach),
+                      selectinload(models.Contact.prospects)
+                        .selectinload(models.Prospect.conversion),
+                  )
                   .all())
     except Exception:  # noqa: BLE001
         return []
@@ -593,14 +609,82 @@ def fetch_contact_interactions(db, contact) -> list:
         return []
 
 
-def contact_events(db, contact) -> list[dict]:
+def prefetch_interactions_by_prospect(db, contacts) -> dict:
+    """Batch fetch_interactions for a whole set of contacts into ONE query.
+
+    fetch_interactions(db, p) is a per-prospect round-trip; called once per
+    linked prospect across a contacts list it's the second half of the N+1 (the
+    first half — prospects/event/outreach/conversion — is killed by the
+    selectinload in list_contacts). This mirrors its exact union semantics
+    (RelationshipInteraction tied to the prospect directly OR to its Contact),
+    deduped by interaction id, but resolves the whole list in a single SELECT.
+
+    Returns {prospect_id: [RelationshipInteraction, ...]}. Pass the result into
+    contact_summary/contact_events as `interactions_by_prospect`. [] on error so
+    a broken read still degrades to an empty timeline, never a 500."""
+    from .. import models
+    from sqlalchemy import or_
+    prospects = [p for c in contacts
+                 for p in (getattr(c, "prospects", None) or [])]
+    prospect_ids = [p.id for p in prospects if getattr(p, "id", None) is not None]
+    contact_ids = [c.id for c in contacts if getattr(c, "id", None) is not None]
+    if not prospect_ids and not contact_ids:
+        return {}
+    try:
+        clauses = []
+        if prospect_ids:
+            clauses.append(
+                models.RelationshipInteraction.prospect_id.in_(prospect_ids))
+        if contact_ids:
+            clauses.append(
+                models.RelationshipInteraction.contact_id.in_(contact_ids))
+        rows = (db.query(models.RelationshipInteraction)
+                  .filter(or_(*clauses))
+                  .all())
+    except Exception:  # noqa: BLE001
+        return {}
+
+    by_prospect: dict = {}
+    by_contact: dict = {}
+    for ri in rows:
+        pid = getattr(ri, "prospect_id", None)
+        cid = getattr(ri, "contact_id", None)
+        if pid is not None:
+            by_prospect.setdefault(pid, []).append(ri)
+        if cid is not None:
+            by_contact.setdefault(cid, []).append(ri)
+
+    result: dict = {}
+    for p in prospects:
+        merged, seen = [], set()
+        candidates = (by_prospect.get(p.id, [])
+                      + by_contact.get(getattr(p, "contact_id", None), []))
+        for ri in candidates:
+            rid = getattr(ri, "id", None)
+            if rid in seen:
+                continue
+            seen.add(rid)
+            merged.append(ri)
+        result[p.id] = merged
+    return result
+
+
+def contact_events(db, contact, interactions_by_prospect=None) -> list[dict]:
     """One row per shared event (per linked Prospect) : where we met / re-touched
     this person, plus where that per-event relationship stands. The 'events we've
-    shared' breakdown behind a Contact, newest touch first."""
+    shared' breakdown behind a Contact, newest touch first.
+
+    `interactions_by_prospect` (from prefetch_interactions_by_prospect) lets the
+    list view avoid a per-prospect interaction query; when None we fall back to
+    the per-prospect fetch (the single-contact detail path stays unchanged)."""
     rows = []
     for p in (getattr(contact, "prospects", None) or []):
         event = getattr(p, "event", None)
-        summary = relationship_summary(p, fetch_interactions(db, p))
+        if interactions_by_prospect is not None:
+            inter = interactions_by_prospect.get(getattr(p, "id", None), [])
+        else:
+            inter = fetch_interactions(db, p)
+        summary = relationship_summary(p, inter)
         rows.append({
             "prospect_id": getattr(p, "id", None),
             "event_id": getattr(event, "id", None),
@@ -618,12 +702,15 @@ def contact_events(db, contact) -> list[dict]:
     return rows
 
 
-def contact_summary(db, contact) -> dict:
+def contact_summary(db, contact, interactions_by_prospect=None) -> dict:
     """A durable-person rollup across every event we've shared : who they are,
     when we first met, how many events, the strongest stage reached, the freshest
-    touch, and the open next step. The Pillar-1 'who I've met' card."""
+    touch, and the open next step. The Pillar-1 'who I've met' card.
+
+    `interactions_by_prospect` is the batched index from the list view; None on
+    the single-contact path (which keeps its per-prospect fetch)."""
     prospects = list(getattr(contact, "prospects", None) or [])
-    events = contact_events(db, contact)
+    events = contact_events(db, contact, interactions_by_prospect)
 
     stages = [e["relationship_stage"] for e in events]
     first_touches = [e["captured_at"] for e in events if e["captured_at"]]

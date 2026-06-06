@@ -126,9 +126,13 @@ def list_contacts(
     Owner-scoped : only the caller's own Contacts are reachable. Newest touch
     first, so the people you've engaged most recently surface at the top.
     """
-    rows = []
-    for c in relationships.list_contacts(db, user.id):
-        rows.append(relationships.contact_summary(db, c))
+    # Eager-loaded contacts (prospects/event/outreach/conversion in ~5 queries)
+    # + a single batched interaction prefetch, so the rollup below is pure
+    # in-memory work instead of ~5 queries per prospect (the N+1 that made this
+    # page take tens of seconds for a contact-rich user).
+    contacts = relationships.list_contacts(db, user.id)
+    inter_index = relationships.prefetch_interactions_by_prospect(db, contacts)
+    rows = [relationships.contact_summary(db, c, inter_index) for c in contacts]
     rows.sort(key=lambda r: r["last_touch_at"] or _MIN_DT, reverse=True)
     return {"count": len(rows), "contacts": rows}
 
