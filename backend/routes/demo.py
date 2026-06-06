@@ -87,8 +87,24 @@ def _demo_token() -> Optional[str]:
     return tok or None
 
 
-def _mint_demo_user(db: DbSession) -> User:
-    """A fresh, not-LinkedIn-connected demo user per visit.
+def _seed_email() -> Optional[str]:
+    """Staging-only: the fixed demo email whose workspace every visit reuses.
+
+    When DEMO_SEED_EMAIL is set (we only set it on the staging service), all
+    demo entries land in ONE pre-seeded workspace so the populated triage queue
+    is visible — see backend/scripts/seed_staging.py. Prod leaves it unset, so
+    each visit still mints a fresh, empty, isolated demo user (the secure
+    default). Guarded to the demo email domain so a stray value can never point
+    the demo link at a real user's account.
+    """
+    em = (os.environ.get("DEMO_SEED_EMAIL") or "").strip().lower()
+    if em and em.endswith(f"@{DEMO_USER_EMAIL_DOMAIN}"):
+        return em
+    return None
+
+
+def _mint_demo_user(db: DbSession, *, email: Optional[str] = None) -> User:
+    """A fresh, not-LinkedIn-connected demo user.
 
     Each click on the share link gets its own demo workspace : no events,
     no prospects, nothing carried over, and crucially no inherited LinkedIn
@@ -97,11 +113,14 @@ def _mint_demo_user(db: DbSession) -> User:
     to every visitor. Per-visitor rows make that impossible.) The dedicated
     demo email domain lets /me still flag is_demo so the SPA hides demo-only
     surfaces like the ROI ledger.
+
+    `email` is supplied only by the staging seed-reuse path (a fixed demo-
+    domain address); left None in prod so each visit gets a random isolated tag.
     """
-    tag = secrets.token_hex(6)
+    addr = email or f"demo-{secrets.token_hex(6)}@{DEMO_USER_EMAIL_DOMAIN}"
     user = User(
         name="Surplus Demo",
-        email=f"demo-{tag}@{DEMO_USER_EMAIL_DOMAIN}",
+        email=addr,
         headline="Demo account : full workflow, LinkedIn sending disabled",
         # NULL on purpose : this is what gates real sends behind the paywall.
         unipile_account_id=None,
@@ -112,6 +131,22 @@ def _mint_demo_user(db: DbSession) -> User:
     db.commit()
     db.refresh(user)
     return user
+
+
+def _demo_user_for_visit(db: DbSession) -> User:
+    """Pick the demo user for this entry.
+
+    Staging (DEMO_SEED_EMAIL set): reuse the one pre-seeded workspace so the
+    visitor sees populated data. Prod (unset): mint a fresh, empty, isolated
+    user every visit — the secure default that can never inherit prior state.
+    """
+    seed = _seed_email()
+    if seed:
+        existing = db.query(User).filter(User.email == seed).first()
+        if existing is not None:
+            return existing
+        return _mint_demo_user(db, email=seed)
+    return _mint_demo_user(db)
 
 
 @router.get("/enter")
@@ -137,7 +172,7 @@ def demo_enter(
     if not hmac.compare_digest(key, expected):
         return _not_found()
 
-    demo_user = _mint_demo_user(db)
+    demo_user = _demo_user_for_visit(db)
 
     sess = create_session(db, demo_user)
     response = RedirectResponse("/", status_code=303)
