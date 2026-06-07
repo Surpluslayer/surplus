@@ -80,6 +80,17 @@ import modal
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install_from_requirements("requirements.txt")
+    # Data assets the backend reads at import/runtime. add_local_python_source
+    # mounts ONLY .py files, so non-code assets must be added explicitly.
+    # prospect_pool.json is read at import time by agents/sources/base.py
+    # (the prospecting mock pool) — without it, importing backend.pipeline
+    # raises FileNotFoundError and prospect/match jobs die before they start.
+    # NB: we deliberately do NOT bundle backend/data/surplus.db (the 6.6 MB
+    # local-dev SQLite file) — Modal talks to Postgres via DATABASE_URL.
+    .add_local_file(
+        "backend/data/prospect_pool.json",
+        "/root/backend/data/prospect_pool.json",
+    )
     # The jobs talk to Exa/Unipile over plain HTTPS via `requests`/SDKs that
     # are already in requirements.txt. Add the backend package last so code
     # edits don't bust the (slow) pip layer.
