@@ -385,8 +385,11 @@ def upload_applicants(
     started = False
     if new_applicants:
         # Fire-and-forget background scoring : the route returns immediately
-        # so the UI can show 'evaluating...' while it runs.
-        background_tasks.add_task(_evaluate_event_async, ev.id)
+        # so the UI can show 'evaluating...' while it runs. dispatch_triage
+        # runs it locally (BackgroundTask) by default, or spawns it on Modal
+        # when USE_MODAL=1 — same call site either way.
+        from ..jobs import dispatch_triage
+        dispatch_triage(background_tasks, ev.id)
         started = True
 
     # NOTE: we deliberately do NOT serialize the inserted applicants back here.
@@ -467,8 +470,8 @@ def re_evaluate(
     ev = get_owned_event(event_id, user, db)
     from ..triage.rubric import _RUBRIC_CACHE
     _RUBRIC_CACHE.clear()
-    background_tasks.add_task(_evaluate_event_async, ev.id,
-                             force_reenrich=reenrich)
+    from ..jobs import dispatch_triage
+    dispatch_triage(background_tasks, ev.id, force_reenrich=reenrich)
     return {"event_id": ev.id, "re_evaluation_started": True,
             "reenrich": reenrich,
             "applicant_count": len(ev.applicants)}

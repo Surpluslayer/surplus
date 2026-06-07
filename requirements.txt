@@ -24,3 +24,9 @@ psycopg2-binary==2.9.12
 
 # Stripe SDK for the billing module (checkout sessions + webhook signature verify).
 stripe==11.4.1
+
+# Modal client : ONLY imported by backend/jobs.py to .spawn() LLM/batch jobs
+# onto Modal when USE_MODAL=1. The import is lazy, so with the flag off this is
+# never imported at runtime and the dyno behaves exactly as before. Pinned to
+# the version validated against the deployed surplus-jobs app.
+modal==1.2.6
