@@ -851,3 +851,41 @@ class RelationshipInteraction(Base):
 
     contact: Mapped[Optional["Contact"]] = relationship(back_populates="interactions")
     prospect: Mapped[Optional["Prospect"]] = relationship()
+
+
+class Job(Base):
+    """An async background job (search / match) executed off the request path.
+
+    The heavy outbound stages — prospecting ("search") and matching — used to
+    run inline in the HTTP handler, blocking the request for tens of seconds.
+    They now run as a Job: the route creates a queued Job, dispatches the work
+    (to Modal when USE_MODAL=1, else a local BackgroundTask), and returns the
+    job id immediately. The frontend polls GET .../jobs/{id} until status flips
+    to "done", then reads result_json (a serialized PipelineResult/MatchResult).
+
+    The row lives in Postgres so it's visible across workers AND across the
+    Railway↔Modal boundary: whichever process does the work updates this row,
+    and any web worker serving a poll request reads it back.
+    """
+    __tablename__ = "jobs"
+
+    # UUID hex string : generated app-side so the route can hand it back before
+    # the worker has touched the DB. String PK keeps it dialect-portable.
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id"), index=True)
+    # Owner, for the poll-auth check. Nullable to tolerate operator/legacy paths.
+    user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id"), default=None, index=True
+    )
+    # "prospect" (search) | "match".
+    kind: Mapped[str] = mapped_column(String(20))
+    # queued -> running -> done | error.
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    # Serialized PipelineResult / MatchResult JSON, set when status == done.
+    result_json: Mapped[str] = mapped_column(Text, default="")
+    # Human-readable failure message, set when status == error.
+    error: Mapped[str] = mapped_column(Text, default="")
+    # Where the work ran : "modal" | "local". Diagnostics only.
+    runner: Mapped[str] = mapped_column(String(10), default="")
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)

@@ -80,18 +80,15 @@ def mark_rsvp(
     )
 
 
-@router.post("/{event_id}/match", response_model=schemas.MatchResult)
-def match(
-    event_id: int,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(current_user),
-):
-    """
-    Score every pair of confirmed guests (symbiotic / affinity) and pack them
-    into the format's groups, balancing market sides. Idempotent.
-    """
-    ev = get_owned_event(event_id, user, db)
+def compute_match(db: Session, ev: models.Event) -> schemas.MatchResult:
+    """Core matching computation, shared by the sync route and the async job
+    worker (backend/jobs.py). Persists edges/groups/sponsor matches (outbound)
+    or computes them in memory (inbound), then returns the wire MatchResult.
 
+    Raises HTTPException(409) when the event isn't ready (no applicants /
+    confirmed guests) — the sync route propagates it as a 409; the job worker
+    catches it and records the message as the job error.
+    """
     # Gap #3a: inbound (triage_config + no prospects) computes matches in
     # memory only. MatchEdge / SponsorMatch FK to prospects.id, so we'd
     # violate FK if we persisted rows for applicant ids. Smoke #6 — we
@@ -143,7 +140,25 @@ def match(
 
     db.commit()
     return schemas.MatchResult.build(ev, attending, edges, groups,
-                                      sponsor_matches=sponsor_match_payload)
+                                     sponsor_matches=sponsor_match_payload)
+
+
+@router.post("/{event_id}/match", response_model=schemas.MatchResult)
+def match(
+    event_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """
+    Score every pair of confirmed guests (symbiotic / affinity) and pack them
+    into the format's groups, balancing market sides. Idempotent.
+
+    Synchronous path (kept for backward-compat / non-Modal). The frontend now
+    prefers the async path (POST .../match/async + poll) so this can move off
+    the request thread — see routes/jobs.py.
+    """
+    ev = get_owned_event(event_id, user, db)
+    return compute_match(db, ev)
 
 
 def _compute_inbound_sponsor_matches(ev: models.Event, attending: list) -> list[dict]:

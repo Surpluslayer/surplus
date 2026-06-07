@@ -25,6 +25,7 @@ imports the same functions). Single source of truth.
 from __future__ import annotations
 
 import os
+import uuid
 
 _MODAL_APP = "surplus-jobs"
 
@@ -71,3 +72,142 @@ def dispatch_triage(background_tasks, event_id: int, *,
         _evaluate_event_async, event_id, force_reenrich=force_reenrich
     )
     return "local"
+
+
+# --------------------------------------------------------------------------- #
+# Async Job model for the heavy outbound stages (search / match).
+#
+# Unlike triage (fire-and-forget, no result returned to the caller), search and
+# match are request/response: the frontend needs the PipelineResult / MatchResult
+# back. So instead of blocking the HTTP handler, we:
+#   1. create a queued Job row,
+#   2. dispatch the work (Modal when USE_MODAL, else a local BackgroundTask),
+#   3. hand the job id back immediately,
+# and the worker writes the serialized result onto the Job row. The frontend
+# polls GET .../jobs/{id} until status == done and reads result_json.
+#
+# execute_*_job are the single source of truth for the work; BOTH the local
+# path (BackgroundTask) and the Modal path (modal_jobs.run_*_job) call them.
+# --------------------------------------------------------------------------- #
+def new_job(db, *, event_id: int, user_id, kind: str):
+    """Insert a queued Job and return it (committed so the id is durable)."""
+    from . import models
+    job = models.Job(
+        id=uuid.uuid4().hex,
+        event_id=event_id,
+        user_id=user_id,
+        kind=kind,
+        status="queued",
+    )
+    db.add(job)
+    db.commit()
+    return job
+
+
+def _finish(db, job, *, result_json: str = "", error: str = "") -> None:
+    job.status = "error" if error else "done"
+    job.result_json = result_json
+    job.error = error[:2000] if error else ""
+    db.commit()
+
+
+async def execute_prospect_job(job_id: str, *, force_fresh: bool = False) -> None:
+    """Run prospecting (search) for a Job, on its own DB session. Persists the
+    prospects and stores a serialized PipelineResult on the Job row."""
+    from .db import SessionLocal
+    from . import models, schemas
+    from .pipeline import run_prospect
+
+    db = SessionLocal()
+    try:
+        job = db.get(models.Job, job_id)
+        if job is None:
+            print(f"  [jobs] prospect job {job_id} NOT FOUND")
+            return
+        job.status = "running"
+        db.commit()
+        ev = db.get(models.Event, job.event_id)
+        if ev is None:
+            _finish(db, job, error="event not found")
+            return
+        # Idempotent : wipe prior prospects (and their outreach/conversions)
+        # before re-surfacing, mirroring the sync /prospect route.
+        from .routes.pipeline import _wipe_prior_prospects
+        _wipe_prior_prospects(db, ev)
+        prospects, failures = await run_prospect(db, ev, force_fresh=force_fresh)
+        result = schemas.PipelineResult.build(ev, prospects, failures=failures)
+        _finish(db, job, result_json=result.model_dump_json())
+        print(f"  [jobs] prospect job {job_id} done "
+              f"({len(prospects)} prospects, {len(failures)} failures)")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [jobs] prospect job {job_id} FAILED: {type(exc).__name__}: {exc}")
+        try:
+            job = db.get(models.Job, job_id)
+            if job is not None:
+                _finish(db, job, error=f"{type(exc).__name__}: {exc}")
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        db.close()
+
+
+async def execute_match_job(job_id: str) -> None:
+    """Run matching for a Job, on its own DB session. Persists edges/groups/
+    sponsor matches and stores a serialized MatchResult on the Job row."""
+    from .db import SessionLocal
+    from . import models
+
+    db = SessionLocal()
+    try:
+        job = db.get(models.Job, job_id)
+        if job is None:
+            print(f"  [jobs] match job {job_id} NOT FOUND")
+            return
+        job.status = "running"
+        db.commit()
+        ev = db.get(models.Event, job.event_id)
+        if ev is None:
+            _finish(db, job, error="event not found")
+            return
+        from .routes.matching import compute_match
+        result = compute_match(db, ev)  # sync; persists internally
+        _finish(db, job, result_json=result.model_dump_json())
+        print(f"  [jobs] match job {job_id} done")
+    except Exception as exc:  # noqa: BLE001
+        # HTTPException(409) (not-ready) lands here too — its .detail carries
+        # the operator-facing message ("no confirmed guests : ...").
+        detail = getattr(exc, "detail", None) or f"{type(exc).__name__}: {exc}"
+        print(f"  [jobs] match job {job_id} FAILED: {detail}")
+        try:
+            job = db.get(models.Job, job_id)
+            if job is not None:
+                _finish(db, job, error=str(detail))
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        db.close()
+
+
+def dispatch_job(background_tasks, db, job, **kwargs) -> str:
+    """Dispatch a Job's work. Modal when USE_MODAL (and reachable), else a local
+    BackgroundTask. Stamps job.runner and returns 'modal' or 'local'."""
+    from . import models  # noqa: F401
+
+    runner = "local"
+    if use_modal():
+        fn = "run_prospect_job" if job.kind == "prospect" else "run_match_job"
+        if _spawn_modal(fn, job.id, **kwargs):
+            runner = "modal"
+
+    if runner == "local":
+        if job.kind == "prospect":
+            background_tasks.add_task(
+                execute_prospect_job, job.id,
+                force_fresh=bool(kwargs.get("force_fresh", False)),
+            )
+        else:
+            background_tasks.add_task(execute_match_job, job.id)
+
+    job.runner = runner
+    db.commit()
+    return runner

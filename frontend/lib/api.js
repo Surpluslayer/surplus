@@ -34,6 +34,40 @@ async function request(path, opts = {}) {
   return ct.includes("application/json") ? res.json() : null;
 }
 
+// Start an async job and poll it to completion, resolving to the SAME shape the
+// old synchronous route returned (PipelineResult / MatchResult). This keeps the
+// rest of the app (App.jsx) unchanged: `await api.runProspect(id)` still yields
+// a PipelineResult — it just no longer blocks an HTTP worker server-side.
+//
+// startPath POSTs and returns { job_id, status, ... }; we then poll
+// GET /events/{id}/jobs/{job_id} every `intervalMs` until status is done/error.
+async function runJob(eventId, startPath, { intervalMs = 2000, timeoutMs = 20 * 60 * 1000 } = {}) {
+  const started = await request(startPath, { method: "POST" });
+  const jobId = started.job_id;
+  if (!jobId) {
+    // Defensive: a backend without the async route would 404 above, but if it
+    // ever returns a body without a job_id, surface it rather than poll forever.
+    throw new Error("async job did not return a job_id");
+  }
+  const deadline = Date.now() + timeoutMs;
+  // small helper so we don't import a sleep util
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  while (Date.now() < deadline) {
+    await wait(intervalMs);
+    const job = await request(`/events/${eventId}/jobs/${jobId}`);
+    if (job.status === "done") return job.result;
+    if (job.status === "error") {
+      const err = new Error(job.error || "job failed");
+      // mirror the synchronous route's 409 contract: not-ready match errors
+      // carried operator-facing detail; callers branch on the message text.
+      err.jobError = true;
+      throw err;
+    }
+    // queued / running -> keep polling
+  }
+  throw new Error("job timed out");
+}
+
 export const api = {
   // 01 intake
   createEvent: (body) =>
@@ -59,7 +93,11 @@ export const api = {
     }),
 
   // 02 prospecting
-  runProspect: (id) => request(`/events/${id}/prospect`, { method: "POST" }),
+  // Async under the hood: starts a job + polls to completion, resolving to the
+  // same PipelineResult the old synchronous /prospect route returned. Pass
+  // {fresh:true} to bust the ICP cache.
+  runProspect: (id, { fresh = false } = {}) =>
+    runJob(id, `/events/${id}/prospect/async${fresh ? "?fresh=true" : ""}`),
   getProspects: (id) => request(`/events/${id}/prospects`),
 
   // 03 outreach (provider-backed; DRY_RUN by default)
@@ -93,7 +131,9 @@ export const api = {
   runPipeline: (id) => request(`/events/${id}/run`, { method: "POST" }),
 
   // 04 matching
-  runMatch: (id) => request(`/events/${id}/match`, { method: "POST" }),
+  // Async under the hood: starts a job + polls to completion, resolving to the
+  // same MatchResult the old synchronous /match route returned.
+  runMatch: (id) => runJob(id, `/events/${id}/match/async`),
   getMatches: (id) => request(`/events/${id}/matches`),
   // manual RSVP override : for demo / Railway testing without the webhook
   markRsvp: (id, body) =>

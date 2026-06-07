@@ -259,6 +259,45 @@ async def run_full_pipeline(event_id: int) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# 4) ASYNC JOBS — request/response prospecting + matching keyed off a Job row.
+#    Unlike run_prospecting/run_full_pipeline above (fire-and-forget, return
+#    counts), these power the frontend's start+poll flow: the web app inserts a
+#    queued Job, spawns one of these, and the worker writes the serialized
+#    PipelineResult / MatchResult onto the Job row for the frontend to poll.
+#    The actual work lives in backend/jobs.py::execute_*_job — single source of
+#    truth shared with the local BackgroundTask path — so these are thin shells.
+# --------------------------------------------------------------------------- #
+@app.function(
+    image=image,
+    secrets=[secret],
+    timeout=_PROSPECT_TIMEOUT,
+    retries=1,
+)
+async def run_prospect_job(job_id: str, force_fresh: bool = False) -> None:
+    """Execute a queued prospect Job (search) and persist its PipelineResult."""
+    from backend.db import init_db
+    from backend.jobs import execute_prospect_job
+
+    init_db()
+    await execute_prospect_job(job_id, force_fresh=force_fresh)
+
+
+@app.function(
+    image=image,
+    secrets=[secret],
+    timeout=_PROSPECT_TIMEOUT,
+    retries=1,
+)
+async def run_match_job(job_id: str) -> None:
+    """Execute a queued match Job and persist its MatchResult."""
+    from backend.db import init_db
+    from backend.jobs import execute_match_job
+
+    init_db()
+    await execute_match_job(job_id)
+
+
+# --------------------------------------------------------------------------- #
 # Local entrypoints: `modal run modal_jobs.py::<name>`
 # --------------------------------------------------------------------------- #
 @app.local_entrypoint()
