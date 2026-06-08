@@ -114,9 +114,12 @@ def set_followup_settings(
     db: Session = Depends(get_db),
     user: models.User = Depends(current_user),
 ):
-    """Turn auto-scheduled follow-ups on or off for this host. Off by default;
-    turning it off does NOT cancel already-staged follow-ups (use the cancel
-    route for those) : it only stops new ones from being staged."""
+    """Turn auto-SEND of follow-ups on or off for this host. Off by default.
+
+    Follow-up drafts are always staged when a first DM goes out regardless of
+    this flag : it only controls whether the dispatch cron sends them. Off ->
+    drafts wait in the queue for a manual send-now; on -> they send at send_at.
+    Turning it off does NOT cancel anything already queued."""
     user.auto_followups_enabled = bool(patch.enabled)
     db.commit()
     return FollowupSettings(auto_followups_enabled=user.auto_followups_enabled)

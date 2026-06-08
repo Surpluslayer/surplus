@@ -218,9 +218,10 @@ def stage_followup(
 ) -> Optional[models.ScheduledFollowup]:
     """Stage a context-drafted follow-up for `prospect` at a suggested time.
 
-    No-op (returns None) unless the prospect's owning host has opted IN via
-    User.auto_followups_enabled : the feature is off by default, so a first DM
-    never auto-stages a follow-up for a user who hasn't turned it on.
+    Always drafts + stages (a follow-up is created for every first DM) : the
+    draft is the product. Whether it actually *sends* is the host's call,
+    gated at dispatch by User.auto_followups_enabled (off -> the row waits in
+    the queue for a manual send-now; on -> the cron sends it at send_at).
 
     Idempotent: returns the existing pending row untouched if one already
     exists (so re-sending a first DM, or a retried webhook, can't stack
@@ -230,10 +231,6 @@ def stage_followup(
     try:
         event = prospect.event
         if event is None:
-            return None
-        # Per-user opt-in gate : off by default.
-        owner = getattr(event, "user", None)
-        if owner is None or not getattr(owner, "auto_followups_enabled", False):
             return None
 
         existing = pending_followup(db, prospect.id)

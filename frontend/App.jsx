@@ -2234,7 +2234,7 @@ function FollowupToggle() {
     <div className="user-dropdown-toggle">
       <span className="toggle-label">
         <span>Auto follow-ups</span>
-        <span className="toggle-sub">Draft a nudge when a first DM is sent</span>
+        <span className="toggle-sub">Send drafted follow-ups automatically</span>
       </span>
       <button
         type="button"

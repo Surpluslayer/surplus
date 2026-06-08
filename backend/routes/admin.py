@@ -105,7 +105,10 @@ def _due_followups(db: Session) -> list[models.ScheduledFollowup]:
               .filter(models.ScheduledFollowup.status == "scheduled")
               .options(
                   selectinload(models.ScheduledFollowup.prospect)
-                  .selectinload(models.Prospect.outreach))
+                  .selectinload(models.Prospect.outreach),
+                  selectinload(models.ScheduledFollowup.prospect)
+                  .selectinload(models.Prospect.event)
+                  .selectinload(models.Event.user))
               .all())
     due: list[models.ScheduledFollowup] = []
     for r in rows:
@@ -119,6 +122,18 @@ def _due_followups(db: Session) -> list[models.ScheduledFollowup]:
 def _replied_since_staging(prospect: models.Prospect) -> bool:
     """Defensive guard against a reply that raced past the webhook cancel."""
     return any(o.state in ("message_replied", "replied") for o in prospect.outreach)
+
+
+def _auto_send_enabled(prospect: models.Prospect) -> bool:
+    """Whether the prospect's owning host has auto-send turned on.
+
+    The follow-up is always drafted + staged; this flag is the only thing that
+    decides if the cron sends it. Off -> the row waits in the queue for a manual
+    send-now (routes/followups). On -> the cron dispatches it at send_at.
+    """
+    event = getattr(prospect, "event", None)
+    owner = getattr(event, "user", None) if event is not None else None
+    return bool(getattr(owner, "auto_followups_enabled", False))
 
 
 @router.post("/run-followups", status_code=200)
@@ -139,6 +154,7 @@ def run_followups(
     sent: list[dict] = []
     failed: list[dict] = []
     cancelled: list[dict] = []
+    held: list[dict] = []
 
     for row in due:
         prospect = row.prospect
@@ -155,6 +171,14 @@ def run_followups(
             row.cancel_reason = "replied"
             row.updated_at = now
             cancelled.append({"followup_id": row.id, "prospect_id": prospect.id})
+            continue
+
+        # Auto-send gate : the draft is staged regardless, but the cron only
+        # dispatches it when the host turned auto-send ON. Off -> leave it
+        # `scheduled` so it waits for a manual send-now. Don't cancel : the
+        # host may flip the toggle on, or send it themselves, later.
+        if not _auto_send_enabled(prospect):
+            held.append({"followup_id": row.id, "prospect_id": prospect.id})
             continue
 
         text = (row.body or "").strip()
@@ -201,6 +225,7 @@ def run_followups(
         "sent": len(sent),
         "failed": len(failed),
         "cancelled": len(cancelled),
+        "held": len(held),
         "results": sent,
         "errors": failed,
     }

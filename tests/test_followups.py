@@ -218,12 +218,16 @@ def test_user_message_includes_prior_message_section():
     assert "do not repeat it" in msg
 
 
-def test_stage_followup_noop_when_disabled(db):
-    """Off by default : a host who hasn't opted in gets no staged follow-up."""
+def test_stage_followup_drafts_even_when_auto_send_off(db):
+    """The draft is always created : auto_followups_enabled gates SENDING at
+    dispatch, not whether a follow-up gets staged. A host with the toggle off
+    still gets a staged draft they can manually send."""
     _u, _ev, p = _seed(db, auto_followups=False)
     row = stage_followup(db, p)
-    assert row is None
-    assert db.query(models.ScheduledFollowup).filter_by(prospect_id=p.id).count() == 0
+    assert row is not None
+    assert row.status == "scheduled"
+    assert row.body.strip()
+    assert db.query(models.ScheduledFollowup).filter_by(prospect_id=p.id).count() == 1
 
 
 def test_stage_followup_is_idempotent(db):
@@ -263,6 +267,22 @@ def test_run_followups_sends_due_row(db):
     assert refreshed.sent_at is not None
     states = [o.state for o in db.get(models.Prospect, p.id).outreach]
     assert states.count("follow_up_sent") == 1
+
+
+def test_run_followups_holds_due_row_when_auto_send_off(db):
+    """Auto-send off : a due draft is HELD (left scheduled), never sent or
+    cancelled, so the host can still send it manually or flip the toggle on."""
+    _u, _ev, p = _seed(db, auto_followups=False)
+    row = _stage_due(db, p)
+    result = run_followups(db=db, _=None)
+    assert result["due"] == 1
+    assert result["sent"] == 0
+    assert result["held"] == 1
+    assert result["cancelled"] == 0
+    db.expire_all()
+    refreshed = db.get(models.ScheduledFollowup, row.id)
+    assert refreshed.status == "scheduled"
+    assert refreshed.sent_at is None
 
 
 def test_run_followups_skips_future_row(db):
