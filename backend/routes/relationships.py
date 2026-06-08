@@ -245,6 +245,101 @@ def run_relationship_agent(
     return res.as_dict()
 
 
+class ChatIn(BaseModel):
+    """One turn from the host's follow-up chat. `message` is the host's ask
+    ('who should I follow up with?', 'draft a ping to anyone at Stripe')."""
+    message: str = ""
+
+
+@router.post("/chat")
+def relationship_chat(
+    body: ChatIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Conversational front door to the propose-only relationship agent.
+
+    The host types an ask; we steer the same auditable survey-and-propose loop
+    with it and hand back (a) a one-paragraph natural-language reply and (b) the
+    staged proposals (each a contact + drafted follow-up + rationale). NOTHING
+    is sent here — the host approves a draft separately via the followup route,
+    which is where the auto-send toggle is honored. Owner-scoped."""
+    from ..agents.relationship_agent import run_relationship_agent as _run
+    res = _run(db, user.id, instruction=(body.message or "").strip())
+    out = res.as_dict()
+    # Surface the host's auto-send preference so the chat can label the approve
+    # button correctly ("Send now" when on, "Save draft" when off) without a
+    # second round-trip.
+    out["auto_send_enabled"] = bool(getattr(user, "auto_followups_enabled", False))
+    return out
+
+
+class FollowupSendIn(BaseModel):
+    """Approve one drafted follow-up for a contact. `message` is the (possibly
+    host-edited) body to act on."""
+    message: str
+
+
+@router.post("/contacts/{contact_id}/followup")
+def send_contact_followup(
+    contact_id: int,
+    body: FollowupSendIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Act on an approved follow-up draft for one owned contact.
+
+    Behavior is gated by the host's auto-send toggle (User.auto_followups_enabled):
+      ON  -> send immediately through the contact's most-recent prospect via the
+             shared send_and_log path (DRY_RUN / paywall enforced inside the
+             provider, exactly like the follow-up cron). Returns status='sent'.
+      OFF -> stage the draft as a private note on the timeline and return
+             status='drafted'; nothing leaves the system.
+
+    Owner-scoped (404 on not-owned contact). The contact is resolved to a
+    sendable Prospect by picking its most-recently captured linked prospect."""
+    contact = _owned_contact(db, contact_id, user)
+    text = (body.message or "").strip()
+    if not text:
+        raise HTTPException(422, "message is required")
+
+    # Resolve the contact to a sendable per-event Prospect: most recent capture
+    # that still has an owning event (send_and_log needs prospect.event).
+    linked = [p for p in (getattr(contact, "prospects", None) or [])
+              if getattr(p, "event", None) is not None]
+    if not linked:
+        raise HTTPException(409, "contact has no sendable event prospect")
+    linked.sort(key=lambda p: getattr(p, "captured_at", None) or _MIN_DT,
+                reverse=True)
+    prospect = linked[0]
+
+    auto_send = bool(getattr(user, "auto_followups_enabled", False))
+    if not auto_send:
+        # Toggle off: stage the draft as a private note so it shows on the
+        # timeline; the host can send it later from the follow-up queue.
+        relationships.add_note(
+            db, prospect, user.id, text,
+            title="Follow-up draft", visibility="private")
+        return {"status": "drafted", "contact_id": contact_id,
+                "prospect_id": prospect.id, "message": text}
+
+    # Toggle on: send through the same path the follow-up cron uses.
+    from ..agents.sender import send_and_log
+    from ..providers import get_provider
+    try:
+        res = send_and_log(
+            db, prospect, text,
+            sent_state="follow_up_sent",
+            fallback_provider=get_provider(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"send failed: {type(exc).__name__}: {exc}")
+    if getattr(res, "error", None):
+        raise HTTPException(502, f"send failed: {res.error}")
+    return {"status": "sent", "contact_id": contact_id,
+            "prospect_id": prospect.id, "message": text}
+
+
 @router.get("/prospects/{prospect_id}/timeline")
 def prospect_timeline(
     prospect_id: int,

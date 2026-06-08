@@ -230,12 +230,37 @@ _UPDATE_TITLES = {
     "new_post": "New LinkedIn post",
 }
 
+# The INITIAL message the host sent each contact right after meeting them. The
+# follow-up assistant grounds its drafts in this first message (continues the
+# thread rather than cold-restarting), so the demo spine needs a real one per
+# person. {contact key: first DM body}.
+_INITIAL_DMS = {
+    "maya-rodriguez":
+        "Hey Maya! Great meeting you at the Stripe × ElevenLabs dinner — loved "
+        "your take on design systems for infra tools. Let's keep in touch.",
+    "priya-sharma":
+        "Priya, so good chatting at the dinner about the eval-harness rabbit "
+        "hole. Would love to swap notes on the infra side sometime.",
+    "sam-chen":
+        "Sam — really enjoyed our conversation on post-training data quality at "
+        "the dinner. Let's stay connected.",
+    "diego-martinez":
+        "Diego! Great to meet you at the builders dinner — your community-led "
+        "DevRel approach stuck with me. Let's keep the thread going.",
+}
 
-def _seed_relationships(db, user: models.User, reset: bool) -> int:
+
+def _seed_relationships(db, user: models.User, ev: models.Event, reset: bool) -> int:
     """Upsert the demo Contact spine and the activity_update "what's new" feed
     under `user`. Idempotent : contacts upsert on (user_id, primary_identity_key)
     and the feed is only (re)built when the user has no activity_update rows yet
     (or always under --reset). Returns the number of update rows written.
+
+    Each contact also gets ONE linked per-event Prospect in `ev` — mirroring
+    production, where a Contact is a projection over the Prospect rows you
+    captured. Without it the contact has no sendable prospect, so the follow-up
+    assistant's Approve→send path 409s. The Prospect is linked by setting
+    prospect.contact_id directly (the spine's normal link path).
 
     No Unipile / LinkedIn call : the updates are hand-seeded interaction rows of
     the exact shape relationship_watch._emit writes, so the feed populates with
@@ -243,13 +268,17 @@ def _seed_relationships(db, user: models.User, reset: bool) -> int:
     now = datetime.utcnow()  # naive UTC, matching the watcher's _now() convention
 
     # --- contact spine (upsert) ---------------------------------------------
+    # primary_identity_key uses the SAME derivation production does
+    # (triage.enrichment_cache.identity_keys -> "li:<slug>"), so a contact the
+    # live watcher would create and this seeded one are the same row.
     contacts: dict[str, models.Contact] = {}
     for spec in _CONTACTS:
+        idkey = f"li:{spec['key']}"
         c = (db.query(models.Contact)
-               .filter_by(user_id=user.id, primary_identity_key=spec["key"])
+               .filter_by(user_id=user.id, primary_identity_key=idkey)
                .first())
         if c is None:
-            c = models.Contact(user_id=user.id, primary_identity_key=spec["key"])
+            c = models.Contact(user_id=user.id, primary_identity_key=idkey)
             db.add(c)
         c.name = spec["name"]
         c.linkedin_url = spec["linkedin_url"]
@@ -261,6 +290,39 @@ def _seed_relationships(db, user: models.User, reset: bool) -> int:
         c.watch_error = None
         db.flush()
         contacts[spec["key"]] = c
+
+        # Linked per-event Prospect (find-or-create on contact_id, idempotent).
+        p = (db.query(models.Prospect)
+               .filter_by(event_id=ev.id, contact_id=c.id)
+               .first())
+        if p is None:
+            p = models.Prospect(
+                event_id=ev.id,
+                identity=spec["key"],
+                name=spec["name"],
+                contact_id=c.id,
+            )
+            db.add(p)
+        p.company = spec["company"]
+        p.role = spec["title"]
+        p.headline = spec["headline"]
+        p.linkedin_url = spec["linkedin_url"]
+        p.status = "captured"
+        p.source = "in_person"
+        p.contact_type = "in_person"
+        p.captured_at = now - timedelta(days=10)
+        db.flush()
+
+        # Initial DM (the first message the host sent) — the thread the
+        # follow-up assistant continues. Find-or-create so re-runs don't dupe.
+        dm = _INITIAL_DMS.get(spec["key"])
+        if dm and not (db.query(models.OutreachLog)
+                         .filter_by(prospect_id=p.id, state="message_sent")
+                         .first()):
+            db.add(models.OutreachLog(
+                prospect_id=p.id, channel="linkedin", state="message_sent",
+                body=dm, ts=now - timedelta(days=10) + timedelta(minutes=5)))
+            db.flush()
 
     # --- "what's new" activity feed -----------------------------------------
     existing = (db.query(models.RelationshipInteraction)
@@ -421,7 +483,7 @@ def main() -> int:
             print(f"[seed_staging] applicants already seeded: event #{ev.id} "
                   f"({len(ev.applicants)} applicants). Use --reset to rebuild.")
 
-        rel = _seed_relationships(db, user, reset)
+        rel = _seed_relationships(db, user, ev, reset)
         print(f"[seed_staging] relationships: {len(_CONTACTS)} contacts, "
               f"{rel} 'what's new' updates under user={seed}.")
         print("  Enter the demo at:  /api/demo/enter?key=<DEMO_ACCESS_TOKEN>")

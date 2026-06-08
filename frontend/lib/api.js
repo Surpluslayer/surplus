@@ -250,6 +250,20 @@ export const api = {
   // writes). Owner-scoped server-side.
   runRelationshipAgent: () =>
     request("/api/relationships/agent/run", { method: "POST" }),
+  // Follow-up chat : send the host's ask to the same propose-only agent and get
+  // back { summary, proposals[], auto_send_enabled }. No sends here.
+  relationshipChat: (message) =>
+    request("/api/relationships/chat", {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    }),
+  // Approve one drafted follow-up for a contact. Honors the host's auto-send
+  // toggle server-side: returns { status: "sent" | "drafted", ... }.
+  sendContactFollowup: (contactId, message) =>
+    request(`/api/relationships/contacts/${contactId}/followup`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    }),
 
   // ── scheduled follow-ups : per-user auto-message preference ──
   // Whether a follow-up is auto-staged when a first DM goes out. Off by

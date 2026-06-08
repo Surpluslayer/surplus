@@ -15,6 +15,7 @@ rest of the relationship-layer suite).
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -268,3 +269,244 @@ def test_agent_get_contact_returns_real_history(db):
     # The agent ran one get_contact; its result carried the real event title.
     # (We assert indirectly: the run completed and saw the one contact.)
     assert res.contacts_seen == 1
+
+
+def test_thread_from_timeline_excludes_private_note():
+    """The operator-only private_note (stored as a private manual_note) must
+    never reach prior_messages — otherwise it could shape an outbound draft.
+    Public note + capture + outreach DO flow through."""
+    now = datetime.now(timezone.utc)
+    timeline = [
+        {"source_type": "in_person_capture", "interaction_type": "captured",
+         "occurred_at": now, "title": "Captured", "summary": "Met at Tech Week",
+         "channel": "in_person", "direction": "none", "metadata": {}},
+        {"source_type": "manual_note", "interaction_type": "note",
+         "occurred_at": now, "title": "Note", "summary": "I have five siblings",
+         "channel": "manual", "direction": "none", "metadata": {"private": False}},
+        {"source_type": "manual_note", "interaction_type": "private_note",
+         "occurred_at": now, "title": "Private note",
+         "summary": "OPERATOR_ONLY_SECRET_MEMO",
+         "channel": "manual", "direction": "none", "metadata": {"private": True}},
+        {"source_type": "linkedin_outreach", "interaction_type": "message_sent",
+         "occurred_at": now, "title": "Message Sent", "summary": "Coffee soon?",
+         "channel": "linkedin", "direction": "outbound", "metadata": {}},
+    ]
+    texts = [t["text"] for t in ragent._thread_from_timeline(timeline)]
+    assert "Met at Tech Week" in texts
+    assert "I have five siblings" in texts          # public note still flows
+    assert "Coffee soon?" in texts
+    assert all("OPERATOR_ONLY_SECRET_MEMO" not in t for t in texts)
+
+
+# ── "who to follow up" : the deterministic signals list_contacts exposes ──────
+# The agent never decides staleness itself — it reads is_stale / has_next_step /
+# days_since_last_touch off contact_summary. These tests pin those inputs so a
+# change to the staleness rule is a conscious one, not a silent regression.
+
+def _outreach(db, prospect, state, *, days_ago=0, body=""):
+    o = models.OutreachLog(
+        prospect_id=prospect.id, channel="linkedin", state=state, body=body,
+        ts=datetime.now(timezone.utc) - timedelta(days=days_ago))
+    db.add(o); db.commit()
+    return o
+
+
+def test_who_captured_goes_stale_after_14_days(db):
+    """A captured-but-never-contacted contact flips to 'stale' once the last
+    touch is older than STALE_AFTER_DAYS (14). is_stale in list_contacts is
+    exactly relationship_stage == 'stale'."""
+    u = _user(db)
+    ev = _event(db, u)
+    p = _prospect(db, ev,
+                  captured_at=datetime.now(timezone.utc) - timedelta(days=15))
+    c = rel.link_contact(db, p, u.id)
+    assert rel.contact_summary(db, c)["relationship_stage"] == "stale"
+
+
+def test_who_recent_capture_is_not_stale(db):
+    """Inside the 14-day window the same contact is still just 'captured' —
+    the agent should skip them as recently-touched."""
+    u = _user(db)
+    ev = _event(db, u)
+    p = _prospect(db, ev,
+                  captured_at=datetime.now(timezone.utc) - timedelta(days=13))
+    c = rel.link_contact(db, p, u.id)
+    assert rel.contact_summary(db, c)["relationship_stage"] == "captured"
+
+
+def test_who_next_step_presence_is_surfaced(db):
+    """has_next_step in list_contacts is bool(next_step); a contact WITH a
+    planned step is deprioritised by the heuristic."""
+    u = _user(db)
+    ev = _event(db, u)
+    p = _prospect(db, ev,
+                  captured_at=datetime.now(timezone.utc) - timedelta(days=2))
+    p.next_step = "grab a coffee"
+    db.commit()
+    c = rel.link_contact(db, p, u.id)
+    assert rel.contact_summary(db, c)["next_step"] == "grab a coffee"
+
+
+def test_strip_dashes_removes_em_and_en_dashes():
+    """No staged draft may carry an em/en dash (the AI 'tell'). The sanitizer
+    rewrites them to commas and tidies the resulting punctuation/spacing."""
+    s = ragent._strip_dashes
+    assert "—" not in s("Hey Mia — just bumping this.")
+    assert s("Hey Mia — just bumping this.") == "Hey Mia, just bumping this."
+    assert "–" not in s("Tech Week was a blur – would love to catch up.")
+    # dash right before terminal punctuation shouldn't leave a dangling comma
+    assert s("Worth a quick coffee —.") == "Worth a quick coffee."
+    assert s("") == ""
+
+
+def test_draft_message_sanitizes_em_dash(db):
+    """End-to-end: even if the model emits an em dash, the staged proposal is
+    clean. Proves the guard sits on the tool impl, not just the prompt."""
+    u = _user(db)
+    ev = _event(db, u)
+    p = _prospect(db, ev)
+    c = rel.link_contact(db, p, u.id)
+    script = [
+        ("tool_use", [_tool_use("draft_message", "t1", contact_id=c.id,
+                                message="Hey Maya — bumping this — still keen?",
+                                rationale="Continues the thread — light nudge.")]),
+        ("end_turn", [_text("done")]),
+    ]
+    res = ragent.run_relationship_agent(db, u.id, client=ScriptedClient(script))
+    draft = next(pr for pr in res.proposals if pr.kind == "draft_message")
+    assert "—" not in draft.text and "–" not in draft.text
+    assert "—" not in draft.rationale
+
+
+def test_host_voice_examples_resolves_from_user_row(db):
+    """The agent sources the host's voice from the SAME User.voice_examples the
+    initial-message composer uses, parsed as a JSON list and capped at 8."""
+    u = _user(db)
+    u.voice_examples = json.dumps(
+        ["yo! great running into you", "lol yeah let's def grab a coffee"]
+        + [f"msg {i}" for i in range(10)])
+    db.commit()
+    ex = ragent._host_voice_examples(db, u.id)
+    assert ex[0] == "yo! great running into you"
+    assert len(ex) == 8                       # capped
+
+
+def test_host_voice_examples_bad_json_is_empty(db):
+    """A typo in voice_examples can't break a run — bad JSON resolves to []."""
+    u = _user(db)
+    u.voice_examples = "{not valid json"
+    db.commit()
+    assert ragent._host_voice_examples(db, u.id) == []
+
+
+def test_voice_block_empty_when_no_examples():
+    assert ragent._voice_block([]) == ""
+    block = ragent._voice_block(["hey!! good seeing you"])
+    assert "<style_examples>" in block
+    assert "hey!! good seeing you" in block
+
+
+def test_agent_injects_host_voice_into_system_prompt(db):
+    """End-to-end: when the host has voice_examples, the style block reaches the
+    model's system prompt — so follow-ups are written in the host's voice."""
+    u = _user(db)
+    u.voice_examples = json.dumps(["yo!! so good to finally meet you haha"])
+    db.commit()
+    ev = _event(db, u)
+    p = _prospect(db, ev)
+    rel.link_contact(db, p, u.id)
+
+    client = ScriptedClient([
+        ("tool_use", [_tool_use("list_contacts", "t1")]),
+        ("end_turn", [_text("done")]),
+    ])
+    ragent.run_relationship_agent(db, u.id, client=client)
+    sent_system = client.calls[0]["system"][0]["text"]
+    assert "<style_examples>" in sent_system
+    assert "yo!! so good to finally meet you haha" in sent_system
+
+
+def _list_contacts_payload(client) -> list[dict]:
+    """Pull the JSON list_contacts returned to the model back out of the
+    scripted client's recorded calls. agent_loop feeds each tool_result back as
+    a user message with content=[{type:'tool_result', content: json.dumps(...)}],
+    so the row payload the agent actually saw is recoverable here — this is the
+    exact dict shape `_list_contacts` produced, not a reconstruction."""
+    for call in client.calls:
+        for m in call.get("messages", []):
+            content = m.get("content")
+            if not isinstance(content, list):
+                continue
+            for blk in content:
+                if isinstance(blk, dict) and blk.get("type") == "tool_result":
+                    rows = json.loads(blk["content"])
+                    if isinstance(rows, list) and rows and "contact_id" in rows[0]:
+                        return rows
+    return []
+
+
+def test_who_marked_follow_up_is_surfaced(db):
+    """The capture-phase `contact_type='follow_up'` marker — the host's explicit
+    'circle back to them' intent set when they met — must reach the agent's
+    list_contacts survey as `marked_follow_up`/`contact_types`. This is the
+    primary WHO signal that does NOT depend on any external/watch-job news."""
+    u = _user(db)
+    ev = _event(db, u)
+    p = _prospect(db, ev,
+                  captured_at=datetime.now(timezone.utc) - timedelta(days=2))
+    p.contact_type = "follow_up"
+    db.commit()
+    c = rel.link_contact(db, p, u.id)
+
+    client = ScriptedClient([
+        ("tool_use", [_tool_use("list_contacts", "t1")]),
+        ("end_turn", [_text("done")]),
+    ])
+    res = ragent.run_relationship_agent(db, u.id, client=client)
+    assert res.error is None
+    rows = _list_contacts_payload(client)
+    row = next(r for r in rows if r["contact_id"] == c.id)
+    assert row["marked_follow_up"] is True
+    assert "follow_up" in row["contact_types"]
+
+
+def test_who_non_follow_up_tag_is_not_marked(db):
+    """A contact tagged with a different capture type (e.g. 'sales') surfaces
+    that tag but is NOT marked_follow_up — so the marker is specific, not a
+    catch-all on any contact_type being present."""
+    u = _user(db)
+    ev = _event(db, u)
+    p = _prospect(db, ev,
+                  captured_at=datetime.now(timezone.utc) - timedelta(days=2))
+    p.contact_type = "sales"
+    db.commit()
+    c = rel.link_contact(db, p, u.id)
+
+    client = ScriptedClient([
+        ("tool_use", [_tool_use("list_contacts", "t1")]),
+        ("end_turn", [_text("done")]),
+    ])
+    res = ragent.run_relationship_agent(db, u.id, client=client)
+    assert res.error is None
+    rows = _list_contacts_payload(client)
+    row = next(r for r in rows if r["contact_id"] == c.id)
+    assert row["marked_follow_up"] is False
+    assert row["contact_types"] == ["sales"]
+
+
+def test_who_replied_then_cold_is_never_stale_KNOWN_GAP(db):
+    """KNOWN GAP: a contact who replied then went quiet never flips to 'stale'
+    (replied outranks stale in _STAGE_RANK, and the stale overlay only applies
+    to captured/contacted). So the deterministic is_stale signal MISSES
+    replied-then-ghosted contacts — only the raw days_since_last_touch would
+    surface them. This asserts CURRENT behavior; flipping it is a product
+    decision, not a bug-fix to slip in silently."""
+    u = _user(db)
+    ev = _event(db, u)
+    p = _prospect(db, ev,
+                  captured_at=datetime.now(timezone.utc) - timedelta(days=60))
+    _outreach(db, p, "invite_sent", days_ago=60, body="hi")
+    _outreach(db, p, "message_replied", days_ago=58, body="sure!")
+    c = rel.link_contact(db, p, u.id)
+    # 58 days cold, yet not stale:
+    assert rel.contact_summary(db, c)["relationship_stage"] == "replied"

@@ -7,8 +7,9 @@
 // cross-event timeline (GET .../contacts/{id}). Styled light to match the
 // surplus event flow. Self-contained so it stays isolated from the in-progress
 // CRM work and from each app's own CSS.
-import React, { useState, useEffect } from "react";
-import { Users, ArrowLeft, Building2, CalendarDays, Activity, Sparkles } from "lucide-react";
+import React, { useState, useEffect, useRef } from "react";
+import { Users, ArrowLeft, Building2, CalendarDays, Activity, Sparkles,
+         MessageSquare, Send, Check } from "lucide-react";
 import { api } from "../lib/api.js";
 
 const C = {
@@ -220,6 +221,8 @@ export default function ContactsPage() {
         </div>
       </div>
 
+      <FollowupChat />
+
       {err && (
         <div style={{ color: "#c0432f", background: "#fdeaea",
                       border: "1px solid #f3c9c2", borderRadius: 10,
@@ -288,6 +291,242 @@ export default function ContactsPage() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Follow-up assistant : a chat over the propose-only relationship agent ──
+// The host asks ("who should I follow up with?"); the agent surveys the spine
+// and replies with a paragraph + per-contact drafted follow-ups. Each draft is
+// editable, and Approve routes through /contacts/{id}/followup — which honors
+// the host's auto-send toggle server-side (sends when on, stages a draft when
+// off). Nothing sends without the host clicking Approve.
+function FollowupChat() {
+  const [open, setOpen] = useState(false);
+  const [turns, setTurns] = useState([]);   // {role:"host"|"agent", text, proposals?, auto?}
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    if (scrollRef.current)
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [turns, busy]);
+
+  const ask = async (text) => {
+    const q = (text ?? input).trim();
+    if (!q || busy) return;
+    setInput("");
+    setTurns((t) => [...t, { role: "host", text: q }]);
+    setBusy(true);
+    try {
+      const r = await api.relationshipChat(q);
+      setTurns((t) => [...t, {
+        role: "agent",
+        text: r.summary || "Done.",
+        proposals: (r.proposals || []).filter((p) => p.kind === "draft_message"),
+        auto: !!r.auto_send_enabled,
+      }]);
+    } catch (e) {
+      setTurns((t) => [...t, { role: "agent",
+        text: `Sorry — ${e.message || String(e)}`, proposals: [] }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)}
+              style={{ display: "flex", alignItems: "center", gap: 8,
+                       width: "100%", marginBottom: 18, cursor: "pointer",
+                       background: "#f3f0ff", border: "1px solid #e3dcff",
+                       borderRadius: 14, padding: "14px 18px", color: C.accent,
+                       fontSize: 14.5, fontWeight: 700, fontFamily: FONT }}>
+        <MessageSquare size={18} />
+        Ask who to follow up with
+        <span style={{ marginLeft: "auto", fontWeight: 500, color: C.muted,
+                       fontSize: 12.5 }}>
+          AI drafts a message for each →
+        </span>
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ marginBottom: 20, background: C.card,
+                  border: `1px solid ${C.line}`, borderRadius: 16,
+                  overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8,
+                    padding: "12px 16px", borderBottom: `1px solid ${C.line}`,
+                    background: "#faf9ff" }}>
+        <MessageSquare size={16} color={C.accent} />
+        <span style={{ fontWeight: 700, color: C.ink, fontSize: 14 }}>
+          Follow-up assistant
+        </span>
+        <button onClick={() => setOpen(false)}
+                style={{ marginLeft: "auto", background: "none", border: "none",
+                         color: C.muted, cursor: "pointer", fontSize: 13 }}>
+          Hide
+        </button>
+      </div>
+
+      <div ref={scrollRef}
+           style={{ maxHeight: 420, overflowY: "auto", padding: "14px 16px" }}>
+        {turns.length === 0 && (
+          <div style={{ color: C.muted, fontSize: 13.5, lineHeight: 1.5 }}>
+            Ask me who's gone quiet, who just changed jobs, or who's worth a
+            ping — I'll read your history and draft a message for each.
+            <div style={{ display: "flex", gap: 8, marginTop: 12,
+                          flexWrap: "wrap" }}>
+              {["Who should I follow up with?",
+                "Who recently changed roles?",
+                "Draft pings for anyone going cold"].map((s) => (
+                <button key={s} onClick={() => ask(s)}
+                        style={{ background: C.chipBg, color: C.chipInk,
+                                 border: "none", borderRadius: 999,
+                                 padding: "6px 12px", fontSize: 12.5,
+                                 fontWeight: 600, cursor: "pointer",
+                                 fontFamily: FONT }}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {turns.map((t, i) => (
+          <div key={i} style={{ marginBottom: 14 }}>
+            {t.role === "host" ? (
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <div style={{ background: C.accent, color: "#fff",
+                              borderRadius: "14px 14px 4px 14px",
+                              padding: "8px 13px", fontSize: 13.5,
+                              maxWidth: "80%" }}>
+                  {t.text}
+                </div>
+              </div>
+            ) : (
+              <div>
+                <div style={{ background: C.bg, color: C.ink, borderRadius: 12,
+                              padding: "10px 14px", fontSize: 13.5,
+                              lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
+                  {t.text}
+                </div>
+                {(t.proposals || []).map((p) => (
+                  <ProposalCard key={`${p.contact_id}-${p.text.slice(0,12)}`}
+                                proposal={p} auto={t.auto} />
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+
+        {busy && (
+          <div style={{ color: C.faint, fontSize: 13, fontStyle: "italic" }}>
+            Reading your relationship history…
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, padding: "12px 16px",
+                    borderTop: `1px solid ${C.line}` }}>
+        <input value={input} onChange={(e) => setInput(e.target.value)}
+               onKeyDown={(e) => { if (e.key === "Enter") ask(); }}
+               placeholder="Ask who to follow up with…"
+               disabled={busy}
+               style={{ flex: 1, border: `1px solid ${C.line}`, borderRadius: 10,
+                        padding: "10px 13px", fontSize: 14, fontFamily: FONT,
+                        outline: "none" }} />
+        <button onClick={() => ask()} disabled={busy || !input.trim()}
+                style={{ display: "flex", alignItems: "center", gap: 6,
+                         background: busy || !input.trim() ? "#c9bdf8" : C.accent,
+                         color: "#fff", border: "none", borderRadius: 10,
+                         padding: "0 16px", fontSize: 14, fontWeight: 600,
+                         cursor: busy || !input.trim() ? "default" : "pointer",
+                         fontFamily: FONT }}>
+          <Send size={15} /> Ask
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// One drafted follow-up the host can edit and approve. Approve calls the
+// server, which sends or stages a draft depending on the auto-send toggle.
+function ProposalCard({ proposal, auto }) {
+  const [draft, setDraft] = useState(proposal.text || "");
+  const [state, setState] = useState("idle");   // idle | sending | sent | drafted | error
+  const [err, setErr] = useState("");
+
+  const approve = async () => {
+    setState("sending"); setErr("");
+    try {
+      const r = await api.sendContactFollowup(proposal.contact_id, draft.trim());
+      setState(r.status === "sent" ? "sent" : "drafted");
+    } catch (e) {
+      setState("error"); setErr(e.message || String(e));
+    }
+  };
+
+  const done = state === "sent" || state === "drafted";
+  return (
+    <div style={{ marginTop: 10, border: `1px solid ${C.line}`,
+                  borderRadius: 12, padding: "12px 14px", background: "#fff" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8,
+                    marginBottom: 8 }}>
+        <span style={{ fontWeight: 700, color: C.ink, fontSize: 13.5 }}>
+          {proposal.contact_name || "Contact"}
+        </span>
+        <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: 0.3,
+                       textTransform: "uppercase", color: C.accent }}>
+          draft follow-up
+        </span>
+      </div>
+      <textarea value={draft} onChange={(e) => setDraft(e.target.value)}
+                disabled={done || state === "sending"} rows={3}
+                style={{ width: "100%", border: `1px solid ${C.line}`,
+                         borderRadius: 8, padding: "8px 10px", fontSize: 13,
+                         fontFamily: FONT, resize: "vertical", color: C.ink,
+                         boxSizing: "border-box", outline: "none",
+                         background: done ? "#f7f7fa" : "#fff" }} />
+      {proposal.rationale && !done && (
+        <div style={{ fontSize: 11.5, color: C.faint, marginTop: 5 }}>
+          Why: {proposal.rationale}
+        </div>
+      )}
+      <div style={{ display: "flex", alignItems: "center", gap: 10,
+                    marginTop: 9 }}>
+        {!done ? (
+          <button onClick={approve}
+                  disabled={state === "sending" || !draft.trim()}
+                  style={{ display: "flex", alignItems: "center", gap: 6,
+                           background: C.accent, color: "#fff", border: "none",
+                           borderRadius: 8, padding: "7px 14px", fontSize: 13,
+                           fontWeight: 600, cursor: "pointer", fontFamily: FONT,
+                           opacity: state === "sending" || !draft.trim() ? 0.6 : 1 }}>
+            <Check size={14} />
+            {state === "sending" ? "Working…"
+              : auto ? "Approve & send" : "Save draft"}
+          </button>
+        ) : (
+          <span style={{ display: "flex", alignItems: "center", gap: 6,
+                         color: state === "sent" ? "#1c8c4e" : C.muted,
+                         fontSize: 13, fontWeight: 600 }}>
+            <Check size={15} />
+            {state === "sent" ? "Sent" : "Saved as draft"}
+          </span>
+        )}
+        {!done && (
+          <span style={{ fontSize: 11.5, color: C.faint }}>
+            {auto ? "Auto-send is ON — this will message them"
+                  : "Auto-send is OFF — staged for your review"}
+          </span>
+        )}
+        {state === "error" && (
+          <span style={{ fontSize: 12, color: "#c0432f" }}>{err}</span>
+        )}
+      </div>
     </div>
   );
 }
