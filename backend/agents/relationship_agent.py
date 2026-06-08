@@ -45,7 +45,9 @@ _SYSTEM_PROMPT = (
     "contact spine — the people they've met across events — and keep those "
     "relationships from going cold.\n\n"
     "Your loop each run:\n"
-    "1. Call `list_contacts` to survey everyone.\n"
+    "1. The host's FULL contact roster is given to you inline (one row per "
+    "person, with the same signals a survey would return). You already have it "
+    "— do NOT waste a turn fetching it; read the roster directly.\n"
     "2. Decide WHO to follow up with from these signals (NOT from fresh "
     "external news), in this PRIORITY ORDER:\n"
     "   a. MARKED follow-ups — AUTHORITATIVE: `marked_follow_up` true (the host "
@@ -169,18 +171,6 @@ def _strip_dashes(text: str) -> str:
 
 _TOOLS = [
     {
-        "name": "list_contacts",
-        "description": (
-            "Survey the host's entire durable contact spine. Returns one row "
-            "per person with name, company, strongest relationship stage, "
-            "number of shared events, whether they're stale, days since last "
-            "touch, any existing next step, the capture-time `contact_types` "
-            "the host tagged them with, and `marked_follow_up` (true if the "
-            "host explicitly tagged them 'follow_up' at capture). Call this first."
-        ),
-        "input_schema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
         "name": "get_contact",
         "description": (
             "Read one person's full history before deciding: rollup summary, "
@@ -193,7 +183,7 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "contact_id": {"type": "integer",
-                               "description": "The contact_id from list_contacts."},
+                               "description": "The contact_id from the roster."},
             },
             "required": ["contact_id"],
         },
@@ -401,20 +391,20 @@ def run_relationship_agent(
         if c is None:
             return {"error": f"no contact {contact_id} for this host"}
         timeline = relationships.contact_timeline(db, c)
-        # The raw `timeline` is mostly redundant with prior_messages (which is
-        # extracted from it) and is the single biggest chunk of payload — every
-        # later agent step re-sends the whole transcript, so a fat get_contact
-        # slows the time-to-first-card. Keep only the tail of the timeline, and
-        # cap the thread while ALWAYS preserving its first item (the initial DM /
-        # capture note the follow-up must continue from).
-        thread = _thread_from_timeline(timeline)
-        if len(thread) > 10:
-            thread = thread[:1] + thread[-9:]
+        # `prior_messages` is the actual host<->contact thread a draft must
+        # continue — it's what grounds the message in real context, so it is sent
+        # IN FULL: draft quality/voice must never lose history. Prompt caching
+        # (agent_loop._mark_thread_cache) makes re-sending it on later steps
+        # cheap, so there's no latency reason to trim it.
+        #
+        # The raw `timeline` is the event log, largely redundant with
+        # prior_messages (extracted from it) and the `events` rollup, so we cap
+        # IT to keep the first read light without touching draft grounding.
         return {
             "summary": relationships.contact_summary(db, c),
             "events": relationships.contact_events(db, c),
             "timeline": timeline[-12:],
-            "prior_messages": thread,
+            "prior_messages": _thread_from_timeline(timeline),
         }
 
     def _name_of(contact_id: int) -> str:
@@ -444,16 +434,23 @@ def run_relationship_agent(
         return {"staged": True, "kind": "draft_message", "contact_id": int(contact_id)}
 
     tool_impls = {
-        "list_contacts": _list_contacts,
         "get_contact": _get_contact,
         "propose_next_step": _propose_next_step,
         "draft_message": _draft_message,
     }
 
+    # Inline the roster instead of spending a whole sequential LLM turn on a
+    # `list_contacts` round-trip: the survey is deterministic data, so handing it
+    # to the model up front lets it go straight to get_contact -> draft. This is
+    # the single biggest cut to time-to-first-card (one fewer Claude call before
+    # anything streams).
+    roster = _list_contacts()
+    roster_json = json.dumps(roster, default=str)
     user_prompt = (
-        f"You have {len(contacts)} contacts in the spine. Survey them, find who "
-        f"is going cold or lacks a next step, and propose concrete moves. Deep-"
-        f"dive at most {MAX_DEEP_DIVES} people this run."
+        f"You have {len(contacts)} contacts in the spine. Here is the full "
+        f"roster (one row per person):\n{roster_json}\n\n"
+        f"Read it, find who is going cold or lacks a next step, and propose "
+        f"concrete moves. Deep-dive at most {MAX_DEEP_DIVES} people this run."
     )
     steer = (instruction or "").strip()
     if steer:

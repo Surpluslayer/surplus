@@ -194,8 +194,8 @@ def test_agent_stages_proposals_never_sends(db):
     p = _prospect(db, ev, captured_at=old)
     c = rel.link_contact(db, p, u.id)
 
+    # Roster is inline in the prompt, so the agent goes straight to get_contact.
     script = [
-        ("tool_use", [_tool_use("list_contacts", "t1")]),
         ("tool_use", [_tool_use("get_contact", "t2", contact_id=c.id)]),
         ("tool_use", [
             _tool_use("propose_next_step", "t3", contact_id=c.id,
@@ -235,7 +235,6 @@ def test_on_proposal_fires_for_each_staged_proposal(db):
     c = rel.link_contact(db, p, u.id)
 
     script = [
-        ("tool_use", [_tool_use("list_contacts", "t1")]),
         ("tool_use", [_tool_use("get_contact", "t2", contact_id=c.id)]),
         ("tool_use", [
             _tool_use("propose_next_step", "t3", contact_id=c.id,
@@ -264,7 +263,6 @@ def test_agent_proposal_for_unknown_contact_is_rejected(db):
     rel.link_contact(db, p, u.id)
 
     script = [
-        ("tool_use", [_tool_use("list_contacts", "t1")]),
         ("tool_use", [_tool_use("propose_next_step", "t2", contact_id=99999,
                                 next_step="x")]),
         ("end_turn", [_text("done")]),
@@ -447,7 +445,6 @@ def test_agent_injects_host_voice_into_system_prompt(db):
     rel.link_contact(db, p, u.id)
 
     client = ScriptedClient([
-        ("tool_use", [_tool_use("list_contacts", "t1")]),
         ("end_turn", [_text("done")]),
     ])
     ragent.run_relationship_agent(db, u.id, client=client)
@@ -456,22 +453,42 @@ def test_agent_injects_host_voice_into_system_prompt(db):
     assert "yo!! so good to finally meet you haha" in sent_system
 
 
+def _message_text(m: dict) -> str:
+    """Flatten a recorded message's content to plain text (string content, or
+    the concatenated text of any text blocks)."""
+    c = m.get("content")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "\n".join(
+            b.get("text", "") for b in c
+            if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+
 def _list_contacts_payload(client) -> list[dict]:
-    """Pull the JSON list_contacts returned to the model back out of the
-    scripted client's recorded calls. agent_loop feeds each tool_result back as
-    a user message with content=[{type:'tool_result', content: json.dumps(...)}],
-    so the row payload the agent actually saw is recoverable here — this is the
+    """Pull the contact roster the model actually saw back out of the scripted
+    client's recorded calls. The roster is no longer a `list_contacts` tool
+    round-trip — it's injected inline into the kickoff prompt (one fewer
+    sequential LLM call), so we recover it from the prompt text. This is the
     exact dict shape `_list_contacts` produced, not a reconstruction."""
+    marker = "(one row per person):\n"
     for call in client.calls:
         for m in call.get("messages", []):
-            content = m.get("content")
-            if not isinstance(content, list):
+            text = _message_text(m)
+            i = text.find(marker)
+            if i == -1:
                 continue
-            for blk in content:
-                if isinstance(blk, dict) and blk.get("type") == "tool_result":
-                    rows = json.loads(blk["content"])
-                    if isinstance(rows, list) and rows and "contact_id" in rows[0]:
-                        return rows
+            after = text[i + len(marker):]
+            j = after.find("[")
+            if j == -1:
+                continue
+            try:
+                rows, _ = json.JSONDecoder().raw_decode(after[j:])
+            except ValueError:
+                continue
+            if isinstance(rows, list) and rows and "contact_id" in rows[0]:
+                return rows
     return []
 
 
@@ -488,8 +505,9 @@ def test_who_marked_follow_up_is_surfaced(db):
     db.commit()
     c = rel.link_contact(db, p, u.id)
 
+    # The roster is injected into the kickoff prompt, so the model needs no
+    # survey turn — it can finish immediately and the roster is still recoverable.
     client = ScriptedClient([
-        ("tool_use", [_tool_use("list_contacts", "t1")]),
         ("end_turn", [_text("done")]),
     ])
     res = ragent.run_relationship_agent(db, u.id, client=client)
@@ -513,7 +531,6 @@ def test_who_non_follow_up_tag_is_not_marked(db):
     c = rel.link_contact(db, p, u.id)
 
     client = ScriptedClient([
-        ("tool_use", [_tool_use("list_contacts", "t1")]),
         ("end_turn", [_text("done")]),
     ])
     res = ragent.run_relationship_agent(db, u.id, client=client)
@@ -540,3 +557,55 @@ def test_who_replied_then_cold_is_never_stale_KNOWN_GAP(db):
     c = rel.link_contact(db, p, u.id)
     # 58 days cold, yet not stale:
     assert rel.contact_summary(db, c)["relationship_stage"] == "replied"
+
+
+# ── latency structure: roster injection + thread caching ──────────────────────
+
+def test_roster_injected_inline_and_no_list_contacts_tool(db):
+    """The survey is handed to the model inline (one fewer sequential LLM call
+    before the first card) instead of via a `list_contacts` tool round-trip. So:
+      - the roster is recoverable from the kickoff prompt, AND
+      - `list_contacts` is no longer offered as a tool at all."""
+    u = _user(db)
+    ev = _event(db, u)
+    p = _prospect(db, ev,
+                  captured_at=datetime.now(timezone.utc) - timedelta(days=20))
+    c = rel.link_contact(db, p, u.id)
+
+    client = ScriptedClient([("end_turn", [_text("done")])])
+    res = ragent.run_relationship_agent(db, u.id, client=client)
+    assert res.error is None
+
+    # Roster reached the model inline, with the real contact in it.
+    rows = _list_contacts_payload(client)
+    assert any(r["contact_id"] == c.id for r in rows)
+
+    # list_contacts is not a tool the model can call anymore.
+    tool_names = {t["name"] for t in client.calls[0]["tools"]}
+    assert "list_contacts" not in tool_names
+    assert "get_contact" in tool_names
+
+
+def test_mark_thread_cache_moves_single_breakpoint_to_tail():
+    """Incremental prompt caching: exactly one cache breakpoint sits at the end
+    of the latest message, and a prior breakpoint is stripped as the thread
+    grows (so we never blow past Anthropic's 4-breakpoint limit)."""
+    # A bare-string first message is normalised to a cache-marked text block.
+    messages = [{"role": "user", "content": "kickoff"}]
+    agent_loop._mark_thread_cache(messages)
+    assert messages[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+    # Thread grows: the old breakpoint is cleared, the new tail gets the marker.
+    messages.append({"role": "assistant", "content": [
+        {"type": "text", "text": "thinking"}]})
+    messages.append({"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "{}"}]})
+    agent_loop._mark_thread_cache(messages)
+
+    marked = [
+        (mi, bi)
+        for mi, m in enumerate(messages)
+        for bi, b in enumerate(m["content"])
+        if isinstance(b, dict) and "cache_control" in b
+    ]
+    assert marked == [(2, 0)]  # exactly one, on the last message's last block

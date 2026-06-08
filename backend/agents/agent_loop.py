@@ -109,6 +109,39 @@ def _serialize_block(block: Any) -> dict:
     return {"type": "text", "text": _text_of(block)}
 
 
+def _mark_thread_cache(messages: list[dict]) -> None:
+    """Place ONE cache breakpoint at the end of the latest message.
+
+    Each agent step re-sends the whole growing transcript (the tool results,
+    especially get_contact payloads, balloon it). Marking the last block as an
+    ephemeral cache breakpoint means the entire prefix up to here — system +
+    tools + every earlier turn — is read from cache on the NEXT step instead of
+    reprocessed, cutting time-to-first-token on every step after the first.
+
+    We keep exactly one breakpoint in the thread (strip any prior one first) so
+    that, with the system block's own breakpoint, we stay well under Anthropic's
+    4-breakpoint limit. Anthropic auto-reads the longest matching cached prefix,
+    so a single moving breakpoint at the tail is enough for incremental caching.
+    """
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, list):
+            for b in c:
+                if isinstance(b, dict):
+                    b.pop("cache_control", None)
+    last = messages[-1]
+    c = last.get("content")
+    if isinstance(c, str):
+        # Normalise a plain-string message to block form so it can carry a
+        # cache_control marker (the initial user_prompt is a bare string).
+        last["content"] = [{
+            "type": "text", "text": c,
+            "cache_control": {"type": "ephemeral"},
+        }]
+    elif isinstance(c, list) and c and isinstance(c[-1], dict):
+        c[-1]["cache_control"] = {"type": "ephemeral"}
+
+
 def run_agent(
     *,
     system: str,
@@ -162,6 +195,9 @@ def run_agent(
 
     for step in range(1, max_steps + 1):
         run.steps = step
+        # Cache the whole transcript prefix so each step after the first reads
+        # the prior turns from cache instead of reprocessing the (growing) thread.
+        _mark_thread_cache(messages)
         try:
             resp = client.messages.create(
                 model=mdl,
