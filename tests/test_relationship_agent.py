@@ -771,14 +771,15 @@ def test_concurrent_uses_sonnet_for_every_call(db):
     assert all(call["model"] == ragent._AGENT_MODEL for call in client.calls)
 
 
-def test_concurrent_caps_selections_at_max_deep_dives(db):
-    """A runaway triage that names more people than MAX_DEEP_DIVES is capped, so
-    the fan-out width stays bounded regardless of roster size (the 100+-contact
-    safety property)."""
+def test_concurrent_does_not_cap_selections(db):
+    """Triage is a high-recall net: every nominated, owner-resolvable person is
+    drafted, with NO arbitrary count cap. (Fan-out CONCURRENCY is still bounded
+    by the semaphore; this asserts total reach, not simultaneity.)"""
     u = _user(db)
     ev = _event(db, u)
+    n = ragent.MAX_DEEP_DIVES + 5  # comfortably past the old cap
     contacts = [_stale_contact(db, u, ev, name=f"P{i}", ident=f"p{i}")
-                for i in range(ragent.MAX_DEEP_DIVES + 5)]
+                for i in range(n)]
     triage = [_tool_use(
         "select_followups", "tg",
         selections=[{"contact_id": c.id, "reason": "cold", "angle": "x"}
@@ -790,8 +791,8 @@ def test_concurrent_caps_selections_at_max_deep_dives(db):
     client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
 
     res = ragent.run_relationship_agent_concurrent(db, u.id, client=client)
-    assert len(client.draft_calls()) == ragent.MAX_DEEP_DIVES   # capped
-    assert len(res.proposals) == ragent.MAX_DEEP_DIVES
+    assert len(client.draft_calls()) == n       # everyone drafted, uncapped
+    assert len(res.proposals) == n
 
 
 def test_concurrent_unknown_selection_is_dropped(db):

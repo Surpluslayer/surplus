@@ -531,9 +531,11 @@ _AGENT_MODEL = (os.environ.get("RELATIONSHIP_AGENT_MODEL")
 # 429. 5 is a deliberately conservative middle of the 4-6 band (Sonnet tokens
 # are heavier than the Haiku compose path that runs at 10).
 _DRAFT_CONCURRENCY = int(os.environ.get("RELATIONSHIP_DRAFT_CONCURRENCY", "5"))
-# Must fit up to MAX_DEEP_DIVES ranked selections (each ~50-60 tokens of
-# {contact_id, reason, angle}) plus the closing line in one triage call. At
-# MAX_DEEP_DIVES=100 that's ~6k tokens of tool output; 8192 leaves headroom.
+# Generous ceiling for the one triage call. The concurrent path nominates
+# everyone with a plausible hook (no count cap), and each selection is ~50-60
+# tokens of {contact_id, reason, angle}; on a large roster that's several kt of
+# tool output. Too low a limit would truncate the select_followups JSON and
+# silently drop tail nominees, so keep headroom.
 _TRIAGE_MAX_TOKENS = 8192
 _DRAFT_MAX_TOKENS = 1024
 
@@ -600,17 +602,23 @@ _TRIAGE_TOOL = {
 _SKIP_TOOL = {
     "name": "skip_contact",
     "description": (
-        "Decline to draft for this person. Use ONLY when the thread in "
-        "prior_messages shows the follow-up is already handled: a SECOND host "
-        "message went out after the first, OR the contact has already REPLIED "
-        "(an inbound 'them' message). Absent those, draft instead of skipping."
+        "Decline to draft for this person because, having READ their actual "
+        "conversation thread, a follow-up is NOT warranted right now. This is a "
+        "normal, common outcome — you are the real filter, so skip whenever the "
+        "content says so: the loop is CLOSED (they declined, said no, or the "
+        "matter is resolved), the BALL IS IN THEIR COURT (they replied or you "
+        "messaged recently and it's their turn / too soon to nudge again), or a "
+        "real follow-up ALREADY went out and not enough has changed to send "
+        "another. Draft only when the thread shows a genuine open reason to "
+        "reach out."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "contact_id": {"type": "integer"},
             "reason": {"type": "string",
-                       "description": "Why no draft is needed, one line."},
+                       "description": "Why no follow-up is warranted, grounded in "
+                       "the thread content, one line."},
         },
         "required": ["contact_id"],
     },
@@ -621,45 +629,162 @@ _SKIP_TOOL = {
 _DRAFT_TOOLS = [_TOOLS[1], _TOOLS[2], _SKIP_TOOL]  # propose_next_step, draft_message, skip
 
 
-_TRIAGE_SYSTEM = (
-    "You are a relationship manager for an event host. You are handed the "
-    "host's FULL contact roster (one row per person, with the signals a survey "
-    "returns). Your ONLY job this step is to TRIAGE: choose who the host should "
-    "follow up with now, ranked most-important first. You do NOT write messages "
-    "here.\n\n"
-    "Choose from these signals (NOT from fresh external news), in PRIORITY ORDER:\n"
-    "  a. MARKED follow-ups — AUTHORITATIVE: `marked_follow_up` true (the host "
-    "tagged them 'follow_up') OR a `next_step` the host wrote down. The host has "
-    "EXPLICITLY decided to follow up, so these are ALWAYS worth selecting this "
-    "run, even if their last touch is recent or unanswered — an unanswered first "
-    "outreach is the REASON to follow up, never a reason to wait. (The drafting "
-    "step has the full thread and will skip anyone already handled, so when in "
-    "doubt about a MARKED contact, select them.)\n"
-    "  b. Stale, UNMARKED: a live relationship gone quiet past the stale line "
-    "(`is_stale` true, or a large `days_since_last_touch`). BUT an unmarked "
-    "contact whose only touch is a recent, un-replied first outreach should be "
-    "held back — a second message this soon is piling on. Skip them this run.\n\n"
-    "Call `select_followups` ONCE with up to "
-    f"{MAX_DEEP_DIVES} people, ranked. Give each a one-line `reason` (why now) "
-    "and an `angle` (the hook the follow-up should hit). Also give a short, "
-    "conversational `closing` line for the host, like you're texting them back "
-    "(one or two sentences, plain prose, NEVER a table or bullet list). If the "
-    "roster has nobody worth actioning, return an empty `selections` list and "
-    "say so warmly in `closing`."
-)
+_TRIAGE_SYSTEM = """\
+You are a relationship manager for an event host.
+
+You are given the host's full contact list, one row per person, with the available relationship signals for each person. Your only job in this step is TRIAGE: nominate people who plausibly warrant a relationship action from the host, ranked most important first.
+
+You do not write messages here. You do not make the final send/no-send decision.
+
+A second step will read each nominee's actual conversation thread and decide, from the content, whether a follow-up is genuinely warranted. That step will skip anyone whose thread shows the loop is closed, they declined, no response is needed, or the ball is clearly in the contact's court.
+
+Your job is high-recall triage, not final filtering.
+
+Your goal is a wide net, not everyone.
+
+Nominate people when the provided data shows a plausible reason for the host to take another relationship action now.
+
+A plausible relationship action includes:
+- following up on an open loop
+- responding to someone who replied
+- continuing momentum after a meaningful interaction
+- reconnecting with someone who has gone quiet
+- checking in after time has passed
+- following up on a host-written next step
+- reaching out because the provided data contains a clear life, work, company, or event update
+- reviving a warm relationship where another touch would feel natural
+- answering the host's explicit request
+
+Wide net means include weak but real hooks.
+Wide net does not mean include people with no hook.
+
+CRITICAL EVIDENCE RULE:
+Only use reasons that are explicitly present in the provided data.
+
+Do not invent or assume:
+- life updates
+- company updates
+- funding news
+- job changes
+- moves
+- launches
+- promotions
+- personal milestones
+- recent activity
+- intent to reconnect
+- interest level
+- relationship warmth
+
+If the provided data does not show the reason, do not use it.
+
+The test is not:
+"Could this person maybe be relevant?"
+
+The test is:
+"Does the provided data show a plausible reason for the host to take another relationship action now?"
+
+ANSWER THE HOST'S REQUEST FIRST.
+
+If the host typed a request that names a company, group, person, stage, event, tag, or criterion, nominate everyone who matches that request and is relevant to that request. This intent overrides the default heuristics. It can include people who already replied, converted, went stale, or would otherwise be deprioritized.
+
+Examples:
+- "Who at Stripe?" means nominate people the provided data identifies as connected to Stripe.
+- "Who replied?" means nominate people whose provided data shows they replied.
+- "Anyone who has gone cold?" means nominate people with stale or quiet-relationship signals.
+- "Who did I mark for follow-up?" means nominate people marked for follow-up.
+- "Any investors?" means nominate people the provided data identifies as investors.
+- "Who should I reconnect with?" means nominate people with stale, warm, prior-engagement, or update-based reasons shown in the data.
+
+Do not use outside knowledge. Do not search. Do not guess based on someone's name, company, title, or background unless the provided data supports it.
+
+When there is no specific host request, or the request is open-ended, use the default triage rules below.
+
+MUST NOMINATE:
+1. The person matches the host's explicit request.
+2. marked_follow_up is true.
+3. The host wrote a next_step.
+4. relationship_stage is replied.
+5. The data shows an open loop, such as send deck, book call, make intro, answer question, share resource, schedule follow-up, check back later, or follow up after event.
+6. The data shows a clear life, work, company, or event update that makes outreach natural.
+7. The relationship has gone quiet after meaningful prior engagement, based on is_stale, days_since_last_touch, or notes in the data.
+
+USUALLY NOMINATE:
+1. Warm contacts where the data shows a check-in would feel natural.
+2. High-fit or high-value people where the data shows a concrete reason to continue the relationship.
+3. Converted contacts when the data shows another plausible action, such as expansion, next event, referral, intro, feedback, renewal, or post-conversion check-in.
+4. People who attended, applied, RSVP'd, or engaged only if the data shows a real continuation angle beyond attendance alone.
+
+DO NOT NOMINATE:
+1. People with no clear reason for another touch.
+2. People whose only signal is that they exist in the contact list.
+3. People who merely attended, RSVP'd, applied, or were imported, with no follow-up or reconnecting hook.
+4. Recent un-replied first outreach where another message would just be piling on.
+5. Clearly closed-loop contacts with no next action.
+6. Declined, rejected, unsubscribed, not interested, or do-not-contact contacts, unless the host explicitly asked for them.
+7. Converted contacts with no reason to continue.
+8. People where the ball is clearly in the contact's court and there is no stale or reconnect trigger.
+9. People who seem generally interesting, impressive, or relevant, but have no actionable relationship reason in the provided data.
+
+Important distinctions:
+- Replied does not mean done. A reply may need a response, so nominate replied contacts.
+- Converted does not always mean done. Nominate converted contacts only when the data shows another plausible action.
+- Unanswered does not automatically mean follow up. Only nominate unanswered contacts if they are stale, marked, have a next_step, match the host's request, or have another explicit hook.
+- Attendance alone is not a follow-up reason. There must be a continuation hook.
+- A title or company alone is not a follow-up reason unless the host explicitly asked for that title or company.
+- Do not pre-filter by stage alone. Use the actual relationship-action hook.
+
+Ranking priority:
+1. Direct matches to the host's request.
+2. Host-marked follow-ups and rows with next_step.
+3. Replied or open-loop contacts.
+4. Contacts with explicit life, work, company, or event updates in the data.
+5. Stale live relationships.
+6. High-fit or high-value contacts with a concrete next action.
+7. Converted contacts with a clear reason to continue.
+
+Within each tier, rank by:
+1. clearest next action
+2. strongest explicit hook
+3. strongest relationship fit shown in the data
+4. highest apparent value to the host
+5. oldest unresolved touch
+6. strongest match to the host's stated intent
+
+Call select_followups exactly once with every person who is plausibly relevant, ranked most important first. Do not apply an arbitrary cap.
+
+For each selected person, provide:
+- the person identifier required by the tool
+- a one-line reason based only on the provided data
+- an angle for the later message-writing step
+
+The reason and angle must not contain invented facts. If the hook is uncertain, state the uncertainty using the available signal. For example, say "possibly stale based on days_since_last_touch," not "they probably lost interest."
+
+Also provide a short conversational closing line for the host. The closing line should be one or two plain-prose sentences. Do not use a table. Do not use bullets. If the host asked a specific question, answer it directly. If nobody is worth nominating, return an empty selections list and say so warmly."""
 
 
 _DRAFT_SYSTEM = (
-    "You are a relationship manager for an event host, drafting ONE follow-up "
-    "for ONE person whose full history is given to you inline below (rollup "
-    "summary, the events you've shared, the cross-event timeline, and "
-    "`prior_messages` — the actual host<->contact thread, oldest-first). A "
-    "triage step already decided this person is worth following up with and "
-    "told you why; your job is the draft.\n\n"
-    "FIRST, check whether a follow-up is even needed. Suppress it — call "
-    "`skip_contact` — ONLY if `prior_messages` shows a SECOND host message after "
-    "the first (a real follow-up already went out) OR the contact has already "
-    "REPLIED (an inbound 'them' message). Absent those, DRAFT.\n\n"
+    "You are a relationship manager for an event host, deciding on and (if "
+    "warranted) drafting ONE follow-up for ONE person whose full history is "
+    "given to you inline below (rollup summary, the events you've shared, the "
+    "cross-event timeline, and `prior_messages` — the actual host<->contact "
+    "thread, oldest-first). A wide triage step NOMINATED this person as a "
+    "candidate; YOU are the real filter, and you decide from the conversation "
+    "content whether a follow-up is genuinely warranted.\n\n"
+    "FIRST, READ `prior_messages` and JUDGE FROM THE CONTENT. Do not assume a "
+    "follow-up is needed just because they were nominated. Call `skip_contact` "
+    "(a normal, common outcome) when the thread says no follow-up is warranted, "
+    "e.g.:\n"
+    "  - CLOSED LOOP: they declined, said no/not interested, or the matter is "
+    "resolved and there's nothing open to continue.\n"
+    "  - THEIR COURT: they replied and the natural next move is theirs, or you "
+    "messaged recently and it's too soon to nudge again (no new reason since).\n"
+    "  - ALREADY HANDLED: a real follow-up already went out and nothing has "
+    "changed that would justify another.\n"
+    "DRAFT only when the content shows a genuine OPEN reason to reach out: an "
+    "unanswered question or open loop, a reply that warrants a response, a "
+    "concrete next_step the host wrote, or a real relationship that has gone "
+    "quiet with a natural reason to reconnect. When you draft after they REPLIED, "
+    "you are answering their message, not nudging them.\n\n"
     "To draft, call `propose_next_step` (a specific action the host should take) "
     "and/or `draft_message` (a short, warm, specific message). The draft MUST "
     "build on `prior_messages`: pick up the thread where it left off, reference "
@@ -777,16 +902,38 @@ def run_relationship_agent_concurrent(
     # ── Phase 1 : triage (one Sonnet call) ─────────────────────────────────
     roster_json = json.dumps(_roster(), default=str)
     triage_prompt = (
-        f"You have {len(contacts)} contacts in the spine. Here is the full "
-        f"roster (one row per person):\n{roster_json}\n\n"
-        f"Triage it: pick who is going cold or lacks a next step and rank them."
+        f"You have {len(contacts)} contacts in the contact list. Here is the "
+        f"full data, one row per person:\n\n{roster_json}\n\n"
+        "Triage it: nominate every person with a plausible relationship action "
+        "for the host to take now, ranked most important first.\n\n"
+        "Use a wide net, but do not nominate everyone. Only nominate people "
+        "where the provided data shows a real hook, such as:\n"
+        "- marked for follow-up\n"
+        "- host-written next_step\n"
+        "- replied or open-loop\n"
+        "- gone quiet after meaningful engagement\n"
+        "- clear update or trigger in the provided data\n"
+        "- concrete reason to reconnect or continue momentum\n\n"
+        "Do not nominate people whose only signal is that they exist in the "
+        "contact list, attended, RSVP'd, were imported, or seem generally "
+        "interesting.\n\n"
+        "Use only the provided data. Do not invent updates, interest, warmth, "
+        "or reasons to reconnect."
     )
     steer = (instruction or "").strip()
     if steer:
         triage_prompt = (
-            f"The host asked: \"{steer}\"\n\n{triage_prompt} Prioritise whoever "
-            f"the host's ask points at, and make your `closing` directly answer "
-            f"what they asked in one short conversational sentence."
+            f"The host asked: \"{steer}\"\n\n"
+            f"You have {len(contacts)} contacts in the contact list. Here is "
+            f"the full data, one row per person:\n\n{roster_json}\n\n"
+            "Triage it according to the host's request first.\n\n"
+            "Nominate everyone who matches the host's request and has a relevant "
+            "reason under that request. Rank them most important first. Do not "
+            "apply an arbitrary cap.\n\n"
+            "If the host's request is specific, make the closing line directly "
+            "answer what they asked in one short conversational sentence.\n\n"
+            "Use only the provided data. Do not invent updates, interest, "
+            "warmth, or reasons to reconnect."
         )
 
     try:
@@ -812,7 +959,10 @@ def run_relationship_agent_concurrent(
             closing = (inp.get("closing") or "").strip()
             break
 
-    # Validate + cap: keep only roster-resolvable ids, dedupe, honour the cap.
+    # Validate: keep only roster-resolvable ids (owner-scoping) and dedupe. No
+    # arbitrary cap on count — triage nominates everyone with a plausible hook,
+    # and the per-person content step is the real filter. The fan-out width is
+    # still bounded by the _DRAFT_CONCURRENCY semaphore (concurrency, not total).
     seen: set[int] = set()
     clean: list[dict] = []
     for sel in selections:
@@ -826,8 +976,6 @@ def run_relationship_agent_concurrent(
         clean.append({"contact_id": cid,
                       "reason": (sel.get("reason") or "").strip(),
                       "angle": (sel.get("angle") or "").strip()})
-        if len(clean) >= MAX_DEEP_DIVES:
-            break
 
     result.steps = 1  # the triage call
     if not clean:
@@ -854,7 +1002,9 @@ def run_relationship_agent_concurrent(
             + (f" Angle to hit: {sel['angle']}." if sel.get("angle") else "")
             + "\n\nTheir full context:\n"
             + json.dumps(ctx, default=str)
-            + "\n\nDraft the follow-up now (or skip_contact if already handled)."
+            + "\n\nRead prior_messages, decide if a follow-up is genuinely "
+            "warranted, then draft it — or call skip_contact if the content says "
+            "no follow-up is needed right now."
         )
         resp = cli.messages.create(
             model=_AGENT_MODEL,
