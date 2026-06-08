@@ -669,6 +669,59 @@ def prefetch_interactions_by_prospect(db, contacts) -> dict:
     return result
 
 
+def fetch_activity_updates(db, contact) -> list:
+    """Newest-first activity_update interactions for one durable Contact — the
+    'what's new about them' the relationship-watch poller emits (job changes,
+    profile edits, new posts). Keyed on contact_id (the poller never sets a
+    prospect_id). Returns [] on any error so a broken read never sinks the card."""
+    from .. import models
+    try:
+        return (db.query(models.RelationshipInteraction)
+                  .filter(models.RelationshipInteraction.contact_id == contact.id)
+                  .filter(models.RelationshipInteraction.source_type == "activity_update")
+                  .order_by(models.RelationshipInteraction.occurred_at.desc())
+                  .all())
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def prefetch_activity_updates_by_contact(db, contacts) -> dict:
+    """Batch fetch_activity_updates for a whole contacts list in ONE query, so
+    the CRM list view surfaces each contact's freshest update without an N+1.
+    Returns {contact_id: [activity_update rows, newest first]}."""
+    from .. import models
+    contact_ids = [c.id for c in contacts if getattr(c, "id", None) is not None]
+    if not contact_ids:
+        return {}
+    try:
+        rows = (db.query(models.RelationshipInteraction)
+                  .filter(models.RelationshipInteraction.contact_id.in_(contact_ids))
+                  .filter(models.RelationshipInteraction.source_type == "activity_update")
+                  .order_by(models.RelationshipInteraction.occurred_at.desc())
+                  .all())
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict = {}
+    for ri in rows:
+        out.setdefault(getattr(ri, "contact_id", None), []).append(ri)
+    return out
+
+
+def _latest_update_view(updates) -> Optional[dict]:
+    """The single freshest activity_update as a compact card field, or None.
+    `updates` is the newest-first list from fetch_activity_updates / the prefetch
+    index — we just read element 0."""
+    if not updates:
+        return None
+    u = updates[0]
+    return {
+        "type": _clean(getattr(u, "interaction_type", None)),   # job_change | profile_update | new_post
+        "title": _clean(getattr(u, "title", None)),
+        "summary": _clean(getattr(u, "summary", None)),
+        "occurred_at": _as_aware(getattr(u, "occurred_at", None)),
+    }
+
+
 def contact_events(db, contact, interactions_by_prospect=None) -> list[dict]:
     """One row per shared event (per linked Prospect) : where we met / re-touched
     this person, plus where that per-event relationship stands. The 'events we've
@@ -702,15 +755,23 @@ def contact_events(db, contact, interactions_by_prospect=None) -> list[dict]:
     return rows
 
 
-def contact_summary(db, contact, interactions_by_prospect=None) -> dict:
+def contact_summary(db, contact, interactions_by_prospect=None,
+                    activity_updates=None) -> dict:
     """A durable-person rollup across every event we've shared : who they are,
     when we first met, how many events, the strongest stage reached, the freshest
     touch, and the open next step. The Pillar-1 'who I've met' card.
 
     `interactions_by_prospect` is the batched index from the list view; None on
-    the single-contact path (which keeps its per-prospect fetch)."""
+    the single-contact path (which keeps its per-prospect fetch).
+
+    `activity_updates` (newest-first, from prefetch_activity_updates_by_contact)
+    feeds the 'what's new' card fields — latest_update + n_updates — so the CRM
+    can show 'Maya changed roles' and float fresh-news contacts to the top.
+    None on the detail path -> fetched directly for this one contact."""
     prospects = list(getattr(contact, "prospects", None) or [])
     events = contact_events(db, contact, interactions_by_prospect)
+    updates = (activity_updates if activity_updates is not None
+               else fetch_activity_updates(db, contact))
 
     stages = [e["relationship_stage"] for e in events]
     first_touches = [e["captured_at"] for e in events if e["captured_at"]]
@@ -744,6 +805,10 @@ def contact_summary(db, contact, interactions_by_prospect=None) -> dict:
         "contact_types": sorted({c for c in contact_types}),
         "next_step": next_steps[0] if next_steps else None,
         "event_ids": [e["event_id"] for e in events if e["event_id"] is not None],
+        # what's new (relationship-watch poller) : freshest external change +
+        # how many we've recorded. None / 0 when we've seen nothing yet.
+        "latest_update": _latest_update_view(updates),
+        "n_updates": len(updates),
     }
 
 

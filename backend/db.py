@@ -130,6 +130,8 @@ def init_db() -> None:
         _migrate_user_voice_synced_at,
         _migrate_prospect_contact_id,
         _migrate_prospect_role_width,
+        _migrate_contact_watch,
+        _migrate_user_auto_followups,
     ]
     for migration in migrations:
         try:
@@ -275,6 +277,45 @@ def _migrate_prospect_enrichment_text() -> None:
         if "bio" not in cols:
             conn.execute(text(
                 f"ALTER TABLE prospects ADD COLUMN {ine}bio TEXT"
+            ))
+
+
+def _migrate_contact_watch() -> None:
+    """Add the relationship-watch snapshot columns to contacts:
+    headline (VARCHAR(300)), title (VARCHAR(200)), seen_post_ids (TEXT,
+    default '[]'), watched_at (TIMESTAMP), watch_error (VARCHAR(300)).
+
+    All nullable / safely-defaulted : pre-existing contacts get NULL snapshot +
+    NULL watched_at, so their first poll seeds the baseline silently (no spam
+    of 'changed jobs' for state we never recorded). seen_post_ids defaults to
+    '[]' so the JSON parse in relationship_watch never sees NULL."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "contacts" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("contacts")}
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        if "headline" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE contacts ADD COLUMN {ine}headline VARCHAR(300)"
+            ))
+        if "title" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE contacts ADD COLUMN {ine}title VARCHAR(200)"
+            ))
+        if "seen_post_ids" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE contacts ADD COLUMN {ine}seen_post_ids TEXT "
+                f"DEFAULT '[]'"
+            ))
+        if "watched_at" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE contacts ADD COLUMN {ine}watched_at TIMESTAMP"
+            ))
+        if "watch_error" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE contacts ADD COLUMN {ine}watch_error VARCHAR(300)"
             ))
 
 
@@ -625,6 +666,29 @@ def _migrate_event_user_id() -> None:
         conn.execute(text("ALTER TABLE events ADD COLUMN user_id INTEGER"))
         # SQLite doesn't enforce FK in ALTER but ORM relationship still works
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_user_id ON events (user_id)"))
+
+
+def _migrate_user_auto_followups() -> None:
+    """Add users.auto_followups_enabled (BOOLEAN, default False) : the per-user
+    opt-in for the Gmail-style scheduled follow-up feature.
+
+    Defaulted to 0/false so every existing user stays opted OUT until they
+    explicitly turn it on : sending a first DM never auto-stages a follow-up
+    for a user who hasn't asked for it."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "auto_followups_enabled" in cols:
+        return
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    default = "FALSE" if ENGINE.dialect.name == "postgresql" else "0"
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            f"ALTER TABLE users ADD COLUMN {ine}auto_followups_enabled "
+            f"BOOLEAN DEFAULT {default}"
+        ))
 
 
 def _ensure_operator_user_and_backfill() -> None:

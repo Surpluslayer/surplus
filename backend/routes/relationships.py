@@ -132,8 +132,17 @@ def list_contacts(
     # page take tens of seconds for a contact-rich user).
     contacts = relationships.list_contacts(db, user.id)
     inter_index = relationships.prefetch_interactions_by_prospect(db, contacts)
-    rows = [relationships.contact_summary(db, c, inter_index) for c in contacts]
-    rows.sort(key=lambda r: r["last_touch_at"] or _MIN_DT, reverse=True)
+    update_index = relationships.prefetch_activity_updates_by_contact(db, contacts)
+    rows = [relationships.contact_summary(db, c, inter_index,
+                                          update_index.get(c.id))
+            for c in contacts]
+    # "What's new on top" : order by the freshest signal — the most recent
+    # external update if there is one, else the last touch — so contacts the
+    # poller just found news about surface first.
+    def _freshness(r):
+        upd = (r.get("latest_update") or {}).get("occurred_at")
+        return max(d for d in (upd, r["last_touch_at"], _MIN_DT) if d is not None)
+    rows.sort(key=_freshness, reverse=True)
     return {"count": len(rows), "contacts": rows}
 
 
@@ -152,6 +161,73 @@ def contact_detail(
         "events": relationships.contact_events(db, c),
         "timeline": relationships.contact_timeline(db, c),
     }
+
+
+@router.post("/refresh")
+def refresh_crm(
+    limit: Optional[int] = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Manually poll the caller's CRM (Contact spine) for LinkedIn changes —
+    job/company moves, headline edits, new posts — and emit each real change as
+    an activity_update interaction (which then shows up in GET /updates and the
+    per-contact timeline).
+
+    Owner-scoped : only ever touches THIS user's contacts. Read-only against
+    LinkedIn (never sends). `limit` caps how many contacts to poll this call
+    (oldest-checked first), so a big CRM can be swept in round-robin batches.
+
+    Dispatch mirrors the rest of the app: when USE_MODAL is set we spawn the
+    off-box sweep and return immediately; otherwise we run inline and return the
+    poll summary so a manual trigger gives instant feedback."""
+    from ..jobs import use_modal, _spawn_modal, execute_crm_refresh
+
+    if use_modal() and _spawn_modal("run_crm_refresh", user.id, limit=limit):
+        return {"dispatched": "modal", "user_id": user.id}
+
+    summary = execute_crm_refresh(user.id, limit=limit)
+    return {"dispatched": "local", **summary}
+
+
+@router.get("/updates")
+def relationship_updates(
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """The 'what's new' feed : every change the watch-poller has detected about
+    the caller's tracked people, newest first. Backed by the append-only
+    activity_update RelationshipInteraction rows the refresh job writes.
+
+    Owner-scoped via actor_user_id. Each item carries the contact it's about so
+    the feed can render 'Maya changed roles' without a second lookup."""
+    limit = max(1, min(limit, 200))
+    rows = (
+        db.query(models.RelationshipInteraction)
+        .filter(models.RelationshipInteraction.actor_user_id == user.id)
+        .filter(models.RelationshipInteraction.source_type == "activity_update")
+        .order_by(models.RelationshipInteraction.occurred_at.desc())
+        .limit(limit)
+        .all()
+    )
+    # Batch-resolve contact names (avoid an N+1 over the feed).
+    contact_ids = {r.contact_id for r in rows if r.contact_id}
+    names: dict[int, str] = {}
+    if contact_ids:
+        for c in (db.query(models.Contact)
+                    .filter(models.Contact.id.in_(contact_ids)).all()):
+            names[c.id] = c.name
+
+    items = [{
+        "contact_id": r.contact_id,
+        "name": names.get(r.contact_id, ""),
+        "type": r.interaction_type,      # job_change | profile_update | new_post
+        "title": r.title,
+        "summary": r.summary,
+        "occurred_at": r.occurred_at,
+    } for r in rows]
+    return {"count": len(items), "updates": items}
 
 
 @router.post("/agent/run")

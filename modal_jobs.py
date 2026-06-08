@@ -309,6 +309,58 @@ async def run_match_job(job_id: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 5) RELATIONSHIP WATCH — poll each user's CRM (Contact spine) for LinkedIn
+#    changes and emit activity_update interactions. There is NO Unipile push for
+#    a tracked person's own posts/job changes (webhooks only fire for the
+#    connected account's own activity), so freshness comes from POLLING on a
+#    schedule. The work lives in backend/jobs.py::execute_crm_refresh (shared
+#    with the manual POST /api/relationships/refresh route) — thin shell here.
+# --------------------------------------------------------------------------- #
+_CRM_TIMEOUT = 60 * 20
+
+
+@app.function(
+    image=image,
+    secrets=[secret],
+    timeout=_CRM_TIMEOUT,
+    retries=1,  # LinkedIn reads are non-deterministic; one retry, not two
+)
+def run_crm_refresh(user_id: int, limit: int | None = None) -> dict:
+    """Poll one user's CRM for LinkedIn changes. Returns {user_id, polled,
+    changes}. Read-only against LinkedIn; best-effort per contact."""
+    from backend.db import init_db
+    from backend.jobs import execute_crm_refresh
+
+    init_db()
+    return execute_crm_refresh(user_id, limit=limit)
+
+
+@app.function(
+    image=image,
+    secrets=[secret],
+    timeout=_CRM_TIMEOUT,
+    schedule=modal.Period(days=1),
+)
+def crm_refresh_sweep() -> list[dict]:
+    """Daily: refresh every user's CRM, one container per user (fan-out with
+    per-user retries). Scheduled — Modal fires this on modal.Period(days=1)
+    once deployed; no Railway cron needed."""
+    from backend.db import SessionLocal, init_db
+    from backend import models
+
+    init_db()
+    db = SessionLocal()
+    try:
+        rows = db.query(models.User.id).all()
+        user_ids = [r[0] for r in rows]
+    finally:
+        db.close()
+
+    print(f"  [modal.crm_sweep] fanning out over {len(user_ids)} users")
+    return list(run_crm_refresh.map(user_ids))
+
+
+# --------------------------------------------------------------------------- #
 # Local entrypoints: `modal run modal_jobs.py::<name>`
 # --------------------------------------------------------------------------- #
 @app.local_entrypoint()

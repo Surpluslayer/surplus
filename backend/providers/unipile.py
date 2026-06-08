@@ -422,6 +422,12 @@ class UnipileProvider(LinkedInProvider):
         if not data:
             return {}
         out: dict = {}
+        # provider_id (the internal LinkedIn id) is what the /posts subpath
+        # requires — the public handle 422s there. Surface it so callers (the
+        # CRM refresh job) can fetch posts without a second profile lookup.
+        prov = (data.get("provider_id") or "").strip()
+        if prov:
+            out["provider_id"] = prov
         headline = (data.get("headline") or data.get("occupation") or "").strip()
         if headline:
             out["headline"] = headline
@@ -454,6 +460,48 @@ class UnipileProvider(LinkedInProvider):
             text = (it.get("text") or it.get("content") or it.get("commentary") or "").strip()
             if text:
                 out.append(text[:500])
+        return out
+
+    def fetch_recent_posts_detailed(
+        self, provider_id: str, limit: int = 5
+    ) -> list[dict]:
+        """GET /users/{provider_id}/posts -> [{id, text, date}] for change
+        detection.
+
+        IMPORTANT: the posts subpath is keyed by the internal `provider_id`,
+        NOT the public handle — passing the handle returns 422 invalid_recipient
+        (verified live). Callers get provider_id from fetch_profile()'s output.
+
+        Unlike _fetch_recent_posts (text-only, for outreach grounding), this
+        keeps a stable post id + ISO timestamp so the CRM refresh job can dedupe
+        and alert on each NEW post exactly once. id prefers the numeric `id` /
+        `social_id`; a post with no resolvable id is dropped (can't dedupe it).
+        `date` uses `parsed_datetime` (real ISO ts) — the bare `date` field is
+        a relative string like "1mo" and is useless for ordering. Best-effort:
+        errors / dry-run degrade to a small deterministic sample so the pipeline
+        stays testable."""
+        if self._dry_run:
+            return [
+                {"id": "dry-post-1",
+                 "text": "[dry-run] Shipped a 3x faster KV-cache today.",
+                 "date": ""},
+            ]
+        if not provider_id or not (self.api_key and self.dsn and self.account_id):
+            return []
+        data = self._get(f"/api/v1/users/{provider_id}/posts",
+                         params={"account_id": self.account_id, "limit": limit})
+        items = (data.get("items") or data.get("posts") or []) if data else []
+        out: list[dict] = []
+        for it in items[:limit]:
+            pid = (it.get("id") or it.get("social_id")
+                   or it.get("share_url") or it.get("urn") or "")
+            if not pid:
+                continue
+            text = (it.get("text") or it.get("content")
+                    or it.get("commentary") or "").strip()
+            date = (it.get("parsed_datetime") or it.get("date")
+                    or it.get("created_at") or "")
+            out.append({"id": str(pid), "text": text[:500], "date": str(date)})
         return out
 
     def fetch_recent_sent_messages(self, limit: int = 20) -> list[str]:

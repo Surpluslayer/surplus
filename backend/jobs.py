@@ -188,6 +188,96 @@ async def execute_match_job(job_id: str) -> None:
         db.close()
 
 
+# ─── Scale tripwire ───────────────────────────────────────────────────────
+# The CRM watch polls each contact's LinkedIn, and LinkedIn throttles an
+# account past ~100-150 profile views/day. A user tracking many hundreds of
+# contacts can't be polled daily without either blowing that budget or
+# stretching per-contact cadence so far the "what's new" feed goes stale.
+# Fire an internal alert WELL BEFORE that wall (default 300 watchable
+# contacts) so we add the prioritized-cadence layer before any user feels it.
+
+def _crm_scale_threshold() -> int:
+    try:
+        return int(os.environ.get("CRM_CONTACT_ALERT_THRESHOLD", "300"))
+    except ValueError:
+        return 300
+
+
+def _crm_scale_alert(user_id: int, watchable: int) -> None:
+    """Loud, greppable warning when a user's watchable-contact count crosses the
+    tripwire. Always logs (so it shows in Modal/server logs); also POSTs to
+    CRM_ALERT_WEBHOOK_URL (Slack-shaped {"text": ...}) when that env is set, so
+    it can page a channel without a code change. Best-effort: alerting must
+    never break the sweep."""
+    threshold = _crm_scale_threshold()
+    if watchable < threshold:
+        return
+    msg = (f"[crm.scale] user_id={user_id} has {watchable} watchable contacts "
+           f"(>= {threshold}). Daily polling will strain LinkedIn's per-account "
+           f"view budget — add prioritized cadence before this user goes stale.")
+    print("  WARNING " + msg)
+    url = (os.environ.get("CRM_ALERT_WEBHOOK_URL") or "").strip()
+    if not url:
+        return
+    try:
+        import json
+        import urllib.request
+        req = urllib.request.Request(
+            url, data=json.dumps({"text": msg}).encode(),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=5)  # noqa: S310 (operator-set URL)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [crm.scale] alert webhook POST failed: "
+              f"{type(exc).__name__}: {exc}")
+
+
+def execute_crm_refresh(user_id: int, *, limit: int | None = None) -> dict:
+    """Poll one user's CRM (Contact spine) for LinkedIn changes, on its own DB
+    session. Used by the scheduled Modal sweep and the manual refresh route's
+    Modal path. Read-only against LinkedIn; writes activity_update interactions.
+
+    Returns {user_id, polled, changes}. Best-effort: a single contact's fetch
+    error is recorded on that Contact and skipped inside refresh_user_crm."""
+    from sqlalchemy import func
+
+    from .db import SessionLocal
+    from . import models
+    from .providers import get_preview_provider
+    from .agents.relationship_watch import refresh_user_crm
+
+    db = SessionLocal()
+    try:
+        user = db.get(models.User, user_id)
+        if user is None:
+            print(f"  [jobs] crm_refresh user {user_id} NOT FOUND")
+            return {"user_id": user_id, "error": "user not found"}
+
+        # Scale tripwire: how many of this user's contacts are LinkedIn-
+        # pollable? Counted independent of `limit` (which only caps THIS
+        # batch) so the alert reflects the real watch load, not the slice.
+        watchable = (
+            db.query(func.count(models.Contact.id))
+            .filter(models.Contact.user_id == user_id)
+            .filter(models.Contact.linkedin_url.isnot(None))
+            .filter(models.Contact.linkedin_url != "")
+            .scalar()
+        ) or 0
+        _crm_scale_alert(user_id, watchable)
+
+        provider = get_preview_provider(user)  # read-only, never sends
+        summary = refresh_user_crm(db, user_id, provider, limit=limit)
+        print(f"  [jobs] crm_refresh user={user_id} "
+              f"polled={summary['polled']} changes={summary['changes']}")
+        return {"user_id": user_id, "polled": summary["polled"],
+                "changes": summary["changes"]}
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [jobs] crm_refresh user={user_id} FAILED: "
+              f"{type(exc).__name__}: {exc}")
+        return {"user_id": user_id, "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        db.close()
+
+
 def dispatch_job(background_tasks, db, job, **kwargs) -> str:
     """Dispatch a Job's work. Modal when USE_MODAL (and reachable), else a local
     BackgroundTask. Stamps job.runner and returns 'modal' or 'local'."""

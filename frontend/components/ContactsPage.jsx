@@ -8,7 +8,7 @@
 // surplus event flow. Self-contained so it stays isolated from the in-progress
 // CRM work and from each app's own CSS.
 import React, { useState, useEffect } from "react";
-import { Users, ArrowLeft, Building2, CalendarDays, Activity } from "lucide-react";
+import { Users, ArrowLeft, Building2, CalendarDays, Activity, Sparkles } from "lucide-react";
 import { api } from "../lib/api.js";
 
 const C = {
@@ -29,6 +29,34 @@ const STAGE_COLORS = {
   captured:  { bg: "#eef0f3", ink: "#5b6472" },
   stale:     { bg: "#fdeaea", ink: "#c0432f" },
 };
+
+// What's-new (relationship-watch) labels for the contact card.
+const UPDATE_LABEL = {
+  job_change:     "Changed roles",
+  profile_update: "Updated profile",
+  new_post:       "New post",
+};
+
+// The "what's new about them" highlight on a contact card : the freshest
+// external change the watch-poller found (job move / profile edit / new post).
+// Absent when we've seen nothing, so quiet contacts stay plain.
+function WhatsNew({ update }) {
+  if (!update) return null;
+  return (
+    <div style={{ marginTop: 10, padding: "8px 11px", borderRadius: 10,
+                  background: "#f3f0ff", border: "1px solid #e3dcff" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6,
+                    fontSize: 10.5, fontWeight: 700, letterSpacing: 0.4,
+                    textTransform: "uppercase", color: "#6d4df6" }}>
+        <Sparkles size={12} /> {UPDATE_LABEL[update.type] || "Update"}
+      </div>
+      <div style={{ fontSize: 12.5, color: "#3a3550", marginTop: 3,
+                    lineHeight: 1.4 }}>
+        {update.summary}
+      </div>
+    </div>
+  );
+}
 
 function StageChip({ stage }) {
   const c = STAGE_COLORS[stage] || STAGE_COLORS.captured;
@@ -249,6 +277,7 @@ export default function ContactsPage() {
               <div style={{ fontSize: 13, color: C.muted, marginTop: 4 }}>
                 {c.company || "—"}
               </div>
+              <WhatsNew update={c.latest_update} />
               <div style={{ fontSize: 12, color: C.faint, marginTop: 10,
                             display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <span>{c.n_events} event{c.n_events === 1 ? "" : "s"}</span>
