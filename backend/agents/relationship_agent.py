@@ -38,7 +38,11 @@ from .agent_loop import DEFAULT_MODEL, _block_type, run_agent
 # How many contacts the agent may pull full history for in one run. A soft
 # guard on cost/latency : the survey tool returns everyone, but deep-diving
 # all of them would be wasteful. The model is told to prioritise.
-MAX_DEEP_DIVES = 12
+# Raised to 100 for now : the concurrent fan-out (load-tested at 100 drafts on
+# Railway, 0 errors, ~30s) makes a large batch cheap in wall-time. Keep the
+# triage token budget (_TRIAGE_MAX_TOKENS) large enough to actually emit this
+# many ranked selections in one call.
+MAX_DEEP_DIVES = 100
 
 
 _SYSTEM_PROMPT = (
@@ -527,7 +531,10 @@ _AGENT_MODEL = (os.environ.get("RELATIONSHIP_AGENT_MODEL")
 # 429. 5 is a deliberately conservative middle of the 4-6 band (Sonnet tokens
 # are heavier than the Haiku compose path that runs at 10).
 _DRAFT_CONCURRENCY = int(os.environ.get("RELATIONSHIP_DRAFT_CONCURRENCY", "5"))
-_TRIAGE_MAX_TOKENS = 1536
+# Must fit up to MAX_DEEP_DIVES ranked selections (each ~50-60 tokens of
+# {contact_id, reason, angle}) plus the closing line in one triage call. At
+# MAX_DEEP_DIVES=100 that's ~6k tokens of tool output; 8192 leaves headroom.
+_TRIAGE_MAX_TOKENS = 8192
 _DRAFT_MAX_TOKENS = 1024
 
 
