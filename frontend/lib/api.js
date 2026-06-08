@@ -311,6 +311,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ message }),
     }),
+  // Schedule a chat-drafted follow-up (Gmail-style). `sendAt` is an ISO string
+  // for a future fire time, or null to send now. Returns { status: "sent" |
+  // "scheduled", send_at?, auto_send_enabled?, ... }. The auto-send toggle still
+  // gates whether a SCHEDULED row auto-fires; send-now always sends.
+  scheduleContactFollowup: (contactId, message, sendAt = null) =>
+    request(`/api/relationships/contacts/${contactId}/schedule`, {
+      method: "POST",
+      body: JSON.stringify({ message, send_at: sendAt }),
+    }),
 
   // ── scheduled follow-ups : per-user auto-message preference ──
   // Whether a follow-up is auto-staged when a first DM goes out. Off by

@@ -40,6 +40,19 @@ def _owned_contact(db: Session, contact_id: int, user: models.User) -> models.Co
     return c
 
 
+def _sendable_prospect(contact: models.Contact) -> models.Prospect:
+    """Resolve a Contact to the per-event Prospect a follow-up acts through:
+    the most-recently captured linked prospect that still has an owning event
+    (send_and_log / scheduling both need prospect.event). 409 if none."""
+    linked = [p for p in (getattr(contact, "prospects", None) or [])
+              if getattr(p, "event", None) is not None]
+    if not linked:
+        raise HTTPException(409, "contact has no sendable event prospect")
+    linked.sort(key=lambda p: getattr(p, "captured_at", None) or _MIN_DT,
+                reverse=True)
+    return linked[0]
+
+
 def _owned_prospect(db: Session, prospect_id: int, user: models.User) -> models.Prospect:
     """Fetch a Prospect, requiring `user` to own its event. 404 in both the
     not-found and not-owned cases so we never leak another user's prospects."""
@@ -308,13 +321,18 @@ def relationship_chat_stream(
     q: "queue.Queue" = queue.Queue()
 
     def _worker():
+        from ..agents.followup_scheduler import suggest_send_time
         db = SessionLocal()
+        # One sensible default fire time for this batch; the card prefills its
+        # picker with it and the host overrides freely.
+        suggested = suggest_send_time().isoformat()
         try:
             def _emit(p):
                 q.put(("proposal", {
                     "kind": p.kind, "contact_id": p.contact_id,
                     "contact_name": p.contact_name, "text": p.text,
                     "rationale": p.rationale,
+                    "suggested_send_at": suggested,
                 }))
             res = _run(db, user_id, instruction=instruction, on_proposal=_emit)
             q.put(("done", {"summary": res.summary or "Done.",
@@ -371,15 +389,7 @@ def send_contact_followup(
     if not text:
         raise HTTPException(422, "message is required")
 
-    # Resolve the contact to a sendable per-event Prospect: most recent capture
-    # that still has an owning event (send_and_log needs prospect.event).
-    linked = [p for p in (getattr(contact, "prospects", None) or [])
-              if getattr(p, "event", None) is not None]
-    if not linked:
-        raise HTTPException(409, "contact has no sendable event prospect")
-    linked.sort(key=lambda p: getattr(p, "captured_at", None) or _MIN_DT,
-                reverse=True)
-    prospect = linked[0]
+    prospect = _sendable_prospect(contact)
 
     auto_send = bool(getattr(user, "auto_followups_enabled", False))
     if not auto_send:
@@ -406,6 +416,88 @@ def send_contact_followup(
         raise HTTPException(502, f"send failed: {res.error}")
     return {"status": "sent", "contact_id": contact_id,
             "prospect_id": prospect.id, "message": text}
+
+
+class FollowupScheduleIn(BaseModel):
+    """Schedule (or immediately send) a chat-drafted follow-up for a contact.
+
+    `message` is the (possibly host-edited) body. `send_at` is the host-chosen
+    fire time; null/absent or a past time means 'send now'. This is the
+    Gmail-style 'Schedule send' the chat cards drive."""
+    message: str
+    send_at: Optional[datetime] = None
+
+
+@router.post("/contacts/{contact_id}/schedule")
+def schedule_contact_followup(
+    contact_id: int,
+    body: FollowupScheduleIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Approve a chat-drafted follow-up by SCHEDULING it (or sending now).
+
+    Bridges the propose-only relationship chat into the existing ScheduledFollowup
+    queue, so a drafted message becomes a real timed send instead of a dead-end
+    private note:
+
+      send_at now/past/absent -> send immediately (send_and_log), status='sent'.
+      send_at in the future    -> upsert the prospect's pending ScheduledFollowup
+                                   to body + send_at, status='scheduled'.
+
+    The auto-send toggle (User.auto_followups_enabled) still gates a SCHEDULED
+    row: the dispatch cron only auto-fires it when auto-send is ON; OFF leaves it
+    queued for a manual send-now. We surface `auto_send_enabled` so the card can
+    say 'will send automatically' vs 'queued for your confirmation'. An immediate
+    'send now' is an explicit host action and always sends. Owner-scoped."""
+    from ..agents.followup_scheduler import pending_followup
+
+    contact = _owned_contact(db, contact_id, user)
+    text = (body.message or "").strip()
+    if not text:
+        raise HTTPException(422, "message is required")
+    prospect = _sendable_prospect(contact)
+
+    now = datetime.now(timezone.utc)
+    send_at = body.send_at
+    if send_at is not None and send_at.tzinfo is None:
+        send_at = send_at.replace(tzinfo=timezone.utc)
+
+    # Send now: no future time chosen. Explicit host action, sends regardless of
+    # the auto toggle (same as the followups send-now route).
+    if send_at is None or send_at <= now:
+        from ..agents.sender import send_and_log
+        from ..providers import get_provider
+        try:
+            res = send_and_log(db, prospect, text, sent_state="follow_up_sent",
+                               fallback_provider=get_provider())
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f"send failed: {type(exc).__name__}: {exc}")
+        if getattr(res, "error", None):
+            raise HTTPException(502, f"send failed: {res.error}")
+        return {"status": "sent", "contact_id": contact_id,
+                "prospect_id": prospect.id, "message": text}
+
+    # Schedule: upsert the prospect's one pending row (idempotent per prospect,
+    # mirroring stage_followup) so re-approving just reschedules instead of
+    # stacking duplicates.
+    row = pending_followup(db, prospect.id)
+    if row is None:
+        row = models.ScheduledFollowup(
+            prospect_id=prospect.id, body=text, send_at=send_at,
+            suggested_send_at=send_at, status="scheduled")
+        db.add(row)
+    else:
+        row.body = text
+        row.send_at = send_at
+        row.updated_at = now
+    db.commit()
+    db.refresh(row)
+    return {"status": "scheduled", "contact_id": contact_id,
+            "prospect_id": prospect.id, "followup_id": row.id,
+            "send_at": row.send_at.isoformat(),
+            "auto_send_enabled": bool(getattr(user, "auto_followups_enabled", False)),
+            "message": text}
 
 
 @router.get("/prospects/{prospect_id}/timeline")

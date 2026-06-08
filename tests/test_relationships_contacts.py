@@ -271,3 +271,59 @@ def test_send_and_log_batched_commit_false_does_not_link(db):
                  fallback_provider=UnipileProvider(dry_run=True), commit=False)
     # No internal commit happened, so the spine link is deferred to the caller.
     assert p.contact_id is None
+
+
+# ── chat schedule-send (Gmail-style) ─────────────────────────────────────────
+
+def test_schedule_followup_future_queues_row_and_sends_nothing(db):
+    """A future send_at stages a ScheduledFollowup the cron will fire later, and
+    sends NOTHING now (no OutreachLog)."""
+    u = _user(db)
+    ev = _event(db, u)
+    c = rel.link_contact(db, _prospect(db, ev), u.id)
+    when = datetime.now(timezone.utc) + timedelta(days=2)
+
+    body = rel_route.FollowupScheduleIn(message="hey Maya, lets reconnect", send_at=when)
+    out = rel_route.schedule_contact_followup(c.id, body, db, u)
+
+    assert out["status"] == "scheduled"
+    rows = db.query(models.ScheduledFollowup).all()
+    assert len(rows) == 1
+    assert rows[0].status == "scheduled"
+    assert rows[0].body == "hey Maya, lets reconnect"
+    # Nothing left the system.
+    assert db.query(models.OutreachLog).count() == 0
+
+
+def test_schedule_followup_reschedule_is_idempotent(db):
+    """Re-approving the same contact updates the one pending row (body + time)
+    instead of stacking duplicate scheduled sends."""
+    u = _user(db)
+    ev = _event(db, u)
+    c = rel.link_contact(db, _prospect(db, ev), u.id)
+    t1 = datetime.now(timezone.utc) + timedelta(days=1)
+    t2 = datetime.now(timezone.utc) + timedelta(days=3)
+
+    rel_route.schedule_contact_followup(
+        c.id, rel_route.FollowupScheduleIn(message="v1", send_at=t1), db, u)
+    rel_route.schedule_contact_followup(
+        c.id, rel_route.FollowupScheduleIn(message="v2", send_at=t2), db, u)
+
+    rows = db.query(models.ScheduledFollowup).filter_by(status="scheduled").all()
+    assert len(rows) == 1
+    assert rows[0].body == "v2"
+
+
+def test_schedule_followup_now_sends_immediately(db):
+    """No send_at means 'send now' : dispatches through the shared send path
+    (dry-run) and records an OutreachLog, regardless of the auto-send toggle."""
+    u = _user(db)  # auto_followups_enabled defaults off
+    ev = _event(db, u)
+    c = rel.link_contact(db, _prospect(db, ev), u.id)
+
+    out = rel_route.schedule_contact_followup(
+        c.id, rel_route.FollowupScheduleIn(message="ping now", send_at=None), db, u)
+
+    assert out["status"] == "sent"
+    assert db.query(models.ScheduledFollowup).count() == 0
+    assert db.query(models.OutreachLog).count() == 1

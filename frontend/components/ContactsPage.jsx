@@ -9,7 +9,7 @@
 // CRM work and from each app's own CSS.
 import React, { useState, useEffect, useRef } from "react";
 import { Users, ArrowLeft, Building2, CalendarDays, Activity, Sparkles,
-         MessageSquare, Send, Check } from "lucide-react";
+         MessageSquare, Send, Check, Clock } from "lucide-react";
 import { api } from "../lib/api.js";
 
 const C = {
@@ -469,24 +469,69 @@ function FollowupChat() {
   );
 }
 
-// One drafted follow-up the host can edit and approve. Approve calls the
-// server, which sends or stages a draft depending on the auto-send toggle.
+// ── send-time helpers (Gmail-style schedule-send) ──
+const _pad = (n) => String(n).padStart(2, "0");
+// Local time -> the value a <input type="datetime-local"> expects.
+function _toLocalInput(d) {
+  return `${d.getFullYear()}-${_pad(d.getMonth() + 1)}-${_pad(d.getDate())}` +
+         `T${_pad(d.getHours())}:${_pad(d.getMinutes())}`;
+}
+function _tomorrow9am() {
+  const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); return d;
+}
+// Human label for a chosen/returned time, e.g. "Jun 9, 9:00 AM".
+function _fmtWhen(d) {
+  return d.toLocaleString(undefined,
+    { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+// One drafted follow-up the host can edit, time, and approve. Approve schedules
+// a real send (or sends now) via the ScheduledFollowup queue — never a dead-end
+// draft. The auto-send toggle still gates whether a scheduled row auto-fires.
 function ProposalCard({ proposal, auto }) {
   const [draft, setDraft] = useState(proposal.text || "");
-  const [state, setState] = useState("idle");   // idle | sending | sent | drafted | error
+  const [choice, setChoice] = useState("tomorrow"); // now | 2h | tomorrow | custom
+  const [customVal, setCustomVal] = useState(() =>
+    _toLocalInput(proposal.suggested_send_at
+      ? new Date(proposal.suggested_send_at) : _tomorrow9am()));
+  const [state, setState] = useState("idle");   // idle | sending | done | error
+  const [result, setResult] = useState(null);   // { sent, when }
   const [err, setErr] = useState("");
+
+  // Resolve the current choice to a send_at Date (null = send now).
+  const resolveSendAt = () => {
+    if (choice === "now") return null;
+    if (choice === "2h") return new Date(Date.now() + 2 * 3600 * 1000);
+    if (choice === "custom") {
+      const d = new Date(customVal);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    return _tomorrow9am();
+  };
 
   const approve = async () => {
     setState("sending"); setErr("");
+    const at = resolveSendAt();
     try {
-      const r = await api.sendContactFollowup(proposal.contact_id, draft.trim());
-      setState(r.status === "sent" ? "sent" : "drafted");
+      const r = await api.scheduleContactFollowup(
+        proposal.contact_id, draft.trim(), at ? at.toISOString() : null);
+      setResult({
+        sent: r.status === "sent",
+        when: r.send_at ? new Date(r.send_at) : null,
+      });
+      setState("done");
     } catch (e) {
       setState("error"); setErr(e.message || String(e));
     }
   };
 
-  const done = state === "sent" || state === "drafted";
+  const done = state === "done";
+  const sending = state === "sending";
+  const PRESETS = [
+    ["now", "Send now"], ["2h", "In 2 hours"],
+    ["tomorrow", "Tomorrow 9am"], ["custom", "Custom…"],
+  ];
+
   return (
     <div style={{ marginTop: 10, border: `1px solid ${C.line}`,
                   borderRadius: 12, padding: "12px 14px", background: "#fff" }}>
@@ -501,7 +546,7 @@ function ProposalCard({ proposal, auto }) {
         </span>
       </div>
       <textarea value={draft} onChange={(e) => setDraft(e.target.value)}
-                disabled={done || state === "sending"} rows={3}
+                disabled={done || sending} rows={3}
                 style={{ width: "100%", border: `1px solid ${C.line}`,
                          borderRadius: 8, padding: "8px 10px", fontSize: 13,
                          fontFamily: FONT, resize: "vertical", color: C.ink,
@@ -512,32 +557,68 @@ function ProposalCard({ proposal, auto }) {
           Why: {proposal.rationale}
         </div>
       )}
+
+      {!done && (
+        <>
+          {/* Send-time presets : Gmail-style schedule-send. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6,
+                        flexWrap: "wrap", marginTop: 10 }}>
+            <Clock size={13} color={C.faint} />
+            {PRESETS.map(([key, label]) => (
+              <button key={key} onClick={() => setChoice(key)} disabled={sending}
+                      style={{ border: `1px solid ${choice === key ? C.accent : C.line}`,
+                               background: choice === key ? C.chipBg : "#fff",
+                               color: choice === key ? C.accent : C.muted,
+                               borderRadius: 999, padding: "4px 11px",
+                               fontSize: 12, fontWeight: 600, cursor: "pointer",
+                               fontFamily: FONT }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {choice === "custom" && (
+            <input type="datetime-local" value={customVal} disabled={sending}
+                   onChange={(e) => setCustomVal(e.target.value)}
+                   min={_toLocalInput(new Date())}
+                   style={{ marginTop: 8, border: `1px solid ${C.line}`,
+                            borderRadius: 8, padding: "7px 10px", fontSize: 13,
+                            fontFamily: FONT, color: C.ink, outline: "none" }} />
+          )}
+        </>
+      )}
+
       <div style={{ display: "flex", alignItems: "center", gap: 10,
-                    marginTop: 9 }}>
+                    marginTop: 10 }}>
         {!done ? (
-          <button onClick={approve}
-                  disabled={state === "sending" || !draft.trim()}
+          <button onClick={approve} disabled={sending || !draft.trim()}
                   style={{ display: "flex", alignItems: "center", gap: 6,
                            background: C.accent, color: "#fff", border: "none",
                            borderRadius: 8, padding: "7px 14px", fontSize: 13,
                            fontWeight: 600, cursor: "pointer", fontFamily: FONT,
-                           opacity: state === "sending" || !draft.trim() ? 0.6 : 1 }}>
-            <Check size={14} />
-            {state === "sending" ? "Working…"
-              : auto ? "Approve & send" : "Save draft"}
+                           opacity: sending || !draft.trim() ? 0.6 : 1 }}>
+            {choice === "now" ? <Send size={14} /> : <Clock size={14} />}
+            {sending ? "Working…" : choice === "now" ? "Send now" : "Schedule send"}
           </button>
         ) : (
           <span style={{ display: "flex", alignItems: "center", gap: 6,
-                         color: state === "sent" ? "#1c8c4e" : C.muted,
+                         color: result?.sent ? "#1c8c4e" : C.accent,
                          fontSize: 13, fontWeight: 600 }}>
             <Check size={15} />
-            {state === "sent" ? "Sent" : "Saved as draft"}
+            {result?.sent ? "Sent"
+              : `Scheduled for ${result?.when ? _fmtWhen(result.when) : "later"}`}
           </span>
         )}
         {!done && (
           <span style={{ fontSize: 11.5, color: C.faint }}>
-            {auto ? "Auto-send is ON — this will message them"
-                  : "Auto-send is OFF — staged for your review"}
+            {choice === "now"
+              ? "Sends immediately"
+              : auto ? "Will send automatically at the chosen time"
+                     : "Auto-send is off, so you'll confirm it then"}
+          </span>
+        )}
+        {done && !result?.sent && !auto && (
+          <span style={{ fontSize: 11.5, color: C.faint }}>
+            auto-send is off, confirm it from your follow-up queue
           </span>
         )}
         {state === "error" && (
