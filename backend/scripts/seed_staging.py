@@ -1,6 +1,7 @@
 """
 scripts/seed_staging.py : populate the STAGING demo workspace with a realistic
-applicant-triage queue so the review UI isn't blank on first visit.
+applicant-triage queue + relationship-watch "what's new" feed so the UI isn't
+blank on first visit.
 
     python -m backend.scripts.seed_staging          # create (idempotent)
     python -m backend.scripts.seed_staging --reset  # wipe + recreate the data
@@ -10,10 +11,17 @@ WHY THIS EXISTS
 The staging service runs the `demo` branch against a throwaway Postgres, and
 the demo entry point (routes/demo.py) drops every visitor into ONE shared
 workspace keyed by the DEMO_SEED_EMAIL address. A throwaway DB starts empty, so
-the triage Review queue shows "0 applicants". This script seeds that exact user
-(DEMO_SEED_EMAIL) with a triage event + a spread of pre-scored applicants
-(accept / maybe / needs_review / reject) so a demo immediately shows the product
-doing its job.
+the triage Review queue shows "0 applicants" and the Relationships page shows no
+contacts. This script seeds that exact user (DEMO_SEED_EMAIL) with:
+  - a triage event + a spread of pre-scored applicants (accept / maybe /
+    needs_review / reject), and
+  - a CRM contact spine + a "what's new" activity feed (job changes, new posts,
+    profile updates) so the relationship-watch UI immediately shows updates,
+so a demo immediately shows the product doing its job.
+
+The relationship updates are hand-seeded RelationshipInteraction rows (the same
+source_type="activity_update" shape agents/relationship_watch.py writes), so the
+feed populates WITHOUT any live Unipile/LinkedIn poll — no profile-view footprint.
 
 SAFETY
 ------
@@ -28,7 +36,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from ..auth import DEMO_USER_EMAIL_DOMAIN
 from ..db import SessionLocal, init_db
@@ -168,6 +176,127 @@ _APPLICANTS = [
 ]
 
 
+# ─── Relationship-watch demo (CRM contact spine + "what's new" feed) ────────
+# Durable Contacts the relationship-watch UI rolls up. Each carries a baseline
+# snapshot (title/headline) so they read as "already tracked", and a linkedin_url
+# so they'd be pollable by the real sweep (we don't poll here — see below).
+#  key = stable primary_identity_key so re-running upserts instead of duplicating.
+_CONTACTS = [
+    dict(key="maya-rodriguez", name="Maya Rodriguez",
+         linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+         company="Stripe", title="Product Designer @ Stripe",
+         headline="Product Designer @ Stripe · ex-Figma"),
+    dict(key="priya-sharma", name="Priya Sharma",
+         linkedin_url="https://www.linkedin.com/in/priya-sharma",
+         company="Notion", title="Founding Engineer @ Notion",
+         headline="Founding Engineer @ Notion · infra & AI"),
+    dict(key="sam-chen", name="Sam Chen",
+         linkedin_url="https://www.linkedin.com/in/sam-chen",
+         company="Anthropic", title="ML Engineer @ Anthropic",
+         headline="ML Engineer @ Anthropic"),
+    dict(key="diego-martinez", name="Diego Martinez",
+         linkedin_url="https://www.linkedin.com/in/diego-martinez",
+         company="Vercel", title="DevRel Lead @ Vercel",
+         headline="DevRel @ Vercel · DX & community"),
+]
+
+# (contact key, kind, summary, meta, hours-ago) — kind ∈
+# job_change | new_post | profile_update, matching agents/relationship_watch._emit.
+_UPDATES = [
+    ("maya-rodriguez", "job_change",
+     "Now Head of Design @ Linear (was Product Designer @ Stripe)",
+     {"old_title": "Product Designer @ Stripe", "new_title": "Head of Design @ Linear",
+      "old_company": "Stripe", "new_company": "Linear"}, 3),
+    ("priya-sharma", "new_post",
+     "Shipping our new agent eval harness this week — wild how much infra a "
+     "'simple' eval needs. Thread 👇",
+     {"post_id": "urn:li:activity:7001", "date": "2026-06-06"}, 7),
+    ("sam-chen", "profile_update",
+     "Updated headline: ML Engineer @ Anthropic · now leading post-training",
+     {"old_headline": "ML Engineer @ Anthropic",
+      "new_headline": "ML Engineer @ Anthropic · now leading post-training"}, 20),
+    ("diego-martinez", "new_post",
+     "We just crossed 50k devs in the community Slack. Grateful + a little terrified 🚀",
+     {"post_id": "urn:li:activity:7002", "date": "2026-06-05"}, 30),
+    ("priya-sharma", "job_change",
+     "Now Founding Engineer @ Notion (was Senior SWE @ Stripe)",
+     {"old_title": "Senior SWE @ Stripe", "new_title": "Founding Engineer @ Notion",
+      "old_company": "Stripe", "new_company": "Notion"}, 54),
+]
+
+_UPDATE_TITLES = {
+    "job_change": "Changed roles",
+    "profile_update": "Updated profile",
+    "new_post": "New LinkedIn post",
+}
+
+
+def _seed_relationships(db, user: models.User, reset: bool) -> int:
+    """Upsert the demo Contact spine and the activity_update "what's new" feed
+    under `user`. Idempotent : contacts upsert on (user_id, primary_identity_key)
+    and the feed is only (re)built when the user has no activity_update rows yet
+    (or always under --reset). Returns the number of update rows written.
+
+    No Unipile / LinkedIn call : the updates are hand-seeded interaction rows of
+    the exact shape relationship_watch._emit writes, so the feed populates with
+    zero profile-view footprint."""
+    now = datetime.utcnow()  # naive UTC, matching the watcher's _now() convention
+
+    # --- contact spine (upsert) ---------------------------------------------
+    contacts: dict[str, models.Contact] = {}
+    for spec in _CONTACTS:
+        c = (db.query(models.Contact)
+               .filter_by(user_id=user.id, primary_identity_key=spec["key"])
+               .first())
+        if c is None:
+            c = models.Contact(user_id=user.id, primary_identity_key=spec["key"])
+            db.add(c)
+        c.name = spec["name"]
+        c.linkedin_url = spec["linkedin_url"]
+        c.company = spec["company"]
+        c.title = spec["title"]
+        c.headline = spec["headline"]
+        c.seen_post_ids = "[]"
+        c.watched_at = now - timedelta(days=10)  # baseline already established
+        c.watch_error = None
+        db.flush()
+        contacts[spec["key"]] = c
+
+    # --- "what's new" activity feed -----------------------------------------
+    existing = (db.query(models.RelationshipInteraction)
+                  .filter_by(actor_user_id=user.id, source_type="activity_update")
+                  .all())
+    if existing and reset:
+        for ri in existing:
+            db.delete(ri)
+        db.commit()
+        existing = []
+    if existing:
+        print(f"[seed_staging] relationships already seeded: user={user.email} "
+              f"({len(existing)} updates). Use --reset to rebuild.")
+        return 0
+
+    written = 0
+    for key, kind, summary, meta, hours_ago in _UPDATES:
+        c = contacts[key]
+        db.add(models.RelationshipInteraction(
+            actor_user_id=user.id,
+            contact_id=c.id,
+            company_domain=c.company_domain,
+            source_type="activity_update",
+            interaction_type=kind,
+            direction="none",
+            occurred_at=now - timedelta(hours=hours_ago),
+            title=_UPDATE_TITLES[kind],
+            summary=summary[:1000],
+            meta_json=json.dumps(meta),
+            visibility="private",
+        ))
+        written += 1
+    db.commit()
+    return written
+
+
 def _get_or_create_user(db, email: str) -> models.User:
     user = db.query(models.User).filter(models.User.email == email).first()
     if user is not None:
@@ -283,17 +412,18 @@ def main() -> int:
             ev = None
             print(f"[seed_staging] --reset: cleared existing event for {seed}")
 
-        if ev is not None and ev.applicants:
-            print(f"[seed_staging] already seeded: user={seed} event #{ev.id} "
-                  f"({len(ev.applicants)} applicants). Use --reset to rebuild.")
-            return 0
-
         if ev is None:
             ev = _create_event(db, user)
+            n = _create_applicants(db, ev)
+            print(f"[seed_staging] OK: user={seed} (id={user.id}) "
+                  f"event #{ev.id} '{SEED_EVENT_NAME}' seeded with {n} applicants.")
+        elif ev.applicants:
+            print(f"[seed_staging] applicants already seeded: event #{ev.id} "
+                  f"({len(ev.applicants)} applicants). Use --reset to rebuild.")
 
-        n = _create_applicants(db, ev)
-        print(f"[seed_staging] OK: user={seed} (id={user.id}) "
-              f"event #{ev.id} '{SEED_EVENT_NAME}' seeded with {n} applicants.")
+        rel = _seed_relationships(db, user, reset)
+        print(f"[seed_staging] relationships: {len(_CONTACTS)} contacts, "
+              f"{rel} 'what's new' updates under user={seed}.")
         print("  Enter the demo at:  /api/demo/enter?key=<DEMO_ACCESS_TOKEN>")
         return 0
     finally:
