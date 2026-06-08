@@ -278,19 +278,31 @@ def outreach_preview(
 
     # The prefetch kicked off by run_prospect usually has the cache fully
     # populated by the time we get here. Cache hits return in <100ms;
-    # misses fall through to live compose (slower but still works).
-    from ..agents.outreach import get_cached_compose
+    # misses fall through to live compose. Cold misses are composed in
+    # PARALLEL (one Haiku call each, ~3-5s) so a cold N-prospect preview is
+    # ~one round-trip instead of N sequential calls.
+    from concurrent.futures import ThreadPoolExecutor
+    from ..agents.outreach import get_cached_compose, _COMPOSE_CONCURRENCY
+
+    def _msg_for(p):
+        return get_cached_compose(p.id, ev.id) or compose(
+            p, ev, peers=[q.name for q in peers if q.id != p.id],
+        )
+
+    if targets:
+        with ThreadPoolExecutor(
+                max_workers=min(_COMPOSE_CONCURRENCY, len(targets))) as ex:
+            messages = list(ex.map(_msg_for, targets))
+    else:
+        messages = []
 
     rows: list[schemas.OutreachPreviewRow] = []
-    for p in targets:
+    for p, msg in zip(targets, messages):
         eligible = True
         skip_reason = None
         if not p.linkedin_url:
             eligible = False
             skip_reason = "no linkedin_url"
-        msg = get_cached_compose(p.id, ev.id) or compose(
-            p, ev, peers=[q.name for q in peers if q.id != p.id],
-        )
         lead = provider.build_lead_payload(p, ev, note=msg.note, message=msg.message)
         payload = None
         if eligible:
