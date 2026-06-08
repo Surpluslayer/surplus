@@ -320,6 +320,108 @@ def _days_since(dt: Any) -> Optional[int]:
     return (datetime.now(timezone.utc) - aware).days
 
 
+# ── Thread-derived recall signals ────────────────────────────────────────────
+# Phase-1 triage reasons over the structured roster row, NOT the message text,
+# so any follow-up reason that lives only inside the thread (e.g. the host wrote
+# "I'll send the deck next week" and never did) is invisible to triage and the
+# person gets dropped as "recent unanswered outreach" before Phase-2 ever sees
+# them. That is the "misses obvious people" bug: Phase-1 controls recall, and a
+# message-blind Phase-1 can't recall a content-only open loop.
+#
+# Fix: distil cheap recall signals from the thread at roster-build time and put
+# them ON the row. The structural ones (who spoke last, how long ago) are exact;
+# the semantic ones (a host promise, an unanswered question) are LOOSE keyword
+# heuristics ON PURPOSE — they feed recall, and Phase-2 reads the real thread and
+# is the precision filter, so a false "open loop" costs only one skipped draft
+# while a missed one is the bug we're fixing. No LLM call, so triage stays cheap.
+
+# Forward-looking commitments in a host message ("I'll send...", "let me intro
+# you", "circle back next week"). Loose on purpose; Phase-2 confirms.
+_PROMISE_PHRASES = (
+    "i'll", "i will", "ill ", "i`ll", "i´ll", "let me", "lemme", "send you",
+    "send over", "send through", "send that", "shoot you", "shoot over",
+    "get you", "get back to you", "follow up", "followup", "circle back",
+    "loop you", "loop back", "ping you", "reach back", "intro you",
+    "introduce you", "connect you", "happy to send", "will send", "will follow",
+    "will get", "will share", "will intro", "will connect", "once i", "i'll grab",
+    "i'll set", "i'll find", "i'll check", "i'll dig", "let you know",
+)
+_INTRO_WORDS = ("intro", "introduce", "introduction", "connect you")
+_RESOURCE_WORDS = ("deck", "link", "doc", "resource", "slide", "pdf", "notion",
+                   "guide", "template", "memo", "write-up", "writeup", "send",
+                   "share", "report")
+_SCHEDULE_WORDS = ("schedule", "calendar", "meet", "call", "coffee", "grab time",
+                   "book", "slot", "sync", "catch up", "find time", "set up time")
+_CHECKBACK_WORDS = ("check back", "circle back", "follow up", "followup",
+                    "touch base", "down the line", "next week", "next month",
+                    "later", "reconnect")
+
+
+def _classify_open_loop(low: str) -> str:
+    """Best-guess the KIND of open loop from a lowercased message, for the
+    `open_loop_type` enum. Order matters: a more specific kind wins."""
+    if any(w in low for w in _INTRO_WORDS):
+        return "intro"
+    if any(w in low for w in _SCHEDULE_WORDS):
+        return "schedule"
+    if any(w in low for w in _RESOURCE_WORDS):
+        return "send_resource"
+    if any(w in low for w in _CHECKBACK_WORDS):
+        return "check_back"
+    return "other"
+
+
+def _thread_signals(thread: list[dict]) -> dict:
+    """Cheap recall signals derived from a contact's message thread (the list
+    `_thread_from_timeline` returns), so message-blind Phase-1 triage can spot
+    content-level open loops. Structural fields are exact; the promise/question
+    fields are loose heuristics (Phase-2 is the precision backstop). Pure
+    function over the thread, so it's directly unit-testable."""
+    msgs = [m for m in (thread or []) if m.get("who") in ("host", "them")]
+    sig = {
+        "last_message_from": None,        # "host" | "contact" | None
+        "last_message_age_days": None,
+        "awaiting_host_reply": False,     # contact spoke last, host owes a reply
+        "awaiting_contact_reply": False,  # host spoke last, waiting on them
+        "host_open_promise": False,       # host committed to a next move, undone
+        "contact_open_question": False,   # contact asked something, unanswered
+        "open_loop_detected": False,
+        "open_loop_type": None,           # send_resource|schedule|intro|answer_question|check_back|other
+        "open_loop_evidence": None,
+        "followup_due": False,
+    }
+    if not msgs:
+        return sig
+
+    last = msgs[-1]
+    who = "host" if last.get("who") == "host" else "contact"
+    age = _days_since(last.get("when"))
+    text = (last.get("text") or "").strip()
+    low = text.lower()
+
+    sig["last_message_from"] = who
+    sig["last_message_age_days"] = age
+    sig["awaiting_host_reply"] = (who == "contact")
+    sig["awaiting_contact_reply"] = (who == "host")
+
+    if who == "contact" and "?" in text:
+        sig["contact_open_question"] = True
+        sig["open_loop_type"] = "answer_question"
+        sig["open_loop_evidence"] = text[:160]
+    elif who == "host" and any(p in low for p in _PROMISE_PHRASES):
+        sig["host_open_promise"] = True
+        sig["open_loop_type"] = _classify_open_loop(low)
+        sig["open_loop_evidence"] = text[:160]
+
+    sig["open_loop_detected"] = bool(sig["contact_open_question"]
+                                     or sig["host_open_promise"])
+    # "Due" = a real obligation exists AND it isn't brand-new (>= 1 day), so a
+    # same-moment exchange isn't flagged overdue. Phase-2 owns precise timing.
+    has_obligation = sig["open_loop_detected"] or sig["awaiting_host_reply"]
+    sig["followup_due"] = bool(has_obligation and (age or 0) >= 1)
+    return sig
+
+
 def run_relationship_agent(
     db,
     user_id: int,
@@ -372,6 +474,11 @@ def run_relationship_agent(
         for c in contacts:
             s = relationships.contact_summary(db, c)
             contact_types = s.get("contact_types") or []
+            # Cheap thread-derived recall signals so message-blind triage can
+            # spot content-only open loops (host promise, unanswered question).
+            # See _thread_signals for the recall/precision rationale.
+            signals = _thread_signals(_thread_from_timeline(
+                relationships.contact_timeline(db, c)))
             rows.append({
                 "contact_id": c.id,
                 "name": s.get("name") or "Unknown",
@@ -388,6 +495,7 @@ def run_relationship_agent(
                 # at capture time — a primary WHO signal, see the system prompt.
                 "contact_types": contact_types,
                 "marked_follow_up": "follow_up" in contact_types,
+                **signals,
             })
         return rows
 
@@ -602,15 +710,28 @@ _TRIAGE_TOOL = {
 _SKIP_TOOL = {
     "name": "skip_contact",
     "description": (
-        "Decline to draft for this person because, having READ their actual "
-        "conversation thread, a follow-up is NOT warranted right now. This is a "
-        "normal, common outcome — you are the real filter, so skip whenever the "
-        "content says so: the loop is CLOSED (they declined, said no, or the "
-        "matter is resolved), the BALL IS IN THEIR COURT (they replied or you "
-        "messaged recently and it's their turn / too soon to nudge again), or a "
-        "real follow-up ALREADY went out and not enough has changed to send "
-        "another. Draft only when the thread shows a genuine open reason to "
-        "reach out."
+        "Decline to draft for this person because, after reading their actual "
+        "conversation thread and provided context, a follow-up is not warranted "
+        "right now.\n\n"
+        "Skipping is normal and expected. This tool should be called whenever "
+        "the thread does not show a genuine natural next action for the host.\n\n"
+        "Use skip_contact when:\n"
+        "- the loop is closed\n"
+        "- they declined, said no, said not interested, or opted out\n"
+        "- the matter is resolved\n"
+        "- the ball is in the contact's court\n"
+        "- the host messaged recently and it is too soon to nudge again\n"
+        "- a real follow-up already went out and nothing has changed\n"
+        "- the person merely attended, RSVP'd, was imported, or seems relevant, "
+        "but there is no actual hook\n"
+        "- they converted and there is no next action\n"
+        "- a message would feel forced, repetitive, pushy, or disconnected from "
+        "the thread\n\n"
+        "Draft only when the actual thread or provided context shows a genuine "
+        "open reason to reach out, such as a reply that needs an answer, an open "
+        "loop, a concrete next_step, a promised follow-up, a stale warm "
+        "relationship with a natural reconnect angle, or a clear update/trigger "
+        "in the provided context."
     ),
     "input_schema": {
         "type": "object",
@@ -699,14 +820,27 @@ Do not use outside knowledge. Do not search. Do not guess based on someone's nam
 
 When there is no specific host request, or the request is open-ended, use the default triage rules below.
 
-MUST NOMINATE:
+Some rows carry thread-derived signals computed from the actual message thread.
+Treat these as authoritative when present:
+- awaiting_host_reply: the contact spoke last and the host has not answered.
+- awaiting_contact_reply: the host spoke last and is waiting on the contact.
+- host_open_promise: the host committed to a next move (send something, make an intro, schedule, circle back) and has not done it yet.
+- contact_open_question: the contact asked something the host has not answered.
+- open_loop_detected / open_loop_type / open_loop_evidence: an unresolved thread, with the kind and the quoted evidence.
+- followup_due: an open obligation that is no longer brand-new.
+- last_message_from / last_message_age_days: who spoke last and how long ago.
+
+MUST NOMINATE (any one of these is sufficient):
 1. The person matches the host's explicit request.
 2. marked_follow_up is true.
-3. The host wrote a next_step.
+3. The host wrote a next_step (has_next_step is true).
 4. relationship_stage is replied.
-5. The data shows an open loop, such as send deck, book call, make intro, answer question, share resource, schedule follow-up, check back later, or follow up after event.
-6. The data shows a clear life, work, company, or event update that makes outreach natural.
-7. The relationship has gone quiet after meaningful prior engagement, based on is_stale, days_since_last_touch, or notes in the data.
+5. awaiting_host_reply is true.
+6. host_open_promise is true.
+7. contact_open_question is true.
+8. open_loop_detected is true, or followup_due is true.
+9. The data shows a clear life, work, company, or event update that makes outreach natural.
+10. The relationship has gone quiet after meaningful prior engagement, based on is_stale, days_since_last_touch, or notes in the data.
 
 USUALLY NOMINATE:
 1. Warm contacts where the data shows a check-in would feel natural.
@@ -718,7 +852,7 @@ DO NOT NOMINATE:
 1. People with no clear reason for another touch.
 2. People whose only signal is that they exist in the contact list.
 3. People who merely attended, RSVP'd, applied, or were imported, with no follow-up or reconnecting hook.
-4. Recent un-replied first outreach where another message would just be piling on.
+4. Recent un-replied first outreach where another message would just be piling on, UNLESS the data shows an open loop, a host promise, a due follow-up, a host-written next_step, a stale signal, a marked follow-up, or an explicit host-request match.
 5. Clearly closed-loop contacts with no next action.
 6. Declined, rejected, unsubscribed, not interested, or do-not-contact contacts, unless the host explicitly asked for them.
 7. Converted contacts with no reason to continue.
@@ -729,6 +863,7 @@ Important distinctions:
 - Replied does not mean done. A reply may need a response, so nominate replied contacts.
 - Converted does not always mean done. Nominate converted contacts only when the data shows another plausible action.
 - Unanswered does not automatically mean follow up. Only nominate unanswered contacts if they are stale, marked, have a next_step, match the host's request, or have another explicit hook.
+- A recent unanswered message with no obligation is probably NOT a follow-up. But a recent unanswered message where the host promised something (host_open_promise) IS a must-nominate: the obligation sits with the host, not the contact.
 - Attendance alone is not a follow-up reason. There must be a continuation hook.
 - A title or company alone is not a follow-up reason unless the host explicitly asked for that title or company.
 - Do not pre-filter by stage alone. Use the actual relationship-action hook.
@@ -762,45 +897,104 @@ The reason and angle must not contain invented facts. If the hook is uncertain, 
 Also provide a short conversational closing line for the host. The closing line should be one or two plain-prose sentences. Do not use a table. Do not use bullets. If the host asked a specific question, answer it directly. If nobody is worth nominating, return an empty selections list and say so warmly."""
 
 
-_DRAFT_SYSTEM = (
-    "You are a relationship manager for an event host, deciding on and (if "
-    "warranted) drafting ONE follow-up for ONE person whose full history is "
-    "given to you inline below (rollup summary, the events you've shared, the "
-    "cross-event timeline, and `prior_messages` — the actual host<->contact "
-    "thread, oldest-first). A wide triage step NOMINATED this person as a "
-    "candidate; YOU are the real filter, and you decide from the conversation "
-    "content whether a follow-up is genuinely warranted.\n\n"
-    "FIRST, READ `prior_messages` and JUDGE FROM THE CONTENT. Do not assume a "
-    "follow-up is needed just because they were nominated. Call `skip_contact` "
-    "(a normal, common outcome) when the thread says no follow-up is warranted, "
-    "e.g.:\n"
-    "  - CLOSED LOOP: they declined, said no/not interested, or the matter is "
-    "resolved and there's nothing open to continue.\n"
-    "  - THEIR COURT: they replied and the natural next move is theirs, or you "
-    "messaged recently and it's too soon to nudge again (no new reason since).\n"
-    "  - ALREADY HANDLED: a real follow-up already went out and nothing has "
-    "changed that would justify another.\n"
-    "DRAFT only when the content shows a genuine OPEN reason to reach out: an "
-    "unanswered question or open loop, a reply that warrants a response, a "
-    "concrete next_step the host wrote, or a real relationship that has gone "
-    "quiet with a natural reason to reconnect. When you draft after they REPLIED, "
-    "you are answering their message, not nudging them.\n\n"
-    "To draft, call `propose_next_step` (a specific action the host should take) "
-    "and/or `draft_message` (a short, warm, specific message). The draft MUST "
-    "build on `prior_messages`: pick up the thread where it left off, reference "
-    "the initial context or what was already said, and only THEN add the new "
-    "reason to reach out. The FIRST item in `prior_messages` is the initial "
-    "message (the first DM or capture note); a follow-up reads as a continuation "
-    "of THAT conversation, never a fresh cold open.\n\n"
-    "Rules: Only use facts from the context provided — never invent an event, a "
-    "name, or a detail. You CANNOT send anything; you only propose. Keep the "
-    "draft under ~60 words, human, not salesy. NEVER use em dashes (—) or en "
-    "dashes (–); use a comma, a period, or restructure. If a <style_examples> "
-    "block is provided below, the draft MUST be written in the host's voice as "
-    "shown there (greeting, sign-off, sentence length, formality, punctuation "
-    "and emoji habits) — match the voice, not the content. This is the SAME "
-    "voice the host's first message was written in."
-)
+_DRAFT_SYSTEM = """\
+You are a relationship manager for an event host.
+
+You are deciding whether to draft ONE follow-up for ONE person. The person was nominated by a wide triage step, but that does not mean they should receive a message.
+
+You are the real filter.
+
+You are given the person's full relationship context inline below, including:
+- rollup summary
+- shared events
+- cross-event timeline
+- prior_messages, which is the actual host/contact conversation thread in chronological order
+
+Your first job is to read prior_messages and decide from the actual conversation content whether a follow-up is genuinely warranted right now.
+
+Do not assume a follow-up is needed because the person was nominated.
+Do not rely only on the triage reason.
+Do not draft from vibes.
+Do not invent new context, updates, warmth, intent, or obligations.
+
+Use only the provided context.
+
+The test is:
+
+"Based on the actual thread and provided context, is there a natural next relationship action for the host to take now?"
+
+If yes, draft.
+If no, skip.
+
+Skipping is normal and expected. Call skip_contact whenever the content does not show a genuine reason to message now.
+
+SKIP when:
+
+1. CLOSED LOOP
+They declined, said no, said not interested, opted out, or the matter is resolved.
+
+2. THEIR COURT
+The contact has the next natural move. For example, the host already asked a question, proposed times, sent the requested resource, made the intro, or asked them to confirm, and the contact has not responded yet.
+
+3. TOO SOON
+The host messaged recently and there is no new reason to nudge again.
+
+4. ALREADY HANDLED
+A real follow-up already went out, and nothing in the provided context has changed since then.
+
+5. NO REAL HOOK
+The person is interesting, attended an event, RSVP'd, or exists in the contact list, but the thread does not show an open loop, reply to answer, next step, stale warm relationship, or concrete reconnect trigger.
+
+6. CONVERTED AND DONE
+They converted or completed the intended action, and the context does not show another natural next action.
+
+7. UNSAFE OR AWKWARD
+A follow-up would feel forced, repetitive, pushy, or disconnected from the actual conversation.
+
+DRAFT only when the content shows a genuine open reason to reach out, such as:
+
+1. The contact replied and their reply warrants a response.
+When drafting after they replied, answer their message. Do not write a generic nudge.
+
+2. There is an unanswered question or open loop for the host to address.
+
+3. The host wrote a concrete next_step.
+
+4. The host promised to send something, follow up, make an intro, share a link, schedule, check back, or continue a specific thread.
+
+5. The relationship has gone quiet after meaningful prior engagement, and the provided context shows a natural reason to reconnect.
+
+6. There is a clear update, event, milestone, or trigger in the provided context that makes outreach natural.
+
+7. The contact showed interest, but the thread has not been moved forward.
+
+Important distinctions:
+- A nomination is not evidence that a message is needed.
+- A reply is not automatically a reason to nudge. If they replied, decide whether the host needs to answer.
+- An unanswered host message is not automatically a reason to follow up. If it is recent or the ball is clearly in their court, skip.
+- A stale relationship is not automatically a reason to message. There must be a natural reconnect angle in the provided context.
+- Attendance alone is not a reason to message.
+- Conversion alone is not a reason to message again.
+- Do not send "just checking in" unless the context supports a natural check-in.
+
+If you draft:
+- The message must be grounded in prior_messages and the provided context.
+- The message must make sense as the next message in the existing thread.
+- The message should be short, natural, and specific.
+- Under 60 words unless the context clearly requires slightly more.
+- No em dashes or en dashes.
+- Match the host's style examples.
+- Do not over-explain.
+- Do not sound like a sales sequence.
+- Do not mention internal labels such as triage, stale, open loop, converted, or relationship_stage.
+- Do not mention that you read their history.
+- Do not invent details, updates, or personal facts.
+
+If the best next action is not a message but a relationship action, call propose_next_step.
+If a message is warranted, call draft_message.
+If no message is warranted right now, call skip_contact.
+
+When unsure, prefer skip_contact unless there is a concrete reason in the thread to message."""
 
 
 def _tool_uses(resp: Any) -> list[Any]:
@@ -868,6 +1062,12 @@ def run_relationship_agent_concurrent(
         for c in contacts:
             s = relationships.contact_summary(db, c)
             contact_types = s.get("contact_types") or []
+            # Thread-derived recall signals (who spoke last, open promises /
+            # questions) so triage can see content-level open loops without
+            # reading full threads. Cheap heuristics; Phase-2 is the precision
+            # filter. See _thread_signals for the recall/precision rationale.
+            signals = _thread_signals(_thread_from_timeline(
+                relationships.contact_timeline(db, c)))
             rows.append({
                 "contact_id": c.id,
                 "name": s.get("name") or "Unknown",
@@ -880,6 +1080,7 @@ def run_relationship_agent_concurrent(
                 "next_step": s.get("next_step") or "",
                 "contact_types": contact_types,
                 "marked_follow_up": "follow_up" in contact_types,
+                **signals,
             })
         return rows
 
@@ -911,6 +1112,8 @@ def run_relationship_agent_concurrent(
         "- marked for follow-up\n"
         "- host-written next_step\n"
         "- replied or open-loop\n"
+        "- awaiting_host_reply, host_open_promise, contact_open_question, "
+        "open_loop_detected, or followup_due in the thread signals\n"
         "- gone quiet after meaningful engagement\n"
         "- clear update or trigger in the provided data\n"
         "- concrete reason to reconnect or continue momentum\n\n"
@@ -997,14 +1200,19 @@ def run_relationship_agent_concurrent(
         sel, ctx, name = job["sel"], job["ctx"], job["name"]
         cid = sel["contact_id"]
         prompt = (
-            f"Follow up with {name} (contact_id {cid}). "
-            f"Triage flagged them because: {sel.get('reason') or 'they need a touch'}."
-            + (f" Angle to hit: {sel['angle']}." if sel.get("angle") else "")
-            + "\n\nTheir full context:\n"
+            f"Follow up with {name} (contact_id {cid}).\n\n"
+            f"Triage flagged them because: {sel.get('reason') or 'they need a touch'}\n"
+            f"Suggested angle: {sel.get('angle') or '(none given)'}\n\n"
+            "Their full context is below:\n"
             + json.dumps(ctx, default=str)
-            + "\n\nRead prior_messages, decide if a follow-up is genuinely "
-            "warranted, then draft it — or call skip_contact if the content says "
-            "no follow-up is needed right now."
+            + "\n\nRead prior_messages first. Decide whether a follow-up is "
+            "genuinely warranted based on the actual thread and provided "
+            "context.\n\n"
+            "If there is a natural next relationship action for the host to take "
+            "now, draft the message or propose the next step.\n\n"
+            "If the thread shows the loop is closed, the ball is in their court, "
+            "it is too soon, a follow-up was already handled, or there is no real "
+            "hook, call skip_contact."
         )
         resp = cli.messages.create(
             model=_AGENT_MODEL,

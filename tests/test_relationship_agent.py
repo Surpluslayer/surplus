@@ -328,6 +328,102 @@ def test_thread_from_timeline_excludes_private_note():
     assert all("OPERATOR_ONLY_SECRET_MEMO" not in t for t in texts)
 
 
+# ── _thread_signals : the cheap recall signals roster-build distils per row ───
+# Pure function over the thread (_thread_from_timeline shape). These pin the
+# recall heuristics that let message-blind Phase-1 triage spot content-only open
+# loops — the "misses obvious people" fix. Structural fields are exact; the
+# promise/question fields are loose-on-purpose (Phase-2 is the precision filter).
+
+def _msg(who, text, *, days_ago=0):
+    return {"when": datetime.now(timezone.utc) - timedelta(days=days_ago),
+            "who": who, "channel": "linkedin", "text": text}
+
+
+def test_thread_signals_empty_thread_is_all_falsey():
+    sig = ragent._thread_signals([])
+    assert sig["last_message_from"] is None
+    assert sig["open_loop_detected"] is False
+    assert sig["followup_due"] is False
+    assert sig["awaiting_host_reply"] is False
+
+
+def test_thread_signals_context_only_thread_is_inert():
+    """'context' items (capture notes / non-directional) carry no who-spoke-last
+    signal, so a thread of only those reads as empty."""
+    sig = ragent._thread_signals([_msg("context", "Met at Tech Week")])
+    assert sig["last_message_from"] is None
+    assert sig["open_loop_detected"] is False
+
+
+def test_thread_signals_contact_spoke_last_awaits_host():
+    sig = ragent._thread_signals([
+        _msg("host", "Great meeting you!", days_ago=5),
+        _msg("them", "Likewise, talk soon", days_ago=3),
+    ])
+    assert sig["last_message_from"] == "contact"
+    assert sig["awaiting_host_reply"] is True
+    assert sig["awaiting_contact_reply"] is False
+    assert sig["last_message_age_days"] == 3
+
+
+def test_thread_signals_contact_question_is_open_loop():
+    sig = ragent._thread_signals([
+        _msg("host", "Nice to connect", days_ago=4),
+        _msg("them", "Can you send me the pricing?", days_ago=2),
+    ])
+    assert sig["contact_open_question"] is True
+    assert sig["open_loop_detected"] is True
+    assert sig["open_loop_type"] == "answer_question"
+    assert "pricing" in sig["open_loop_evidence"]
+    assert sig["followup_due"] is True            # obligation + >= 1 day old
+
+
+def test_thread_signals_host_promise_is_open_loop():
+    """The keystone recall case: host promised to send something and the contact
+    hasn't replied. Message-blind triage would have dropped this as 'recent
+    unanswered outreach'; the signal makes it a must-nominate."""
+    sig = ragent._thread_signals([
+        _msg("them", "Loved the talk", days_ago=6),
+        _msg("host", "I'll send you the deck next week", days_ago=4),
+    ])
+    assert sig["last_message_from"] == "host"
+    assert sig["host_open_promise"] is True
+    assert sig["open_loop_detected"] is True
+    assert sig["open_loop_type"] == "send_resource"
+    assert sig["followup_due"] is True
+
+
+def test_thread_signals_host_intro_promise_classifies_intro():
+    sig = ragent._thread_signals([
+        _msg("host", "Happy to intro you to our CTO", days_ago=3),
+    ])
+    assert sig["host_open_promise"] is True
+    assert sig["open_loop_type"] == "intro"
+
+
+def test_thread_signals_plain_host_message_is_no_loop():
+    """A recent unanswered first outreach with NO promise is exactly the case we
+    must NOT over-nominate on — no open loop, host isn't waited on."""
+    sig = ragent._thread_signals([
+        _msg("host", "Nice to meet you at the event", days_ago=2),
+    ])
+    assert sig["awaiting_contact_reply"] is True
+    assert sig["host_open_promise"] is False
+    assert sig["open_loop_detected"] is False
+    assert sig["followup_due"] is False
+
+
+def test_thread_signals_brandnew_obligation_not_yet_due():
+    """followup_due gates on age >= 1 day so a same-moment exchange isn't flagged
+    overdue — Phase-2 owns precise timing."""
+    sig = ragent._thread_signals([
+        _msg("host", "I'll send the deck", days_ago=0),
+    ])
+    assert sig["host_open_promise"] is True
+    assert sig["open_loop_detected"] is True
+    assert sig["followup_due"] is False
+
+
 # ── "who to follow up" : the deterministic signals list_contacts exposes ──────
 # The agent never decides staleness itself — it reads is_stale / has_next_step /
 # days_since_last_touch off contact_summary. These tests pin those inputs so a
@@ -518,6 +614,31 @@ def test_who_marked_follow_up_is_surfaced(db):
     row = next(r for r in rows if r["contact_id"] == c.id)
     assert row["marked_follow_up"] is True
     assert "follow_up" in row["contact_types"]
+
+
+def test_roster_row_carries_host_promise_open_loop(db):
+    """End-to-end of the recall fix: a host outbound "I'll send the deck" with no
+    reply must reach the triage roster as host_open_promise/open_loop_detected,
+    so message-blind Phase-1 can nominate it instead of dropping it as a recent
+    unanswered outreach. This is the exact 'misses obvious people' case."""
+    u = _user(db)
+    ev = _event(db, u)
+    p = _prospect(db, ev,
+                  captured_at=datetime.now(timezone.utc) - timedelta(days=6))
+    c = rel.link_contact(db, p, u.id)
+    _outreach(db, p, "message_sent", days_ago=3,
+              body="Loved the chat earlier. I'll send you the deck next week")
+
+    client = ScriptedClient([("end_turn", [_text("done")])])
+    res = ragent.run_relationship_agent(db, u.id, client=client)
+    assert res.error is None
+    rows = _list_contacts_payload(client)
+    row = next(r for r in rows if r["contact_id"] == c.id)
+    assert row["host_open_promise"] is True
+    assert row["open_loop_detected"] is True
+    assert row["open_loop_type"] == "send_resource"
+    assert row["last_message_from"] == "host"
+    assert row["followup_due"] is True
 
 
 def test_who_non_follow_up_tag_is_not_marked(db):
