@@ -112,6 +112,9 @@ def route_and_send(
             lead, linkedin_provider_id=prospect.linkedin_provider_id)
         if not provider.dry_run and res.state == "message_sent":
             prospect.status = "contacted"
+            # Stage a scheduled follow-up the host can review/reschedule/cancel.
+            from .followup_scheduler import stage_followup
+            stage_followup(db, prospect, commit=False)
         path_taken = "warm"
     else:
         # Cold path (the historical default). LinkedIn caps notes at 300.
