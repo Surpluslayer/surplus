@@ -82,6 +82,10 @@ _SYSTEM_PROMPT = (
     "already said or the initial context, and only then add the new reason to "
     "reach out (a job change, a post, time passing). Never generic, never a "
     "restart that ignores the first message. Quality over quantity.\n"
+    "   WORK ONE PERSON AT A TIME: read a candidate with `get_contact`, then "
+    "immediately propose their move before moving to the next person. Do NOT "
+    "batch-read everyone first — the host watches each proposal appear live, so "
+    "interleaving read->propose gets the first one in front of them fastest.\n"
     "5. When you've worked the priority list, stop and give a SHORT, "
     "conversational closing line, like you're texting the host back. ONE or two "
     "sentences, plain prose. NEVER use markdown tables, headers (#), or bullet "
@@ -397,14 +401,20 @@ def run_relationship_agent(
         if c is None:
             return {"error": f"no contact {contact_id} for this host"}
         timeline = relationships.contact_timeline(db, c)
+        # The raw `timeline` is mostly redundant with prior_messages (which is
+        # extracted from it) and is the single biggest chunk of payload — every
+        # later agent step re-sends the whole transcript, so a fat get_contact
+        # slows the time-to-first-card. Keep only the tail of the timeline, and
+        # cap the thread while ALWAYS preserving its first item (the initial DM /
+        # capture note the follow-up must continue from).
+        thread = _thread_from_timeline(timeline)
+        if len(thread) > 10:
+            thread = thread[:1] + thread[-9:]
         return {
             "summary": relationships.contact_summary(db, c),
             "events": relationships.contact_events(db, c),
-            "timeline": timeline,
-            # The actual message/note thread, pulled OUT of the timeline so the
-            # model can't miss it: this is the conversation a follow-up must
-            # CONTINUE (the first DM, the capture note, any reply). Oldest-first.
-            "prior_messages": _thread_from_timeline(timeline),
+            "timeline": timeline[-12:],
+            "prior_messages": thread,
         }
 
     def _name_of(contact_id: int) -> str:
