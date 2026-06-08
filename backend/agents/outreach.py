@@ -587,39 +587,14 @@ def _compose_inperson_template(prospect, event) -> Message:
     return Message(note=connection, message=message)
 
 
-def _followup_hook(prospect) -> str:
-    """One specific personal line for the follow-up : grounds the nudge in who
-    the recipient is (what they work on, else their company) so even the
-    deterministic draft isn't a generic blast. Empty when we know nothing."""
-    works_on = (getattr(prospect, "works_on", "") or "").strip()
-    company = (getattr(prospect, "company", "") or "").strip()
-    if works_on:
-        return f"Still think your work on {works_on} would resonate with the room."
-    if company:
-        return f"Still think the {company} angle would resonate with the room."
-    return ""
-
-
-def compose_followup(prospect, event, prior_message: str | None = None) -> str:
+def compose_followup(prospect, event) -> str:
     """The follow-up DM sent N hours after the first post-accept message
     when the prospect hasn't replied. Lighter touch than the first DM :
-    no re-pitch, explicit off-ramp.
-
-    Deterministic fallback for followup_scheduler.compose_followup_text. Still
-    context-grounded: recipient first name, a personal hook (works_on/company),
-    and the event framing. `prior_message` (the first DM text) only shifts the
-    opener to acknowledge a prior touch : the template can't summarize free
-    text, so the real first-message grounding happens in the LLM path."""
+    no re-pitch, explicit off-ramp."""
     first = (prospect.name or "there").split()[0]
     framing = _framing(event)
-    hook = _followup_hook(prospect)
-    opener = (f"Hey {first} : circling back on the {event.format.lower()}."
-              if prior_message else
-              f"Hey {first} : following up about the {event.format.lower()}.")
-    lines = [opener]
-    if hook:
-        lines += ["", hook]
-    lines += [
+    lines = [
+        f"Hey {first} : circling back on the {event.format.lower()}.",
         "",
         f"Quick recap: {framing}. Seats are filling so wanted to make sure "
         f"this didn't get lost.",

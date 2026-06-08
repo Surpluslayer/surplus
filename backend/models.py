@@ -567,13 +567,6 @@ class User(Base):
     # overwritten by the auto-sync.
     voice_synced_at: Mapped[Optional[datetime]] = mapped_column(default=None)
 
-    # Opt-in toggle for the "Gmail Schedule Send" auto follow-up feature. When
-    # False (the default), sending a first DM does NOT auto-stage a scheduled
-    # follow-up : the host has not asked us to. Flipped via the followups
-    # settings route. Gated in agents/followup_scheduler.stage_followup so the
-    # whole feature is off for a user until they explicitly turn it on.
-    auto_followups_enabled: Mapped[bool] = mapped_column(default=False)
-
     # ─── Billing ───────────────────────────────────────────────────────
     # Stripe customer id, set by the checkout webhook on first successful
     # payment. Indexed because the webhook path looks users up by it.
@@ -911,41 +904,3 @@ class Job(Base):
     runner: Mapped[str] = mapped_column(String(10), default="")
     created_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
-
-
-class ScheduledFollowup(Base):
-    """One auto-drafted follow-up DM staged to send at a user-chosen time.
-
-    The "Gmail Schedule Send" model: the moment a first DM goes out we draft
-    a context-aware follow-up and pick a sensible send time, then stage it
-    HERE for the host to review, edit, reschedule, or cancel. The dispatch
-    cron (admin.run-followups) sends every row whose send_at has arrived and
-    is still `scheduled`. An inbound reply auto-cancels any pending row so we
-    never "circle back" to someone who already responded.
-
-    Exactly one pending (status="scheduled") row exists per prospect at a
-    time : stage_followup() is idempotent on (prospect_id, status="scheduled").
-
-    status     : scheduled -> sent | cancelled | failed
-    body       : the editable draft; what actually gets sent at dispatch time
-    send_at    : the user-controlled fire time (defaults to suggested_send_at)
-    suggested_send_at : the original system suggestion, kept for audit/UX even
-                        after the user reschedules
-    cancel_reason : "replied" (auto) | "user" (manual) | "" : audit only
-    """
-    __tablename__ = "scheduled_followups"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    prospect_id: Mapped[int] = mapped_column(
-        ForeignKey("prospects.id"), index=True
-    )
-    body: Mapped[str] = mapped_column(Text, default="")
-    send_at: Mapped[datetime] = mapped_column(index=True)
-    suggested_send_at: Mapped[datetime] = mapped_column(default=_utcnow)
-    status: Mapped[str] = mapped_column(String(20), default="scheduled", index=True)
-    cancel_reason: Mapped[str] = mapped_column(String(20), default="")
-    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
-    sent_at: Mapped[Optional[datetime]] = mapped_column(default=None)
-
-    prospect: Mapped["Prospect"] = relationship()

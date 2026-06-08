@@ -447,9 +447,6 @@ def send_direct_message(
     ))
     if not provider.dry_run and res.state == "message_sent":
         p.status = "contacted"
-        # Stage a Gmail-style scheduled follow-up the host can review/reschedule.
-        from ..agents.followup_scheduler import stage_followup
-        stage_followup(db, p, commit=False)
     db.commit()
 
     return {

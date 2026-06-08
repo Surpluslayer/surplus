@@ -143,11 +143,6 @@ def _trigger_auto_dm(
         db, prospect, msg.message,
         sent_state="message_sent", fallback_provider=provider,
     )
-    if not res.dry_run and res.state == "message_sent":
-        # Auto-stage the follow-up the instant the post-accept DM lands, so the
-        # host has a reviewable scheduled nudge without lifting a finger.
-        from ..agents.followup_scheduler import stage_followup
-        stage_followup(db, prospect, commit=True)
     return {"state": res.state, "dry_run": res.dry_run, "error": res.error}
 
 
@@ -182,10 +177,6 @@ async def _handle(request: Request, db: Session, provider: LinkedInProvider) -> 
 
     ai_reply = None
     if applied and prospect is not None and canonical.state == "message_replied":
-        # They engaged : kill any pending scheduled follow-up so we never send
-        # a "circling back" to someone who already replied.
-        from ..agents.followup_scheduler import cancel_pending_followups
-        cancel_pending_followups(db, prospect.id, reason="replied")
         ai_reply = _handle_ai_reply(db, provider, prospect, canonical)
 
     return {

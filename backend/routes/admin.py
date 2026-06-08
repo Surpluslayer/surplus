@@ -4,27 +4,26 @@ routes/admin.py : cron / operator-triggered tasks.
     POST /admin/run-followups   shared-secret auth (X-Admin-Token)
 
 Idempotent enough to hit from an external cron (Railway, GitHub Actions)
-on a regular schedule. Dispatches the "Gmail Schedule Send" follow-up queue:
-every ScheduledFollowup row that is still `scheduled` and whose host-chosen
-`send_at` has arrived. Each row flips to sent/cancelled/failed as it's
-processed, so overlapping cron runs can't double-send.
+on a regular schedule. Picks prospects that:
+  - have a `message_sent` outreach row (the first post-accept DM landed)
+  - have not received a `message_replied` since
+  - have fewer than FOLLOWUP_MAX_PER_PROSPECT `follow_up_sent` rows
+  - last `message_sent` is older than FOLLOWUP_DELAY_HOURS
 
-Rows are staged at first-DM time by agents/followup_scheduler.stage_followup
-(drafted body + suggested time the host can edit) and auto-cancelled on reply
-by the webhook. Sends go via the prospect's owning user's LinkedIn account
-(same per-user routing the webhook auto-DM uses).
+For each, composes a follow-up and sends via the prospect's owning user's
+LinkedIn account (same per-user routing the webhook auto-DM uses).
 """
 from __future__ import annotations
 import hmac
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
 
-from .. import models
+from .. import config, models
 from ..agents.sender import send_and_log
 from ..auth import _as_aware_utc
 from ..db import get_db
@@ -89,36 +88,63 @@ def _require_admin_token(x_admin_token: Optional[str] = Header(default=None)) ->
         raise HTTPException(404, "Not Found")
 
 
-def _due_followups(db: Session) -> list[models.ScheduledFollowup]:
-    """Every staged follow-up whose user-chosen send_at has arrived.
+def _eligible_prospects(db: Session) -> list[models.Prospect]:
+    """Find every prospect that's due for a follow-up right now.
 
-    The host controls timing now : we send a ScheduledFollowup row when it's
-    still `scheduled` AND its send_at is in the past. A reply already flips
-    pending rows to `cancelled` via the webhook, so a row reaching this query
-    is one the host scheduled and the recipient hasn't answered.
-
-    Eager-loads the prospect (+ its outreach) so the dispatch loop and the
-    defensive reply re-check don't fan out into per-row queries.
+    Eager-loads `outreach` so the per-prospect timeline scan doesn't trigger
+    one query per row. Legacy email-flavored states (sent/opened/replied)
+    coexist with the canonical LinkedIn states here, which is why we walk
+    the timeline in Python rather than write a SQL aggregate.
     """
-    now = datetime.now(timezone.utc)
-    rows = (db.query(models.ScheduledFollowup)
-              .filter(models.ScheduledFollowup.status == "scheduled")
-              .options(
-                  selectinload(models.ScheduledFollowup.prospect)
-                  .selectinload(models.Prospect.outreach))
-              .all())
-    due: list[models.ScheduledFollowup] = []
-    for r in rows:
-        send_at = _as_aware_utc(r.send_at)
-        if send_at is None or send_at > now:
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        hours=config.FOLLOWUP_DELAY_HOURS
+    )
+    candidates = (db.query(models.Prospect)
+                    .filter(models.Prospect.status == "contacted")
+                    .options(selectinload(models.Prospect.outreach))
+                    .all())
+
+    # Outbound DM states we can both anchor timing on AND prove the thread is
+    # live enough to DM. We deliberately anchor on the MOST RECENT outbound
+    # touch (a first DM or any prior follow-up), not the first DM, so the
+    # cadence stays "time sensitive based on when you last wrote".
+    OUTBOUND_DM_STATES = {"message_sent", "follow_up_sent"}
+    REPLIED_STATES = {"message_replied", "replied"}  # canonical + legacy
+
+    rows: list[models.Prospect] = []
+    for p in candidates:
+        if not p.outreach:
             continue
-        due.append(r)
-    return due
+        last_outbound_ts: Optional[datetime] = None  # most recent DM we sent
+        has_dm = False                                # at least one real DM out
+        replied = False
+        followup_count = 0
+        for o in p.outreach:
+            if o.state in OUTBOUND_DM_STATES:
+                if o.state == "message_sent":
+                    has_dm = True
+                if o.state == "follow_up_sent":
+                    followup_count += 1
+                ts = _as_aware_utc(o.ts)
+                if last_outbound_ts is None or ts > last_outbound_ts:
+                    last_outbound_ts = ts
+            elif o.state in REPLIED_STATES:
+                replied = True
 
-
-def _replied_since_staging(prospect: models.Prospect) -> bool:
-    """Defensive guard against a reply that raced past the webhook cancel."""
-    return any(o.state in ("message_replied", "replied") for o in prospect.outreach)
+        if replied:
+            continue
+        if followup_count >= config.FOLLOWUP_MAX_PER_PROSPECT:
+            continue
+        # DM-able guard : a bare unaccepted invite has no thread to nudge, so
+        # an invite_sent-only prospect is never eligible (no message_sent).
+        if not has_dm:
+            continue
+        # Timing : nudge only once the most recent outbound touch has aged past
+        # the delay window.
+        if last_outbound_ts is None or last_outbound_ts > cutoff:
+            continue
+        rows.append(p)
+    return rows
 
 
 @router.post("/run-followups", status_code=200)
@@ -126,44 +152,26 @@ def run_followups(
     db: Session = Depends(get_db),
     _: None = Depends(_require_admin_token),
 ) -> dict:
-    """Dispatch every scheduled follow-up whose send time has arrived.
+    """Send a follow-up DM to every prospect currently due for one.
 
-    Designed for frequent cron (e.g. every 5-15 min) : sends are idempotent
-    because each row flips to `sent`/`cancelled`/`failed` the moment it's
-    processed, so a row is never sent twice even if two runs overlap.
+    Designed for hourly cron : running it more often is harmless (the
+    eligibility window won't shift inside an hour and follow-up rows would
+    just exceed FOLLOWUP_MAX_PER_PROSPECT on the second run).
     """
+    from ..agents.outreach import compose_followup
     fallback_provider = get_provider()
-    due = _due_followups(db)
-    now = datetime.now(timezone.utc)
+    eligible = _eligible_prospects(db)
 
     sent: list[dict] = []
     failed: list[dict] = []
-    cancelled: list[dict] = []
 
-    for row in due:
-        prospect = row.prospect
-        if prospect is None or prospect.event is None:
-            row.status = "failed"
-            row.cancel_reason = "no_prospect"
-            row.updated_at = now
-            failed.append({"followup_id": row.id, "error": "no prospect/event"})
+    for prospect in eligible:
+        event = prospect.event
+        if event is None:
+            failed.append({"prospect_id": prospect.id, "error": "no event"})
             continue
 
-        # A reply that beat the webhook cancel : drop the nudge, don't send.
-        if _replied_since_staging(prospect):
-            row.status = "cancelled"
-            row.cancel_reason = "replied"
-            row.updated_at = now
-            cancelled.append({"followup_id": row.id, "prospect_id": prospect.id})
-            continue
-
-        text = (row.body or "").strip()
-        if not text:
-            row.status = "failed"
-            row.cancel_reason = "empty_body"
-            row.updated_at = now
-            failed.append({"followup_id": row.id, "error": "empty body"})
-            continue
+        text = compose_followup(prospect, event)
 
         try:
             res = send_and_log(
@@ -173,34 +181,26 @@ def run_followups(
                 commit=False,
             )
         except Exception as exc:  # noqa: BLE001
-            row.status = "failed"
-            row.cancel_reason = f"{type(exc).__name__}"
-            row.updated_at = now
-            failed.append({"followup_id": row.id, "prospect_id": prospect.id,
+            failed.append({"prospect_id": prospect.id,
                            "error": f"{type(exc).__name__}: {exc}"})
             continue
 
         if res.error:
-            row.status = "failed"
-            row.cancel_reason = "send_error"
-            row.updated_at = now
-            failed.append({"followup_id": row.id, "prospect_id": prospect.id,
-                           "error": res.error})
+            failed.append({"prospect_id": prospect.id, "error": res.error})
             continue
 
-        row.status = "sent"
-        row.sent_at = now
-        row.updated_at = now
-        sent.append({"followup_id": row.id, "prospect_id": prospect.id,
-                     "state": res.state, "dry_run": res.dry_run})
+        sent.append({"prospect_id": prospect.id, "state": res.state,
+                     "dry_run": res.dry_run})
 
-    db.commit()
+    if sent:
+        db.commit()
 
     return {
-        "due": len(due),
+        "eligible": len(eligible),
         "sent": len(sent),
         "failed": len(failed),
-        "cancelled": len(cancelled),
+        "delay_hours": config.FOLLOWUP_DELAY_HOURS,
+        "max_per_prospect": config.FOLLOWUP_MAX_PER_PROSPECT,
         "results": sent,
         "errors": failed,
     }
