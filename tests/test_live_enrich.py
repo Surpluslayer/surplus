@@ -98,6 +98,27 @@ def test_sync_host_voice_populates_examples():
     assert u.voice_synced_at is not None
 
 
+def test_sync_host_voice_stamps_linkedin_provenance():
+    """Synced examples carry channel='linkedin' provenance (Step 4) so scoped
+    retrieval can tell them apart from future other-channel examples; they read
+    back as plain text through the shared voice parser."""
+    from backend.agents import voice
+    u = SimpleNamespace(voice_examples="", voice_synced_at=None)
+    prov = _FakeProvider(sent=[
+        "Hey Maya, loved your post on inference infra, worth a quick chat?",
+    ])
+    live_enrich.sync_host_voice(u, prov)
+    records = json.loads(u.voice_examples)
+    assert records[0]["channel"] == "linkedin"
+    # message_type is omitted on write: a sent message can be a cold intro OR a
+    # follow-up, so it stays channel-tagged but type-agnostic.
+    assert "message_type" not in records[0]
+    # and the shared parser surfaces the text + scopes correctly
+    assert voice.parse_voice_examples(u.voice_examples, env_fallback=False,
+                                      channel="linkedin") == \
+        ["Hey Maya, loved your post on inference infra, worth a quick chat?"]
+
+
 def test_sync_host_voice_does_not_clobber_curated():
     u = SimpleNamespace(voice_examples=json.dumps(["my curated example"]),
                         voice_synced_at=None)

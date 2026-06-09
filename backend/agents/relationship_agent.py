@@ -156,7 +156,8 @@ def _voice_context_block(db, user_id: int) -> str:
         user = db.get(models.User, user_id)
     except Exception:  # noqa: BLE001 - keep the run alive on any lookup failure
         user = None
-    return voice.build_voice_context(user)["block"]
+    return voice.build_voice_context(
+        user, channel="linkedin", message_type="warm_followup")["block"]
 
 
 def _strip_dashes(text: str) -> str:

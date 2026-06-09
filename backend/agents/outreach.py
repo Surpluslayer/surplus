@@ -279,7 +279,8 @@ def _get_voice_examples(event, voice_examples_raw: str | None = None) -> list[st
                 raw = getattr(user, "voice_examples", "") or ""
         except Exception:  # noqa: BLE001 - DetachedInstanceError + friends
             raw = ""
-    return voice.parse_voice_examples(raw, env_fallback=True, limit=8)
+    return voice.parse_voice_examples(raw, env_fallback=True, limit=8,
+                                      channel="linkedin", message_type="cold_intro")
 
 
 def _compose_user_message(prospect, event, host_bio, framing,

@@ -216,3 +216,108 @@ def test_resolve_profile_survives_bad_cache_json():
     examples = ["Hey! hello"]
     assert voice.resolve_voice_profile_for_user(user, examples) == \
         voice.build_host_voice_profile(examples)
+
+
+# ── Step 4: provenance records + scoped retrieval ────────────────────────────
+
+def test_records_accept_both_legacy_and_tagged_shapes():
+    """A plain string is a channel-agnostic record; a dict carries provenance."""
+    raw = json.dumps([
+        "legacy plain string",
+        {"text": "tagged linkedin", "channel": "LinkedIn", "message_type": "Cold_Intro"},
+        {"message": "alt body key", "type": "warm_followup"},  # message/type aliases
+    ])
+    recs = voice.parse_voice_records(raw, env_fallback=False)
+    assert recs[0] == {"text": "legacy plain string", "channel": None,
+                       "message_type": None}
+    # tags are lowercased
+    assert recs[1] == {"text": "tagged linkedin", "channel": "linkedin",
+                       "message_type": "cold_intro"}
+    assert recs[2] == {"text": "alt body key", "channel": None,
+                       "message_type": "warm_followup"}
+
+
+def test_dict_record_without_text_is_dropped():
+    raw = json.dumps([{"channel": "linkedin"}, {"text": "  ", "channel": "x"},
+                      {"text": "kept"}])
+    assert voice.parse_voice_examples(raw, env_fallback=False) == ["kept"]
+
+
+def test_legacy_plain_strings_are_unaffected_by_scoping():
+    """Untagged examples are channel-agnostic: scoping to any channel returns
+    them unchanged, so existing plain-string data behaves exactly as before."""
+    raw = json.dumps(["one", "two", "three"])
+    unscoped = voice.parse_voice_examples(raw, env_fallback=False)
+    scoped = voice.parse_voice_examples(raw, env_fallback=False,
+                                        channel="linkedin", message_type="cold_intro")
+    assert unscoped == scoped == ["one", "two", "three"]
+
+
+def test_scoping_filters_to_matching_channel():
+    raw = json.dumps([
+        {"text": "li one", "channel": "linkedin"},
+        {"text": "email one", "channel": "email"},
+        {"text": "li two", "channel": "linkedin"},
+    ])
+    assert voice.parse_voice_examples(raw, env_fallback=False, channel="linkedin") \
+        == ["li one", "li two"]
+    assert voice.parse_voice_examples(raw, env_fallback=False, channel="email") \
+        == ["email one"]
+
+
+def test_untagged_records_remain_eligible_under_scope():
+    """An untagged example applies to every channel, alongside the matching ones."""
+    raw = json.dumps([
+        {"text": "agnostic"},                              # no channel
+        {"text": "li only", "channel": "linkedin"},
+        {"text": "email only", "channel": "email"},
+    ])
+    assert voice.parse_voice_examples(raw, env_fallback=False, channel="linkedin") \
+        == ["agnostic", "li only"]
+
+
+def test_scope_falls_back_to_all_when_channel_has_no_examples():
+    """Scoping to a channel the host has zero examples for must NOT yield an empty
+    voice block — fall back to the full set rather than dropping voice entirely."""
+    raw = json.dumps([
+        {"text": "li one", "channel": "linkedin"},
+        {"text": "li two", "channel": "linkedin"},
+    ])
+    assert voice.parse_voice_examples(raw, env_fallback=False, channel="email") \
+        == ["li one", "li two"]
+
+
+def test_message_type_narrows_within_channel():
+    raw = json.dumps([
+        {"text": "cold li", "channel": "linkedin", "message_type": "cold_intro"},
+        {"text": "warm li", "channel": "linkedin", "message_type": "warm_followup"},
+        {"text": "email warm", "channel": "email", "message_type": "warm_followup"},
+    ])
+    assert voice.parse_voice_examples(
+        raw, env_fallback=False, channel="linkedin", message_type="warm_followup") \
+        == ["warm li"]
+
+
+def test_scope_applied_before_cap():
+    """The cap bounds the SELECTED set, not the raw list, so a channel still gets
+    up to `limit` of its own examples even when other-channel rows come first."""
+    rows = [{"text": f"email{i}", "channel": "email"} for i in range(8)]
+    rows += [{"text": f"li{i}", "channel": "linkedin"} for i in range(3)]
+    raw = json.dumps(rows)
+    assert voice.parse_voice_examples(raw, env_fallback=False, limit=8,
+                                      channel="linkedin") == ["li0", "li1", "li2"]
+
+
+def test_build_voice_context_scopes_examples_and_profile():
+    user = SimpleNamespace(
+        voice_examples=json.dumps([
+            {"text": "Hey! quick one, you around? 🙌", "channel": "linkedin"},
+            {"text": "Dear Sir, I write to formally request. Best regards.",
+             "channel": "email"},
+        ]),
+        voice_profile="")
+    ctx = voice.build_voice_context(user, channel="linkedin")
+    assert ctx["examples"] == ["Hey! quick one, you around? 🙌"]
+    # profile is distilled from the SCOPED example, so it reads casual not formal
+    assert ctx["profile"]["greeting"] == "hey"
+    assert ctx["profile"]["uses_emoji"] is True

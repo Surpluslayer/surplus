@@ -463,29 +463,24 @@ def get_voice_examples(
 ):
     """Return the operator's current voice-matching examples + which source
     they're coming from (DB row vs env-var fallback)."""
-    import json as _json
+    from ..agents import voice
     user = _operator_user(db)
     db_raw = (user.voice_examples if user else "") or ""
     env_raw = (os.environ.get("OPERATOR_VOICE_EXAMPLES") or "").strip()
 
+    # parse_voice_examples handles BOTH the legacy plain-string form and the
+    # richer {"text", "channel", ...} provenance form, returning just the text —
+    # so a tagged example never leaks as a stringified dict into the admin UI.
     examples: list[str] = []
     source = "none"
     if db_raw.strip():
-        try:
-            parsed = _json.loads(db_raw)
-            if isinstance(parsed, list):
-                examples = [str(s).strip() for s in parsed if str(s).strip()]
-                source = "user_row"
-        except _json.JSONDecodeError:
-            pass
+        examples = voice.parse_voice_examples(db_raw, env_fallback=False, limit=100)
+        if examples:
+            source = "user_row"
     elif env_raw:
-        try:
-            parsed = _json.loads(env_raw)
-            if isinstance(parsed, list):
-                examples = [str(s).strip() for s in parsed if str(s).strip()]
-                source = "env_var"
-        except _json.JSONDecodeError:
-            pass
+        examples = voice.parse_voice_examples(env_raw, env_fallback=False, limit=100)
+        if examples:
+            source = "env_var"
     return {
         "source": source,
         "count": len(examples),

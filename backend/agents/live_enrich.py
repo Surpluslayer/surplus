@@ -80,8 +80,12 @@ def sync_host_voice(user, provider) -> None:
     except Exception:  # noqa: BLE001
         msgs = []
     # Keep substantive messages only : one-word replies ("thanks!", "sounds
-    # good") are noise for voice matching.
-    samples = [m.strip() for m in (msgs or []) if len(m.strip()) > 25][:8]
+    # good") are noise for voice matching. Stamp channel provenance so scoped
+    # retrieval (agents/voice.select_voice_records) can tell these LinkedIn-
+    # sourced examples apart from any future email/other-channel ones; no
+    # message_type since a sent message can be a cold intro OR a follow-up.
+    samples = [{"text": m.strip(), "channel": "linkedin"}
+               for m in (msgs or []) if len(m.strip()) > 25][:8]
     if samples:
         user.voice_examples = json.dumps(samples)
     user.voice_synced_at = _utcnow()

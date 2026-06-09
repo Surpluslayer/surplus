@@ -16,9 +16,11 @@ Scope discipline (see the staged voice plan):
     rendered string, does NOT touch the em-dash scrubbers (the two surfaces use
     intentionally different ones), and does NOT alter the cold-DM block wording.
   - Step 2 adds a structured ``host_voice_profile`` (``profile`` is ``None`` here).
-  - Step 4 adds channel/message_type-scoped retrieval. ``build_voice_context``
-    already ACCEPTS ``channel``/``message_type`` (ignored for now) so adding that
-    later needs no signature change at the call sites.
+  - Step 4 wires channel/message_type-scoped retrieval. Stored voice examples may
+    now carry provenance (``{"text", "channel", "message_type"}``) alongside the
+    legacy plain-string form; :func:`build_voice_context` filters to the examples
+    that match the requested ``channel``/``message_type``. Untagged examples stay
+    channel-agnostic, so existing plain-string data behaves exactly as before.
 """
 
 from __future__ import annotations
@@ -31,18 +33,69 @@ import statistics
 from typing import Any, Optional
 
 
-# ── Raw → list[str] ──────────────────────────────────────────────────────────
+# ── Raw → records → list[str] ────────────────────────────────────────────────
+# A stored voice example is EITHER a plain string (the legacy form, channel-
+# agnostic) OR a dict carrying provenance: {"text", "channel", "message_type"}.
+# Internally everything normalizes to a record so scoped retrieval (Step 4) can
+# filter by channel/message_type; the public list[str] helpers are thin façades
+# over the record layer so existing callers are untouched.
 
-def parse_voice_examples(raw: Optional[str], *, env_fallback: bool = True,
-                         limit: int = 8) -> list[str]:
-    """Parse a raw JSON string of voice examples into a clean, capped list.
+def _norm_tag(v: Any) -> Optional[str]:
+    """Normalize a channel/message_type tag to a lowercased token, or ``None``."""
+    s = str(v).strip().lower() if v is not None else ""
+    return s or None
 
-    This is the exact logic both surfaces duplicated:
-      - empty ``raw`` falls back to ``OPERATOR_VOICE_EXAMPLES`` (when
-        ``env_fallback``), else returns ``[]``
-      - bad JSON or a non-list parses to ``[]`` (a typo can never break a run)
-      - each element is coerced to ``str`` and stripped; blanks dropped
-      - capped at ``limit`` (default 8) to bound input tokens
+
+def _normalize_record(item: Any) -> Optional[dict]:
+    """Coerce one raw example element into a ``{text, channel, message_type}``
+    record, or ``None`` when it has no usable text. Accepts the legacy plain
+    string (channel-agnostic) and the richer dict form (keys ``text``/``message``
+    for the body, ``channel``, ``message_type``/``type`` for provenance)."""
+    if isinstance(item, dict):
+        text = str(item.get("text") or item.get("message") or "").strip()
+        if not text:
+            return None
+        return {"text": text,
+                "channel": _norm_tag(item.get("channel")),
+                "message_type": _norm_tag(item.get("message_type")
+                                          or item.get("type"))}
+    text = str(item).strip()
+    if not text:
+        return None
+    return {"text": text, "channel": None, "message_type": None}
+
+
+def select_voice_records(records: list[dict], *, channel: Optional[str] = None,
+                         message_type: Optional[str] = None) -> list[dict]:
+    """Scope records to the requested ``channel``/``message_type``.
+
+    A record matches a filter when its tag is absent (untagged = applies to any
+    channel/type) or equals the requested value. Each filter is applied only if
+    it would leave at least one record — so a channel the host has no examples
+    for falls back to the full set rather than rendering an empty voice block."""
+    sel = records
+    if channel:
+        ch = _norm_tag(channel)
+        scoped = [r for r in sel if not r.get("channel") or r["channel"] == ch]
+        if scoped:
+            sel = scoped
+    if message_type:
+        mt = _norm_tag(message_type)
+        scoped = [r for r in sel
+                  if not r.get("message_type") or r["message_type"] == mt]
+        if scoped:
+            sel = scoped
+    return sel
+
+
+def parse_voice_records(raw: Optional[str], *, env_fallback: bool = True,
+                        limit: int = 8, channel: Optional[str] = None,
+                        message_type: Optional[str] = None) -> list[dict]:
+    """Parse + scope + cap a raw JSON string of voice examples into records.
+
+    Scoping happens BEFORE the cap so a channel gets up to ``limit`` of its own
+    examples. Bad JSON / a non-list parses to ``[]`` so a typo can never break a
+    run; ``env_fallback`` pulls ``OPERATOR_VOICE_EXAMPLES`` when ``raw`` is empty.
     """
     raw = (raw or "").strip()
     if not raw and env_fallback:
@@ -55,11 +108,28 @@ def parse_voice_examples(raw: Optional[str], *, env_fallback: bool = True,
         return []
     if not isinstance(parsed, list):
         return []
-    return [str(s).strip() for s in parsed if str(s).strip()][:limit]
+    records = [r for r in (_normalize_record(x) for x in parsed) if r]
+    records = select_voice_records(records, channel=channel,
+                                   message_type=message_type)
+    return records[:limit]
 
 
-def resolve_voice_examples_for_user(user: Any, *, limit: int = 8) -> list[str]:
-    """Resolve a host's voice examples from their ``User`` row, then env.
+def parse_voice_examples(raw: Optional[str], *, env_fallback: bool = True,
+                         limit: int = 8, channel: Optional[str] = None,
+                         message_type: Optional[str] = None) -> list[str]:
+    """Parse a raw JSON string of voice examples into a clean, capped list of
+    strings. Thin façade over :func:`parse_voice_records` (channel/message_type
+    default to ``None`` = unscoped, the legacy behavior)."""
+    return [r["text"] for r in parse_voice_records(
+        raw, env_fallback=env_fallback, limit=limit,
+        channel=channel, message_type=message_type)]
+
+
+def resolve_voice_examples_for_user(user: Any, *, limit: int = 8,
+                                    channel: Optional[str] = None,
+                                    message_type: Optional[str] = None) -> list[str]:
+    """Resolve a host's voice examples from their ``User`` row, then env,
+    optionally scoped to a ``channel``/``message_type``.
 
     Defensive: accessing ``user.voice_examples`` can raise
     ``DetachedInstanceError`` when the row's session has closed (the background
@@ -72,7 +142,8 @@ def resolve_voice_examples_for_user(user: Any, *, limit: int = 8) -> list[str]:
             raw = (getattr(user, "voice_examples", "") or "").strip()
     except Exception:  # noqa: BLE001 - DetachedInstanceError + friends
         raw = ""
-    return parse_voice_examples(raw, env_fallback=True, limit=limit)
+    return parse_voice_examples(raw, env_fallback=True, limit=limit,
+                                channel=channel, message_type=message_type)
 
 
 # ── list[str] → model-ready <style_examples> block ───────────────────────────
@@ -297,11 +368,13 @@ def build_voice_context(user: Any, *, channel: Optional[str] = None,
 
     Returns ``{"profile", "examples", "block"}`` where ``block`` is the
     model-ready voice context: the ``<host_voice_profile>`` rules (if any)
-    followed by the ``<style_examples>`` ground-truth messages. ``channel`` and
-    ``message_type`` are accepted now but ignored — they exist so Step 4's scoped
-    retrieval slots in without touching call sites.
+    followed by the ``<style_examples>`` ground-truth messages. When ``channel``/
+    ``message_type`` are given, retrieval is scoped to the examples carrying that
+    provenance (untagged examples remain eligible); the profile is then distilled
+    from the SAME scoped examples so the rules and the ground truth agree.
     """
-    examples = resolve_voice_examples_for_user(user, limit=limit)
+    examples = resolve_voice_examples_for_user(
+        user, limit=limit, channel=channel, message_type=message_type)
     profile = resolve_voice_profile_for_user(user, examples)
     block = render_voice_profile_block(profile) + build_style_examples_block(examples)
     return {
