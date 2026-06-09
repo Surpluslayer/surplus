@@ -337,25 +337,55 @@ function FollowupChat() {
     // auto-send pref arrives in the `meta` frame before any card; hold it so
     // each streamed proposal card labels its button correctly.
     let auto = false;
+
+    // Reveal pacing. The backend drafts up to RELATIONSHIP_DRAFT_CONCURRENCY
+    // people in PARALLEL, so their cards resolve in a near-simultaneous burst
+    // and would otherwise all pop at once. Buffer the streamed proposals and
+    // release them into the chat one at a time on a fixed cadence, so they
+    // animate in one-by-one regardless of how bursty the delivery is. The
+    // "busy" indicator stays on until the buffer drains.
+    const REVEAL_MS = 700;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const pending = [];          // proposals streamed but not yet shown
+    let streamDone = false;      // true once the SSE stream closes
+    let summaryText = null;      // closing line, shown after the last card
+
+    const pump = (async () => {
+      // First card lands fast; subsequent ones are spaced by REVEAL_MS.
+      let first = true;
+      for (;;) {
+        if (pending.length) {
+          if (!first) await sleep(REVEAL_MS);
+          first = false;
+          const p = pending.shift();
+          setTurns((t) => [...t, { role: "agent", proposals: [p], auto }]);
+        } else if (streamDone) {
+          break;
+        } else {
+          await sleep(120);      // wait for the next streamed card
+        }
+      }
+    })();
+
     try {
       await api.relationshipChatStream(q, {
         onMeta: (m) => { auto = !!m.auto_send_enabled; },
-        // Reveal each person the instant the agent stages them — one card per
-        // turn, so they pop into the chat one-by-one as the survey runs.
-        onProposal: (p) => {
-          if (p.kind !== "draft_message") return;
-          setTurns((t) => [...t, { role: "agent", proposals: [p], auto }]);
-        },
+        // Queue each staged person; the pump reveals them one-by-one.
+        onProposal: (p) => { if (p.kind === "draft_message") pending.push(p); },
         // Closing line lands last, under the cards it summarizes.
-        onDone: (d) => {
-          if (d.summary) setTurns((t) => [...t, { role: "agent", text: d.summary }]);
-        },
+        onDone: (d) => { summaryText = d.summary || null; },
         onError: (e) => {
           setTurns((t) => [...t, { role: "agent",
             text: `Sorry — ${e.message || "something went wrong"}`, proposals: [] }]);
         },
       });
+      streamDone = true;
+      await pump;                // drain the remaining cards one-by-one
+      if (summaryText)
+        setTurns((t) => [...t, { role: "agent", text: summaryText }]);
     } catch (e) {
+      streamDone = true;
+      await pump.catch(() => {});
       // A 402 from the relationship-quota gate means the free cap is hit:
       // open the upgrade paywall instead of dumping a raw error in the chat.
       const pw = paywallFromError(e);
