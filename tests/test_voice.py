@@ -321,3 +321,41 @@ def test_build_voice_context_scopes_examples_and_profile():
     # profile is distilled from the SCOPED example, so it reads casual not formal
     assert ctx["profile"]["greeting"] == "hey"
     assert ctx["profile"]["uses_emoji"] is True
+
+
+# ── contact register detection (orthogonal to host identity) ─────────────────
+
+def test_detect_register_none_when_empty():
+    assert voice.detect_register([]) is None
+    assert voice.detect_register(["   ", ""]) is None
+
+
+def test_detect_register_formal_on_letter_style():
+    msg = ("Dear Alex, thank you for the kind note. I would welcome the "
+           "opportunity to discuss your work further. Might you have "
+           "availability next week to speak? Kind regards, Dr. Patel")
+    assert voice.detect_register([msg]) == "formal"
+
+
+def test_detect_register_casual_on_emoji_and_slang():
+    assert voice.detect_register(["omg yesss so good meeting you!! lmk 🙌"]) == "casual"
+    assert voice.detect_register(["hey! lets grab coffee soon, gonna be in town"]) == "casual"
+
+
+def test_detect_register_neutral_when_no_strong_signal():
+    msg = "Thanks for reaching out. Happy to chat next week, what works for you?"
+    assert voice.detect_register([msg]) == "neutral"
+
+
+def test_register_guidance_maps_each_label_and_none():
+    assert voice.register_guidance(None) is None
+    assert "no emoji" in voice.register_guidance("formal")
+    assert "casual voice fits" in voice.register_guidance("casual")
+    assert "neutral register" in voice.register_guidance("neutral")
+
+
+def test_register_is_the_contacts_voice_not_the_hosts():
+    """Register is judged from the CONTACT's messages only; a casual host
+    profile must not flip a formal contact's detected register."""
+    formal_contact = ["Dear Sir, I would be grateful for your guidance. Kind regards."]
+    assert voice.detect_register(formal_contact) == "formal"

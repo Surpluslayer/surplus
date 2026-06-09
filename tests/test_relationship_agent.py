@@ -497,6 +497,38 @@ def test_brief_host_promise_without_next_step_uses_promise_action():
     assert any("keyword guess" in a for a in b["facts_to_avoid_or_treat_as_uncertain"])
 
 
+def test_brief_reads_contact_register_from_their_messages_only():
+    """The brief should classify how the CONTACT writes (so the draft can meet
+    their register) — judged from their messages, not the host's."""
+    formal = _ctx(
+        summary={"name": "Dr. Patel", "last_touch_at": None},
+        thread=[_msg("host", "Great meeting you! Let's stay in touch.", days_ago=5),
+                _msg("them", "Dear Alex, I would welcome the opportunity to "
+                             "discuss further. Might you have availability next "
+                             "week? Kind regards, Dr. Patel", days_ago=2)])
+    b = ragent._context_brief({"reason": "replied", "angle": ""}, formal)
+    assert b["contact_register"] == "formal"
+    assert "no emoji" in b["register_guidance"]
+
+    casual = _ctx(
+        summary={"name": "Maya", "last_touch_at": None},
+        thread=[_msg("host", "Great meeting you! Let's stay in touch.", days_ago=5),
+                _msg("them", "omg yesss so good meeting you!! lmk when ur free 🙌",
+                     days_ago=2)])
+    c = ragent._context_brief({"reason": "replied", "angle": ""}, casual)
+    assert c["contact_register"] == "casual"
+
+
+def test_brief_register_is_none_with_no_contact_messages():
+    """No contact message yet (host-only opener) → nothing to mirror."""
+    b = ragent._context_brief(
+        {"reason": "stale", "angle": ""},
+        _ctx(summary={"name": "Mia", "last_touch_at": None},
+             thread=[_msg("host", "Great meeting you at the mixer!", days_ago=60)]))
+    assert b["contact_register"] is None
+    assert b["register_guidance"] is None
+
+
 # ── "who to follow up" : the deterministic signals list_contacts exposes ──────
 # The agent never decides staleness itself — it reads is_stale / has_next_step /
 # days_since_last_touch off contact_summary. These tests pin those inputs so a

@@ -292,6 +292,99 @@ def _most_common(items: list[str]) -> Optional[str]:
     return max(dict.fromkeys(items), key=items.count)
 
 
+# ── Contact register detection ────────────────────────────────────────────────
+# The host profile fixes the host's IDENTITY (greeting habit, emoji, sign-off).
+# Register is a separate, orthogonal axis: how formal THIS reply should be, which
+# depends on the *contact*, not the host. A casual host writing back to someone
+# who signs "Kind regards" should dial down — keep their identity, meet the
+# register. detect_register() reads the contact's own messages and classifies
+# formal | neutral | casual using the same cheap cues build_host_voice_profile
+# uses, so it's deterministic, model-free, and unit-testable.
+
+# Phrases that only show up in genuinely formal writing.
+_FORMAL_MARKERS = (
+    "dear ", "kind regards", "best regards", "warm regards", "sincerely",
+    "respectfully", "yours truly", "to whom it may concern", "i would welcome",
+    "i would be grateful", "at your earliest convenience", "please find",
+    "i shall", "do let me know", "might you", "would you be so kind",
+    "it would be my pleasure", "i trust this", "i hope this message finds you",
+)
+# Tokens that only show up in casual writing.
+_CASUAL_MARKERS = (
+    "lol", "haha", "hahaha", "gonna", "wanna", "gotta", "yeah", "yep", "nah",
+    "thx", "ttyl", "omg", "btw", "tbh", "super ", "totally", "awesome", "!!",
+)
+_CONTRACTION_RE = re.compile(r"\b\w+'(s|re|ll|ve|d|t|m)\b", re.IGNORECASE)
+
+
+def detect_register(texts: list[str]) -> Optional[str]:
+    """Classify how formally the *contact* writes: 'formal' | 'neutral' |
+    'casual', or None when there's nothing to judge.
+
+    Scored, not first-match: each side accumulates evidence and the dominant
+    side wins; a tie (or no signal) is 'neutral'. Pure function of the strings,
+    mirroring build_host_voice_profile's cue set so the two stay consistent."""
+    texts = [t.strip() for t in (texts or []) if t and t.strip()]
+    if not texts:
+        return None
+
+    formal = 0
+    casual = 0
+    for t in texts:
+        low = t.lower()
+        head = low[:24]
+        tail = low[-48:]
+
+        # formal evidence
+        if head.startswith("dear ") or "good morning" in head or \
+                "good afternoon" in head or "good evening" in head:
+            formal += 1
+        if any(m in low for m in _FORMAL_MARKERS):
+            formal += 1
+        # long, single-clause, no-contraction sentences read formal
+        if _word_count(t) >= 18 and not _CONTRACTION_RE.search(t):
+            formal += 1
+
+        # casual evidence
+        if _EMOJI_RE.search(t):
+            casual += 1
+        if _GREETING_RE.match(t) and re.match(r"^[\s\W]*(hey|yo|hiya|heya)\b",
+                                              low):
+            casual += 1
+        if t[:1].islower():
+            casual += 1
+        if any(m in low for m in _CASUAL_MARKERS):
+            casual += 1
+        if t.count("!") >= 2:
+            casual += 1
+
+    if formal > casual:
+        return "formal"
+    if casual > formal:
+        return "casual"
+    return "neutral"
+
+
+# Drafting guidance per detected contact register. Keyed so the brief can carry
+# both the label and a one-line instruction the model can act on directly.
+_REGISTER_GUIDANCE = {
+    "formal": ("the contact writes formally — keep the host's identity but meet "
+               "their register: no emoji, no slang, use a fuller greeting "
+               "(e.g. 'Hi {name},' not 'Hey'), and complete sentences."),
+    "casual": ("the contact writes casually — the host's natural casual voice "
+               "fits; no need to stiffen up."),
+    "neutral": ("the contact writes in a neutral register — match it; let the "
+                "host's voice lead without forcing extra formality or slang."),
+}
+
+
+def register_guidance(register: Optional[str]) -> Optional[str]:
+    """One-line drafting instruction for a detected contact register, or None."""
+    if not register:
+        return None
+    return _REGISTER_GUIDANCE.get(register)
+
+
 def render_voice_profile_block(profile: Optional[dict]) -> str:
     """Render a ``host_voice_profile`` as a ``<host_voice_profile>`` instruction
     block, or ``""`` when there's no profile. The block states the distilled

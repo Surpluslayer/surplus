@@ -478,6 +478,11 @@ def _context_brief(sel: dict, ctx: dict) -> dict:
     events = ctx.get("events") or []
     sig = _thread_signals(thread)
 
+    # contact register: how formally THEY write, so the draft can meet their
+    # register while keeping the host's identity (deterministic, model-free).
+    contact_texts = [m.get("text") or "" for m in thread if m.get("who") == "them"]
+    contact_register = voice.detect_register(contact_texts)
+
     name = (summary.get("name") or "").strip()
     company = (summary.get("company") or "").strip()
     stage = summary.get("relationship_stage")
@@ -579,6 +584,8 @@ def _context_brief(sel: dict, ctx: dict) -> dict:
         "continue_from": _last_text(thread),
         "do_not_repeat": _last_text(thread, who="host"),
         "drafting_risks": risks,
+        "contact_register": contact_register,
+        "register_guidance": voice.register_guidance(contact_register),
     }
 
 
