@@ -901,6 +901,19 @@ _TRIAGE_TOOL = {
             "closing": {"type": "string",
                         "description": "A SHORT, conversational closing line for "
                         "the host, one or two sentences, plain prose (no lists)."},
+            "force_draft": {
+                "type": "boolean",
+                "description": (
+                    "TRUE only when the host EXPLICITLY COMMANDED drafting "
+                    "messages for the people you select — e.g. 'draft messages "
+                    "for everyone', 'message these folks', 'write to X and Y', "
+                    "'create drafts for all of them'. FALSE when the host merely "
+                    "ASKED who to follow up with ('who should I reach out to?', "
+                    "'anyone worth pinging?') or gave no instruction at all. When "
+                    "TRUE, the drafting step honors the host's command and writes "
+                    "a message for every person you select instead of holding off "
+                    "on 'too soon' / 'ball in their court' grounds."),
+            },
         },
         "required": ["selections"],
     },
@@ -1336,6 +1349,12 @@ def run_relationship_agent_concurrent(
             "Nominate everyone who matches the host's request and has a relevant "
             "reason under that request. Rank them most important first. Do not "
             "apply an arbitrary cap.\n\n"
+            "If the host's request is a COMMAND to draft/message/write to people "
+            "(e.g. 'draft messages for everyone', 'message these folks', 'write "
+            "to X and Y'), set force_draft TRUE and select everyone the command "
+            "covers — the host has decided, so don't pre-filter on whether a "
+            "touch is 'warranted'. If the host is only ASKING who to follow up "
+            "with, set force_draft FALSE and use your judgment.\n\n"
             "If the host's request is specific, make the closing line directly "
             "answer what they asked in one short conversational sentence.\n\n"
             "Use only the provided data. Do not invent updates, interest, "
@@ -1358,11 +1377,13 @@ def run_relationship_agent_concurrent(
 
     selections: list[dict] = []
     closing = ""
+    force_draft = False
     for tu in _tool_uses(triage_resp):
         if _tu_name(tu) == "select_followups":
             inp = _tu_input(tu)
             selections = list(inp.get("selections") or [])
             closing = (inp.get("closing") or "").strip()
+            force_draft = bool(inp.get("force_draft"))
             break
 
     # Validate: keep only roster-resolvable ids (owner-scoping) and dedupe. No
@@ -1423,14 +1444,30 @@ def run_relationship_agent_concurrent(
             "thread, write as if you don't know it.\n"
             "</triage_signal>\n\n"
             "<drafting_task>\n"
-            "Read prior_messages in <full_context_json> first. Decide whether a "
-            "follow-up is genuinely warranted based on the actual thread.\n"
-            "If there is a natural next relationship action for the host to take "
-            "now, draft the message or propose the next step.\n"
-            "If the thread shows the loop is closed, the ball is in their court, "
-            "it is too soon, a follow-up was already handled, or there is no real "
-            "hook, call skip_contact.\n"
-            "</drafting_task>\n\n"
+            + (
+                # Host EXPLICITLY commanded a draft for this person: honor it.
+                # The host has overridden the usual 'is it warranted?' judgment,
+                # so do NOT second-guess it on timing/etiquette grounds.
+                "The host EXPLICITLY asked you to draft a message for this "
+                "person. Honor that: WRITE THE MESSAGE. Read prior_messages in "
+                "<full_context_json> first so the draft continues the real "
+                "thread (or opens naturally if there's no history yet), then "
+                "draft it. Do NOT call skip_contact for 'too soon', 'ball in "
+                "their court', 'no clear hook', or 'already handled' — the host "
+                "has overridden that judgment. The ONLY time you may skip is a "
+                "hard stop: the contact explicitly opted out, asked not to be "
+                "contacted, or said no/not interested. Absent that, draft.\n"
+                if force_draft else
+                "Read prior_messages in <full_context_json> first. Decide "
+                "whether a follow-up is genuinely warranted based on the actual "
+                "thread.\n"
+                "If there is a natural next relationship action for the host to "
+                "take now, draft the message or propose the next step.\n"
+                "If the thread shows the loop is closed, the ball is in their "
+                "court, it is too soon, a follow-up was already handled, or "
+                "there is no real hook, call skip_contact.\n"
+            )
+            + "</drafting_task>\n\n"
             "<context_brief>\n"
             "A deterministic pre-read of the signals. Use it to orient, but "
             "prior_messages is authoritative: if anything here conflicts with the "

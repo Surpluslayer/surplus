@@ -1004,6 +1004,56 @@ def test_concurrent_summary_does_not_promise_a_skipped_draft(db):
     assert "bensiraphob gets a follow-up draft" not in res.summary
 
 
+def test_concurrent_force_draft_honors_explicit_command(db):
+    """When the host explicitly commands drafting, triage sets force_draft=true
+    and the per-person draft prompt must tell the model to WRITE the message and
+    NOT skip on 'too soon / ball in their court' grounds — the host's command
+    overrides the drafter's caution."""
+    u = _user(db)
+    ev = _event(db, u)
+    a = _stale_contact(db, u, ev, name="Laurel Dong", ident="laurel", days=1)
+
+    triage = [_tool_use("select_followups", "tg",
+                        selections=[{"contact_id": a.id, "reason": "host asked",
+                                     "angle": "first touch"}],
+                        closing="Drafting for everyone you asked.",
+                        force_draft=True)]
+    drafts = {a.id: [_tool_use("draft_message", "da", contact_id=a.id,
+                              message="Hey Laurel, great meeting you.",
+                              rationale="host asked")]}
+    client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
+
+    res = ragent.run_relationship_agent_concurrent(
+        db, u.id, instruction="draft messages for everyone", client=client)
+    assert res.error is None
+    prompt = client.draft_calls()[0]["messages"][0]["content"]
+    assert "EXPLICITLY asked you to draft" in prompt
+    assert "Do NOT call skip_contact" in prompt
+
+
+def test_concurrent_no_force_draft_keeps_skip_judgment(db):
+    """Without an explicit command (force_draft falsey), the draft prompt keeps
+    the conservative branch that still allows skip_contact."""
+    u = _user(db)
+    ev = _event(db, u)
+    a = _stale_contact(db, u, ev, name="Maya Rodriguez", ident="maya", days=40)
+
+    triage = [_tool_use("select_followups", "tg",
+                        selections=[{"contact_id": a.id, "reason": "40d cold",
+                                     "angle": "reconnect"}],
+                        closing="Here's who I'd reconnect with.")]  # no force_draft
+    drafts = {a.id: [_tool_use("draft_message", "da", contact_id=a.id,
+                              message="Hey Maya.", rationale="40d")]}
+    client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
+
+    res = ragent.run_relationship_agent_concurrent(
+        db, u.id, instruction="who should I follow up with?", client=client)
+    assert res.error is None
+    prompt = client.draft_calls()[0]["messages"][0]["content"]
+    assert "call skip_contact" in prompt
+    assert "EXPLICITLY asked you to draft" not in prompt
+
+
 def test_concurrent_empty_selection_skips_fan_out(db):
     """If triage selects nobody, there are zero draft calls and the warm closing
     line is surfaced — the silent path costs exactly one Claude call."""
