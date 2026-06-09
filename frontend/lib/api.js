@@ -271,7 +271,13 @@ export const api = {
     });
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => "");
-      throw new Error(`${res.status} ${res.statusText} : ${text.slice(0, 240)}`);
+      const err = new Error(`${res.status} ${res.statusText} : ${text.slice(0, 240)}`);
+      // Mirror request(): surface status + parsed body so the caller can
+      // branch on the 402 relationship-quota paywall (LIMIT_REACHED /
+      // CONTACT_LIMIT_REACHED) instead of just showing a raw error string.
+      err.status = res.status;
+      try { err.body = JSON.parse(text); } catch { err.body = null; }
+      throw err;
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
