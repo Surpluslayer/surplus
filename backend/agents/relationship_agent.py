@@ -173,6 +173,38 @@ def _strip_dashes(text: str) -> str:
     return strip_em_dashes(text or "") or ""
 
 
+def _oxford_join(names: list[str]) -> str:
+    """'A' | 'A and B' | 'A, B, and C' — for human-readable name lists."""
+    names = [n for n in names if n]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+
+def _reconcile_summary(drafted: list[str], held: list[dict]) -> str:
+    """Truthful wrap-up built from ACTUAL outcomes, not the triage's pre-draft
+    promise: name who got drafted, and who was held off (and why, when there's a
+    single clear reason). Used only when a nominee was skipped, so the summary
+    can never claim a draft the host won't actually see on screen."""
+    if drafted:
+        lead = f"Drafted follow-ups for {_oxford_join(drafted)}."
+    else:
+        lead = "Didn't draft anyone this run."
+    held_names = _oxford_join([h["name"] for h in held])
+    reason = (held[0].get("reason") or "").strip() if len(held) == 1 else ""
+    if reason:
+        reason = reason[0].lower() + reason[1:]  # de-cap first char only
+        tail = f"Held off on {held_names} since {reason.rstrip('.')}."
+    else:
+        tail = (f"Held off on {held_names} since the threads don't show a clear "
+                "reason to nudge yet.")
+    return f"{lead} {tail}"
+
+
 _TOOLS = [
     {
         "name": "get_contact",
@@ -1364,6 +1396,12 @@ def run_relationship_agent_concurrent(
         c = by_id[sel["contact_id"]]
         jobs.append({"sel": sel, "ctx": _context(c), "name": _name_of(sel["contact_id"])})
 
+    # Nominees a drafter declined via skip_contact (with the per-person reason),
+    # so the closing summary reflects what was ACTUALLY staged, not what triage
+    # promised before reading the threads. list.append is atomic under the GIL,
+    # so the fan-out threads can record into this safely (same basis as _stage).
+    skipped: list[dict] = []
+
     # ── Phase 2 : draft every selected person CONCURRENTLY (Anthropic-only,
     # no DB) under a bounded semaphore. Each draft stages its card the moment
     # it resolves, so they stream in as they finish. ───────────────────────
@@ -1420,6 +1458,10 @@ def run_relationship_agent_concurrent(
             # Ignore a model slip that targets a different/invalid contact_id;
             # this job is about `cid` only.
             if tname == "skip_contact":
+                skipped.append({
+                    "contact_id": cid, "name": name,
+                    "reason": _strip_dashes((inp.get("reason") or "").strip()),
+                })
                 continue
             if tname == "propose_next_step" and (inp.get("next_step") or "").strip():
                 _stage(Proposal(
@@ -1447,7 +1489,21 @@ def run_relationship_agent_concurrent(
 
     asyncio.run(_fan_out())
 
-    result.summary = _strip_dashes(closing) if closing else (
-        f"Drafted follow-ups for {len(result.proposals)} of your contacts.")
+    # Reconcile the summary against what ACTUALLY got staged. The triage closing
+    # was written BEFORE the per-person drafters ran, so it can promise a draft
+    # ("bensiraphob gets a follow-up draft") that a drafter then declines via
+    # skip_contact — leaving a summary that contradicts the cards on screen. If
+    # any nominee was skipped, the closing is stale: rebuild a truthful wrap-up
+    # from real outcomes. With no skips the closing is consistent, so keep its
+    # warmer, question-answering phrasing.
+    drafted_ids = {p.contact_id for p in result.proposals}
+    held = [s for s in skipped if s["contact_id"] not in drafted_ids]
+    if held:
+        drafted_names = [j["name"] for j in jobs
+                         if j["sel"]["contact_id"] in drafted_ids]
+        result.summary = _reconcile_summary(drafted_names, held)
+    else:
+        result.summary = _strip_dashes(closing) if closing else (
+            f"Drafted follow-ups for {len(result.proposals)} of your contacts.")
     result.stop_reason = "end_turn"
     return result

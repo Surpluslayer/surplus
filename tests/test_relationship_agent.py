@@ -957,6 +957,51 @@ def test_concurrent_skip_suppresses_draft(db):
     assert res.error is None
     assert len(client.draft_calls()) == 1     # we DID try to draft
     assert res.proposals == []                # but skip staged nothing
+    # The summary must reflect the SKIP, not the triage's stale "already handled"
+    # promise. It must not claim a draft (none was staged) and should name who we
+    # held off on, grounded in the skip reason.
+    assert "already handled" not in res.summary
+    assert "Maya" in res.summary
+    assert "Held off" in res.summary
+    assert "already replied" in res.summary.lower()
+
+
+def test_concurrent_summary_does_not_promise_a_skipped_draft(db):
+    """Regression for the ben/Laurel bug: triage nominates TWO and its closing
+    promises a draft for BOTH, but one drafter skips (ball in their court). The
+    final summary must NOT claim a draft for the skipped person — it must name
+    only who was actually drafted and honestly note the hold-off."""
+    u = _user(db)
+    ev = _event(db, u)
+    laurel = _stale_contact(db, u, ev, name="Laurel Dong", ident="laurel", days=1)
+    ben = _stale_contact(db, u, ev, name="bensiraphob", ident="bensiraphob", days=2)
+
+    triage = [_tool_use("select_followups", "tg",
+                        selections=[{"contact_id": ben.id, "reason": "mid-convo",
+                                     "angle": "continue thread"},
+                                    {"contact_id": laurel.id, "reason": "no msg yet",
+                                     "angle": "first touch"}],
+                        # The stale, over-eager promise that caused the bug:
+                        closing="Both nominated, bensiraphob gets a follow-up "
+                                "draft and Laurel Dong gets a first-touch draft.")]
+    drafts = {
+        laurel.id: [_tool_use("draft_message", "dl", contact_id=laurel.id,
+                              message="Hey Laurel, great meeting you at Tech Week.",
+                              rationale="first touch")],
+        ben.id: [_tool_use("skip_contact", "sb", contact_id=ben.id,
+                           reason="The ball is in their court")],
+    }
+    client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
+
+    res = ragent.run_relationship_agent_concurrent(db, u.id, client=client)
+    assert res.error is None
+    # Only Laurel was actually staged.
+    assert [pr.contact_name for pr in res.proposals] == ["Laurel Dong"]
+    # Summary names the real draft and the hold-off; never claims ben got one.
+    assert "Laurel Dong" in res.summary
+    assert "Held off on bensiraphob" in res.summary
+    assert "ball is in their court" in res.summary
+    assert "bensiraphob gets a follow-up draft" not in res.summary
 
 
 def test_concurrent_empty_selection_skips_fan_out(db):
