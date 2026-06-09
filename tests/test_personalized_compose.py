@@ -153,6 +153,45 @@ def test_compose_user_message_uses_real_linkedin_not_icp_guesses(fake_event):
     assert "inference infra" not in msg
 
 
+def test_compose_user_message_meets_a_formal_recipient_register(fake_event):
+    """A recipient whose own prose (About/posts) reads formal should add a
+    WRITING REGISTER directive telling the model to dial down."""
+    formal = SimpleNamespace(
+        name="Dr. Aanya Rao", role="Managing Director", company="Meridian",
+        works_on=None, offers=None, headline="Managing Director @ Meridian",
+        bio="I would be delighted to discuss potential collaboration. I have "
+            "spent two decades advising institutional clients with the utmost "
+            "rigor and discretion. Kind regards.",
+        recent_activity="")
+    msg = outreach._compose_user_message(formal, fake_event, host_bio=None,
+                                         framing="a dinner")
+    assert "WRITING REGISTER" in msg
+    assert "no emoji" in msg
+
+
+def test_compose_user_message_keeps_a_casual_recipient_loose(fake_event):
+    casual = SimpleNamespace(
+        name="Jay", role="Founder", company="Bolt", works_on=None, offers=None,
+        headline="building stuff @ Bolt",
+        bio="hey! i build dumb little apps that somehow go viral lol 🙌",
+        recent_activity="omg we just hit 10k users, wild!! gonna keep shipping")
+    msg = outreach._compose_user_message(casual, fake_event, host_bio=None,
+                                         framing="a dinner")
+    assert "WRITING REGISTER" in msg
+    assert "casual voice fits" in msg
+
+
+def test_compose_user_message_omits_register_without_recipient_prose(fake_event):
+    """No About / posts to read (headline alone is excluded) → no register
+    directive, so we never guess formality from a title fragment."""
+    bare = SimpleNamespace(name="Sam", role="Engineer", company="Acme",
+                           works_on=None, offers=None,
+                           headline="Senior Principal Distinguished Engineer")
+    msg = outreach._compose_user_message(bare, fake_event, host_bio=None,
+                                         framing="a dinner")
+    assert "WRITING REGISTER" not in msg
+
+
 def test_compose_user_message_includes_event_brief(fake_prospect):
     """The host's own description should reach the prompt and be flagged as
     preferred over the canned framing."""

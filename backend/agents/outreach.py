@@ -343,6 +343,17 @@ def _compose_user_message(prospect, event, host_bio, framing,
                   "current detail from here in the note — this is what makes it "
                   "land instead of reading generic):", activity]
 
+    # Register: infer how THIS recipient writes from their own prose (About +
+    # recent posts) and meet their formality — the cold-DM analogue of the
+    # follow-up's contact-register read, just sourced from profile text since a
+    # cold DM has no inbound thread. Headline is excluded on purpose: it's a
+    # title fragment ("VP of Eng at X"), not prose, and skews the read formal.
+    register = voice.detect_register([t for t in (bio, activity) if t])
+    guidance = voice.register_guidance(register)
+    if guidance:
+        parts += ["", "WRITING REGISTER (match how THEY write, inferred from "
+                  f"their About / recent posts): {guidance}"]
+
     # Prior relationship history (compact, outbound-safe : never carries the
     # operator-only private_note). Background grounding, not to be quoted.
     ctx = (relationship_ctx or "").strip()
