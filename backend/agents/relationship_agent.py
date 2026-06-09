@@ -146,6 +146,19 @@ def _voice_block(examples: list[str]) -> str:
     return voice.build_style_examples_block(examples)
 
 
+def _voice_context_block(db, user_id: int) -> str:
+    """Full model-ready voice context for this host via the shared voice layer:
+    the distilled <host_voice_profile> rules followed by the ground-truth
+    <style_examples>. Used by both draft paths so each Sonnet draft gets the
+    packaged voice, not just raw examples. DetachedInstance/lookup-safe."""
+    from .. import models
+    try:
+        user = db.get(models.User, user_id)
+    except Exception:  # noqa: BLE001 - keep the run alive on any lookup failure
+        user = None
+    return voice.build_voice_context(user)["block"]
+
+
 def _strip_dashes(text: str) -> str:
     """Belt-and-suspenders on the prompt's no-em-dash rule: rewrite any dash the
     model slips into a staged draft to a comma, so the AI 'tell' never leaks.
@@ -728,7 +741,7 @@ def run_relationship_agent(
     # Speak in the host's voice: reuse the SAME captured voice_examples the
     # initial-message composer uses, appended as a <style_examples> primer so
     # follow-ups sound like the same person who sent the first DM.
-    system = _SYSTEM_PROMPT + _voice_block(_host_voice_examples(db, user_id))
+    system = _SYSTEM_PROMPT + _voice_context_block(db, user_id)
 
     run = run_agent(
         system=system,
@@ -1246,8 +1259,7 @@ def run_relationship_agent_concurrent(
         c = by_id.get(int(contact_id))
         return (relationships.contact_summary(db, c).get("name") or "Unknown") if c else "Unknown"
 
-    voice_block = _voice_block(_host_voice_examples(db, user_id))
-    draft_system = _DRAFT_SYSTEM + voice_block
+    draft_system = _DRAFT_SYSTEM + _voice_context_block(db, user_id)
 
     # ── Phase 1 : triage (one Sonnet call) ─────────────────────────────────
     roster_json = json.dumps(_roster(), default=str)

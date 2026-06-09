@@ -104,18 +104,115 @@ def test_block_matches_prior_voice_block_format():
 
 # ── build_voice_context (the Step-2/4 seam) ──────────────────────────────────
 
-def test_voice_context_shape_v0():
-    user = SimpleNamespace(voice_examples=json.dumps(["hi"]))
+def test_voice_context_shape():
+    user = SimpleNamespace(voice_examples=json.dumps(["Hey Mia! great to meet you"]),
+                           voice_profile="")
     ctx = voice.build_voice_context(user, channel="linkedin",
                                     message_type="warm_followup")
-    assert ctx["profile"] is None                 # filled in Step 2
-    assert ctx["examples"] == ["hi"]
-    assert ctx["block"] == voice.build_style_examples_block(["hi"])
+    assert ctx["examples"] == ["Hey Mia! great to meet you"]
+    # profile is now populated (Step 2) and the block carries BOTH layers.
+    assert isinstance(ctx["profile"], dict)
+    assert ctx["profile"]["greeting"] == "hey"
+    assert "<host_voice_profile>" in ctx["block"]
+    assert "<style_examples>" in ctx["block"]
+    # the profile block precedes the style-examples block
+    assert ctx["block"].index("<host_voice_profile>") < ctx["block"].index("<style_examples>")
 
 
-def test_voice_context_ignores_channel_and_type_in_v0():
+def test_voice_context_ignores_channel_and_type():
     """channel/message_type are accepted but must not change output yet."""
-    user = SimpleNamespace(voice_examples=json.dumps(["hi"]))
+    user = SimpleNamespace(voice_examples=json.dumps(["hi"]), voice_profile="")
     a = voice.build_voice_context(user, channel="linkedin", message_type="x")
     b = voice.build_voice_context(user, channel="email", message_type="y")
     assert a == b
+
+
+def test_voice_context_no_examples_is_empty_block():
+    user = SimpleNamespace(voice_examples="", voice_profile="")
+    ctx = voice.build_voice_context(user)
+    assert ctx["examples"] == [] and ctx["profile"] is None and ctx["block"] == ""
+
+
+# ── build_host_voice_profile / fingerprint / render ──────────────────────────
+
+def test_profile_none_when_no_examples():
+    assert voice.build_host_voice_profile([]) is None
+    assert voice.build_host_voice_profile(["", "   "]) is None
+
+
+def test_profile_captures_casual_voice():
+    p = voice.build_host_voice_profile([
+        "Hey Sarah! great meeting you, lets grab coffee soon 🙌",
+        "hey, you free next week? would love to catch up!",
+    ])
+    assert p["greeting"] == "hey"
+    assert p["uses_emoji"] is True and "🙌" in p["emoji_samples"]
+    assert p["formality"] == "casual"
+    assert p["length_band"] == "short"
+
+
+def test_profile_captures_formal_voice():
+    p = voice.build_host_voice_profile([
+        "Hello Dr. Chen, thank you for the thoughtful conversation at the summit. "
+        "I would welcome the opportunity to continue it. Best regards.",
+        "Hello Mr. Patel, it was a pleasure connecting. Looking forward to staying "
+        "in touch over the coming months. Kind regards.",
+    ])
+    assert p["greeting"] == "hello"
+    assert p["uses_emoji"] is False
+    assert p["formality"] in ("neutral", "formal")
+
+
+def test_fingerprint_is_stable_and_order_sensitive():
+    a = voice.fingerprint_examples(["one", "two"])
+    assert a == voice.fingerprint_examples(["one", "two"])     # stable
+    assert a != voice.fingerprint_examples(["two", "one"])     # order-sensitive
+    assert a != voice.fingerprint_examples(["one"])            # content-sensitive
+
+
+def test_render_profile_block_empty_when_none():
+    assert voice.render_voice_profile_block(None) == ""
+
+
+def test_render_profile_block_states_rules():
+    p = voice.build_host_voice_profile(["Hey! thanks so much, talk soon 🙌"])
+    block = voice.render_voice_profile_block(p)
+    assert block.startswith("\n<host_voice_profile>")
+    assert "</host_voice_profile>" in block
+    assert "Typical length" in block
+    assert "Hey" in block
+
+
+# ── resolve_voice_profile_for_user (the cache seam) ──────────────────────────
+
+def test_resolve_profile_builds_inline_when_no_cache():
+    user = SimpleNamespace(voice_profile="")
+    examples = ["Hey there! good to meet you"]
+    prof = voice.resolve_voice_profile_for_user(user, examples)
+    assert prof == voice.build_host_voice_profile(examples)
+
+
+def test_resolve_profile_uses_cache_when_fingerprint_matches():
+    examples = ["Hey! nice to meet you"]
+    fp = voice.fingerprint_examples(examples)
+    cached = {"fingerprint": fp, "profile": {"sentinel": "from-cache"}}
+    user = SimpleNamespace(voice_profile=json.dumps(cached))
+    assert voice.resolve_voice_profile_for_user(user, examples) == {"sentinel": "from-cache"}
+
+
+def test_resolve_profile_ignores_stale_cache():
+    """A cached profile whose fingerprint no longer matches the examples is
+    discarded and rebuilt inline."""
+    cached = {"fingerprint": "deadbeefdeadbeef", "profile": {"sentinel": "stale"}}
+    user = SimpleNamespace(voice_profile=json.dumps(cached))
+    examples = ["Hey! totally different examples now"]
+    prof = voice.resolve_voice_profile_for_user(user, examples)
+    assert prof == voice.build_host_voice_profile(examples)
+    assert prof != {"sentinel": "stale"}
+
+
+def test_resolve_profile_survives_bad_cache_json():
+    user = SimpleNamespace(voice_profile="{not json")
+    examples = ["Hey! hello"]
+    assert voice.resolve_voice_profile_for_user(user, examples) == \
+        voice.build_host_voice_profile(examples)

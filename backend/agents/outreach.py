@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from .. import config
 from ..jsonx import extract_json
 from ..providers.base import strip_call_asks, strip_em_dashes
+from . import voice
 
 
 # ---- compose result cache + prefetch -------------------------------------
@@ -291,14 +292,19 @@ def _compose_user_message(prospect, event, host_bio, framing,
     them in context removes the temptation entirely."""
     parts: list[str] = []
 
-    # Voice examples go FIRST so they prime the model's tone before the
-    # event/recipient context arrives.
+    # Voice context goes FIRST so it primes the model's tone before the
+    # event/recipient context arrives: the distilled <host_voice_profile> rules
+    # followed by the ground-truth <style_examples>. Both come from the shared
+    # voice layer (agents/voice.py) so the cold-DM composer and the follow-up
+    # agent package voice identically. (.lstrip drops the layer's leading newline
+    # since this is the top of the user message.)
     if voice_examples:
-        parts.append("<style_examples>")
-        parts.append("Past outreach messages from this host. Match their voice, not the content:")
-        for i, ex in enumerate(voice_examples, 1):
-            parts.append(f"---\nExample {i}:\n{ex.strip()}")
-        parts += ["---", "</style_examples>", ""]
+        pblock = voice.render_voice_profile_block(
+            voice.build_host_voice_profile(voice_examples)).lstrip("\n")
+        if pblock:
+            parts.append(pblock)
+        parts.append(voice.build_style_examples_block(voice_examples).lstrip("\n"))
+        parts.append("")
 
     parts += ["EVENT", f"Framing the host wants conveyed: {framing}"]
     brief = (getattr(event, "brief", "") or "").strip()

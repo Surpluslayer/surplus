@@ -128,6 +128,7 @@ def init_db() -> None:
         _migrate_event_brief,
         _migrate_prospect_live_enrichment,
         _migrate_user_voice_synced_at,
+        _migrate_user_voice_profile,
         _migrate_prospect_contact_id,
         _migrate_prospect_role_width,
         _migrate_contact_watch,
@@ -567,6 +568,24 @@ def _migrate_user_voice_examples() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN voice_examples TEXT DEFAULT ''"))
+
+
+def _migrate_user_voice_profile() -> None:
+    """Add users.voice_profile (TEXT, default '') : the cached structured voice
+    profile (distilled style rules + the fingerprint of the examples it was built
+    from). Old rows get an empty string, which the drafting surfaces treat as
+    'no cache, rebuild the profile inline from voice_examples.'"""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "voice_profile" in cols:
+        return
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            f"ALTER TABLE users ADD COLUMN {ine}voice_profile TEXT DEFAULT ''"))
 
 
 def _migrate_event_yoe() -> None:

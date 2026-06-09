@@ -566,6 +566,13 @@ class User(Base):
     # (set via POST /admin/voice-examples) leave this NULL and are never
     # overwritten by the auto-sync.
     voice_synced_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+    # Cached structured voice profile (distilled style rules) for this host,
+    # built from voice_examples by agents/voice.build_host_voice_profile. JSON
+    # object: {"fingerprint": <hash of the examples it was built from>,
+    # "profile": {...}}. Empty / unset means "no cache" — the drafting surfaces
+    # rebuild the profile inline (it's cheap + deterministic). The fingerprint
+    # lets us invalidate the cache when voice_examples change.
+    voice_profile: Mapped[str] = mapped_column(Text, default="")
 
     # Opt-in toggle for the "Gmail Schedule Send" auto follow-up feature. When
     # False (the default), sending a first DM does NOT auto-stage a scheduled
