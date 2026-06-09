@@ -120,6 +120,7 @@ def init_db() -> None:
         _migrate_event_event_date,
         _migrate_event_event_name,
         _migrate_user_billing_columns,
+        _migrate_user_plan_usage_columns,
         _migrate_applicant_evaluation_verifier,
         _migrate_applicant_enrichment_raw,
         _migrate_event_kind_label,
@@ -527,6 +528,42 @@ def _migrate_user_billing_columns() -> None:
         if "paid_at" not in cols:
             conn.execute(text(
                 "ALTER TABLE users ADD COLUMN paid_at TIMESTAMP"
+            ))
+
+
+def _migrate_user_plan_usage_columns() -> None:
+    """Add the subscription-plan + metered-usage columns to users.
+
+    Tier (plan/subscription_status), Stripe linkage (subscription_id/price_id),
+    per-period counters (drafts_used_this_period / contacts_scanned_this_period)
+    and the period bounds. Cross-dialect-safe: every ADD COLUMN carries a
+    server-side DEFAULT so existing rows backfill without a follow-up UPDATE,
+    and the whole thing is idempotent (skips any column already present)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    # name -> column DDL (type + default). TIMESTAMP/varchar columns are NULL.
+    additions = {
+        "plan": "VARCHAR(20) DEFAULT 'free'",
+        "subscription_status": "VARCHAR(30) DEFAULT 'free'",
+        "stripe_subscription_id": "VARCHAR(120)",
+        "stripe_price_id": "VARCHAR(120)",
+        "drafts_used_this_period": "INTEGER DEFAULT 0",
+        "contacts_scanned_this_period": "INTEGER DEFAULT 0",
+        "billing_period_start": "TIMESTAMP",
+        "billing_period_end": "TIMESTAMP",
+    }
+    with ENGINE.begin() as conn:
+        for name, ddl in additions.items():
+            if name in cols:
+                continue
+            conn.execute(text(f"ALTER TABLE users ADD COLUMN {name} {ddl}"))
+        if "stripe_subscription_id" not in cols and ENGINE.dialect.name == "postgresql":
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_users_stripe_subscription_id "
+                "ON users (stripe_subscription_id)"
             ))
 
 

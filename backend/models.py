@@ -591,7 +591,40 @@ class User(Base):
     # paid (or refunded out). require_can_send_linkedin() blocks real LinkedIn
     # sends when NULL : free tier can browse + run prospecting + see
     # composed previews, paid tier unlocks the actual outreach.
+    #
+    # NOTE: paid_at is the LEGACY one-time-unlock gate for LinkedIn SENDS and
+    # stays independent of the plan/usage fields below. The plan tier meters a
+    # DIFFERENT surface — the relationship layer's drafting + contact scanning —
+    # so a user can be on a paid plan without paid_at set, and vice versa.
     paid_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+
+    # ─── Subscription plan + metered usage (relationship layer) ─────────
+    # Tier the user is on. One of "free" | "starter" | "pro". Drives the
+    # per-period draft + contact-scan limits in backend/billing_plans.py.
+    # Stamped by the Stripe pricing-table webhook (price_id -> plan); demo
+    # accounts (is_demo_user) bypass limits entirely regardless of plan.
+    plan: Mapped[str] = mapped_column(String(20), default="free")
+    # Mirrors the Stripe Subscription.status ("active", "trialing",
+    # "past_due", "canceled", ...) or "free" when there's no subscription.
+    subscription_status: Mapped[str] = mapped_column(String(30), default="free")
+    # Stripe Subscription / Price ids, set by the subscription webhooks. Both
+    # NULL on the free tier. subscription_id is how subscription.updated /
+    # .deleted events resolve back to this row.
+    stripe_subscription_id: Mapped[Optional[str]] = mapped_column(
+        String(120), default=None, index=True,
+    )
+    stripe_price_id: Mapped[Optional[str]] = mapped_column(String(120), default=None)
+    # Metered usage in the CURRENT billing period. Reset to 0 by the webhook on
+    # a fresh checkout/renewal and by the in-app period roll when now passes
+    # billing_period_end. Each staged follow-up DRAFT card increments drafts;
+    # each contact the agent triages increments contacts_scanned.
+    drafts_used_this_period: Mapped[int] = mapped_column(default=0)
+    contacts_scanned_this_period: Mapped[int] = mapped_column(default=0)
+    # Current period bounds. For paid plans these come from Stripe
+    # (current_period_start/end). For the free tier we roll a 30-day window
+    # in-app (NULL until the user's first metered action seeds it).
+    billing_period_start: Mapped[Optional[datetime]] = mapped_column(default=None)
+    billing_period_end: Mapped[Optional[datetime]] = mapped_column(default=None)
 
 
 # ─── Curation (Stage 1-5: ingested-audience workflow) ─────────────────
