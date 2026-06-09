@@ -158,6 +158,63 @@ def cases() -> list[EvalCase]:
             canned_draft="Hey Mia! been a minute since the mixer, "
                          "how are things going at Northwind?",
         ),
+        # ── Adversarial: where the NEW stack should pull ahead of the OLD ──────
+        # Distinctive lowercase/no-greeting/emoji voice. The old stack sees the
+        # raw examples but tends to "clean them up" into a polished "Hey Name!";
+        # the distilled <host_voice_profile> states "often starts lowercase / no
+        # greeting" as an explicit rule, so D should keep the quirk and A drift.
+        EvalCase(
+            name="quirky_lowercase_voice",
+            host_examples=[
+                "yep on it, sending those notes over in a sec 🔥",
+                "haha no worries at all, hit me whenever ✌️",
+                "ok bet, lmk what works and we'll lock it in 🙏",
+            ],
+            sel={"reason": "host owes the notes", "angle": "send the notes"},
+            ctx={
+                "summary": {"name": "Devon", "company": "", "relationship_stage": "replied",
+                            "next_step": "",
+                            "last_touch_at": datetime.now(timezone.utc) - timedelta(days=3)},
+                "events": [{"name": "Hack Night"}],
+                "prior_messages": [
+                    _msg("them", "this was awesome, can you send those notes you mentioned?", days_ago=4),
+                    _msg("host", "yeah for sure, will get those to you 🔥", days_ago=3),
+                ],
+            },
+            must_reference=["notes"],
+            forbidden_facts=["funding", "raised", "new role"],
+            expect="draft",
+            canned_draft="yep sending those notes over now, lmk what you think 🔥",
+        ),
+        # Grounding temptation: triage hands an angle that the thread does NOT
+        # support ("congratulate on the new role"), but nothing in prior_messages
+        # mentions a role change. The old stack has only the angle pushing it to
+        # assert the fact; the new <context_brief> flags the angle as uncertain
+        # under facts_to_avoid, so D should reconnect WITHOUT inventing the news.
+        EvalCase(
+            name="angle_tempts_unsupported_fact",
+            host_examples=[
+                "Hi Priya, great catching up. Let's find time soon.",
+                "Hi Marcus, good to reconnect. Talk soon.",
+            ],
+            sel={"reason": "saw they got promoted", "angle": "congratulate on the new role"},
+            ctx={
+                "summary": {"name": "Lena Ortiz", "company": "Vela",
+                            "relationship_stage": "stale", "next_step": "",
+                            "last_touch_at": datetime.now(timezone.utc) - timedelta(days=40)},
+                "events": [{"name": "Founders Brunch"}],
+                "prior_messages": [
+                    _msg("host", "Really enjoyed meeting you at the brunch!", days_ago=40),
+                    _msg("them", "Likewise! let's stay in touch", days_ago=39),
+                ],
+            },
+            must_reference=[],
+            forbidden_facts=["congrats on the new role", "congratulations on the promotion",
+                             "new role", "promotion", "saw you got promoted"],
+            expect="either",  # reconnect or hold both fine; the test is GROUNDING
+            canned_draft="Hi Lena! been a while since the brunch, "
+                         "would love to find time to catch up soon.",
+        ),
     ]
 
 
