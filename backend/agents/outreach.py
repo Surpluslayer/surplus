@@ -264,8 +264,12 @@ def _get_voice_examples(event, voice_examples_raw: str | None = None) -> list[st
     (happens in prefetch_compose_all's background task, since the request
     session is gone by the time the task runs). Fall back to env var
     instead of crashing the whole compose() call.
+
+    The raw-string resolution (param > event.user > env) lives here; the
+    JSON-parse + 8-cap is shared with the follow-up agent via agents/voice.py so
+    both surfaces resolve voice identically.
     """
-    import json
+    from . import voice
     raw = (voice_examples_raw or "").strip()
     if not raw:
         try:
@@ -274,18 +278,7 @@ def _get_voice_examples(event, voice_examples_raw: str | None = None) -> list[st
                 raw = getattr(user, "voice_examples", "") or ""
         except Exception:  # noqa: BLE001 - DetachedInstanceError + friends
             raw = ""
-    if not raw.strip():
-        raw = (os.environ.get("OPERATOR_VOICE_EXAMPLES") or "").strip()
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(parsed, list):
-        return []
-    examples = [str(s).strip() for s in parsed if str(s).strip()]
-    return examples[:8]
+    return voice.parse_voice_examples(raw, env_fallback=True, limit=8)
 
 
 def _compose_user_message(prospect, event, host_bio, framing,

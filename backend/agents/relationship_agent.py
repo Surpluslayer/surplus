@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from . import relationships
+from . import voice
 from .agent_loop import DEFAULT_MODEL, _block_type, run_agent
 
 # How many contacts the agent may pull full history for in one run. A soft
@@ -124,42 +125,24 @@ def _host_voice_examples(db, user_id: int) -> list[str]:
       3. [] — no style guide, drafts fall back to generic-but-warm
 
     Bad JSON anywhere is treated as empty so a typo can't break a run. Capped
-    at 8 to keep input tokens bounded (matches the composer's cap)."""
+    at 8 to keep input tokens bounded (matches the composer's cap).
+
+    Thin wrapper over the shared voice layer (agents/voice.py) so the cold-DM
+    composer and this follow-up agent resolve voice identically."""
     from .. import models
-    raw = ""
     try:
         user = db.get(models.User, user_id)
-        if user is not None:
-            raw = (getattr(user, "voice_examples", "") or "").strip()
-    except Exception:  # noqa: BLE001
-        raw = ""
-    if not raw:
-        raw = (os.environ.get("OPERATOR_VOICE_EXAMPLES") or "").strip()
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(parsed, list):
-        return []
-    return [str(s).strip() for s in parsed if str(s).strip()][:8]
+    except Exception:  # noqa: BLE001 - keep the run alive on any lookup failure
+        user = None
+    return voice.resolve_voice_examples_for_user(user)
 
 
 def _voice_block(examples: list[str]) -> str:
     """Format the host's past messages as a style primer, mirroring the
     composer's <style_examples> block ('match their voice, not the content')
-    so the two surfaces speak in one consistent voice."""
-    if not examples:
-        return ""
-    lines = ["", "<style_examples>",
-             "Past messages this host actually sent. Match their VOICE — "
-             "greeting, sign-off, sentence length, formality, punctuation and "
-             "emoji habits — not the content:"]
-    for i, ex in enumerate(examples, 1):
-        lines.append(f"---\nExample {i}:\n{ex}")
-    lines += ["---", "</style_examples>"]
-    return "\n".join(lines)
+    so the two surfaces speak in one consistent voice. Delegates to the shared
+    voice layer (agents/voice.py)."""
+    return voice.build_style_examples_block(examples)
 
 
 def _strip_dashes(text: str) -> str:
