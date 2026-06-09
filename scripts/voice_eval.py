@@ -71,6 +71,11 @@ class EvalCase:
     must_reference: list[str] = field(default_factory=list)  # the real hook
     forbidden_facts: list[str] = field(default_factory=list)  # must NOT invent
     canned_draft: str = ""            # used by the deterministic scorer demo
+    # The right KIND of action for this case (scored as outcome_ok):
+    #   "draft"  : there's a clear owed/open action — the agent SHOULD draft+send
+    #   "skip"   : the ball is in their court / too soon — the agent SHOULD hold
+    #   "either" : both a grounded draft and a hold are defensible — not graded
+    expect: str = "draft"
 
 
 def _msg(who: str, text: str, *, days_ago: int = 0) -> dict:
@@ -101,6 +106,7 @@ def cases() -> list[EvalCase]:
             must_reference=["deck"],
             forbidden_facts=["series a", "funding", "promotion", "new job",
                              "congrats on the round"],
+            expect="draft",  # host owes the deck — the agent should send it
             canned_draft="Hey Sarah! Meant to get this over sooner, "
                          "here's the deck I mentioned. Let me know what you think 🙌",
         ),
@@ -122,7 +128,9 @@ def cases() -> list[EvalCase]:
             },
             must_reference=[],
             forbidden_facts=["raised", "launched", "acquired"],
-            # A good system here may SKIP; the canned draft simulates an over-eager nudge
+            expect="skip",  # ball is in Tom's court, host just said "no rush" — hold
+            # The canned draft simulates the FAILURE mode (an over-eager nudge),
+            # so deterministic mode shows outcome_ok flagging the wrong action.
             canned_draft="Just bumping this to the top of your inbox, "
                          "any thoughts on times?",
         ),
@@ -145,6 +153,8 @@ def cases() -> list[EvalCase]:
             must_reference=[],
             forbidden_facts=["series a", "new role", "congrats", "saw you raised",
                              "your launch"],
+            expect="either",  # a grounded reconnect OR a hold are both defensible;
+                              # the real test here is grounding (invent nothing)
             canned_draft="Hey Mia! been a minute since the mixer, "
                          "how are things going at Northwind?",
         ),
@@ -189,38 +199,74 @@ _DASH_RE = re.compile(r"[—–―−]|\s-\s")
 _EMOJI_RE = voice._EMOJI_RE
 _BAND_MAX = {"short": 35, "medium": 70, "long": 120}
 
+# The live draft path prefixes non-draft tool outcomes; everything else is a
+# real outgoing draft. Classifying this matters because a skip's "reason" is
+# internal reasoning that is NEVER sent — scoring its dashes/length/greeting as
+# if it were a draft (the bug the first live run exposed) penalizes the agent
+# for correctly holding back.
+_OUTCOME_MARKERS = {"[skip]": "skip", "[next_step]": "next_step",
+                    "[no tool call]": "none"}
+
+
+def _classify_outcome(text: str) -> str:
+    for marker, name in _OUTCOME_MARKERS.items():
+        if text.startswith(marker):
+            return name
+    return "draft"
+
 
 def score_draft(draft: str, case: EvalCase, profile: Optional[dict]) -> dict:
-    """Deterministic, API-free metrics over a single draft. Each is a real
-    failure mode the voice/grounding work is meant to move:
-      - dash_clean: no em/en/spaced-hyphen 'AI tell' leaked
-      - grounded: asserts none of the case's forbidden (un-sourced) facts
-      - references_hook: mentions the real open-loop hook (when the case has one)
-      - length_ok: within the profile's length band (voice match)
-      - greeting_match: opens in the host's greeting style
-      - emoji_match: emoji presence matches the host's habit
-    Returns per-metric bools (or None when N/A) plus a 0..1 `score`."""
+    """Deterministic, API-free metrics over a single agent outcome.
+
+    First classifies the OUTCOME (draft / skip / next_step / none), because the
+    voice + structure metrics only apply to an actual outgoing draft:
+      - outcome_ok: took the right KIND of action for this case (draft vs hold)
+      - grounded: asserts none of the case's forbidden (un-sourced) facts —
+        graded on ANY outcome, since a skip reason that invents a fact is a tell
+      - dash_clean: no em/en/spaced-hyphen 'AI tell' leaked      (draft only)
+      - references_hook: mentions the real open-loop hook         (draft only)
+      - length_ok: within the profile's length band              (draft only)
+      - greeting_match: opens in the host's greeting style        (draft only)
+      - emoji_match: emoji presence matches the host's habit      (draft only)
+    Non-applicable metrics are None and excluded from the 0..1 `score`."""
     text = (draft or "").strip()
     low = text.lower()
-    m: dict[str, Any] = {}
+    outcome = _classify_outcome(text)
+    is_draft = outcome == "draft"
+    m: dict[str, Any] = {"outcome": outcome}
 
-    m["dash_clean"] = not bool(_DASH_RE.search(text))
+    # Right kind of action? "either" cases don't grade this (both are fine).
+    if case.expect == "draft":
+        m["outcome_ok"] = is_draft
+    elif case.expect == "skip":
+        m["outcome_ok"] = outcome in ("skip", "next_step")
+    else:  # "either"
+        m["outcome_ok"] = None
+
+    # Grounding applies regardless of outcome.
     m["grounded"] = not any(f.lower() in low for f in case.forbidden_facts)
-    m["references_hook"] = (any(h.lower() in low for h in case.must_reference)
-                            if case.must_reference else None)
 
-    words = len(re.findall(r"\b[\w']+\b", text))
-    if profile:
-        m["length_ok"] = words <= _BAND_MAX.get(profile["length_band"], 120)
-        g = (profile.get("greeting") or "")
-        m["greeting_match"] = (low.startswith(g) if g else None)
-        m["emoji_match"] = bool(_EMOJI_RE.search(text)) == profile["uses_emoji"]
+    if is_draft:
+        m["dash_clean"] = not bool(_DASH_RE.search(text))
+        m["references_hook"] = (any(h.lower() in low for h in case.must_reference)
+                                if case.must_reference else None)
+        words = len(re.findall(r"\b[\w']+\b", text))
+        if profile:
+            m["length_ok"] = words <= _BAND_MAX.get(profile["length_band"], 120)
+            g = (profile.get("greeting") or "")
+            m["greeting_match"] = (low.startswith(g) if g else None)
+            m["emoji_match"] = bool(_EMOJI_RE.search(text)) == profile["uses_emoji"]
+        else:
+            m["length_ok"] = words <= 70
+            m["greeting_match"] = None
+            m["emoji_match"] = None
     else:
-        m["length_ok"] = words <= 70
-        m["greeting_match"] = None
-        m["emoji_match"] = None
+        # A held message: voice/structure metrics don't apply to the reasoning.
+        m["dash_clean"] = m["references_hook"] = None
+        m["length_ok"] = m["greeting_match"] = m["emoji_match"] = None
 
-    graded = [v for v in m.values() if isinstance(v, bool)]
+    graded = [v for k, v in m.items()
+              if k != "outcome" and isinstance(v, bool)]
     m["score"] = round(sum(graded) / len(graded), 3) if graded else 0.0
     return m
 
@@ -271,8 +317,9 @@ def run(live: bool = False) -> None:
         from anthropic import Anthropic
         client = Anthropic(api_key=key, max_retries=2)
 
-    metrics_order = ["dash_clean", "grounded", "references_hook",
-                     "length_ok", "greeting_match", "emoji_match", "score"]
+    metrics_order = ["outcome", "outcome_ok", "grounded", "references_hook",
+                     "dash_clean", "length_ok", "greeting_match", "emoji_match",
+                     "score"]
     header = f"{'variant':<12}" + "".join(f"{m:>14}" for m in metrics_order)
 
     for case in cases():

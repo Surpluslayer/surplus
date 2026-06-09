@@ -142,6 +142,59 @@ def test_greeting_and_emoji_match_track_the_profile():
     assert off["emoji_match"] is False      # missing the host's emoji habit
 
 
+def test_skip_outcome_is_not_scored_for_voice():
+    """A held message (skip) must NOT be penalized on dash/length/greeting — its
+    reason text is internal reasoning, never sent. This is the exact bug the
+    first live run exposed: D correctly skipped but scored worse than baseline."""
+    case = _case_by_name("their_court_should_be_brief_aware")  # expect == "skip"
+    skip = ("[skip] Tom said he'd circle back — the ball is in his court and "
+            "it's too soon to nudge again, so holding off.")
+    sc = ve.score_draft(skip, case, _profile(case))
+    assert sc["outcome"] == "skip"
+    assert sc["outcome_ok"] is True           # holding was the right call
+    assert sc["dash_clean"] is None           # em-dash in the REASON isn't graded
+    assert sc["length_ok"] is None
+    assert sc["greeting_match"] is None
+    assert sc["emoji_match"] is None
+    assert sc["grounded"] is True             # grounding still applies
+    assert sc["score"] == 1.0                 # right action + grounded == perfect
+
+
+def test_drafting_when_case_wants_a_hold_fails_outcome():
+    """The canned over-eager nudge on a 'should skip' case is the planted failure
+    mode: it drafts when it should hold, so outcome_ok must flag it."""
+    case = _case_by_name("their_court_should_be_brief_aware")
+    sc = ve.score_draft(case.canned_draft, case, _profile(case))
+    assert sc["outcome"] == "draft"
+    assert sc["outcome_ok"] is False
+
+
+def test_skipping_when_case_wants_a_draft_fails_outcome():
+    case = _case_by_name(CASE)  # owed_resource, expect == "draft"
+    sc = ve.score_draft("[skip] nothing to do here", case, _profile(case))
+    assert sc["outcome"] == "skip"
+    assert sc["outcome_ok"] is False
+
+
+def test_either_case_does_not_grade_outcome():
+    case = _case_by_name("stale_reconnect_no_history_to_invent")  # expect "either"
+    drafted = ve.score_draft("Hey Mia! been a while, how are things?", case,
+                             _profile(case))
+    held = ve.score_draft("[skip] ball is in her court, no hook", case,
+                          _profile(case))
+    assert drafted["outcome_ok"] is None
+    assert held["outcome_ok"] is None
+
+
+def test_grounding_is_graded_even_on_a_skip():
+    """A skip reason that invents a forbidden fact is still a hallucination tell."""
+    case = _case_by_name("stale_reconnect_no_history_to_invent")
+    sc = ve.score_draft("[skip] she just raised a Series A so I'll wait", case,
+                        _profile(case))
+    assert sc["outcome"] == "skip"
+    assert sc["grounded"] is False
+
+
 def test_voice_metrics_are_none_without_a_profile():
     """A/B variants score with profile=None — voice metrics must abstain (None),
     not silently pass/fail, so the score reflects only the graded dimensions."""
