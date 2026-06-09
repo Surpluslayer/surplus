@@ -211,6 +211,46 @@ def test_contact_detail_route_404_on_missing(db):
     assert ei.value.status_code == 404
 
 
+# ── important-person star ────────────────────────────────────────────────
+
+def test_contact_summary_defaults_unstarred(db):
+    """A freshly-linked contact is not starred, and the rollup surfaces it so
+    the CRM can render the (empty) star."""
+    u = _user(db)
+    c = rel.link_contact(db, _prospect(db, _event(db, u)), u.id)
+    s = rel.contact_summary(db, c)
+    assert s["starred"] is False
+
+
+def test_set_contact_star_toggles_and_surfaces(db):
+    """Starring an owned contact flips the flag, and the rollup + roster reflect
+    it so both the CRM and the relationship agent see the signal."""
+    u = _user(db)
+    c = rel.link_contact(db, _prospect(db, _event(db, u)), u.id)
+
+    out = rel_route.set_contact_star(c.id, rel_route.StarIn(starred=True), db, u)
+    assert out == {"contact_id": c.id, "starred": True}
+    db.refresh(c)
+    assert c.starred is True
+    assert rel.contact_summary(db, c)["starred"] is True
+
+    # Idempotent un-star.
+    out = rel_route.set_contact_star(c.id, rel_route.StarIn(starred=False), db, u)
+    assert out["starred"] is False
+    db.refresh(c)
+    assert c.starred is False
+
+
+def test_set_contact_star_blocks_unowned(db):
+    from fastapi import HTTPException
+    owner = _user(db, email="owner@x.com", acct="owner")
+    other = _user(db, email="other@x.com", acct="other")
+    c = rel.link_contact(db, _prospect(db, _event(db, owner)), owner.id)
+    with pytest.raises(HTTPException) as ei:
+        rel_route.set_contact_star(c.id, rel_route.StarIn(starred=True), db, other)
+    assert ei.value.status_code == 404
+
+
 # ── auto-link at interaction points (Gap A) ──────────────────────────────
 
 def test_webhook_funnel_event_auto_links_contact(db):

@@ -581,6 +581,13 @@ class User(Base):
     # whole feature is off for a user until they explicitly turn it on.
     auto_followups_enabled: Mapped[bool] = mapped_column(default=False)
 
+    # The host's saved scheduling / booking link (Calendly, cal.com, a demo
+    # booking URL, etc.). Empty by default. Stored once here so the host can
+    # opt to append it to any follow-up they send ("click or check to include
+    # it") without retyping the URL each time. Sent only when the host
+    # explicitly opts in per-message — never auto-injected.
+    scheduling_link: Mapped[str] = mapped_column(String(400), default="")
+
     # ─── Billing ───────────────────────────────────────────────────────
     # Stripe customer id, set by the checkout webhook on first successful
     # payment. Indexed because the webhook path looks users up by it.
@@ -829,6 +836,13 @@ class Contact(Base):
     watched_at: Mapped[Optional[datetime]] = mapped_column(default=None)
     # Last poll error message (ops visibility; cleared on a clean poll).
     watch_error: Mapped[Optional[str]] = mapped_column(String(300), default=None)
+
+    # Operator-set "this is an important person" flag. The host stars the people
+    # they most want to keep warm; the relationship agent treats a starred
+    # contact as a primary WHO signal (a must-nominate for follow-up, ranked at
+    # the top), so the star directly steers who gets drafted. Defaults False :
+    # every existing contact is unstarred until the host marks them.
+    starred: Mapped[bool] = mapped_column(default=False)
 
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)

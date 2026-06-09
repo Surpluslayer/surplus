@@ -57,10 +57,12 @@ _SYSTEM_PROMPT = (
     "— do NOT waste a turn fetching it; read the roster directly.\n"
     "2. Decide WHO to follow up with from these signals (NOT from fresh "
     "external news), in this PRIORITY ORDER:\n"
-    "   a. MARKED follow-ups — AUTHORITATIVE: `marked_follow_up` true (the host "
-    "tagged them 'follow_up') OR a `next_step` the host wrote down. The host has "
+    "   a. MARKED follow-ups — AUTHORITATIVE: `starred` true (the host flagged "
+    "them an important person), `marked_follow_up` true (the host tagged them "
+    "'follow_up'), OR a `next_step` the host wrote down. The host has "
     "EXPLICITLY decided to follow up with these people, so they are ALWAYS worth "
-    "actioning this run. CRITICAL: an initial outreach that hasn't been answered "
+    "actioning this run. A starred contact is the strongest WHO signal there is, "
+    "so it ranks first. CRITICAL: an initial outreach that hasn't been answered "
     "yet is the REASON to follow up, never a reason to wait. Do NOT skip a marked "
     "contact just because their first message is recent or still unanswered — "
     "that recency/no-reply logic does NOT apply to marked contacts. Suppress a "
@@ -694,6 +696,10 @@ def run_relationship_agent(
                 # at capture time — a primary WHO signal, see the system prompt.
                 "contact_types": contact_types,
                 "marked_follow_up": "follow_up" in contact_types,
+                # The host's explicit "important person" star. An AUTHORITATIVE
+                # WHO signal: the host hand-picked these people to keep warm, so
+                # they rank at the very top of the follow-up priority order.
+                "starred": bool(s.get("starred")),
                 **signals,
             })
         return rows
@@ -1032,8 +1038,9 @@ Do not use outside knowledge. Do not search. Do not guess based on someone's nam
 
 When there is no specific host request, or the request is open-ended, use the default triage rules below.
 
-Some rows carry thread-derived signals computed from the actual message thread.
+Some rows carry host-set and thread-derived signals.
 Treat these as authoritative when present:
+- starred: the host flagged this person as an important person to keep warm. This is the strongest WHO signal there is: a starred contact should almost always be nominated, and ranked at the very top.
 - awaiting_host_reply: the contact spoke last and the host has not answered.
 - awaiting_contact_reply: the host spoke last and is waiting on the contact.
 - host_open_promise: the host committed to a next move (send something, make an intro, schedule, circle back) and has not done it yet.
@@ -1044,7 +1051,7 @@ Treat these as authoritative when present:
 
 MUST NOMINATE (any one of these is sufficient):
 1. The person matches the host's explicit request.
-2. marked_follow_up is true.
+2. starred is true, or marked_follow_up is true.
 3. The host wrote a next_step (has_next_step is true).
 4. relationship_stage is replied.
 5. awaiting_host_reply is true.
@@ -1082,7 +1089,7 @@ Important distinctions:
 
 Ranking priority:
 1. Direct matches to the host's request.
-2. Host-marked follow-ups and rows with next_step.
+2. Starred contacts, host-marked follow-ups, and rows with next_step.
 3. Replied or open-loop contacts.
 4. Contacts with explicit life, work, company, or event updates in the data.
 5. Stale live relationships.
@@ -1297,6 +1304,10 @@ def run_relationship_agent_concurrent(
                 "next_step": s.get("next_step") or "",
                 "contact_types": contact_types,
                 "marked_follow_up": "follow_up" in contact_types,
+                # The host's explicit "important person" star. An AUTHORITATIVE
+                # WHO signal: the host hand-picked these people to keep warm, so
+                # they rank at the very top of the follow-up priority order.
+                "starred": bool(s.get("starred")),
                 **signals,
             })
         return rows

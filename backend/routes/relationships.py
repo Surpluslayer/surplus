@@ -89,6 +89,11 @@ class NoteIn(BaseModel):
     visibility: str = "private"      # "private" | "team"
 
 
+class StarIn(BaseModel):
+    """Flip a contact's 'important person' star on or off."""
+    starred: bool
+
+
 @router.get("/prospects")
 def list_relationships(
     event_id: Optional[int] = None,
@@ -178,6 +183,26 @@ def contact_detail(
         "events": relationships.contact_events(db, c),
         "timeline": relationships.contact_timeline(db, c),
     }
+
+
+@router.patch("/contacts/{contact_id}/star")
+def set_contact_star(
+    contact_id: int,
+    body: StarIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Mark (or un-mark) an owned contact as an important person.
+
+    The star is the host's explicit 'keep this relationship warm' signal : the
+    relationship agent treats a starred contact as a primary follow-up candidate
+    (a must-nominate, ranked at the top), so starring directly steers who gets
+    drafted next. Owner-scoped (404 on not-owned). Idempotent : setting the same
+    value twice is a no-op."""
+    c = _owned_contact(db, contact_id, user)
+    c.starred = bool(body.starred)
+    db.commit()
+    return {"contact_id": contact_id, "starred": c.starred}
 
 
 @router.post("/refresh")

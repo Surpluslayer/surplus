@@ -245,6 +245,14 @@ export const api = {
   // every event you've shared with them). Owner-scoped server-side.
   listContacts: () => request("/api/relationships/contacts"),
   getContact: (contactId) => request(`/api/relationships/contacts/${contactId}`),
+  // Star / un-star a contact as an important person. Returns { contact_id,
+  // starred }. The star is an authoritative follow-up-priority signal the
+  // relationship agent reads. Owner-scoped server-side.
+  setContactStar: (contactId, starred) =>
+    request(`/api/relationships/contacts/${contactId}/star`, {
+      method: "PATCH",
+      body: JSON.stringify({ starred }),
+    }),
   // Propose-only relationship agent : loops over the caller's contact spine
   // and returns staged next-step / draft-message suggestions (no sends, no
   // writes). Owner-scoped server-side.
@@ -329,6 +337,14 @@ export const api = {
     request("/api/followups/settings", {
       method: "PUT",
       body: JSON.stringify({ enabled }),
+    }),
+  // Save (or clear, with "") the host's Calendly / demo booking link. Shares
+  // the follow-up settings record; only the scheduling_link field is touched.
+  // Returns the full { auto_followups_enabled, scheduling_link }.
+  setSchedulingLink: (link) =>
+    request("/api/followups/settings", {
+      method: "PUT",
+      body: JSON.stringify({ scheduling_link: link }),
     }),
 
   // meta

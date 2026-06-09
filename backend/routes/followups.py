@@ -55,12 +55,19 @@ class FollowupPatch(BaseModel):
 
 
 class FollowupSettings(BaseModel):
-    """The host's auto-follow-up preference."""
+    """The host's follow-up preferences : the auto-send toggle and their saved
+    scheduling / demo booking link (appended to a follow-up only when the host
+    opts in per-message)."""
     auto_followups_enabled: bool
+    scheduling_link: str = ""
 
 
 class FollowupSettingsPatch(BaseModel):
-    enabled: bool
+    """Both fields optional : a PATCH-style update that touches only what's
+    sent. `enabled` flips the auto-send toggle; `scheduling_link` saves the
+    host's booking link (empty string clears it)."""
+    enabled: Optional[bool] = None
+    scheduling_link: Optional[str] = None
 
 
 def _as_aware(dt: datetime) -> datetime:
@@ -103,9 +110,11 @@ def _owned_followup(db: Session, followup_id: int,
 def get_followup_settings(
     user: models.User = Depends(current_user),
 ):
-    """Whether this host has the auto-schedule-follow-up feature turned on."""
+    """This host's follow-up preferences : the auto-send toggle + saved
+    booking link."""
     return FollowupSettings(
-        auto_followups_enabled=bool(getattr(user, "auto_followups_enabled", False)))
+        auto_followups_enabled=bool(getattr(user, "auto_followups_enabled", False)),
+        scheduling_link=getattr(user, "scheduling_link", "") or "")
 
 
 @router.put("/settings", response_model=FollowupSettings)
@@ -114,15 +123,26 @@ def set_followup_settings(
     db: Session = Depends(get_db),
     user: models.User = Depends(current_user),
 ):
-    """Turn auto-SEND of follow-ups on or off for this host. Off by default.
+    """Update this host's follow-up preferences. Only the fields present in the
+    request are touched, so the auto-send toggle and the booking link can be set
+    independently.
 
-    Follow-up drafts are always staged when a first DM goes out regardless of
-    this flag : it only controls whether the dispatch cron sends them. Off ->
-    drafts wait in the queue for a manual send-now; on -> they send at send_at.
-    Turning it off does NOT cancel anything already queued."""
-    user.auto_followups_enabled = bool(patch.enabled)
+    auto-SEND is off by default. Follow-up drafts are always staged when a first
+    DM goes out regardless of that flag : it only controls whether the dispatch
+    cron sends them. Off -> drafts wait for a manual send-now; on -> they send at
+    send_at. Turning it off does NOT cancel anything already queued.
+
+    `scheduling_link` saves the host's Calendly / demo booking URL; passing an
+    empty string clears it. The link is never sent automatically — it's only
+    appended to a message the host explicitly opts to include it in."""
+    if patch.enabled is not None:
+        user.auto_followups_enabled = bool(patch.enabled)
+    if patch.scheduling_link is not None:
+        user.scheduling_link = patch.scheduling_link.strip()[:400]
     db.commit()
-    return FollowupSettings(auto_followups_enabled=user.auto_followups_enabled)
+    return FollowupSettings(
+        auto_followups_enabled=bool(getattr(user, "auto_followups_enabled", False)),
+        scheduling_link=getattr(user, "scheduling_link", "") or "")
 
 
 @router.get("", response_model=list[FollowupOut])

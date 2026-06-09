@@ -803,6 +803,9 @@ def contact_summary(db, contact, interactions_by_prospect=None,
         "last_touch_at": max(last_touches) if last_touches else None,
         "relationship_stage": _strongest_stage(stages),
         "contact_types": sorted({c for c in contact_types}),
+        # Host's "important person" flag (steers follow-up priority + lets the
+        # CRM render the star). Defaults False for contacts that predate it.
+        "starred": bool(getattr(contact, "starred", False)),
         "next_step": next_steps[0] if next_steps else None,
         "event_ids": [e["event_id"] for e in events if e["event_id"] is not None],
         # what's new (relationship-watch poller) : freshest external change +

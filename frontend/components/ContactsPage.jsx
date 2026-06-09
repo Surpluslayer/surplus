@@ -9,13 +9,14 @@
 // CRM work and from each app's own CSS.
 import React, { useState, useEffect, useRef } from "react";
 import { Users, ArrowLeft, Building2, CalendarDays, Activity, Sparkles,
-         MessageSquare, Send, Check, Clock } from "lucide-react";
+         MessageSquare, Send, Check, Clock, Star, Link2 } from "lucide-react";
 import { api } from "../lib/api.js";
 
 const C = {
   ink: "#1a1d24", muted: "#6b7280", faint: "#9aa1ad",
   line: "#e6e8ee", card: "#ffffff", bg: "#f4f5f7",
   accent: "#6d4df6", chipBg: "#efeafe", chipInk: "#6d4df6",
+  star: "#f5a623",
 };
 
 // Match the surplus shell's typeface (set on `.root` in surplusTheme.js).
@@ -59,6 +60,112 @@ function WhatsNew({ update }) {
   );
 }
 
+// The "important person" star that sits beside a contact. Clicking it flips
+// Contact.starred server-side; the host stars the people they most want to
+// keep warm, and the relationship agent treats a starred contact as a
+// top-priority follow-up candidate. Rendered as a span (not a button) so it can
+// live inside a clickable card row without nesting interactive elements;
+// stopPropagation keeps a click from also opening the contact.
+function StarToggle({ starred, onToggle, size = 18 }) {
+  const [busy, setBusy] = useState(false);
+  const click = async (e) => {
+    e.stopPropagation();
+    if (busy) return;
+    setBusy(true);
+    try { await onToggle(!starred); }
+    finally { setBusy(false); }
+  };
+  return (
+    <span role="button" aria-pressed={starred} onClick={click}
+          title={starred ? "Important — click to unstar"
+                          : "Star as an important person"}
+          style={{ display: "inline-flex", cursor: busy ? "default" : "pointer",
+                   color: starred ? C.star : C.faint, opacity: busy ? 0.5 : 1,
+                   flexShrink: 0 }}>
+      <Star size={size} fill={starred ? C.star : "none"} strokeWidth={2} />
+    </span>
+  );
+}
+
+// The host's saved booking link (Calendly / cal.com / a demo URL). Saved once
+// here and reused : when drafting a follow-up the host can opt to append it
+// with a single click. Empty by default; "Save" with a blank field clears it.
+function BookingLinkBar({ link, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(link || "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => { setVal(link || ""); }, [link]);
+
+  const save = async () => {
+    setBusy(true); setErr("");
+    try {
+      const r = await api.setSchedulingLink(val.trim());
+      onSave?.(r.scheduling_link || "");
+      setEditing(false);
+    } catch (e) { setErr(e.message || String(e)); }
+    finally { setBusy(false); }
+  };
+
+  const showInput = editing || !link;
+  return (
+    <div style={{ marginBottom: 14, background: C.card,
+                  border: `1px solid ${C.line}`, borderRadius: 12,
+                  padding: "11px 14px", display: "flex", alignItems: "center",
+                  gap: 10, flexWrap: "wrap" }}>
+      <Link2 size={16} color={C.accent} style={{ flexShrink: 0 }} />
+      <span style={{ fontSize: 13, fontWeight: 700, color: C.ink,
+                     flexShrink: 0 }}>
+        Booking link
+      </span>
+      {showInput ? (
+        <>
+          <input value={val} onChange={(e) => setVal(e.target.value)}
+                 onKeyDown={(e) => { if (e.key === "Enter") save(); }}
+                 placeholder="https://calendly.com/you/intro" disabled={busy}
+                 style={{ flex: 1, minWidth: 180, border: `1px solid ${C.line}`,
+                          borderRadius: 8, padding: "7px 10px", fontSize: 13,
+                          fontFamily: FONT, outline: "none", color: C.ink }} />
+          <button onClick={save} disabled={busy}
+                  style={{ background: C.accent, color: "#fff", border: "none",
+                           borderRadius: 8, padding: "7px 14px", fontSize: 13,
+                           fontWeight: 600, cursor: busy ? "default" : "pointer",
+                           fontFamily: FONT, opacity: busy ? 0.6 : 1 }}>
+            {busy ? "Saving…" : "Save"}
+          </button>
+          {link && (
+            <button onClick={() => { setVal(link); setEditing(false); }}
+                    disabled={busy}
+                    style={{ background: "none", border: "none", color: C.muted,
+                             cursor: "pointer", fontSize: 13, fontFamily: FONT }}>
+              Cancel
+            </button>
+          )}
+        </>
+      ) : (
+        <>
+          <a href={link} target="_blank" rel="noreferrer"
+             style={{ flex: 1, minWidth: 120, fontSize: 13, color: C.accent,
+                      textOverflow: "ellipsis", overflow: "hidden",
+                      whiteSpace: "nowrap" }}>
+            {link}
+          </a>
+          <button onClick={() => setEditing(true)}
+                  style={{ background: "none", border: `1px solid ${C.line}`,
+                           color: C.muted, borderRadius: 8, padding: "6px 12px",
+                           fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+                           fontFamily: FONT }}>
+            Edit
+          </button>
+        </>
+      )}
+      {err && <span style={{ fontSize: 12, color: "#c0432f",
+                             flexBasis: "100%" }}>{err}</span>}
+    </div>
+  );
+}
+
 function StageChip({ stage }) {
   const c = STAGE_COLORS[stage] || STAGE_COLORS.captured;
   return (
@@ -81,12 +188,18 @@ export default function ContactsPage() {
   const [err, setErr] = useState(null);
   const [active, setActive] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // The host's saved booking link (Calendly / demo URL), loaded once and
+  // shared with the follow-up chat so a drafted message can include it.
+  const [schedulingLink, setSchedulingLink] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     api.listContacts()
       .then((r) => { if (!cancelled) setList(r.contacts || []); })
       .catch((e) => { if (!cancelled) setErr(e.message || String(e)); });
+    api.getFollowupSettings()
+      .then((s) => { if (!cancelled) setSchedulingLink(s.scheduling_link || ""); })
+      .catch(() => {});   // settings are optional; never block the page on them
     return () => { cancelled = true; };
   }, []);
 
@@ -95,6 +208,23 @@ export default function ContactsPage() {
     try { setActive(await api.getContact(id)); }
     catch (e) { setErr(e.message || String(e)); setActive(null); }
     finally { setDetailLoading(false); }
+  };
+
+  // Flip a contact's star, optimistically reflecting it in both the list row
+  // and (if open) the detail header. Throws are swallowed by StarToggle's
+  // finally, but we revert on failure so the UI never lies about server state.
+  const toggleStar = async (contactId, starred) => {
+    const apply = (val) => {
+      setList((prev) => prev
+        ? prev.map((c) => c.contact_id === contactId ? { ...c, starred: val } : c)
+        : prev);
+      setActive((prev) => prev?.contact_summary?.contact_id === contactId
+        ? { ...prev, contact_summary: { ...prev.contact_summary, starred: val } }
+        : prev);
+    };
+    apply(starred);
+    try { await api.setContactStar(contactId, starred); }
+    catch (e) { apply(!starred); setErr(e.message || String(e)); }
   };
 
   // ── detail view ────────────────────────────────────────────────────
@@ -115,7 +245,10 @@ export default function ContactsPage() {
           <div style={{ display: "flex", justifyContent: "space-between",
                         alignItems: "flex-start" }}>
             <div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: C.ink }}>
+              <div style={{ fontSize: 22, fontWeight: 700, color: C.ink,
+                            display: "flex", alignItems: "center", gap: 9 }}>
+                <StarToggle starred={!!s.starred} size={20}
+                            onToggle={(v) => toggleStar(s.contact_id, v)} />
                 {s.name || "Unknown"}
               </div>
               <div style={{ fontSize: 14, color: C.muted, marginTop: 4,
@@ -221,7 +354,9 @@ export default function ContactsPage() {
         </div>
       </div>
 
-      <FollowupChat />
+      <BookingLinkBar link={schedulingLink} onSave={setSchedulingLink} />
+
+      <FollowupChat schedulingLink={schedulingLink} />
 
       {err && (
         <div style={{ color: "#c0432f", background: "#fdeaea",
@@ -255,10 +390,16 @@ export default function ContactsPage() {
         <div style={{ display: "grid",
                       gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
                       gap: 12 }}>
-          {list.map((c) => (
+          {/* Starred contacts float to the top : they're the people the host
+              told us matter most, so they should be the first thing they see.
+              Array.sort is stable, so within each group the server's
+              freshest-first order is preserved. */}
+          {[...list].sort((a, b) => (b.starred ? 1 : 0) - (a.starred ? 1 : 0))
+            .map((c) => (
             <button key={c.contact_id} onClick={() => open(c.contact_id)}
                     style={{ textAlign: "left", background: C.card,
-                             border: `1px solid ${C.line}`, borderRadius: 14,
+                             border: `1px solid ${c.starred ? C.star : C.line}`,
+                             borderRadius: 14,
                              padding: "16px 18px", cursor: "pointer",
                              transition: "border-color .12s, box-shadow .12s" }}
                     onMouseEnter={(e) => {
@@ -267,13 +408,19 @@ export default function ContactsPage() {
                         "0 4px 16px rgba(109,77,246,0.10)";
                     }}
                     onMouseLeave={(e) => {
-                      e.currentTarget.style.borderColor = C.line;
+                      e.currentTarget.style.borderColor =
+                        c.starred ? C.star : C.line;
                       e.currentTarget.style.boxShadow = "none";
                     }}>
               <div style={{ display: "flex", justifyContent: "space-between",
-                            alignItems: "flex-start" }}>
-                <span style={{ fontWeight: 700, color: C.ink, fontSize: 15 }}>
-                  {c.name || "Unknown"}
+                            alignItems: "flex-start", gap: 8 }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 8,
+                               minWidth: 0 }}>
+                  <StarToggle starred={!!c.starred} size={16}
+                              onToggle={(v) => toggleStar(c.contact_id, v)} />
+                  <span style={{ fontWeight: 700, color: C.ink, fontSize: 15 }}>
+                    {c.name || "Unknown"}
+                  </span>
                 </span>
                 <StageChip stage={c.relationship_stage} />
               </div>
@@ -301,7 +448,7 @@ export default function ContactsPage() {
 // editable, and Approve routes through /contacts/{id}/followup — which honors
 // the host's auto-send toggle server-side (sends when on, stages a draft when
 // off). Nothing sends without the host clicking Approve.
-function FollowupChat() {
+function FollowupChat({ schedulingLink = "" }) {
   const [open, setOpen] = useState(false);
   const [turns, setTurns] = useState([]);   // {role:"host"|"agent", text, proposals?, auto?}
   const [input, setInput] = useState("");
@@ -460,7 +607,8 @@ function FollowupChat() {
                 )}
                 {(t.proposals || []).map((p) => (
                   <ProposalCard key={`${p.contact_id}-${p.text.slice(0,12)}`}
-                                proposal={p} auto={t.auto} />
+                                proposal={p} auto={t.auto}
+                                schedulingLink={schedulingLink} />
                 ))}
               </div>
             )}
@@ -518,8 +666,12 @@ function _fmtWhen(d) {
 // One drafted follow-up the host can edit, time, and approve. Approve schedules
 // a real send (or sends now) via the ScheduledFollowup queue — never a dead-end
 // draft. The auto-send toggle still gates whether a scheduled row auto-fires.
-function ProposalCard({ proposal, auto }) {
+function ProposalCard({ proposal, auto, schedulingLink = "" }) {
   const [draft, setDraft] = useState(proposal.text || "");
+  // Whether the host's saved booking link is appended to this draft. Toggling
+  // it on adds a "Book a time: <link>" line; off removes it. The host can still
+  // edit the resulting text freely before approving.
+  const [includeLink, setIncludeLink] = useState(false);
   const [choice, setChoice] = useState("tomorrow"); // now | 2h | tomorrow | custom
   const [customVal, setCustomVal] = useState(() =>
     _toLocalInput(proposal.suggested_send_at
@@ -555,6 +707,17 @@ function ProposalCard({ proposal, auto }) {
     }
   };
 
+  // Append / strip the host's booking link on the draft. Idempotent : toggling
+  // on never double-adds, toggling off removes the exact line we added.
+  const linkLine = schedulingLink ? `\n\nBook a time: ${schedulingLink}` : "";
+  const toggleIncludeLink = () => {
+    setDraft((d) => {
+      if (includeLink) return d.replace(linkLine, "").trimEnd();
+      return d.includes(schedulingLink) ? d : (d.trimEnd() + linkLine);
+    });
+    setIncludeLink((v) => !v);
+  };
+
   const done = state === "done";
   const sending = state === "sending";
   const PRESETS = [
@@ -586,6 +749,18 @@ function ProposalCard({ proposal, auto }) {
         <div style={{ fontSize: 11.5, color: C.faint, marginTop: 5 }}>
           Why: {proposal.rationale}
         </div>
+      )}
+
+      {!done && schedulingLink && (
+        <label style={{ display: "flex", alignItems: "center", gap: 7,
+                        marginTop: 9, fontSize: 12.5, color: C.muted,
+                        cursor: sending ? "default" : "pointer" }}>
+          <input type="checkbox" checked={includeLink} disabled={sending}
+                 onChange={toggleIncludeLink}
+                 style={{ accentColor: C.accent, cursor: "inherit" }} />
+          <Link2 size={13} color={C.accent} />
+          Include my booking link
+        </label>
       )}
 
       {!done && (

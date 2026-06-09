@@ -133,6 +133,8 @@ def init_db() -> None:
         _migrate_prospect_role_width,
         _migrate_contact_watch,
         _migrate_user_auto_followups,
+        _migrate_contact_starred,
+        _migrate_user_scheduling_link,
     ]
     for migration in migrations:
         try:
@@ -707,6 +709,48 @@ def _migrate_user_auto_followups() -> None:
         conn.execute(text(
             f"ALTER TABLE users ADD COLUMN {ine}auto_followups_enabled "
             f"BOOLEAN DEFAULT {default}"
+        ))
+
+
+def _migrate_contact_starred() -> None:
+    """Add contacts.starred (BOOLEAN, default False) : the host's 'important
+    person' flag that steers the relationship agent's follow-up priority.
+
+    Defaulted to 0/false so every existing contact starts unstarred until the
+    host marks them. Idempotent on Postgres (IF NOT EXISTS) and guarded by the
+    inspect check for the single-writer SQLite case."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "contacts" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("contacts")}
+    if "starred" in cols:
+        return
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    default = "FALSE" if ENGINE.dialect.name == "postgresql" else "0"
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            f"ALTER TABLE contacts ADD COLUMN {ine}starred "
+            f"BOOLEAN DEFAULT {default}"
+        ))
+
+
+def _migrate_user_scheduling_link() -> None:
+    """Add users.scheduling_link (VARCHAR(400), default '') : the host's saved
+    Calendly / demo booking link, appended to follow-ups only when the host
+    opts in per-message. Empty string for existing rows means 'no link saved'."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "scheduling_link" in cols:
+        return
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            f"ALTER TABLE users ADD COLUMN {ine}scheduling_link "
+            f"VARCHAR(400) DEFAULT ''"
         ))
 
 

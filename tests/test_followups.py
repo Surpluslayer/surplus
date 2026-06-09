@@ -385,6 +385,34 @@ def test_settings_default_off_and_toggle(db):
     assert out.auto_followups_enabled is False
 
 
+def test_settings_scheduling_link_independent_of_toggle(db):
+    """The booking link saves without disturbing the auto-send toggle, and an
+    empty string clears it. A patch with only one field leaves the other alone."""
+    user = models.User(email="link@example.com")
+    db.add(user); db.commit()
+    # Default: no link.
+    assert followups_route.get_followup_settings(user=user).scheduling_link == ""
+
+    # Save a link without touching auto-send.
+    out = followups_route.set_followup_settings(
+        followups_route.FollowupSettingsPatch(
+            scheduling_link="https://calendly.com/me/intro"), db=db, user=user)
+    assert out.scheduling_link == "https://calendly.com/me/intro"
+    assert out.auto_followups_enabled is False  # untouched
+
+    # Flip auto-send; the link survives a patch that omits it.
+    out = followups_route.set_followup_settings(
+        followups_route.FollowupSettingsPatch(enabled=True), db=db, user=user)
+    assert out.auto_followups_enabled is True
+    assert out.scheduling_link == "https://calendly.com/me/intro"
+
+    # Clear the link with an empty string.
+    out = followups_route.set_followup_settings(
+        followups_route.FollowupSettingsPatch(scheduling_link=""), db=db, user=user)
+    assert out.scheduling_link == ""
+    assert out.auto_followups_enabled is True
+
+
 def test_routes_404_on_not_owned(db):
     _user, _ev, p = _seed(db)
     row = stage_followup(db, p)
