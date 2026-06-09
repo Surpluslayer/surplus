@@ -49,6 +49,7 @@ from ..auth import (
     set_last_account_cookie,
     set_session_cookie,
 )
+from .. import billing_plans as bp
 from ..db import get_db
 from ..hosts import is_first_party, is_inperson_host, request_browser_host
 from ..models import AuthState, Session, User
@@ -970,6 +971,11 @@ def me(user: User = Depends(current_user)) -> JSONResponse:
         # populated by the webhook on successful checkout.
         "paid_at": user.paid_at.isoformat() if user.paid_at else None,
         "stripe_customer_id": user.stripe_customer_id,
+        # Relationship-layer metered plan (independent of paid_at). The SPA
+        # reads this to render the usage meter (X/5 drafts left) and decide
+        # whether to show the pricing table. unlimited=True for demo /
+        # allowlisted accounts.
+        "billing": bp.usage_snapshot(user),
     })
 
 
