@@ -176,6 +176,22 @@ def test_skipping_when_case_wants_a_draft_fails_outcome():
     assert sc["outcome_ok"] is False
 
 
+def test_act_case_accepts_draft_or_next_step_but_not_skip():
+    """An owed host promise must be ACTED on: delivering it (draft) or naming the
+    concrete next step both satisfy outcome_ok; only skipping lets the promise
+    fall through, which is the failure this 'act' expectation guards."""
+    case = _case_by_name("quirky_lowercase_voice")  # expect == "act"
+    drafted = ve.score_draft("here are those notes, lmk what you think", case,
+                             _profile(case))
+    stepped = ve.score_draft("[next_step] send Devon the notes you promised",
+                             case, _profile(case))
+    held = ve.score_draft("[skip] no deliverable in context so holding off", case,
+                          _profile(case))
+    assert drafted["outcome"] == "draft" and drafted["outcome_ok"] is True
+    assert stepped["outcome"] == "next_step" and stepped["outcome_ok"] is True
+    assert held["outcome"] == "skip" and held["outcome_ok"] is False
+
+
 def test_either_case_does_not_grade_outcome():
     case = _case_by_name("stale_reconnect_no_history_to_invent")  # expect "either"
     drafted = ve.score_draft("Hey Mia! been a while, how are things?", case,
@@ -193,6 +209,21 @@ def test_grounding_is_graded_even_on_a_skip():
                         _profile(case))
     assert sc["outcome"] == "skip"
     assert sc["grounded"] is False
+
+
+def test_grounding_allows_naming_a_forbidden_fact_to_reject_it():
+    """A skip reason that names the triage's guess only to FLAG it as unconfirmed
+    is correct behavior, not a hallucination — the negation-aware check must not
+    false-fail it (the exact artifact a live eval exposed)."""
+    case = _case_by_name("angle_tempts_unsupported_fact")  # forbidden incl "promotion"
+    reject = ("[skip] the triage's promotion guess is unconfirmed and not in the "
+              "thread, so I won't reference it; the exchange is also very recent.")
+    sc = ve.score_draft(reject, case, _profile(case))
+    assert sc["outcome"] == "skip"
+    assert sc["grounded"] is True            # named-to-reject, not asserted
+    # but actually congratulating the promotion is still a hard fail
+    assert ve.score_draft("Hi Lena, congrats on the promotion!", case,
+                          _profile(case))["grounded"] is False
 
 
 def test_voice_metrics_are_none_without_a_profile():

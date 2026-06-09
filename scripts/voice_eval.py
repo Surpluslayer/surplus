@@ -73,6 +73,8 @@ class EvalCase:
     canned_draft: str = ""            # used by the deterministic scorer demo
     # The right KIND of action for this case (scored as outcome_ok):
     #   "draft"  : there's a clear owed/open action — the agent SHOULD draft+send
+    #   "act"    : must DO something (draft OR propose_next_step); only skip is wrong
+    #              — e.g. an undelivered host promise must not fall through
     #   "skip"   : the ball is in their court / too soon — the agent SHOULD hold
     #   "either" : both a grounded draft and a hold are defensible — not graded
     expect: str = "draft"
@@ -183,7 +185,9 @@ def cases() -> list[EvalCase]:
             },
             must_reference=["notes"],
             forbidden_facts=["funding", "raised", "new role"],
-            expect="draft",
+            # An owed promise must be ACTED on — either draft the delivery or
+            # propose "send Devon the notes"; skipping lets it fall through.
+            expect="act",
             canned_draft="yep sending those notes over now, lmk what you think 🔥",
         ),
         # Grounding temptation: triage hands an angle that the thread does NOT
@@ -237,8 +241,14 @@ def build_prompts(case: EvalCase, variant: Variant) -> dict:
     name = (ctx.get("summary") or {}).get("name") or "them"
     user = (f"Follow up with {name}.\n\n"
             "<triage_signal>\n"
-            f"Triage flagged them because: {sel.get('reason')}\n"
-            f"Suggested angle: {sel.get('angle')}\n"
+            "A message-blind, wide-net triage pass guessed: "
+            f"\"{sel.get('reason')}\" (suggested angle: \"{sel.get('angle')}\").\n"
+            "These are LOW-CONFIDENCE GUESSES, not observations — triage never "
+            "read the thread. This is NOT proof a message is needed, and any "
+            "factual claim implied here (a promotion, raise, launch, new role, "
+            "move, award, etc.) is UNCONFIRMED: do NOT state or congratulate it "
+            "unless prior_messages explicitly shows it. If it isn't in the "
+            "thread, write as if you don't know it.\n"
             "</triage_signal>\n\n")
     if variant.use_brief:
         brief = ragent._context_brief(sel, ctx)
@@ -272,6 +282,32 @@ def _classify_outcome(text: str) -> str:
     return "draft"
 
 
+# Cues that mark a nearby fact as explicitly UNASSERTED — the model naming the
+# triage's guess in order to reject it, not to state it as true.
+_REJECTION_CUES = (
+    "unconfirmed", "unverified", "not confirmed", "not in the thread",
+    "isn't in the thread", "not visible", "no confirmation", "can't confirm",
+    "cannot confirm", "no evidence", "no mention", "not mentioned", "speculative",
+    "unsupported", "a guess", "just a guess", "no proof", "don't actually know",
+    "do not actually know", "not assume", "won't assume", "wouldn't assume",
+    "won't mention", "not reference", "without confirming", "if it's true",
+)
+
+
+def _fact_asserted(low: str, fact: str) -> bool:
+    """Is `fact` ASSERTED in `low` (already lowercased), vs merely named to be
+    rejected? True only if some occurrence has no rejection cue in its ±60-char
+    window. Keeps grounding honest on skip reasons that flag a guess as
+    unconfirmed instead of stating it."""
+    idx = low.find(fact)
+    while idx != -1:
+        window = low[max(0, idx - 60): idx + len(fact) + 60]
+        if not any(cue in window for cue in _REJECTION_CUES):
+            return True
+        idx = low.find(fact, idx + 1)
+    return False
+
+
 def score_draft(draft: str, case: EvalCase, profile: Optional[dict]) -> dict:
     """Deterministic, API-free metrics over a single agent outcome.
 
@@ -295,13 +331,22 @@ def score_draft(draft: str, case: EvalCase, profile: Optional[dict]) -> dict:
     # Right kind of action? "either" cases don't grade this (both are fine).
     if case.expect == "draft":
         m["outcome_ok"] = is_draft
+    elif case.expect == "act":
+        # must DO something (deliver or propose the next step); only skip is wrong
+        m["outcome_ok"] = outcome in ("draft", "next_step")
     elif case.expect == "skip":
         m["outcome_ok"] = outcome in ("skip", "next_step")
     else:  # "either"
         m["outcome_ok"] = None
 
-    # Grounding applies regardless of outcome.
-    m["grounded"] = not any(f.lower() in low for f in case.forbidden_facts)
+    # Grounding applies regardless of outcome — a skip reason that ASSERTS an
+    # un-sourced fact ("she just raised, so I'll wait") is still a hallucination
+    # tell. But a skip reason that NAMES the forbidden fact only to REJECT it
+    # ("the triage's promotion guess is unconfirmed, not in the thread") is the
+    # correct behavior, so plain substring matching false-fails it. Grade a fact
+    # as present only when it's asserted, i.e. NOT inside a rejection window.
+    m["grounded"] = not any(_fact_asserted(low, f.lower())
+                            for f in case.forbidden_facts)
 
     if is_draft:
         m["dash_clean"] = not bool(_DASH_RE.search(text))

@@ -1160,11 +1160,13 @@ If you draft:
 - Do not mention that you read their history.
 - Do not invent details, updates, or personal facts.
 
+An undelivered promise is never a skip. If the host promised to send or do something (reason 4 above) and prior_messages does not show it was delivered, you MUST act. Prefer draft_message: write the short note that delivers or accompanies the promised thing (the host attaches the actual file or link when they send it), so you do NOT need the deliverable itself in the context to write that note. Only fall back to propose_next_step when no sendable message could carry the promise forward. Never skip an open promise — that lets the host's commitment fall through, which is a failure, not a safe hold.
+
 If the best next action is not a message but a relationship action, call propose_next_step.
 If a message is warranted, call draft_message.
 If no message is warranted right now, call skip_contact.
 
-When unsure, prefer skip_contact unless there is a concrete reason in the thread to message."""
+When unsure, prefer skip_contact unless there is a concrete reason in the thread to message — but an open host promise IS such a concrete reason, so act on it rather than skip."""
 
 
 def _tool_uses(resp: Any) -> list[Any]:
@@ -1372,9 +1374,15 @@ def run_relationship_agent_concurrent(
         prompt = (
             f"Follow up with {name} (contact_id {cid}).\n\n"
             "<triage_signal>\n"
-            f"Triage flagged them because: {sel.get('reason') or 'they need a touch'}\n"
-            f"Suggested angle: {sel.get('angle') or '(none given)'}\n"
-            "This is a wide-net hint, NOT proof a message is needed.\n"
+            "A message-blind, wide-net triage pass guessed: "
+            f"\"{sel.get('reason') or 'they need a touch'}\" "
+            f"(suggested angle: \"{sel.get('angle') or '(none given)'}\").\n"
+            "These are LOW-CONFIDENCE GUESSES, not observations — triage never "
+            "read the thread. This is NOT proof a message is needed, and any "
+            "factual claim implied here (a promotion, raise, launch, new role, "
+            "move, award, etc.) is UNCONFIRMED: do NOT state or congratulate it "
+            "unless prior_messages explicitly shows it. If it isn't in the "
+            "thread, write as if you don't know it.\n"
             "</triage_signal>\n\n"
             "<drafting_task>\n"
             "Read prior_messages in <full_context_json> first. Decide whether a "
