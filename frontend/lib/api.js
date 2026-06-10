@@ -394,6 +394,20 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(patch),
     }),
+  // ── advisor "book today" surface (BookApp) ──
+  // The Today feed : { date, advisor_name, updates:[...], needs_outreach:[...] }.
+  // Built server-side by scoring + update-detection over the book (cached shape;
+  // loads instantly). refresh re-runs the batch.
+  bookToday: () => request("/api/book/today"),
+  bookRefresh: () => request("/api/book/refresh", { method: "POST" }),
+  // Draft the note behind a "Draft" tap. Pass { contact_id | name, trigger,
+  // channel }. Returns { channel, subject, body }.
+  bookDraft: (body) =>
+    request("/api/book/draft", { method: "POST", body: JSON.stringify(body) }),
+  // The agent ask bar + chips. { query } -> { answer, people:[{name,reason,draft}] }.
+  bookAsk: (query) =>
+    request("/api/book/ask", { method: "POST", body: JSON.stringify({ query }) }),
+
   // in-person guest : mint a LinkedIn-less anonymous session so the capture
   // flow works on event.surpluslayer.com without signing in (real sends stay
   // blocked until LinkedIn is connected). 403s on non-in-person hosts.
