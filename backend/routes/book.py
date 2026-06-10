@@ -36,8 +36,9 @@ def _demo_book() -> list[dict]:
         # ── people with a noteworthy update (recently active → not "overdue") ──
         {
             "id": "james-holloway", "name": "James Holloway", "vip": True,
-            "title": "Founder", "firm": "Holloway Capital", "tier": "key",
+            "title": "General counsel", "firm": "Meridian Capital", "tier": "key",
             "days_since": 12, "cadence_days": 60, "review_due": False,
+            "met_at": "NYC Tech Week", "value": "$60M relationship",
             "interaction_history": "Sold his logistics company in 2021; you "
                 "manage the proceeds. Last spoke at his daughter's graduation.",
             "raw_signals": {"type": "liquidity_event",
@@ -49,6 +50,7 @@ def _demo_book() -> list[dict]:
             "id": "priya-nadel", "name": "Priya Nadel", "vip": False,
             "title": "Principal", "firm": "Lumen Growth", "tier": "a",
             "days_since": 20, "cadence_days": 90, "review_due": False,
+            "met_at": "Milken", "value": "$12M relationship",
             "interaction_history": "Met through the Whartonalumni network; "
                 "you handle her family trust.",
             "raw_signals": {"type": "promotion",
@@ -58,8 +60,9 @@ def _demo_book() -> list[dict]:
         },
         {
             "id": "david-osei", "name": "David Osei", "vip": True,
-            "title": "General Partner", "firm": "Meridian Ventures", "tier": "key",
-            "days_since": 8, "cadence_days": 90, "review_due": False,
+            "title": "Partner", "firm": "Crestline Partners", "tier": "key",
+            "days_since": 5, "cadence_days": 90, "review_due": False,
+            "met_at": "NYC Tech Week", "value": "$35M relationship",
             "interaction_history": "Long-time client; you structured his "
                 "carry. Talks about his kids' college planning often.",
             "raw_signals": {"type": "fundraise",
@@ -69,45 +72,66 @@ def _demo_book() -> list[dict]:
         },
         # ── people overdue for a touch (the "Needs outreach" list) ──
         {"id": "thomas-reyes", "name": "Thomas Reyes", "vip": False,
-         "title": "Partner", "firm": "Reyes & Cole", "tier": "core",
+         "title": "SVP finance", "firm": "Atlas Pension", "tier": "core",
          "days_since": 64, "cadence_days": 45, "review_due": False,
+         "met_at": "SALT",
          "interaction_history": "Estate planning client. Last talked about a "
             "second home in Tahoe."},
         {"id": "margaret-chen", "name": "Margaret Chen", "vip": True,
-         "title": "CFO", "firm": "Arclight Bio", "tier": "key",
+         "title": "Founder", "firm": "Chen Family Office", "tier": "key",
          "days_since": 18, "cadence_days": 60, "review_due": True,
+         "met_at": "SALT", "value": "$40M relationship",
          "interaction_history": "Annual portfolio review is due this month. "
             "Risk-averse; values a clear agenda."},
+        {"id": "naomi-vance", "name": "Naomi Vance", "vip": False,
+         "title": "Partner", "firm": "Vance Family Office", "tier": "a",
+         "days_since": 41, "cadence_days": 35, "review_due": True,
+         "met_at": "Milken",
+         "interaction_history": "Review overdue. Co-invests with two of your "
+            "other clients."},
         {"id": "sofia-klein", "name": "Sofia Klein", "vip": False,
-         "title": "Managing Director", "firm": "Klein Advisory", "tier": "a",
+         "title": "Managing director", "firm": "Klein Advisory", "tier": "a",
          "days_since": 38, "cadence_days": 30, "review_due": False,
+         "met_at": "SALT",
          "interaction_history": "Referred three clients last year. Loves "
             "sailing; usually off-grid in August."},
         {"id": "raj-patel", "name": "Raj Patel", "vip": False,
-         "title": "VP Finance", "firm": "Northwind", "tier": "core",
+         "title": "VP finance", "firm": "Northwind", "tier": "core",
          "days_since": 52, "cadence_days": 40, "review_due": False,
+         "met_at": "NYC Tech Week",
          "interaction_history": "Rolling over a 401k; awaiting paperwork."},
         {"id": "elena-fischer", "name": "Elena Fischer", "vip": False,
          "title": "Owner", "firm": "Fischer Group", "tier": "a",
          "days_since": 71, "cadence_days": 45, "review_due": False,
+         "met_at": "Milken",
          "interaction_history": "Business-sale conversation stalled last spring."},
         {"id": "marcus-webb", "name": "Marcus Webb", "vip": False,
          "title": "Director", "firm": "Webb & Associates", "tier": "core",
          "days_since": 29, "cadence_days": 30, "review_due": True,
+         "met_at": "NYC Tech Week",
          "interaction_history": "Mid-year check-in due; new baby last year."},
         {"id": "grace-lin", "name": "Grace Lin", "vip": False,
          "title": "Partner", "firm": "Lin Wealth", "tier": "core",
          "days_since": 45, "cadence_days": 35, "review_due": False,
+         "met_at": "SALT",
          "interaction_history": "Tax-loss harvesting question still open."},
         {"id": "daniel-okafor", "name": "Daniel Okafor", "vip": False,
          "title": "Executive", "firm": "Okafor Holdings", "tier": "a",
          "days_since": 90, "cadence_days": 45, "review_due": False,
+         "met_at": "Milken",
          "interaction_history": "Went quiet after a market dip; reassurance call "
             "never happened."},
         {"id": "hannah-brooks", "name": "Hannah Brooks", "vip": False,
          "title": "Founder", "firm": "Brooks Studio", "tier": "core",
          "days_since": 33, "cadence_days": 30, "review_due": False,
+         "met_at": "NYC Tech Week",
          "interaction_history": "Just started a college fund for her twins."},
+        # ── fresh captures (the "Prospects" filter / "New" health) ──
+        {"id": "elena-marsh", "name": "Elena Marsh", "vip": False,
+         "title": "Principal", "firm": "Hawthorn Wealth", "tier": "core",
+         "days_since": 0, "cadence_days": 45, "review_due": False,
+         "met_at": "NYC Tech Week", "is_prospect": True,
+         "interaction_history": "Just met — exchanged badges at the afterparty."},
     ]
 
 
@@ -183,3 +207,14 @@ def ask(body: AskIn, user: models.User = Depends(current_user)):
     if not q:
         raise HTTPException(422, "query is required")
     return book_agent.ask_agent(_demo_book(), q)
+
+
+@router.get("/relationship/{contact_id}")
+def relationship(contact_id: str, user: models.User = Depends(current_user)):
+    """The relationship detail screen : health, the plain-language 'why', the
+    relationship value, and a synthesized timeline. The drafted message is
+    fetched separately via /draft so it can be refined independently."""
+    contact = _find_contact(_demo_book(), contact_id=contact_id, name=None)
+    if contact is None:
+        raise HTTPException(404, "contact not found")
+    return book_agent.relationship_detail(contact)

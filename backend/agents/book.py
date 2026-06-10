@@ -117,6 +117,12 @@ def _score_health_heuristic(contact: dict) -> dict:
     else:
         status = "active"
 
+    # A due/overdue review pulls the relationship down to at least "cooling" —
+    # it reads (and dots) as needing attention everywhere, even if cadence
+    # alone would call it warm/active.
+    if review_due and status in ("active", "warm"):
+        status = "cooling"
+
     needs = review_due or status in ("cooling", "dormant")
     if review_due and days > 0:
         reason = f"Quiet {days} days · review due"
@@ -340,7 +346,114 @@ def build_today(book: list[dict]) -> dict:
         "date": _iso_today(),
         "updates": updates,
         "needs_outreach": needs,
+        # Full roster for the Book screen (every contact scored, richest-first
+        # by who needs attention). Today renders from updates/needs; Book and
+        # the relationship detail render from this.
+        "roster": build_roster(book),
     }
+
+
+# ─── Roster (the "Your book" screen) ─────────────────────────────────────────
+
+def build_roster(book: list[dict]) -> list[dict]:
+    """Score every contact and return a single attention-ranked roster. Powers
+    the Book screen's list + filter pills (All / Starred / Cooling / Prospects)
+    and seeds the relationship detail. No LLM call beyond the per-contact score
+    (cached upstream in production)."""
+    rows = []
+    for c in book:
+        h = score_health(c)
+        upd = detect_update(c)
+        rows.append({
+            "contact_id": c.get("id"),
+            "name": c.get("name"),
+            "vip": bool(c.get("vip")),
+            "title": c.get("title") or "",
+            "firm": c.get("firm") or "",
+            "met_at": c.get("met_at") or "",
+            "days_since": int(c.get("days_since") or 0),
+            "status": h.get("status"),
+            "reason": h.get("reason"),
+            "review_due": bool(c.get("review_due")),
+            "needs_outreach": bool(h.get("needs_outreach")),
+            "priority": h.get("priority"),
+            "is_prospect": bool(c.get("is_prospect")),
+            "value": c.get("value") or "",
+            "has_update": upd is not None,
+            "headline": (upd or {}).get("headline"),
+        })
+    # New prospects float to the top, then by attention (priority) desc.
+    rows.sort(key=lambda r: (not r["is_prospect"], -(r.get("priority") or 0)))
+    return rows
+
+
+def relationship_detail(contact: dict) -> dict:
+    """The relationship screen: health, a plain-language 'why', the timeline,
+    and the relationship value line. The drafted message is fetched separately
+    (draft_message) on open so it can be refined independently."""
+    h = score_health(contact)
+    status = h.get("status")
+    days = int(contact.get("days_since") or 0)
+    return {
+        "contact_id": contact.get("id"),
+        "name": contact.get("name"),
+        "vip": bool(contact.get("vip")),
+        "title": contact.get("title") or "",
+        "firm": contact.get("firm") or "",
+        "met_at": contact.get("met_at") or "",
+        "status": status,
+        "days_since": days,
+        "reason": h.get("reason"),
+        "review_due": bool(contact.get("review_due")),
+        "value": contact.get("value") or "",
+        "why": _why_text(contact, status, days),
+        "timeline": _timeline(contact, status, days),
+    }
+
+
+def _why_text(contact: dict, status: str, days: int) -> str:
+    """A short, true reasoning line for the detail header — built from the
+    contact's own fields, never invented."""
+    name = (contact.get("name") or "They").split(" ")[0]
+    review = bool(contact.get("review_due"))
+    tier = (contact.get("tier") or "").lower()
+    big = tier in ("key", "a")
+    if status in ("cooling", "dormant"):
+        bits = [f"It's been {days} days since you last spoke"]
+        if review:
+            bits.append("their review is overdue")
+        if big:
+            bits.append(f"and {name} is one of your larger relationships")
+        lead = ", ".join(bits) + "."
+        return (lead + " A personal note this week is worth more than another "
+                "quarter of silence.")
+    if status == "warm":
+        return (f"You spoke {days} days ago — still warm, but the kind of "
+                "relationship that fades without a light touch.")
+    if status == "active" and contact.get("raw_signals"):
+        return (f"{name} is active and there's fresh news worth a note — a good "
+                "moment to reach out while it's top of mind.")
+    return f"You're in good standing with {name}. No action needed today."
+
+
+def _timeline(contact: dict, status: str, days: int) -> list[dict]:
+    """Synthesize an honest timeline from the fields we have: the last touch
+    (flagged when it's gone quiet), the background note, and where you met."""
+    items = []
+    if days > 0:
+        items.append({
+            "t": ("Sent a note · no reply" if status in ("cooling", "dormant")
+                  else "Last spoke"),
+            "d": f"{days} days ago",
+            "warn": status in ("cooling", "dormant"),
+        })
+    hist = (contact.get("interaction_history") or "").strip()
+    if hist:
+        items.append({"t": hist, "d": "Background", "warn": False})
+    met = contact.get("met_at")
+    if met:
+        items.append({"t": f"Met at {met}", "d": "", "warn": False})
+    return items
 
 
 def _iso_today() -> str:

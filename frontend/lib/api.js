@@ -409,10 +409,14 @@ export const api = {
       body: JSON.stringify(patch),
     }),
   // ── advisor "book today" surface (BookApp) ──
-  // The Today feed : { date, advisor_name, updates:[...], needs_outreach:[...] }.
-  // Built server-side by scoring + update-detection over the book (cached shape;
-  // loads instantly). refresh re-runs the batch.
+  // The Today feed : { date, advisor_name, updates:[...], needs_outreach:[...],
+  // roster:[...] }. Built server-side by scoring + update-detection over the
+  // book (cached shape; loads instantly). refresh re-runs the batch.
   bookToday: () => request("/api/book/today"),
+  // The relationship detail screen for one contact :
+  // { name, title, firm, status, why, value, timeline:[{t,d,warn}], ... }.
+  bookRelationship: (id) =>
+    request(`/api/book/relationship/${encodeURIComponent(id)}`),
   bookRefresh: () => request("/api/book/refresh", { method: "POST" }),
   // Draft the note behind a "Draft" tap. Pass { contact_id | name, trigger,
   // channel }. Returns { channel, subject, body }.

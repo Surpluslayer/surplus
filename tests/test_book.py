@@ -40,7 +40,7 @@ def test_needs_outreach_excludes_recently_active():
     assert "David Osei" not in needs_names
     # The mockup's overdue names are present.
     assert {"Thomas Reyes", "Margaret Chen", "Sofia Klein"} <= needs_names
-    assert len(feed["needs_outreach"]) == 9
+    assert len(feed["needs_outreach"]) == 10
 
 
 def test_review_due_always_needs_outreach_with_reason():
@@ -80,6 +80,33 @@ def test_draft_congratulation_vs_reengage():
     cold = b.draft_message(c, "Quiet 64 days", channel="sms", user_name="Jordan")
     assert cold["subject"] is None           # non-email: no subject
     assert "Priya" in cold["body"]
+
+
+def test_roster_carries_book_fields_and_sorts_prospects_first():
+    feed = b.build_today(_demo_book())
+    roster = feed["roster"]
+    # Every contact in the book is present, with the Book-screen fields.
+    assert len(roster) == len(_demo_book())
+    first = roster[0]
+    assert {"contact_id", "name", "title", "firm", "met_at", "status",
+            "is_prospect", "value", "has_update"} <= set(first)
+    # Fresh captures (prospects) float to the top.
+    assert first["is_prospect"] is True and first["name"] == "Elena Marsh"
+    # Updates are flagged so the Book row can mark them.
+    james = next(r for r in roster if r["name"] == "James Holloway")
+    assert james["has_update"] is True and james["met_at"] == "NYC Tech Week"
+
+
+def test_relationship_detail_builds_why_and_timeline():
+    margaret = next(c for c in _demo_book() if c["name"] == "Margaret Chen")
+    d = b.relationship_detail(margaret)
+    assert d["status"] in ("cooling", "dormant")
+    assert d["value"] == "$40M relationship"
+    # The "why" is built from her real fields (review overdue + days quiet).
+    assert "18 days" in d["why"] and "review" in d["why"].lower()
+    # Timeline ends with where you met and flags the quiet last touch.
+    assert d["timeline"][-1]["t"] == "Met at SALT"
+    assert d["timeline"][0]["warn"] is True
 
 
 def test_ask_agent_routes_queries():
