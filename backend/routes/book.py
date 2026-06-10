@@ -1,0 +1,185 @@
+"""
+routes/book.py : the advisor "Your book today" surface (BookApp).
+
+Serves the Today feed (Updates + Needs-outreach), drafts the note behind a
+"Draft" tap, and answers the agent ask bar — all backed by agents/book.py.
+
+The feed is built from a DEMO BOOK (the advisor's roster) so the surface renders
+end-to-end without a populated relationship spine; agents/book.py runs the real
+LLM prompts over it when ANTHROPIC_API_KEY is set, and a deterministic heuristic
+otherwise. Wiring the demo book to live Contacts is the next slice.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+
+from .. import models
+from ..agents import book as book_agent
+from ..auth import current_user
+
+router = APIRouter(prefix="/api/book", tags=["book"])
+
+
+# ─── demo book : the advisor's roster ────────────────────────────────────────
+# Fresh relative dates each call so "2h ago" / "Yesterday" stay accurate.
+
+def _ago(*, hours: int = 0, days: int = 0) -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=hours, days=days)).isoformat()
+
+
+def _demo_book() -> list[dict]:
+    return [
+        # ── people with a noteworthy update (recently active → not "overdue") ──
+        {
+            "id": "james-holloway", "name": "James Holloway", "vip": True,
+            "title": "Founder", "firm": "Holloway Capital", "tier": "key",
+            "days_since": 12, "cadence_days": 60, "review_due": False,
+            "interaction_history": "Sold his logistics company in 2021; you "
+                "manage the proceeds. Last spoke at his daughter's graduation.",
+            "raw_signals": {"type": "liquidity_event",
+                            "headline": "Liquidity event flagged",
+                            "detected_at": _ago(hours=2),
+                            "significance": "high", "outreach_trigger": True},
+        },
+        {
+            "id": "priya-nadel", "name": "Priya Nadel", "vip": False,
+            "title": "Principal", "firm": "Lumen Growth", "tier": "a",
+            "days_since": 20, "cadence_days": 90, "review_due": False,
+            "interaction_history": "Met through the Whartonalumni network; "
+                "you handle her family trust.",
+            "raw_signals": {"type": "promotion",
+                            "headline": "Promoted to MD, Lumen Growth",
+                            "detected_at": _ago(days=1),
+                            "significance": "medium", "outreach_trigger": True},
+        },
+        {
+            "id": "david-osei", "name": "David Osei", "vip": True,
+            "title": "General Partner", "firm": "Meridian Ventures", "tier": "key",
+            "days_since": 8, "cadence_days": 90, "review_due": False,
+            "interaction_history": "Long-time client; you structured his "
+                "carry. Talks about his kids' college planning often.",
+            "raw_signals": {"type": "fundraise",
+                            "headline": "Raised a new fund",
+                            "detected_at": _ago(days=3),
+                            "significance": "high", "outreach_trigger": True},
+        },
+        # ── people overdue for a touch (the "Needs outreach" list) ──
+        {"id": "thomas-reyes", "name": "Thomas Reyes", "vip": False,
+         "title": "Partner", "firm": "Reyes & Cole", "tier": "core",
+         "days_since": 64, "cadence_days": 45, "review_due": False,
+         "interaction_history": "Estate planning client. Last talked about a "
+            "second home in Tahoe."},
+        {"id": "margaret-chen", "name": "Margaret Chen", "vip": True,
+         "title": "CFO", "firm": "Arclight Bio", "tier": "key",
+         "days_since": 18, "cadence_days": 60, "review_due": True,
+         "interaction_history": "Annual portfolio review is due this month. "
+            "Risk-averse; values a clear agenda."},
+        {"id": "sofia-klein", "name": "Sofia Klein", "vip": False,
+         "title": "Managing Director", "firm": "Klein Advisory", "tier": "a",
+         "days_since": 38, "cadence_days": 30, "review_due": False,
+         "interaction_history": "Referred three clients last year. Loves "
+            "sailing; usually off-grid in August."},
+        {"id": "raj-patel", "name": "Raj Patel", "vip": False,
+         "title": "VP Finance", "firm": "Northwind", "tier": "core",
+         "days_since": 52, "cadence_days": 40, "review_due": False,
+         "interaction_history": "Rolling over a 401k; awaiting paperwork."},
+        {"id": "elena-fischer", "name": "Elena Fischer", "vip": False,
+         "title": "Owner", "firm": "Fischer Group", "tier": "a",
+         "days_since": 71, "cadence_days": 45, "review_due": False,
+         "interaction_history": "Business-sale conversation stalled last spring."},
+        {"id": "marcus-webb", "name": "Marcus Webb", "vip": False,
+         "title": "Director", "firm": "Webb & Associates", "tier": "core",
+         "days_since": 29, "cadence_days": 30, "review_due": True,
+         "interaction_history": "Mid-year check-in due; new baby last year."},
+        {"id": "grace-lin", "name": "Grace Lin", "vip": False,
+         "title": "Partner", "firm": "Lin Wealth", "tier": "core",
+         "days_since": 45, "cadence_days": 35, "review_due": False,
+         "interaction_history": "Tax-loss harvesting question still open."},
+        {"id": "daniel-okafor", "name": "Daniel Okafor", "vip": False,
+         "title": "Executive", "firm": "Okafor Holdings", "tier": "a",
+         "days_since": 90, "cadence_days": 45, "review_due": False,
+         "interaction_history": "Went quiet after a market dip; reassurance call "
+            "never happened."},
+        {"id": "hannah-brooks", "name": "Hannah Brooks", "vip": False,
+         "title": "Founder", "firm": "Brooks Studio", "tier": "core",
+         "days_since": 33, "cadence_days": 30, "review_due": False,
+         "interaction_history": "Just started a college fund for her twins."},
+    ]
+
+
+def _advisor_identity(user: models.User) -> tuple[str, str]:
+    name = (getattr(user, "name", None) or "").strip() or "your advisor"
+    return name, "wealth advisor"
+
+
+def _find_contact(book: list[dict], *, contact_id: Optional[str],
+                  name: Optional[str]) -> Optional[dict]:
+    for c in book:
+        if contact_id and c.get("id") == contact_id:
+            return c
+        if name and (c.get("name") or "").lower() == name.lower():
+            return c
+    return None
+
+
+# ─── request bodies ──────────────────────────────────────────────────────────
+
+class DraftIn(BaseModel):
+    contact_id: Optional[str] = None
+    name: Optional[str] = None
+    trigger: str                       # "Promoted to MD" | "Quiet 38 days, review due"
+    channel: str = "email"             # email | linkedin | sms
+
+
+class AskIn(BaseModel):
+    query: str
+
+
+# ─── routes ──────────────────────────────────────────────────────────────────
+
+@router.get("/today")
+def today(user: models.User = Depends(current_user)):
+    """The cached-shape Today feed : time-ordered Updates + priority-ranked
+    Needs-outreach. Built by running detection + scoring across the book."""
+    feed = book_agent.build_today(_demo_book())
+    name, _ = _advisor_identity(user)
+    feed["advisor_name"] = name
+    return feed
+
+
+@router.post("/refresh")
+def refresh(user: models.User = Depends(current_user)):
+    """Re-run the batch over the book. Same shape as /today (the heavy LLM
+    passes would be scheduled + cached in production; here it recomputes)."""
+    return today(user)
+
+
+@router.post("/draft")
+def draft(body: DraftIn, user: models.User = Depends(current_user)):
+    """The note behind a 'Draft' tap : warm congratulation or cold re-engage,
+    chosen from the trigger."""
+    book = _demo_book()
+    contact = _find_contact(book, contact_id=body.contact_id, name=body.name)
+    if contact is None:
+        # Still draftable from just a name + trigger (the agent can work with
+        # the trigger alone), so synthesize a minimal contact rather than 404.
+        contact = {"name": body.name or "there", "title": "", "firm": "",
+                   "interaction_history": ""}
+    name, role = _advisor_identity(user)
+    msg = book_agent.draft_message(
+        contact, body.trigger, channel=body.channel,
+        user_name=name, user_role=role)
+    return {"channel": body.channel, **msg}
+
+
+@router.post("/ask")
+def ask(body: AskIn, user: models.User = Depends(current_user)):
+    """The 'Ask your agent anything' bar + chip queries."""
+    q = (body.query or "").strip()
+    if not q:
+        raise HTTPException(422, "query is required")
+    return book_agent.ask_agent(_demo_book(), q)
