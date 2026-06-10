@@ -385,6 +385,20 @@ export const api = {
   // seat. Returns { url } — redirect the browser there; the hosted page does
   // the OAuth and bounces back with the Integrations tile flipped.
   startEmailAuth: () => request("/api/auth/email/start", { method: "POST" }),
+  // Email channel on a contact (TEST surface; see EmailTestPanel)
+  setContactEmail: (id, email) =>
+    request(`/api/relationships/contacts/${id}/email`,
+            { method: "POST", body: JSON.stringify({ email }) }),
+  listContactEmailThreads: (id) =>
+    request(`/api/relationships/contacts/${id}/email-threads`),
+  linkContactEmailThread: (id, threadId) =>
+    request(`/api/relationships/contacts/${id}/email-thread`,
+            { method: "POST", body: JSON.stringify({ thread_id: threadId }) }),
+  readContactEmailThread: (id) =>
+    request(`/api/relationships/contacts/${id}/email-thread?with_bodies=true`),
+  sendContactEmail: (id, message, subject) =>
+    request(`/api/relationships/contacts/${id}/send-email`,
+            { method: "POST", body: JSON.stringify({ message, subject }) }),
   // First-time-user onboarding tour : persist progress so the coachmark flow
   // survives a refresh / device switch. Pass { step } to advance, { status }
   // to finish ("done") / dismiss ("skipped"), or { status:"active", step:0 }

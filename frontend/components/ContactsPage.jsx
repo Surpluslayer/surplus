@@ -144,6 +144,7 @@ export default function ContactsPage() {
               <strong>Next step:</strong> {s.next_step}
             </div>
           )}
+          <EmailTestPanel s={s} />
         </div>
 
         <SectionLabel icon={CalendarDays} text="Events we've shared" />
@@ -324,6 +325,120 @@ export default function ContactsPage() {
 // shown as the roadmap so the demo tells the whole story. Per the design: each
 // app is its own progressive connect, and contacts sync in automatically (we
 // pull who you actually talk to — you remove, never assemble).
+// ── EmailTestPanel : TEMPORARY test surface for the email channel ───────────
+// Lets the operator type a contact's email, pick + confirm the mailbox
+// thread, read it, and send a (prefilled, editable) reply — exercising the
+// full pull/push loop end to end. Deliberately utilitarian; may be removed
+// or replaced by the real contact-view design later.
+function EmailTestPanel({ s }) {
+  const cid = s.contact_id;
+  const [email, setEmail] = useState(s.email || "");
+  const [threadId, setThreadId] = useState(s.email_thread_id || null);
+  const [threads, setThreads] = useState(null);
+  const [msgs, setMsgs] = useState(null);
+  const [draft, setDraft] = useState("");
+  const [status, setStatus] = useState("");
+  const run = async (fn, okMsg) => {
+    setStatus("…");
+    try { const r = await fn(); setStatus(okMsg || "done"); return r; }
+    catch (e) { setStatus(e.message || "failed"); return null; }
+  };
+  const saveEmail = () => run(async () => {
+    const r = await api.setContactEmail(cid, email.trim() || null);
+    setThreadId(r.linked_thread_id); setThreads(null); setMsgs(null);
+  }, "email saved");
+  const loadThreads = () => run(async () => {
+    const r = await api.listContactEmailThreads(cid);
+    setThreads(r.threads || []);
+  }, "threads loaded");
+  const link = (tid) => run(async () => {
+    const r = await api.linkContactEmailThread(cid, tid);
+    setThreadId(r.linked_thread_id); setMsgs(null);
+  }, "thread linked");
+  const read = () => run(async () => {
+    const r = await api.readContactEmailThread(cid);
+    setMsgs(r.messages || []);
+    if (!draft) setDraft(`Hey ${(s.name || "").split(" ")[0]}, following up on our thread — `);
+  }, "thread loaded");
+  const send = () => run(async () => {
+    const r = await api.sendContactEmail(cid, draft);
+    setStatus(`sent (${r.status}${r.dry_run ? ", dry-run" : ""}) → ${r.to}`);
+    setMsgs(null);
+  });
+  const box = { width: "100%", border: `1px solid ${C.line}`, borderRadius: 8,
+                padding: "8px 10px", fontSize: 13, fontFamily: FONT };
+  const btn = { border: "none", background: C.accent, color: "#fff",
+                borderRadius: 8, padding: "8px 12px", fontSize: 12.5,
+                fontWeight: 700, fontFamily: FONT, cursor: "pointer" };
+  return (
+    <div style={{ marginTop: 16, padding: "14px 16px", background: C.card,
+                  border: `1px dashed ${C.accent}`, borderRadius: 12 }}>
+      <div style={{ fontWeight: 700, fontSize: 13, color: C.accent,
+                    marginBottom: 10 }}>
+        Email channel (test) {status && <span style={{ color: C.muted,
+          fontWeight: 500 }}>· {status}</span>}
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input value={email} onChange={(e) => setEmail(e.target.value)}
+               placeholder="their email…" style={box} />
+        <button onClick={saveEmail} style={btn}>Save</button>
+        <button onClick={loadThreads} style={btn} disabled={!email}>Threads</button>
+      </div>
+      {threads && (
+        <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+          {threads.length === 0 && (
+            <div style={{ fontSize: 12.5, color: C.muted }}>No threads found with this address.</div>)}
+          {threads.map((t) => (
+            <div key={t.thread_id} style={{ display: "flex", gap: 8,
+                 alignItems: "center", fontSize: 12.5, color: C.ink }}>
+              <span style={{ flex: 1 }}>
+                {t.subject || "(no subject)"} · {t.n} msg
+                {threadId === t.thread_id && " · linked ✓"}
+              </span>
+              <button onClick={() => link(t.thread_id)}
+                      style={{ ...btn, background: threadId === t.thread_id
+                               ? "#1c8c4e" : C.accent }}>
+                {threadId === t.thread_id ? "Linked" : "Link"}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {threadId && (
+        <div style={{ marginTop: 10 }}>
+          <button onClick={read} style={btn}>Read thread</button>
+          {msgs && (
+            <div style={{ marginTop: 8, display: "grid", gap: 6,
+                          maxHeight: 240, overflowY: "auto" }}>
+              {msgs.map((m) => (
+                <div key={m.provider_id}
+                     style={{ fontSize: 12.5, padding: "8px 10px",
+                              borderRadius: 8,
+                              background: m.direction === "out" ? C.chipBg : C.bg,
+                              color: C.ink }}>
+                  <strong>{m.direction === "out" ? "You" : (m.from_name || m.from_address)}</strong>
+                  <span style={{ color: C.faint }}> · {fmtDate(m.date)}</span>
+                  <div>{(m.body || m.subject || "").slice(0, 400)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {email && (
+        <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+          <textarea value={draft} onChange={(e) => setDraft(e.target.value)}
+                    rows={3} placeholder="email body…" style={box} />
+          <button onClick={send} style={{ ...btn, width: 140 }}
+                  disabled={!draft.trim()}>
+            {threadId ? "Reply in thread" : "Send email"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const INTEGRATIONS = [
   {
     key: "linkedin", name: "LinkedIn", Icon: Link2, brand: "#0a66c2",
