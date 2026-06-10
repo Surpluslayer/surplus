@@ -58,6 +58,22 @@ from ..rate_limit import per_ip_rate_limit
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+
+def _arm_onboarding_if_first_connect(user: User) -> None:
+    """Arm the in-product onboarding tour the instant a user FIRST gains a
+    LinkedIn connection.
+
+    Called from both the webhook and the callback upsert paths, after `user`
+    has been assigned the connecting account. Gated on the empty default of
+    onboarding_status so it fires exactly once per user : a brand-new signup
+    or a triage-only user connecting LinkedIn for the first time gets armed;
+    a re-connect / profile refresh (status already 'active'/'done'/'skipped')
+    is a no-op. The actual coachmarks render on the in-person surface, which
+    reads this off /me."""
+    if not (getattr(user, "onboarding_status", "") or ""):
+        user.onboarding_status = "active"
+        user.onboarding_step = 0
+
 # Anonymous user-creation rate limit : ~5/min per IP. A real Tech Week
 # demo viewer clicking around does ~1/min ; a bot trying to fill up the
 # users table gets blocked at 6/min. Also applied to triage signup +
@@ -620,6 +636,9 @@ async def linkedin_webhook(payload: dict, db: DbSession = Depends(get_db)) -> JS
         db.add(user)
         db.flush()  # need user.id
 
+    # First LinkedIn connection -> arm the onboarding tour (once per user).
+    _arm_onboarding_if_first_connect(user)
+
     auth_state.user_id = user.id
     auth_state.status = "webhook_done"
     auth_state.completed_at = now
@@ -770,6 +789,8 @@ async def linkedin_callback(
             )
             db.add(user)
             db.flush()
+        # First LinkedIn connection -> arm the onboarding tour (once per user).
+        _arm_onboarding_if_first_connect(user)
         auth_state.user_id = user.id
         auth_state.status = "callback_upserted"
         db.commit()
@@ -988,6 +1009,49 @@ def me(user: User = Depends(current_user)) -> JSONResponse:
         # whether to show the pricing table. unlimited=True for demo /
         # allowlisted accounts.
         "billing": bp.usage_snapshot(user),
+        # First-time-user onboarding tour. The in-person surface reads these
+        # to decide whether to run the coachmark flow ('active') and which
+        # step to resume from. saved_send_link is the user's reusable demo /
+        # Calendly link, pre-filled on every future send.
+        "onboarding_status": getattr(user, "onboarding_status", "") or "",
+        "onboarding_step": getattr(user, "onboarding_step", 0) or 0,
+        "saved_send_link": getattr(user, "saved_send_link", None),
+    })
+
+
+# ─── Onboarding tour state ─────────────────────────────────────────
+
+class OnboardingPatch(BaseModel):
+    # Which coachmark the user is on (0-based). Optional so a caller can
+    # update just the status (e.g. skip) without moving the step.
+    step: Optional[int] = None
+    # "active" | "done" | "skipped". "active" + step 0 re-runs the tour from
+    # settings. Omitted -> status unchanged.
+    status: Optional[str] = None
+
+
+@router.put("/onboarding")
+def update_onboarding(
+    patch: OnboardingPatch,
+    db: DbSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> JSONResponse:
+    """Persist onboarding progress so the tour survives a refresh / device
+    switch. The in-person surface PUTs here on every advance, on skip, and on
+    'replay tour' from settings."""
+    if patch.step is not None:
+        user.onboarding_step = max(0, int(patch.step))
+    if patch.status is not None:
+        status = (patch.status or "").strip().lower()
+        if status in {"active", "done", "skipped"}:
+            user.onboarding_status = status
+            if status == "active" and patch.step is None:
+                # Replay from the top unless the caller pinned a step.
+                user.onboarding_step = 0
+    db.commit()
+    return JSONResponse({
+        "onboarding_status": user.onboarding_status or "",
+        "onboarding_step": user.onboarding_step or 0,
     })
 
 

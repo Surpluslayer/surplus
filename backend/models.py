@@ -179,6 +179,9 @@ class Prospect(Base):
     # first message, e.g. "grab a coffee — book a time: <calendly link>".
     contact_type: Mapped[Optional[str]] = mapped_column(String(20), default=None)
     next_step: Mapped[Optional[str]] = mapped_column(String(300), default=None)
+    # VIP flag : the operator starred this person at capture time as someone
+    # to prioritize. Icon-only toggle in the in-person UI. False is the norm.
+    vip: Mapped[bool] = mapped_column(default=False)
     captured_at: Mapped[Optional[datetime]] = mapped_column(default=None)
     source: Mapped[Optional[str]] = mapped_column(String(20), default=None)
 
@@ -580,6 +583,31 @@ class User(Base):
     # settings route. Gated in agents/followup_scheduler.stage_followup so the
     # whole feature is off for a user until they explicitly turn it on.
     auto_followups_enabled: Mapped[bool] = mapped_column(default=False)
+
+    # ─── First-time-user onboarding (in-person coachmark tour) ──────────
+    # Lifecycle of the guided coachmark flow that walks a brand-new user
+    # through their first event → contact → send → relationships hub.
+    #   ""        : never armed (guest / pre-feature account, or not yet
+    #               connected). The default for a fresh row.
+    #   "active"  : armed — set the INSTANT the user first gains a LinkedIn
+    #               connection (see routes/auth: webhook + callback). The
+    #               in-person surface runs the tour from onboarding_step.
+    #   "done"    : finished the flow (or auto-backfilled for users who were
+    #               already connected before this feature shipped).
+    #   "skipped" : dismissed the whole flow. Re-runnable from settings,
+    #               which flips this back to "active" + step 0.
+    # Gated on the empty default so the arm fires exactly once per user and
+    # never on a re-connect / profile refresh.
+    onboarding_status: Mapped[str] = mapped_column(String(20), default="")
+    # Which coachmark the user is on (0-based index into the 7-step flow).
+    # Persisted on every advance so the tour resumes in place after a refresh
+    # or a device switch — the server is the source of truth.
+    onboarding_step: Mapped[int] = mapped_column(default=0)
+    # The host's reusable demo / Calendly link. Captured once during the
+    # "attach a link" onboarding step (or any in-person capture whose next
+    # step is a URL) and then pre-filled / auto-suggested on every future
+    # send. NULL until the first link is captured.
+    saved_send_link: Mapped[Optional[str]] = mapped_column(String(400), default=None)
 
     # ─── Billing ───────────────────────────────────────────────────────
     # Stripe customer id, set by the checkout webhook on first successful
