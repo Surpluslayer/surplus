@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .db import ENGINE, init_db
-from .routes import admin, auth, billing, curation, demo, events, followups, inperson, jobs, pipeline, matching, relationships, roi, triage, webhooks
+from .routes import admin, auth, billing, book, curation, demo, events, followups, inperson, jobs, pipeline, matching, relationships, roi, triage, webhooks
 
 
 @asynccontextmanager
@@ -86,6 +86,7 @@ async def no_store_for_api(request: Request, call_next):
     return response
 
 app.include_router(auth.router)
+app.include_router(book.router)
 app.include_router(demo.router)
 app.include_router(events.router)
 app.include_router(pipeline.router)
