@@ -333,7 +333,7 @@ const INTEGRATIONS = [
   {
     key: "email", name: "Email", Icon: Mail, brand: "#ea4335",
     blurb: "Gmail or Outlook. Pulls who you actually correspond with — and when you last talked.",
-    real: false,
+    real: true,
   },
   {
     key: "calendar", name: "Calendar", Icon: Calendar, brand: "#4285f4",
@@ -362,25 +362,39 @@ function Integrations() {
 
   const linkedinConnected = !!(user && user.unipile_account_id
     && user.linkedin_status === "active");
+  const emailConnected = !!(user && user.unipile_email_account_id
+    && user.email_status === "active");
 
-  const connectLinkedin = async () => {
-    setErr(""); setConnecting("linkedin");
+  // One generic starter for both hosted-auth connects: hit the start route,
+  // redirect the browser to Unipile's hosted page. The webhook flips the
+  // user row; we land back here with the tile reading Connected.
+  const startConnect = (key, startFn) => async () => {
+    setErr(""); setConnecting(key);
     try {
-      const r = await api.startLinkedinAuth();
+      const r = await startFn();
       if (r?.url) { window.location.href = r.url; return; }
       setConnecting("");
     } catch (e) {
-      setErr("Couldn't start LinkedIn connect: " + (e.message || "unknown"));
+      setErr(`Couldn't start ${key} connect: ` + (e.message || "unknown"));
       setConnecting("");
     }
   };
+  const connectLinkedin = startConnect("linkedin", api.startLinkedinAuth);
+  const connectEmail = startConnect("email", api.startEmailAuth);
 
   const statusFor = (it) => {
     if (!it.real) return { label: "Coming soon", connected: false, soon: true };
+    if (user === null) return { label: "…", connected: false };
     if (it.key === "linkedin") {
-      if (user === null) return { label: "…", connected: false };
       return linkedinConnected
         ? { label: "Connected", connected: true }
+        : { label: "Not connected", connected: false };
+    }
+    if (it.key === "email") {
+      return emailConnected
+        ? { label: user.email_account_address
+              ? `Connected · ${user.email_account_address}` : "Connected",
+            connected: true }
         : { label: "Not connected", connected: false };
     }
     return { label: "Not connected", connected: false };
@@ -463,7 +477,8 @@ function Integrations() {
                     Coming soon
                   </button>
                 ) : (
-                  <button onClick={it.key === "linkedin" ? connectLinkedin : undefined}
+                  <button onClick={it.key === "linkedin" ? connectLinkedin
+                                   : it.key === "email" ? connectEmail : undefined}
                           disabled={busy}
                           style={{ width: "100%", border: "none",
                                    background: C.accent, color: "#fff", borderRadius: 10,

@@ -381,6 +381,10 @@ export const api = {
   me: () => request("/api/auth/me"),
   // returns { url } : frontend sets window.location = url to begin the flow
   startLinkedinAuth: () => request("/api/auth/linkedin/start", { method: "POST" }),
+  // Connect the signed-in user's mailbox (Gmail/Outlook) as a second Unipile
+  // seat. Returns { url } — redirect the browser there; the hosted page does
+  // the OAuth and bounces back with the Integrations tile flipped.
+  startEmailAuth: () => request("/api/auth/email/start", { method: "POST" }),
   // First-time-user onboarding tour : persist progress so the coachmark flow
   // survives a refresh / device switch. Pass { step } to advance, { status }
   // to finish ("done") / dismiss ("skipped"), or { status:"active", step:0 }
