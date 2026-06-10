@@ -9,7 +9,8 @@
 // CRM work and from each app's own CSS.
 import React, { useState, useEffect, useRef } from "react";
 import { Users, ArrowLeft, Building2, CalendarDays, Activity, Sparkles,
-         MessageSquare, Send, Check, Clock } from "lucide-react";
+         MessageSquare, Send, Check, Clock, Plug2, Mail, Calendar,
+         MessageCircle, Link2, ArrowRight } from "lucide-react";
 import { api } from "../lib/api.js";
 import { UsageMeter, PaywallModal, paywallFromError } from "./UpgradePaywall.jsx";
 
@@ -82,6 +83,7 @@ export default function ContactsPage() {
   const [err, setErr] = useState(null);
   const [active, setActive] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [tab, setTab] = useState("contacts");   // "contacts" | "integrations"
 
   useEffect(() => {
     let cancelled = false;
@@ -211,7 +213,7 @@ export default function ContactsPage() {
   // ── list view ──────────────────────────────────────────────────────
   return (
     <div style={{ maxWidth: 980, margin: "0 auto", fontFamily: FONT }}>
-      <div style={{ marginBottom: 20 }}>
+      <div style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 26, fontWeight: 800, color: C.ink,
                       display: "flex", alignItems: "center", gap: 10 }}>
           <Users size={24} /> Relationships
@@ -222,6 +224,23 @@ export default function ContactsPage() {
         </div>
       </div>
 
+      <div style={{ display: "flex", gap: 6, marginBottom: 20 }}>
+        {[["contacts", "Contacts", Users],
+          ["integrations", "Integrations", Plug2]].map(([key, label, Icon]) => (
+          <button key={key} onClick={() => setTab(key)}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 7,
+                           background: tab === key ? C.chipBg : "transparent",
+                           color: tab === key ? C.chipInk : C.muted,
+                           border: `1px solid ${tab === key ? "transparent" : C.line}`,
+                           borderRadius: 999, padding: "8px 15px", cursor: "pointer",
+                           fontSize: 13.5, fontWeight: 700, fontFamily: FONT }}>
+            <Icon size={15} /> {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "integrations" ? <Integrations /> : (
+      <>
       <FollowupChat />
 
       {err && (
@@ -292,6 +311,179 @@ export default function ContactsPage() {
           ))}
         </div>
       )}
+      </>
+      )}
+    </div>
+  );
+}
+
+// ── Integrations : connect the apps your contacts already live in ────────────
+// The relationship engine's intake surface. Connecting an app is how your book
+// fills itself — no manual entry. LinkedIn is wired to the real hosted-auth
+// connect (and reflects live status off /me); Email / Calendar / WhatsApp are
+// shown as the roadmap so the demo tells the whole story. Per the design: each
+// app is its own progressive connect, and contacts sync in automatically (we
+// pull who you actually talk to — you remove, never assemble).
+const INTEGRATIONS = [
+  {
+    key: "linkedin", name: "LinkedIn", Icon: Link2, brand: "#0a66c2",
+    blurb: "Imports the people you connect with and message.",
+    real: true,
+  },
+  {
+    key: "email", name: "Email", Icon: Mail, brand: "#ea4335",
+    blurb: "Gmail or Outlook. Pulls who you actually correspond with — and when you last talked.",
+    real: false,
+  },
+  {
+    key: "calendar", name: "Calendar", Icon: Calendar, brand: "#4285f4",
+    blurb: "Knows who you're meeting, and nudges a follow-up after.",
+    real: false,
+  },
+  {
+    key: "whatsapp", name: "WhatsApp", Icon: MessageCircle, brand: "#25d366",
+    blurb: "Keeps the people you text in the loop too.",
+    real: false,
+  },
+];
+
+function Integrations() {
+  const [user, setUser] = useState(null);   // null = loading
+  const [connecting, setConnecting] = useState("");
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    api.me()
+      .then((u) => { if (!cancelled) setUser(u || {}); })
+      .catch(() => { if (!cancelled) setUser({}); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const linkedinConnected = !!(user && user.unipile_account_id
+    && user.linkedin_status === "active");
+
+  const connectLinkedin = async () => {
+    setErr(""); setConnecting("linkedin");
+    try {
+      const r = await api.startLinkedinAuth();
+      if (r?.url) { window.location.href = r.url; return; }
+      setConnecting("");
+    } catch (e) {
+      setErr("Couldn't start LinkedIn connect: " + (e.message || "unknown"));
+      setConnecting("");
+    }
+  };
+
+  const statusFor = (it) => {
+    if (!it.real) return { label: "Coming soon", connected: false, soon: true };
+    if (it.key === "linkedin") {
+      if (user === null) return { label: "…", connected: false };
+      return linkedinConnected
+        ? { label: "Connected", connected: true }
+        : { label: "Not connected", connected: false };
+    }
+    return { label: "Not connected", connected: false };
+  };
+
+  return (
+    <div style={{ fontFamily: FONT }}>
+      <div style={{ background: C.chipBg, border: `1px solid #e2d9fb`,
+                    borderRadius: 14, padding: "14px 16px", marginBottom: 18,
+                    display: "flex", gap: 10, alignItems: "flex-start" }}>
+        <Sparkles size={18} color={C.accent} style={{ flexShrink: 0, marginTop: 1 }} />
+        <div style={{ fontSize: 13.5, color: C.ink, lineHeight: 1.5 }}>
+          <strong>Connect the apps you already use.</strong> Your contacts sync
+          in automatically — we pull the people you actually talk to and how
+          recently, so your book stays warm without you typing a thing.
+        </div>
+      </div>
+
+      {err && (
+        <div style={{ color: "#c0432f", background: "#fdeaea",
+                      border: "1px solid #f3c9c2", borderRadius: 10,
+                      padding: "10px 14px", fontSize: 13, marginBottom: 16 }}>{err}</div>
+      )}
+
+      <div style={{ display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+                    gap: 12 }}>
+        {INTEGRATIONS.map((it) => {
+          const st = statusFor(it);
+          const busy = connecting === it.key;
+          return (
+            <div key={it.key}
+                 style={{ background: C.card, border: `1px solid ${C.line}`,
+                          borderRadius: 14, padding: "16px 18px",
+                          opacity: st.soon ? 0.85 : 1 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ width: 40, height: 40, borderRadius: 10,
+                              background: `${it.brand}14`, color: it.brand,
+                              display: "flex", alignItems: "center",
+                              justifyContent: "center", flexShrink: 0 }}>
+                  <it.Icon size={21} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, color: C.ink, fontSize: 15.5 }}>
+                    {it.name}
+                  </div>
+                  <div style={{ fontSize: 12, marginTop: 2,
+                                display: "inline-flex", alignItems: "center", gap: 5,
+                                color: st.connected ? "#1c8c4e"
+                                  : st.soon ? C.faint : C.muted, fontWeight: 600 }}>
+                    {st.connected && <Check size={12} />}
+                    {st.label}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ fontSize: 13, color: C.muted, marginTop: 12,
+                            lineHeight: 1.5 }}>
+                {it.blurb}
+              </div>
+
+              <div style={{ marginTop: 14 }}>
+                {st.connected ? (
+                  <button disabled
+                          style={{ width: "100%", border: `1px solid ${C.line}`,
+                                   background: C.bg, color: C.muted, borderRadius: 10,
+                                   padding: "10px", fontSize: 13.5, fontWeight: 700,
+                                   fontFamily: FONT, cursor: "default",
+                                   display: "inline-flex", alignItems: "center",
+                                   justifyContent: "center", gap: 7 }}>
+                    <Check size={15} /> Connected
+                  </button>
+                ) : st.soon ? (
+                  <button disabled title="On the roadmap"
+                          style={{ width: "100%", border: `1px dashed ${C.line}`,
+                                   background: "transparent", color: C.faint,
+                                   borderRadius: 10, padding: "10px", fontSize: 13.5,
+                                   fontWeight: 700, fontFamily: FONT,
+                                   cursor: "not-allowed" }}>
+                    Coming soon
+                  </button>
+                ) : (
+                  <button onClick={it.key === "linkedin" ? connectLinkedin : undefined}
+                          disabled={busy}
+                          style={{ width: "100%", border: "none",
+                                   background: C.accent, color: "#fff", borderRadius: 10,
+                                   padding: "10px", fontSize: 13.5, fontWeight: 700,
+                                   fontFamily: FONT, cursor: busy ? "default" : "pointer",
+                                   display: "inline-flex", alignItems: "center",
+                                   justifyContent: "center", gap: 7 }}>
+                    {busy ? "Connecting…" : <>Connect <ArrowRight size={15} /></>}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ fontSize: 12, color: C.faint, marginTop: 16, lineHeight: 1.5 }}>
+        We only ever sync people you genuinely correspond with, and you can hide
+        anyone — you remove, you never have to build the list yourself.
+      </div>
     </div>
   );
 }
