@@ -118,3 +118,27 @@ def test_provider_send_email_dry_run_carries_reply_to():
     assert res.state == "dry_run_queued"
     assert res.payload["reply_to"] == "a2"
     assert res.payload["to"][0]["identifier"] == "maya@x.com"
+
+
+def test_set_contact_email_clears_stale_thread(db):
+    """Changing a contact's address must clear the linked thread (it belonged
+    to the old address) and backfill linked prospects."""
+    from backend.routes import relationships as rel_routes
+    u = _user(db)
+    c = models.Contact(user_id=u.id, primary_identity_key="li:maya",
+                       name="Maya", email="old@x.com", email_thread_id="tOLD")
+    db.add(c); db.commit(); db.refresh(c)
+
+    out = rel_routes.set_contact_email(
+        c.id, rel_routes.ContactEmailIn(email="Maya@Lo91r.com"), db, u)
+    db.refresh(c)
+    assert c.email == "maya@lo91r.com"
+    assert c.email_thread_id is None          # stale link cleared
+    assert out["linked_thread_id"] is None
+
+    # Same address again: no-op on the thread link.
+    c.email_thread_id = "tNEW"; db.commit()
+    rel_routes.set_contact_email(
+        c.id, rel_routes.ContactEmailIn(email="maya@lo91r.com"), db, u)
+    db.refresh(c)
+    assert c.email_thread_id == "tNEW"
