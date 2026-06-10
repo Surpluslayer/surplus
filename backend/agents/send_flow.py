@@ -45,14 +45,18 @@ def _aware(dt: Optional[datetime]) -> Optional[datetime]:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
-def _assert_no_recent_send(db, prospect: models.Prospect) -> None:
-    """409 if the last real send to this prospect is unconfirmed-and-recent or
-    confirmed-but-seconds-old. Dry-run rows never block (their state is
-    dry_run_queued), so demos are unaffected."""
+def _assert_no_recent_send(db, prospect: models.Prospect,
+                           channel: str = "linkedin") -> None:
+    """409 if the last real send to this prospect ON THIS CHANNEL is
+    unconfirmed-and-recent or confirmed-but-seconds-old. Per-channel so an
+    email follow-up isn't blocked by a LinkedIn DM seconds earlier (different
+    surfaces, deliberate cross-channel touches are allowed). Dry-run rows
+    never block (their state is dry_run_queued), so demos are unaffected."""
+    surface = "LinkedIn" if channel == "linkedin" else "their inbox"
     last = (
         db.query(models.OutreachLog)
         .filter(models.OutreachLog.prospect_id == prospect.id,
-                models.OutreachLog.channel == "linkedin",
+                models.OutreachLog.channel == channel,
                 models.OutreachLog.state.in_(_SENT_STATES + ("unconfirmed",)))
         .order_by(models.OutreachLog.ts.desc())
         .first())
@@ -67,9 +71,9 @@ def _assert_no_recent_send(db, prospect: models.Prospect) -> None:
         raise HTTPException(
             409,
             "The previous send to this person didn't confirm (the request "
-            "went out but the response was lost) — it may already be on "
-            "LinkedIn. Check their profile/thread before retrying; this "
-            f"guard lifts in {mins_left} min.")
+            "went out but the response was lost) — it may already be in "
+            f"{surface}. Check before retrying; this guard lifts in "
+            f"{mins_left} min.")
     if last.state in _SENT_STATES and age < _JUST_SENT_HOLD:
         raise HTTPException(
             409, "A message to this person was sent seconds ago — refusing "
