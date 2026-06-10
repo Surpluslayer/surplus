@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Surplus — design reference</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.47.0/dist/tabler-icons.min.css" rel="stylesheet">
+<style>
+/* ============================================================
+   SURPLUS DESIGN TOKENS
+   Single source of truth. Re-theme by editing these.
+   ============================================================ */
+:root{
+  --ink:#1b1e22;          /* primary text */
+  --muted:#5b616a;        /* secondary text */
+  --faint:#99a0a8;        /* tertiary text / metadata */
+  --bg:#ffffff;           /* white surface (cards / sheet body) */
+  --surface:#f4f5f7;      /* gray surface (list groups, inputs) */
+  --line:rgba(20,23,28,.08);
+  --line-2:rgba(20,23,28,.16);
+
+  --accent:#2f6df6;       /* primary action / links */
+  --accent-bg:#eaf1fe;
+
+  --success:#1f9d62;  --success-bg:#e7f5ee;   /* active */
+  --warning:#b07210;  --warning-bg:#fbf1e1;   /* warm / quiet */
+  --danger:#c0433d;   --danger-bg:#fbeceb;    /* cooling / dormant */
+  --gold:#ba7517;                             /* key-relationship star */
+
+  --r-sm:8px; --r-md:10px; --r-lg:14px;
+  --font-ui:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --font-display:'Newsreader',Georgia,'Times New Roman',serif;
+}
+
+/* ---------- base ---------- */
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:#e9ebee;color:var(--ink);font-family:var(--font-ui);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+p{margin:0}
+.i{font-size:16px;line-height:1}      /* default icon size */
+
+/* ---------- gallery scaffold (reference only — not part of the app) ---------- */
+.gallery{display:flex;flex-wrap:wrap;gap:36px 24px;justify-content:center;align-items:flex-start;padding:40px 16px 64px}
+.frame{width:392px;max-width:100%}
+.caption{font-size:13px;font-weight:500;color:var(--muted);margin:0 0 10px 4px}
+
+/* ============================================================
+   APP COMPONENTS — these classes are what you port into Surplus
+   ============================================================ */
+.phone{background:var(--bg);border:.5px solid var(--line-2);border-radius:26px;overflow:hidden}
+
+/* top bar / headings */
+.topbar{display:flex;align-items:flex-start;justify-content:space-between;padding:18px 18px 14px}
+.eyebrow{font-size:12px;color:var(--faint);margin:0 0 2px}
+.h-display{font-family:var(--font-display);font-size:23px;font-weight:400;margin:0}
+.h-display--lg{font-size:24px}
+.avatar{width:28px;height:28px;border-radius:50%;background:var(--accent-bg);color:var(--accent);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:500;flex:none}
+.brand{font-size:15px;font-weight:500}
+
+/* agent ask bar */
+.agent-bar{display:flex;align-items:center;gap:10px;margin:0 18px 20px;background:var(--surface);border:.5px solid var(--line);border-radius:999px;padding:9px 15px}
+.agent-bar .ph{flex:1;font-size:13px;color:var(--faint)}
+.agent-bar .i{color:var(--accent);font-size:17px;cursor:pointer}
+
+/* section label + count */
+.sec{padding:0 18px 6px;display:flex;align-items:baseline;justify-content:space-between}
+.sec-label{font-size:13px;font-weight:500}
+.sec-label .count{color:var(--faint);font-weight:400}
+.sec-link{font-size:12px;color:var(--accent);cursor:pointer}
+
+/* grouped list */
+.group{margin:0 18px 20px;background:var(--surface);border:.5px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 14px}
+.row + .row{border-top:.5px solid var(--line)}
+.row .main{min-width:0}
+.row .name{font-size:14px;font-weight:500;margin:0}
+.row .sub{font-size:12px;color:var(--muted);margin:2px 0 0}
+.row .meta{font-size:11px;color:var(--faint);margin:3px 0 0}
+.row .aside{text-align:right;white-space:nowrap}
+.row .time{font-size:11px;color:var(--faint);margin:0}
+
+.star{font-size:13px;color:var(--gold);vertical-align:-1px}
+.draft{font-size:12px;color:var(--accent);cursor:pointer;white-space:nowrap}
+
+/* relationship health pip + word */
+.health{display:inline-flex;align-items:center;gap:5px;font-size:11px;white-space:nowrap}
+.health .dot{width:7px;height:7px;border-radius:50%}
+.health.cooling,.health.dormant{color:var(--danger)} .health.cooling .dot,.health.dormant .dot{background:var(--danger)}
+.health.warm{color:var(--warning)} .health.warm .dot{background:var(--warning)}
+.health.active{color:var(--success)} .health.active .dot{background:var(--success)}
+.health.new{color:var(--accent)}
+
+/* filter pills */
+.pills{display:flex;gap:7px;flex-wrap:wrap;padding:0 18px 12px}
+.pill{font-size:12px;color:var(--muted);background:var(--surface);padding:5px 12px;border-radius:999px;cursor:pointer}
+.pill.active{background:var(--accent-bg);color:var(--accent);font-weight:500}
+.hint{font-size:11px;color:var(--faint);margin:0 18px 8px}
+.more{text-align:center;font-size:12px;color:var(--accent);margin:0 0 16px;cursor:pointer}
+
+/* assistant card (Book) */
+.assistant{margin:0 18px 14px;background:var(--surface);border:.5px solid var(--line);border-radius:var(--r-lg);padding:13px 14px}
+.assistant .head{display:flex;align-items:center;gap:7px;margin-bottom:10px}
+.assistant .head .i{color:var(--accent);font-size:16px}
+.assistant .head span{font-size:13px;font-weight:500}
+.field{display:flex;align-items:center;gap:8px}
+.field input{flex:1;height:36px;border:.5px solid var(--line-2);border-radius:var(--r-md);padding:0 12px;font:inherit;font-size:13px;background:var(--bg);color:var(--ink)}
+.field input::placeholder{color:var(--faint)}
+.send{width:36px;height:36px;border:.5px solid var(--accent);background:var(--accent-bg);color:var(--accent);border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.chip{font-size:11px;color:var(--ink);background:var(--bg);border:.5px solid var(--line-2);border-radius:var(--r-md);padding:5px 10px;cursor:pointer}
+
+/* buttons */
+.btn{font:inherit;font-size:13px;border:.5px solid var(--line-2);background:var(--bg);color:var(--ink);border-radius:var(--r-md);padding:7px 13px;cursor:pointer}
+.btn--primary{background:var(--accent-bg);color:var(--accent);border-color:var(--accent)}
+.btn--block{width:100%;display:flex;align-items:center;justify-content:center;gap:8px;font-size:15px;font-weight:500;padding:14px}
+
+/* bottom nav (Today · Add · Book) */
+.nav{display:flex;align-items:center;border-top:.5px solid var(--line);padding:8px 0}
+.nav-item{flex:1;text-align:center;color:var(--faint);cursor:pointer}
+.nav-item .i{font-size:19px;display:block}
+.nav-item span{font-size:11px}
+.nav-item.active{color:var(--accent)}
+.nav-add{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer}
+.nav-add .fab{width:44px;height:44px;border-radius:50%;background:var(--accent-bg);color:var(--accent);border:.5px solid var(--accent);display:flex;align-items:center;justify-content:center}
+.nav-add .fab .i{font-size:22px}
+.nav-add span{font-size:11px;color:var(--accent)}
+
+/* Add-contact sheet */
+.grabber{display:flex;justify-content:center;padding:12px 0 2px}
+.grabber span{width:40px;height:4px;border-radius:999px;background:var(--line-2)}
+.sheet-title{display:flex;align-items:center;justify-content:space-between;padding:8px 18px 12px}
+.event{margin:0 18px 14px;background:var(--surface);border:.5px solid var(--line);border-radius:var(--r-lg);padding:12px 14px}
+.event .current{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-bottom:11px;border-bottom:.5px solid var(--line)}
+.event .current .name{display:inline-flex;align-items:center;gap:8px;font-size:16px;font-weight:500}
+.event .current .name .i{color:var(--accent);font-size:18px}
+.event .field{margin-top:11px}
+.event .recents{margin-top:11px}
+.banner{margin:0 18px 14px;background:var(--accent-bg);color:var(--accent);border-radius:var(--r-md);padding:9px 12px;text-align:center;font-size:12px}
+.banner b{font-weight:500}
+.tabs{display:flex;gap:4px;margin:0 18px 16px;background:var(--surface);border-radius:var(--r-md);padding:4px}
+.tab{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:8px 0;font-size:13px;color:var(--muted);border-radius:var(--r-md);cursor:pointer}
+.tab .i{font-size:16px}
+.tab.active{background:var(--bg);color:var(--accent);font-weight:500}
+.scan{margin:0 18px 20px;border:1.5px dashed var(--line-2);border-radius:var(--r-lg);padding:32px 20px;text-align:center}
+.scan .target{width:92px;height:92px;margin:0 auto 16px;border-radius:var(--r-md);background:var(--surface);display:flex;align-items:center;justify-content:center}
+.scan .target .i{font-size:42px;color:var(--accent)}
+.scan .lead{font-size:15px;font-weight:500;margin:0}
+.scan .sub{font-size:12px;color:var(--muted);margin:7px 0 0}
+
+/* relationship detail */
+.detail-head{display:flex;align-items:center;gap:8px;padding:16px 18px 6px}
+.detail-head .i{font-size:20px;color:var(--muted);cursor:pointer}
+.detail-head .crumb{font-size:13px;color:var(--faint)}
+.subhead{padding:2px 18px 14px}
+.subhead .role{font-size:13px;color:var(--muted);margin:4px 0 0}
+.subhead .stat{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:var(--faint)}
+.panel{margin:0 18px 12px;background:var(--surface);border:.5px solid var(--line);border-radius:var(--r-lg);padding:13px 15px}
+.panel .head{display:flex;align-items:center;gap:7px;margin-bottom:8px}
+.panel .head .i{color:var(--accent);font-size:16px}
+.panel .head span{font-size:13px;font-weight:500}
+.panel p{font-size:13px;color:var(--muted);line-height:1.55}
+.panel .label{font-size:12px;color:var(--faint);margin:0 0 9px}
+.quote{background:var(--bg);border:.5px solid var(--line);border-radius:var(--r-md);padding:11px 13px}
+.quote p{font-family:var(--font-display);font-size:14px;color:var(--ink);line-height:1.55}
+.actions{margin-top:10px;display:flex;gap:8px}
+.tl{margin:0 18px 14px;background:var(--surface);border:.5px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.tl-item{display:flex;align-items:flex-start;gap:10px;padding:11px 14px}
+.tl-item + .tl-item{border-top:.5px solid var(--line)}
+.tl-item .dot{width:7px;height:7px;border-radius:50%;background:var(--faint);margin-top:5px;flex:none}
+.tl-item .dot.warn{background:var(--warning)}
+.tl-item .t{font-size:13px;margin:0}
+.tl-item .d{font-size:11px;color:var(--faint);margin:2px 0 0}
+
+/* account / settings */
+.acct-head{display:flex;align-items:center;gap:13px;padding:8px 18px 18px}
+.avatar-lg{width:48px;height:48px;border-radius:50%;background:var(--accent-bg);color:var(--accent);display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:500;flex:none}
+.acct-head .nm{font-family:var(--font-display);font-size:22px;font-weight:400;margin:0}
+.acct-head .em{font-size:12px;color:var(--muted);margin:3px 0 0}
+.set-group{margin:0 18px 16px;background:var(--surface);border:.5px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.set-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 14px}
+.set-row + .set-row{border-top:.5px solid var(--line)}
+.set-row .lead{display:inline-flex;align-items:center;gap:11px}
+.set-row .lead .i{font-size:19px;color:var(--muted)}
+.set-row .lead .lbl{font-size:14px}
+.set-row .right{display:inline-flex;align-items:center;gap:8px}
+.set-row .val{font-size:12px;color:var(--faint)}
+.set-row .chev{font-size:17px;color:var(--faint)}
+.set-row.danger .lead .i,.set-row.danger .lead .lbl{color:var(--danger)}
+
+/* connections */
+.conn-row{display:flex;align-items:center;gap:12px;padding:13px 14px}
+.conn-row + .conn-row{border-top:.5px solid var(--line)}
+.conn-row .tile{width:38px;height:38px;border-radius:var(--r-md);background:var(--bg);border:.5px solid var(--line);display:flex;align-items:center;justify-content:center;flex:none}
+.conn-row .tile .i{font-size:21px;color:var(--accent)}
+.conn-row .main{flex:1;min-width:0}
+.conn-row .name{font-size:14px;font-weight:500;margin:0}
+.conn-row .sub{font-size:12px;color:var(--muted);margin:2px 0 0}
+.conn-status{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--success);white-space:nowrap}
+.note{font-size:11px;color:var(--faint);margin:0 18px 20px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="gallery">
+
+  <!-- ================= TODAY ================= -->
+  <div class="frame">
+    <p class="caption">Today</p>
+    <div class="phone">
+      <div class="topbar">
+        <div>
+          <p class="eyebrow">Wednesday, June 10</p>
+          <p class="h-display">Your book today</p>
+        </div>
+        <div class="avatar">JL</div>
+      </div>
+
+      <div class="agent-bar">
+        <i class="ti ti-sparkles" aria-hidden="true"></i>
+        <span class="ph">Ask your agent anything…</span>
+        <i class="ti ti-arrow-up" aria-label="Ask"></i>
+      </div>
+
+      <div class="sec"><span class="sec-label">Updates <span class="count">· 3</span></span></div>
+      <div class="group">
+        <div class="row">
+          <div class="main"><p class="name">James Holloway <i class="ti ti-star star" aria-label="Key relationship"></i></p><p class="sub">Liquidity event flagged</p></div>
+          <div class="aside"><p class="time">2h ago</p><span class="draft">Draft →</span></div>
+        </div>
+        <div class="row">
+          <div class="main"><p class="name">Priya Nadel</p><p class="sub">Promoted to MD, Lumen Growth</p></div>
+          <div class="aside"><p class="time">Yesterday</p><span class="draft">Draft →</span></div>
+        </div>
+        <div class="row">
+          <div class="main"><p class="name">David Osei <i class="ti ti-star star" aria-label="Key relationship"></i></p><p class="sub">Raised a new fund</p></div>
+          <div class="aside"><p class="time">Tuesday</p><span class="draft">Draft →</span></div>
+        </div>
+      </div>
+
+      <div class="sec"><span class="sec-label">Needs outreach <span class="count">· 9</span></span></div>
+      <div class="group">
+        <div class="row"><div class="main"><p class="name">Thomas Reyes</p><p class="sub">Quiet 64 days</p></div><span class="draft">Draft →</span></div>
+        <div class="row"><div class="main"><p class="name">Margaret Chen <i class="ti ti-star star" aria-label="Key relationship"></i></p><p class="sub">Quiet 18 days · review due</p></div><span class="draft">Draft →</span></div>
+        <div class="row"><div class="main"><p class="name">Sofia Klein</p><p class="sub">Quiet 38 days</p></div><span class="draft">Draft →</span></div>
+      </div>
+
+      <div class="nav">
+        <div class="nav-item active"><i class="ti ti-layout-dashboard" aria-hidden="true"></i><span>Today</span></div>
+        <div class="nav-add"><span class="fab"><i class="ti ti-plus" aria-hidden="true"></i></span><span>Add</span></div>
+        <div class="nav-item"><i class="ti ti-address-book" aria-hidden="true"></i><span>Book</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= BOOK ================= -->
+  <div class="frame">
+    <p class="caption">Book</p>
+    <div class="phone">
+      <div class="topbar" style="align-items:center;padding-bottom:12px">
+        <span class="h-display" style="display:inline-flex;align-items:center;gap:10px">Your book <span style="font-size:13px;color:var(--faint);font-family:var(--font-ui)">142</span></span>
+      </div>
+
+      <div class="assistant">
+        <div class="head"><i class="ti ti-sparkles" aria-hidden="true"></i><span>Relationship assistant</span></div>
+        <div class="field">
+          <input type="text" placeholder="Ask about anyone, or who to follow up with…" />
+          <span class="send" aria-label="Ask"><i class="ti ti-arrow-up" aria-hidden="true"></i></span>
+        </div>
+        <div class="chips">
+          <span class="chip">Who's cooling?</span>
+          <span class="chip">Reviews due</span>
+          <span class="chip">Quiet 30+ days</span>
+        </div>
+      </div>
+
+      <div class="pills">
+        <span class="pill active">All</span>
+        <span class="pill">Starred</span>
+        <span class="pill">Cooling</span>
+        <span class="pill">Prospects</span>
+      </div>
+      <p class="hint">Sorted by who needs attention</p>
+
+      <div class="group">
+        <div class="row"><div class="main"><p class="name">Thomas Reyes</p><p class="sub">SVP finance · Atlas Pension</p><p class="meta">Met at SALT · last spoke 64d ago</p></div><span class="health dormant"><span class="dot"></span>Dormant</span></div>
+        <div class="row"><div class="main"><p class="name">Margaret Chen <i class="ti ti-star star"></i></p><p class="sub">Founder · Chen Family Office</p><p class="meta">Met at SALT · last spoke 18d ago</p></div><span class="health cooling"><span class="dot"></span>Cooling</span></div>
+        <div class="row"><div class="main"><p class="name">Naomi Vance</p><p class="sub">Partner · Vance Family Office</p><p class="meta">Met at Milken · review overdue 6d</p></div><span class="health cooling"><span class="dot"></span>Cooling</span></div>
+        <div class="row"><div class="main"><p class="name">James Holloway <i class="ti ti-star star"></i></p><p class="sub">General counsel · Meridian Capital</p><p class="meta">Met at NYC Tech Week · last spoke 11d ago</p></div><span class="health warm"><span class="dot"></span>Warm</span></div>
+        <div class="row"><div class="main"><p class="name">David Osei <i class="ti ti-star star"></i></p><p class="sub">Partner · Crestline Partners</p><p class="meta">Met at NYC Tech Week · last spoke 5d ago</p></div><span class="health active"><span class="dot"></span>Active</span></div>
+        <div class="row"><div class="main"><p class="name">Elena Marsh</p><p class="sub">Principal · Hawthorn Wealth</p><p class="meta">Met at NYC Tech Week · moments ago</p></div><span class="health new">New</span></div>
+      </div>
+      <p class="more">Show 136 more</p>
+
+      <div class="nav">
+        <div class="nav-item"><i class="ti ti-layout-dashboard" aria-hidden="true"></i><span>Today</span></div>
+        <div class="nav-add"><span class="fab"><i class="ti ti-plus" aria-hidden="true"></i></span><span>Add</span></div>
+        <div class="nav-item active"><i class="ti ti-address-book" aria-hidden="true"></i><span>Book</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= ADD CONTACT ================= -->
+  <div class="frame">
+    <p class="caption">Add contact</p>
+    <div class="phone">
+      <div class="grabber"><span></span></div>
+      <div class="sheet-title">
+        <span class="h-display">Add contact</span>
+        <i class="ti ti-x" style="font-size:20px;color:var(--faint);cursor:pointer" aria-label="Close"></i>
+      </div>
+
+      <div class="event">
+        <div class="current">
+          <span class="name"><i class="ti ti-map-pin" aria-hidden="true"></i>Founders Inc</span>
+          <i class="ti ti-chevron-down" style="color:var(--faint)" aria-hidden="true"></i>
+        </div>
+        <div class="field" style="margin-top:11px">
+          <input type="text" placeholder="e.g. NYC Tech Week — Founders Inc" />
+          <button class="btn btn--primary" style="height:36px">Set</button>
+        </div>
+        <div class="chips recents">
+          <span class="pill active">Founders Inc</span>
+          <span class="chip">NYC Tech Week</span>
+          <span class="chip">SALT Conference</span>
+        </div>
+      </div>
+
+      <div class="banner"><b>1.</b> Add the person · <b>2.</b> Connect. That's it.</div>
+
+      <div class="tabs">
+        <div class="tab active"><i class="ti ti-qrcode" aria-hidden="true"></i> Scan QR</div>
+        <div class="tab"><i class="ti ti-link" aria-hidden="true"></i> Paste link</div>
+        <div class="tab"><i class="ti ti-search" aria-hidden="true"></i> By name</div>
+      </div>
+
+      <div class="scan">
+        <div class="target"><i class="ti ti-qrcode" aria-hidden="true"></i></div>
+        <p class="lead">Point at their badge or QR</p>
+        <p class="sub">It lands in your book in seconds. No camera? Switch to <b style="color:var(--ink);font-weight:500">Paste link</b>.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= RELATIONSHIP ================= -->
+  <div class="frame">
+    <p class="caption">Relationship</p>
+    <div class="phone">
+      <div class="detail-head"><i class="ti ti-chevron-left" aria-label="Back"></i><span class="crumb">Your book</span></div>
+      <div class="subhead">
+        <p class="h-display h-display--lg">Margaret Chen <i class="ti ti-star star" style="font-size:16px;vertical-align:1px"></i></p>
+        <p class="role">Founder · Chen Family Office</p>
+        <div class="stat"><span class="health cooling"><span class="dot"></span>Cooling</span><span>· last spoke 18 days ago · $40M relationship</span></div>
+      </div>
+
+      <div class="panel">
+        <div class="head"><i class="ti ti-sparkles" aria-hidden="true"></i><span>Why she's cooling</span></div>
+        <p>It's been 18 days since you last spoke, her annual review is overdue, and she's one of your largest relationships. A personal note this week is worth more than another quarter of silence.</p>
+      </div>
+
+      <div class="panel">
+        <p class="label">Drafted re-engagement</p>
+        <div class="quote"><p>Hi Margaret — it's been a few weeks. I'd love to set up your annual review and hear how the family office expansion is coming along. Would early next week suit you?</p></div>
+        <div class="actions">
+          <button class="btn btn--primary"><i class="ti ti-send" style="font-size:13px;vertical-align:-1px;margin-right:4px"></i>Send</button>
+          <button class="btn">Refine</button>
+          <button class="btn">Snooze</button>
+        </div>
+      </div>
+
+      <p class="sec-label" style="margin:0 18px 8px">Timeline</p>
+      <div class="tl">
+        <div class="tl-item"><span class="dot warn"></span><div><p class="t">Sent market update · no reply</p><p class="d">18 days ago</p></div></div>
+        <div class="tl-item"><span class="dot"></span><div><p class="t">Quarterly call · discussed succession plan</p><p class="d">Apr 12</p></div></div>
+        <div class="tl-item"><span class="dot"></span><div><p class="t">Lunch · introduced her daughter Claire</p><p class="d">Feb 3</p></div></div>
+        <div class="tl-item"><span class="dot"></span><div><p class="t">Met at SALT Conference</p><p class="d">Nov 2024</p></div></div>
+      </div>
+
+      <div class="nav">
+        <div class="nav-item"><i class="ti ti-layout-dashboard" aria-hidden="true"></i><span>Today</span></div>
+        <div class="nav-add"><span class="fab"><i class="ti ti-plus" aria-hidden="true"></i></span><span>Add</span></div>
+        <div class="nav-item active"><i class="ti ti-address-book" aria-hidden="true"></i><span>Book</span></div>
+      </div>
+    </div>
+  </div>
+  <!-- ================= ACCOUNT ================= -->
+  <div class="frame">
+    <p class="caption">Account &nbsp;<span style="color:var(--faint);font-weight:400">(tap the JL avatar)</span></p>
+    <div class="phone">
+      <div class="detail-head"><i class="ti ti-chevron-left" aria-label="Back to Today"></i><span class="crumb">Today</span></div>
+      <div class="acct-head">
+        <div class="avatar-lg">JL</div>
+        <div><p class="nm">Jia Liu</p><p class="em">jia@surplus.com</p></div>
+      </div>
+      <div class="set-group">
+        <div class="set-row">
+          <span class="lead"><i class="ti ti-plug" aria-hidden="true"></i><span class="lbl">Connections</span></span>
+          <span class="right"><span class="health warm"><span class="dot"></span>Calendar off</span><i class="ti ti-chevron-right chev" aria-hidden="true"></i></span>
+        </div>
+        <div class="set-row">
+          <span class="lead"><i class="ti ti-credit-card" aria-hidden="true"></i><span class="lbl">Plan</span></span>
+          <span class="right"><span class="val">Individual</span><i class="ti ti-chevron-right chev" aria-hidden="true"></i></span>
+        </div>
+      </div>
+      <div class="set-group">
+        <div class="set-row danger"><span class="lead"><i class="ti ti-logout" aria-hidden="true"></i><span class="lbl">Sign out</span></span></div>
+      </div>
+      <div class="nav">
+        <div class="nav-item"><i class="ti ti-layout-dashboard" aria-hidden="true"></i><span>Today</span></div>
+        <div class="nav-add"><span class="fab"><i class="ti ti-plus" aria-hidden="true"></i></span><span>Add</span></div>
+        <div class="nav-item"><i class="ti ti-address-book" aria-hidden="true"></i><span>Book</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= CONNECTIONS ================= -->
+  <div class="frame">
+    <p class="caption">Connections &nbsp;<span style="color:var(--faint);font-weight:400">(Account &rarr; Connections)</span></p>
+    <div class="phone">
+      <div class="detail-head"><i class="ti ti-chevron-left" aria-label="Back to Account"></i><span class="crumb">Account</span></div>
+      <div class="subhead" style="padding:2px 18px 16px"><p class="h-display">Connections</p></div>
+      <div class="set-group">
+        <div class="conn-row">
+          <span class="tile"><i class="ti ti-brand-linkedin" aria-hidden="true"></i></span>
+          <div class="main"><p class="name">LinkedIn</p><p class="sub">Enrichment &amp; job-change updates</p></div>
+          <span class="conn-status"><i class="ti ti-circle-check" style="font-size:14px"></i>Connected</span>
+        </div>
+        <div class="conn-row">
+          <span class="tile"><i class="ti ti-mail" aria-hidden="true"></i></span>
+          <div class="main"><p class="name">Gmail</p><p class="sub">Tracks replies, sends your drafts</p></div>
+          <span class="conn-status"><i class="ti ti-circle-check" style="font-size:14px"></i>Connected</span>
+        </div>
+        <div class="conn-row">
+          <span class="tile"><i class="ti ti-calendar" aria-hidden="true"></i></span>
+          <div class="main"><p class="name">Google Calendar</p><p class="sub">Logs meetings, books reviews</p></div>
+          <button class="btn btn--primary">Connect</button>
+        </div>
+      </div>
+      <p class="note">Surplus reads these to keep your book current — it never posts or emails without you.</p>
+      <div class="nav">
+        <div class="nav-item"><i class="ti ti-layout-dashboard" aria-hidden="true"></i><span>Today</span></div>
+        <div class="nav-add"><span class="fab"><i class="ti ti-plus" aria-hidden="true"></i></span><span>Add</span></div>
+        <div class="nav-item"><i class="ti ti-address-book" aria-hidden="true"></i><span>Book</span></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
