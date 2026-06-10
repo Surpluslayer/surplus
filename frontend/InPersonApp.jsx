@@ -293,7 +293,7 @@ function InPersonAppInner() {
           </button>
           <button className={view === "flow" && tab === "people" ? "on" : ""}
                   onClick={() => { setView("flow"); setTab("people"); }}>
-            <Users size={20} /><span>People</span>
+            <Users size={20} /><span>Relationship</span>
           </button>
           {isOperator && (
             <button className={view === "flow" && tab === "activity" ? "on" : ""}
@@ -819,7 +819,7 @@ function ScanResult({ event, result, onDone, onCancel, canSend, savedLink = "", 
         </div>
         {result.resolve_failed && (
           <div className="ip-warn"><AlertCircle size={13} /> Couldn’t resolve on
-            LinkedIn — saved anyway, retry from People.</div>
+            LinkedIn — saved anyway, retry from Relationship.</div>
         )}
       </div>
 
@@ -938,7 +938,7 @@ function ScanResult({ event, result, onDone, onCancel, canSend, savedLink = "", 
       </div>
       {!canSend && <div className="ip-dim ip-center">Connect LinkedIn to send now.</div>}
       <div className="ip-dim ip-center ip-laterhint">
-        You can also edit any of this later from <b>People</b>.
+        You can also edit any of this later from <b>Relationship</b>.
       </div>
     </div>
   );
@@ -1131,7 +1131,7 @@ function CaptureDetail({ event, capture, onBack, canSend }) {
 
   return (
     <div className="ip-screen ip-result">
-      <button className="ip-back" onClick={onBack}><ArrowLeft size={18} /> People</button>
+      <button className="ip-back" onClick={onBack}><ArrowLeft size={18} /> Relationship</button>
 
       <div className="ip-person">
         <div className="ip-person-head">
