@@ -1003,6 +1003,32 @@ async def email_webhook(payload: dict,
     db.commit()
     print(f"  [auth.email] attached email account {account_id} to "
           f"user.id={user.id} ({user.email_account_address or 'address n/a'})")
+
+    # The magic moment: connect → the book fills itself. Kick the first
+    # mailbox sync in the background (own thread + own DB session — this
+    # webhook must ack fast or Unipile retries). Best-effort by design;
+    # the manual /api/relationships/email/sync route covers any failure.
+    user_id = user.id
+    if dsn and api_key:
+        import threading
+
+        def _first_sync():
+            from ..db import SessionLocal
+            from ..agents.email_sync import sync_email_contacts
+            sdb = SessionLocal()
+            try:
+                u = sdb.query(User).filter(User.id == user_id).first()
+                if u is not None:
+                    stats = sync_email_contacts(sdb, u, dsn=dsn, api_key=api_key)
+                    print(f"  [auth.email] first sync user.id={user_id}: {stats}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [auth.email] first sync failed: "
+                      f"{type(exc).__name__}: {exc}")
+            finally:
+                sdb.close()
+
+        threading.Thread(target=_first_sync, daemon=True).start()
+
     return JSONResponse({"ok": True, "user_id": user.id})
 
 

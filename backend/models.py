@@ -921,6 +921,11 @@ class Contact(Base):
     email: Mapped[Optional[str]] = mapped_column(String(200), default=None)
     company: Mapped[Optional[str]] = mapped_column(String(120), default=None)
     company_domain: Mapped[Optional[str]] = mapped_column(String(160), default=None)
+    # The Unipile email thread the HOST CONFIRMED as "my thread with this
+    # person" (manual link via /contacts/{id}/email-thread — never guessed).
+    # Once set, the email channel reads (pull) and replies (push) within
+    # this one thread, so Gmail/Outlook threading stays intact.
+    email_thread_id: Mapped[Optional[str]] = mapped_column(String(160), default=None)
 
     # --- Relationship-watch snapshot (CRM auto-updates) ---------------------
     # The last-seen LinkedIn state for this person, refreshed by the scheduled

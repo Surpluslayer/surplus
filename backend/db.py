@@ -138,6 +138,7 @@ def init_db() -> None:
         _migrate_prospect_vip,
         _migrate_user_email_account,
         _migrate_prospect_email,
+        _migrate_contact_email_thread,
     ]
     for migration in migrations:
         try:
@@ -834,6 +835,23 @@ def _migrate_prospect_email() -> None:
                 "CREATE INDEX IF NOT EXISTS ix_prospects_email "
                 "ON prospects (email)"
             ))
+
+
+def _migrate_contact_email_thread() -> None:
+    """Add contacts.email_thread_id (VARCHAR(160), NULL) : the host-confirmed
+    Unipile email thread for this person. NULL = not linked yet."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "contacts" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("contacts")}
+    if "email_thread_id" in cols:
+        return
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            f"ALTER TABLE contacts ADD COLUMN {ine}email_thread_id VARCHAR(160)"
+        ))
 
 
 def _migrate_user_email_account() -> None:
