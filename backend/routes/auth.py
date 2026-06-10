@@ -847,6 +847,182 @@ async def linkedin_callback(
     return response
 
 
+# ─── 3b-bis. Email connect (Gmail / Outlook via Unipile hosted-auth) ──
+#
+# A SECOND Unipile seat on the same workspace, pointing at the signed-in
+# user's real mailbox. Unlike the LinkedIn flow above this is an
+# INTEGRATION, not a sign-in method: the user already has a session, so
+# there is no dedup/upsert gymnastics — the webhook just attaches the new
+# account_id to their existing row. Flow:
+#
+#   1. POST /email/start (auth required) : mint AuthState(state_token,
+#      user_id pre-tagged), POST /hosted/accounts/link with
+#      providers=[GOOGLE, MICROSOFT], return {url}.
+#   2. User authenticates on Unipile's hosted page (Google/Microsoft OAuth;
+#      Unipile vaults the tokens — we only ever hold the account_id).
+#   3. Unipile POSTs /email/webhook {status, account_id, name=state_token}:
+#      stamp unipile_email_account_id + email_status='active' on the user.
+#   4. Browser lands on GET /email/callback?state=... : brief-poll the
+#      AuthState so the Integrations tile shows Connected immediately,
+#      then redirect into the app.
+
+def _email_create_body(dsn: str, expires: str, state_token: str,
+                       base: str, failure_url: str) -> dict:
+    """Hosted-auth create body for the email channel. Mirrors _create_body
+    but with the mail providers and the email webhook/callback URLs."""
+    return {
+        "type": "create",
+        "providers": ["GOOGLE", "MICROSOFT"],
+        "api_url": dsn,
+        "expiresOn": expires,
+        "success_redirect_url": f"{base}/api/auth/email/callback?state={state_token}",
+        "failure_redirect_url": failure_url,
+        "notify_url": f"{base}/api/auth/email/webhook",
+        "name": state_token,
+    }
+
+
+def _extract_mailbox_address(account_data: dict) -> Optional[str]:
+    """Best-effort pull of the connected mailbox address from a Unipile
+    account payload. Email accounts surface it in different spots per
+    provider; try the known ones and fall back to None (display-only
+    field, nothing downstream depends on it)."""
+    if not isinstance(account_data, dict):
+        return None
+    cp = account_data.get("connection_params") or {}
+    mail = cp.get("mail") or {}
+    for candidate in (
+        mail.get("username"),
+        mail.get("email"),
+        cp.get("email"),
+        account_data.get("email"),
+        account_data.get("identifier"),
+    ):
+        if isinstance(candidate, str) and "@" in candidate:
+            return candidate.strip().lower()
+    return None
+
+
+@router.post("/email/start")
+async def email_start(
+    request: Request,
+    db: DbSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> JSONResponse:
+    """Mint a hosted-auth link for connecting the signed-in user's mailbox.
+    Auth required : the email seat always attaches to an existing account,
+    so anonymous callers have nothing to attach it to."""
+    dsn, api_key = _ensure_unipile_configured()
+
+    state_token = secrets.token_urlsafe(32)
+    auth_state = AuthState(state_token=state_token, status="pending",
+                           user_id=user.id)
+    db.add(auth_state)
+    db.commit()
+
+    base = _redirect_base(request)
+    expires = _unipile_iso_timestamp(_utcnow() + timedelta(hours=1))
+    failure_url = f"{base}/?email_connect=failed"
+
+    status_code, data = await _post_hosted_link(
+        dsn, api_key,
+        _email_create_body(dsn, expires, state_token, base, failure_url))
+    url = (data or {}).get("url")
+    if status_code >= 400 or not url:
+        print(f"  [auth.email] hosted link failed status={status_code} "
+              f"body={str(data)[:300]}")
+        raise HTTPException(502, "couldn't start the email connect flow")
+    return JSONResponse({"url": url})
+
+
+@router.post("/email/webhook")
+async def email_webhook(payload: dict,
+                        db: DbSession = Depends(get_db)) -> JSONResponse:
+    """Unipile posts here when a hosted-auth EMAIL account is created (or
+    fails). Attaches the new account to the AuthState's pre-tagged user —
+    no user creation, no dedup: email connect requires a signed-in caller."""
+    status_raw = (payload.get("status") or "").upper()
+    state_token = (payload.get("name") or "").strip()
+    account_id = (payload.get("account_id") or "").strip()
+
+    if not state_token:
+        return JSONResponse({"ok": True, "ignored": "no state_token"})
+    auth_state = (db.query(AuthState)
+                  .filter(AuthState.state_token == state_token).first())
+    if not auth_state:
+        return JSONResponse({"ok": True, "ignored": "unknown state_token"})
+
+    if status_raw not in {"CREATION_SUCCESS", "RECONNECTED"} or not account_id:
+        auth_state.status = "failed"
+        auth_state.error = f"unipile status={status_raw}"
+        auth_state.completed_at = _utcnow()
+        db.commit()
+        return JSONResponse({"ok": True, "recorded": "failure"})
+
+    user = (db.query(User).filter(User.id == auth_state.user_id).first()
+            if auth_state.user_id is not None else None)
+    if user is None:
+        auth_state.status = "failed"
+        auth_state.error = "no user on auth_state"
+        auth_state.completed_at = _utcnow()
+        db.commit()
+        return JSONResponse({"ok": True, "ignored": "no user"})
+
+    # If this mailbox account_id is already attached to a DIFFERENT user
+    # (re-connect from another row), release it there first — the unique
+    # index would reject the second attach otherwise.
+    other = (db.query(User)
+             .filter(User.unipile_email_account_id == account_id,
+                     User.id != user.id).first())
+    if other is not None:
+        print(f"  [auth.email] moving email account {account_id} from "
+              f"user.id={other.id} to user.id={user.id}")
+        other.unipile_email_account_id = None
+        other.email_status = "disconnected"
+
+    now = _utcnow()
+    user.unipile_email_account_id = account_id
+    user.email_status = "active"
+    user.email_connected_at = now
+
+    # Best-effort mailbox address for the Integrations tile ("Connected as
+    # daniel@gmail.com"). Never fails the connect.
+    dsn, api_key = _unipile_dsn(), _unipile_api_key()
+    if dsn and api_key:
+        account_data = await _fetch_unipile_profile(account_id, dsn, api_key)
+        addr = _extract_mailbox_address(account_data)
+        if addr:
+            user.email_account_address = addr
+
+    auth_state.status = "webhook_done"
+    auth_state.completed_at = now
+    db.commit()
+    print(f"  [auth.email] attached email account {account_id} to "
+          f"user.id={user.id} ({user.email_account_address or 'address n/a'})")
+    return JSONResponse({"ok": True, "user_id": user.id})
+
+
+@router.get("/email/callback")
+async def email_callback(
+    state: str = Query(...),
+    db: DbSession = Depends(get_db),
+):
+    """Browser lands here after the hosted page. The WEBHOOK is the writer;
+    this just gives it a few seconds to arrive so the Integrations tile
+    reads Connected on the very next paint, then bounces into the app."""
+    import asyncio as _asyncio
+    for _ in range(10):  # up to ~5s
+        auth_state = (db.query(AuthState)
+                      .filter(AuthState.state_token == state).first())
+        if auth_state and auth_state.status in ("webhook_done", "failed"):
+            break
+        await _asyncio.sleep(0.5)
+        db.expire_all()  # re-read committed webhook writes, not session cache
+    ok = bool(auth_state and auth_state.status == "webhook_done")
+    return RedirectResponse(
+        f"/?email_connect={'ok' if ok else 'pending'}", status_code=303)
+
+
 # ─── 3c. Triage quick-start : zero-friction anonymous session ─────
 #
 # For demos / first-time users who just want to upload a CSV and see
@@ -995,6 +1171,12 @@ def me(user: User = Depends(current_user)) -> JSONResponse:
         "linkedin_public_id": user.linkedin_public_id,
         "linkedin_status": user.linkedin_status,
         "unipile_account_id": user.unipile_account_id,
+        # Email channel (Gmail/Outlook via Unipile). The Integrations tile
+        # branches on email_status; email_account_address is the display
+        # line ("Connected as daniel@gmail.com").
+        "email_status": getattr(user, "email_status", "disconnected") or "disconnected",
+        "email_account_address": getattr(user, "email_account_address", None),
+        "unipile_email_account_id": getattr(user, "unipile_email_account_id", None),
         # True for sessions that entered via the hidden demo link. The SPA
         # uses this to hide demo-only surfaces (e.g. the ROI ledger stage).
         "is_demo": is_demo_user(user),

@@ -136,6 +136,7 @@ def init_db() -> None:
         _migrate_user_auto_followups,
         _migrate_user_onboarding,
         _migrate_prospect_vip,
+        _migrate_user_email_account,
     ]
     for migration in migrations:
         try:
@@ -809,6 +810,46 @@ def _migrate_prospect_vip() -> None:
         conn.execute(text(
             f"ALTER TABLE prospects ADD COLUMN {ine}vip BOOLEAN DEFAULT {default}"
         ))
+
+
+def _migrate_user_email_account() -> None:
+    """Add the email-channel columns to users : a SECOND Unipile account id
+    pointing at the user's real mailbox (Gmail / Outlook), plus its display
+    address, health status, and connect timestamp. All nullable / defaulted
+    so existing rows are untouched (email starts disconnected for everyone).
+    Cross-dialect-safe : SQLite + Postgres."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        if "unipile_email_account_id" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE users ADD COLUMN {ine}unipile_email_account_id "
+                "VARCHAR(80)"
+            ))
+            if ENGINE.dialect.name == "postgresql":
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "ix_users_unipile_email_account_id "
+                    "ON users (unipile_email_account_id)"
+                ))
+        if "email_account_address" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE users ADD COLUMN {ine}email_account_address "
+                "VARCHAR(200)"
+            ))
+        if "email_status" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE users ADD COLUMN {ine}email_status VARCHAR(20) "
+                "DEFAULT 'disconnected'"
+            ))
+        if "email_connected_at" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE users ADD COLUMN {ine}email_connected_at TIMESTAMP"
+            ))
 
 
 def _ensure_operator_user_and_backfill() -> None:

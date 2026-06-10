@@ -557,6 +557,25 @@ class User(Base):
     # Connection health : flipped to "disconnected" if Unipile webhook fires
     # CREDENTIALS / DISCONNECTED. Re-auth flips it back to "active".
     linkedin_status: Mapped[str] = mapped_column(String(20), default="active")
+
+    # ─── Email channel (Unipile GOOGLE / MICROSOFT account) ─────────────
+    # A SECOND Unipile account on the same workspace, pointing at the user's
+    # real mailbox (Gmail / Outlook). Independent of the LinkedIn seat above:
+    # either can be connected without the other. Connected via the hosted-auth
+    # flow in routes/auth.py (/email/start → /email/webhook), which is the
+    # only writer of these fields.
+    unipile_email_account_id: Mapped[Optional[str]] = mapped_column(
+        String(80), unique=True, index=True, default=None,
+    )
+    # The mailbox address Unipile reports for the connected account (e.g.
+    # "daniel@gmail.com"). Display-only; may differ from `email` above (the
+    # profile/login email). Best-effort: NULL if the fetch didn't surface it.
+    email_account_address: Mapped[Optional[str]] = mapped_column(
+        String(200), default=None)
+    # "disconnected" | "active" | "credentials" — mirrors linkedin_status
+    # semantics (credentials = OAuth lapsed, needs the reconnect flow).
+    email_status: Mapped[str] = mapped_column(String(20), default="disconnected")
+    email_connected_at: Mapped[Optional[datetime]] = mapped_column(default=None)
     # Operator-curated outreach exemplars used as style guides when Claude
     # composes personalized notes/DMs for their events. JSON-encoded list
     # of strings (each = one past outreach message). Empty / unset means
