@@ -5,13 +5,16 @@ FROM node:20.18-alpine AS frontend-build
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm ci --no-audit --no-fund
-# Cache-bust knob: a changed GIT_SHA forces the frontend COPY + build below to
-# rerun, even on a remote builder whose layer cache is coarser than Docker's
+# Cache-bust knob: a changed commit sha forces the frontend COPY + build below
+# to rerun, even on a remote builder whose layer cache is coarser than Docker's
 # content hash. (Docker already invalidates COPY on content change; this is the
 # belt-and-suspenders so a stale dist can never silently survive a deploy.)
-# Pass it: `--build-arg GIT_SHA=$(git rev-parse --short HEAD)`.
+#   - GitHub deploys: Railway injects RAILWAY_GIT_COMMIT_SHA at build, so this
+#     auto-busts on every commit with no extra flags.
+#   - railway up / docker build: pass `--build-arg GIT_SHA=$(git rev-parse --short HEAD)`.
 ARG GIT_SHA=unknown
-RUN echo "frontend build for ${GIT_SHA}" > /dev/null
+ARG RAILWAY_GIT_COMMIT_SHA=
+RUN echo "frontend build for ${GIT_SHA} ${RAILWAY_GIT_COMMIT_SHA}" > /dev/null
 COPY frontend/ ./
 RUN npm run build
 # output: /app/frontend/dist/
