@@ -348,6 +348,10 @@ function EmailTestPanel({ s }) {
     setThreadId(r.linked_thread_id); setThreads(null); setMsgs(null);
   }, "email saved");
   const loadThreads = () => run(async () => {
+    // Auto-save first : the thread search reads the SAVED address, so
+    // "type email -> Threads" must work without a separate Save click.
+    const saved = await api.setContactEmail(cid, email.trim());
+    setThreadId(saved.linked_thread_id);
     const r = await api.listContactEmailThreads(cid);
     setThreads(r.threads || []);
   }, "threads loaded");
