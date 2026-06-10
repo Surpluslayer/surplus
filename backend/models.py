@@ -784,6 +784,27 @@ class LLMCall(Base):
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
 
+class StripeWebhookEvent(Base):
+    """One row per Stripe event the billing webhook has fully processed.
+
+    Stripe delivery is at-least-once: a timeout / deploy / transient non-2xx
+    means the SAME event is re-sent (possibly hours later, possibly out of
+    order). This table is the idempotency ledger — the handler acks any
+    event_id it has already seen without re-running side effects, instead of
+    relying on every write happening to be harmless to repeat.
+
+    The marker is committed in the SAME transaction as the handler's
+    mutations: a crash mid-handler rolls back both, so Stripe's retry
+    processes the event cleanly (never half-applied, never double-applied).
+    """
+    __tablename__ = "stripe_webhook_events"
+
+    # Stripe event ids ("evt_...") are globally unique; natural primary key.
+    event_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    event_type: Mapped[Optional[str]] = mapped_column(String(80), default=None)
+    processed_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
 class AuthState(Base):
     """Short-lived state token created when a user clicks Sign in with LinkedIn.
 

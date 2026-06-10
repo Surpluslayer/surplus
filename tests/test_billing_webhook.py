@@ -207,3 +207,80 @@ def test_unknown_event_is_acked(db, monkeypatch):
     event = {"type": "invoice.paid", "data": {"object": {"id": "in_1"}}}
     resp = _run_webhook(db, event, monkeypatch)
     assert resp.status_code == 200
+
+
+# ── idempotency ledger : at-least-once delivery must not double-apply ───────
+
+def test_duplicate_event_is_acked_without_reprocessing(db, monkeypatch):
+    """Stripe re-sends the SAME event (same evt id) after a timeout. The
+    second delivery must ack as duplicate and re-run NO side effects — here,
+    paid_at must keep its original stamp instead of being re-stamped later."""
+    u = _user(db)
+    event = {"id": "evt_dup_1", "type": "checkout.session.completed",
+             "data": {"object": {"id": "cs_d1", "mode": "payment",
+                                  "client_reference_id": str(u.id),
+                                  "customer": "cus_d1"}}}
+    _run_webhook(db, event, monkeypatch)
+    db.refresh(u)
+    first_stamp = u.paid_at
+    assert first_stamp is not None
+
+    resp = _run_webhook(db, event, monkeypatch)  # exact re-delivery
+    assert json.loads(resp.body)["duplicate"] is True
+    db.refresh(u)
+    assert u.paid_at == first_stamp  # NOT re-stamped to a later time
+
+
+def test_duplicate_does_not_overwrite_newer_state(db, monkeypatch):
+    """Out-of-order re-delivery: a stale subscription.updated replayed after
+    the user's plan moved on must NOT drag the plan back."""
+    u = _user(db, plan="starter", stripe_subscription_id="sub_1")
+    event = {"id": "evt_stale", "type": "customer.subscription.updated",
+             "data": {"object": _sub(sub_id="sub_1", price="price_pro")}}
+    _run_webhook(db, event, monkeypatch)
+    db.refresh(u)
+    assert u.plan == "pro"
+
+    # The plan moves on (e.g. comp'd to unlimited)…
+    u.plan = "unlimited"
+    db.commit()
+    # …then Stripe re-delivers the old event hours later.
+    resp = _run_webhook(db, event, monkeypatch)
+    assert json.loads(resp.body)["duplicate"] is True
+    db.refresh(u)
+    assert u.plan == "unlimited"  # stale event did not regress the plan
+
+
+def test_distinct_event_ids_both_process(db, monkeypatch):
+    u = _user(db, plan="free", stripe_subscription_id="sub_1")
+    e1 = {"id": "evt_a", "type": "customer.subscription.updated",
+          "data": {"object": _sub(sub_id="sub_1", price="price_starter")}}
+    e2 = {"id": "evt_b", "type": "customer.subscription.updated",
+          "data": {"object": _sub(sub_id="sub_1", price="price_pro")}}
+    _run_webhook(db, e1, monkeypatch)
+    db.refresh(u)
+    assert u.plan == "starter"
+    _run_webhook(db, e2, monkeypatch)
+    db.refresh(u)
+    assert u.plan == "pro"  # different ids -> both applied
+
+
+def test_unknown_event_type_still_records_ledger(db, monkeypatch):
+    event = {"id": "evt_unknown", "type": "invoice.paid",
+             "data": {"object": {"id": "in_1"}}}
+    resp = _run_webhook(db, event, monkeypatch)
+    assert json.loads(resp.body)["ok"] is True
+    row = db.get(models.StripeWebhookEvent, "evt_unknown")
+    assert row is not None and row.event_type == "invoice.paid"
+
+
+def test_event_without_id_still_processes(db, monkeypatch):
+    """Defensive: a payload missing the event id (shouldn't happen with real
+    Stripe) skips the ledger but still handles the event."""
+    u = _user(db)
+    event = {"type": "checkout.session.completed",
+             "data": {"object": {"id": "cs_noid", "mode": "payment",
+                                  "client_reference_id": str(u.id)}}}
+    _run_webhook(db, event, monkeypatch)
+    db.refresh(u)
+    assert u.paid_at is not None

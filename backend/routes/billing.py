@@ -360,6 +360,25 @@ async def stripe_webhook(request: Request,
     obj = event.get("data", {}).get("object", {}) or {}
     print(f"  [billing.webhook] event={et} obj_id={obj.get('id')}")
 
+    # ── Idempotency ledger ────────────────────────────────────────────────
+    # Stripe delivery is at-least-once: timeouts / deploys / transient
+    # non-2xx all trigger re-delivery of the SAME event (possibly hours
+    # later, possibly out of order). Ack anything we've fully processed
+    # before, WITHOUT re-running side effects — re-applying a stale
+    # subscription.updated can overwrite a newer plan, and equality-based
+    # heuristics (period_rolled) shouldn't be the only line of defense on
+    # the money path. The marker row is committed in the same transaction
+    # as the handler's mutations (each branch's db.commit() below), so a
+    # crash mid-handler rolls back BOTH and the retry processes cleanly.
+    evt_id = event.get("id")
+    if evt_id:
+        seen = db.get(models.StripeWebhookEvent, evt_id)
+        if seen is not None:
+            print(f"  [billing.webhook] duplicate {evt_id} ({et}) : acking, "
+                  "no re-processing")
+            return JSONResponse({"ok": True, "duplicate": True})
+        db.add(models.StripeWebhookEvent(event_id=evt_id, event_type=et))
+
     if et == "checkout.session.completed":
         user_id = (obj.get("client_reference_id")
                    or (obj.get("metadata") or {}).get("user_id"))
@@ -443,7 +462,11 @@ async def stripe_webhook(request: Request,
         print(f"  [billing.webhook] subscription canceled → free "
               f"user.id={user.id}")
 
-    # Unknown event types ack quietly so Stripe stops retrying.
+    # Unknown event types ack quietly so Stripe stops retrying. Persist the
+    # ledger marker for them too (the branches above already committed it
+    # alongside their mutations; noop early-returns deliberately don't — a
+    # 200-acked noop is never retried, and re-running one writes nothing).
+    db.commit()
     return JSONResponse({"ok": True})
 
 
