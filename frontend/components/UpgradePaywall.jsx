@@ -17,8 +17,8 @@ const STRIPE_PRICING_TABLE_ID = "prctbl_1TgJTaBCTXVW8E0Q27EzcbLA";
 const STRIPE_PUBLISHABLE_KEY =
   "pk_live_51TaTZnBCTXVW8E0QARWE3yrEBdRexqpG8jvT09y1WVPhWHJwruFf0Pf5xOv7YJFgJWZWgcBMOREqWSyPYCClqaKG005IdEOAAj";
 
-const FONT = "'Plus Jakarta Sans', system-ui, sans-serif";
-const ACCENT = "#6d4df6";
+const FONT = "'Inter', system-ui, sans-serif";
+const ACCENT = "#2f6df6";
 
 // Load Stripe's pricing-table web component once, idempotently.
 function useStripePricingScript() {

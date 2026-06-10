@@ -17,13 +17,13 @@ import { UsageMeter, PaywallModal, paywallFromError } from "./UpgradePaywall.jsx
 const C = {
   ink: "#1a1d24", muted: "#6b7280", faint: "#9aa1ad",
   line: "#e6e8ee", card: "#ffffff", bg: "#f4f5f7",
-  accent: "#6d4df6", chipBg: "#efeafe", chipInk: "#6d4df6",
+  accent: "#2f6df6", chipBg: "#eaf1fe", chipInk: "#2f6df6",
 };
 
 // Match the surplus shell's typeface (set on `.root` in surplusTheme.js).
 // The page renders via inline styles, so we set it explicitly on the two
 // top-level containers rather than relying on inheritance.
-const FONT = "'Plus Jakarta Sans', system-ui, sans-serif";
+const FONT = "'Inter', system-ui, sans-serif";
 
 const STAGE_COLORS = {
   converted: { bg: "#e7f7ee", ink: "#1c8c4e" },
@@ -47,10 +47,10 @@ function WhatsNew({ update }) {
   if (!update) return null;
   return (
     <div style={{ marginTop: 10, padding: "8px 11px", borderRadius: 10,
-                  background: "#f3f0ff", border: "1px solid #e3dcff" }}>
+                  background: "#eaf1fe", border: "1px solid #cfe0fd" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6,
                     fontSize: 10.5, fontWeight: 700, letterSpacing: 0.4,
-                    textTransform: "uppercase", color: "#6d4df6" }}>
+                    textTransform: "uppercase", color: "#2f6df6" }}>
         <Sparkles size={12} /> {UPDATE_LABEL[update.type] || "Update"}
       </div>
       <div style={{ fontSize: 12.5, color: "#3a3550", marginTop: 3,
@@ -615,7 +615,7 @@ function FollowupChat() {
       <button onClick={() => setOpen(true)}
               style={{ display: "flex", alignItems: "center", gap: 8,
                        width: "100%", marginBottom: 18, cursor: "pointer",
-                       background: "#f3f0ff", border: "1px solid #e3dcff",
+                       background: "#eaf1fe", border: "1px solid #cfe0fd",
                        borderRadius: 14, padding: "14px 18px", color: C.accent,
                        fontSize: 14.5, fontWeight: 700, fontFamily: FONT }}>
         <MessageSquare size={18} />

@@ -181,13 +181,13 @@ export default function ContactsButton({ variant = "desktop", active = false, on
   // button to its host so it reads as native, and use the purple accent
   // to signal the active (CRM) state in both.
   const palette = variant === "inperson"
-    ? { onBg: "#6d4df6", onInk: "#ffffff", offBg: "#141923",
+    ? { onBg: "#2f6df6", onInk: "#ffffff", offBg: "#141923",
         offInk: "#cfd6e4", offBorder: "#232936" }
-    : { onBg: "#6d4df6", onInk: "#ffffff", offBg: "#ffffff",
+    : { onBg: "#2f6df6", onInk: "#ffffff", offBg: "#ffffff",
         offInk: "#1a1d24", offBorder: "#e6e8ee" };
   const base = {
     display: "flex", alignItems: "center", gap: 6, cursor: "pointer",
-    fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif",
+    fontFamily: "'Inter', system-ui, sans-serif",
     fontWeight: 600,
     background: active ? palette.onBg : palette.offBg,
     color: active ? palette.onInk : palette.offInk,
