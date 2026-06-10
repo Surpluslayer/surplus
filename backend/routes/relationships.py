@@ -343,6 +343,38 @@ def list_contact_email_threads(
             "linked_thread_id": contact.email_thread_id, "threads": threads}
 
 
+class ContactEmailIn(BaseModel):
+    email: Optional[str] = None  # null clears
+
+
+@router.post("/contacts/{contact_id}/email")
+def set_contact_email(
+    contact_id: int,
+    body: ContactEmailIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Manually attach (or clear) this contact's email address — the host
+    types it in on the contact view. This is THE entry point of the email
+    channel for a contact: thread listing, pull, and push all key off it.
+    Changing the address clears any linked thread (it belonged to the old
+    address). Also backfills the linked prospects so capture-side surfaces
+    (and link_contact identity) see it."""
+    contact = _owned_contact(db, contact_id, user)
+    addr = (body.email or "").strip().lower() or None
+    if addr is not None and "@" not in addr:
+        raise HTTPException(422, "that doesn't look like an email address")
+    if addr != (contact.email or None):
+        contact.email_thread_id = None  # old thread belonged to the old address
+    contact.email = addr
+    for p in (getattr(contact, "prospects", None) or []):
+        if addr and not getattr(p, "email", None):
+            p.email = addr
+    db.commit()
+    return {"contact_id": contact_id, "email": contact.email,
+            "linked_thread_id": contact.email_thread_id}
+
+
 class ThreadLinkIn(BaseModel):
     thread_id: Optional[str] = None  # null unlinks
 

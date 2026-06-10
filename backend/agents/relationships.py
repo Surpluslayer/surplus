@@ -795,6 +795,11 @@ def contact_summary(db, contact, interactions_by_prospect=None,
         "name": _clean(getattr(contact, "name", None)) or identity.get("name"),
         "company": _clean(getattr(contact, "company", None)) or identity.get("company"),
         "linkedin_url": _clean(getattr(contact, "linkedin_url", None)),
+        # Email channel : whose email is whose, visible on every contact row.
+        # NULL until the host sets it (manually or via mailbox sync); the
+        # thread link is the host-confirmed Unipile thread for pull/push.
+        "email": _clean(getattr(contact, "email", None)),
+        "email_thread_id": _clean(getattr(contact, "email_thread_id", None)),
         "primary_identity_key": _clean(getattr(contact, "primary_identity_key", None)),
         "identity": identity,
         "is_connection": connected,
