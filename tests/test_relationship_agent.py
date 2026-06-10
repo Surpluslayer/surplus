@@ -1073,6 +1073,55 @@ def test_concurrent_empty_selection_skips_fan_out(db):
     assert "warm" in res.summary
 
 
+def test_concurrent_preset_stop_makes_zero_claude_calls(db):
+    """A stop_event that's already set (client gone before we started) must
+    short-circuit before ANY Claude call — zero triage, zero drafts."""
+    import threading
+    u = _user(db)
+    ev = _event(db, u)
+    _stale_contact(db, u, ev, name="Maya Rodriguez", ident="maya")
+
+    client = ConcurrentScriptedClient(triage=[], drafts={})
+    stop = threading.Event()
+    stop.set()
+    res = ragent.run_relationship_agent_concurrent(
+        db, u.id, client=client, stop_event=stop)
+    assert res.stop_reason == "aborted"
+    assert res.proposals == []
+    assert client.calls == []  # not a single Anthropic round-trip
+
+
+def test_concurrent_stop_during_triage_skips_all_drafts(db):
+    """A stop that fires while triage is in flight (= the client closed the
+    tab) must prevent every per-person draft call and mark the run aborted."""
+    import threading
+    u = _user(db)
+    ev = _event(db, u)
+    a = _stale_contact(db, u, ev, name="Maya Rodriguez", ident="maya")
+    b = _stale_contact(db, u, ev, name="Shama Patel", ident="shama")
+
+    stop = threading.Event()
+    triage = [_tool_use("select_followups", "tg",
+                        selections=[{"contact_id": a.id, "reason": "r", "angle": "x"},
+                                    {"contact_id": b.id, "reason": "r", "angle": "x"}],
+                        closing="both")]
+
+    class StopDuringTriage(ConcurrentScriptedClient):
+        def create(self, **kwargs):
+            resp = super().create(**kwargs)
+            stop.set()  # the disconnect lands while triage is returning
+            return resp
+
+    client = StopDuringTriage(triage=triage, drafts={})
+    res = ragent.run_relationship_agent_concurrent(
+        db, u.id, client=client, stop_event=stop)
+    assert res.stop_reason == "aborted"
+    assert res.proposals == []
+    # Exactly the one triage call went out; no draft fan-out followed.
+    assert len(client.triage_calls()) == 1
+    assert len(client.draft_calls()) == 0
+
+
 def test_concurrent_uses_sonnet_for_every_call(db):
     """Quality + voice depend on Sonnet: BOTH the triage and the draft calls must
     run on the Sonnet model, never silently downgraded to a cheaper one."""

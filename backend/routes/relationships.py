@@ -351,6 +351,11 @@ def relationship_chat_stream(
     auto = bool(getattr(user, "auto_followups_enabled", False))
     instruction = (body.message or "").strip()
     q: "queue.Queue" = queue.Queue()
+    # Set when the client goes away (or the stream completes). The agent
+    # checks it before every Claude call, so a closed tab stops the run at
+    # the next call boundary instead of silently burning tokens + a DB
+    # session to the end of the fan-out.
+    stop = threading.Event()
 
     def _worker():
         from ..agents.followup_scheduler import suggest_send_time
@@ -360,13 +365,16 @@ def relationship_chat_stream(
         suggested = suggest_send_time().isoformat()
         try:
             def _emit(p):
+                if stop.is_set():
+                    return  # nobody is reading; don't grow the queue
                 q.put(("proposal", {
                     "kind": p.kind, "contact_id": p.contact_id,
                     "contact_name": p.contact_name, "text": p.text,
                     "rationale": p.rationale,
                     "suggested_send_at": suggested,
                 }))
-            res = _run(db, user_id, instruction=instruction, on_proposal=_emit)
+            res = _run(db, user_id, instruction=instruction,
+                       on_proposal=_emit, stop_event=stop)
             q.put(("done", {"summary": res.summary or "Done.",
                             "auto_send_enabled": auto}))
         except Exception as exc:  # noqa: BLE001 : surface to the client, don't 500 mid-stream
@@ -376,9 +384,15 @@ def relationship_chat_stream(
             q.put((None, None))
 
     def _stream():
-        yield _sse("meta", {"auto_send_enabled": auto})
-        threading.Thread(target=_worker, daemon=True).start()
-        yield from _drain_stream(q)
+        # The finally runs on normal completion AND on GeneratorExit — which
+        # is what Starlette throws into the generator when the client
+        # disconnects mid-stream. Either way, tell the worker to wind down.
+        try:
+            yield _sse("meta", {"auto_send_enabled": auto})
+            threading.Thread(target=_worker, daemon=True).start()
+            yield from _drain_stream(q)
+        finally:
+            stop.set()
 
     return StreamingResponse(
         _stream(),

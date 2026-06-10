@@ -1240,6 +1240,7 @@ def run_relationship_agent_concurrent(
     concurrency: int = _DRAFT_CONCURRENCY,
     client: Any = None,
     on_proposal: Any = None,
+    stop_event: Any = None,
 ) -> RelationshipAgentResult:
     """Propose-only relationship agent, two-phase + parallel-draft variant.
 
@@ -1251,14 +1252,26 @@ def run_relationship_agent_concurrent(
     stay on this thread; only the Anthropic calls fan out).
 
     `client` is injected for tests; in production a pooled singleton is used.
+    `stop_event` (a threading.Event, or anything with .is_set()) aborts the
+    run early: checked before the triage call and before every per-person
+    draft call, so a closed SSE client stops burning Claude tokens at the
+    next call boundary instead of finishing the whole fan-out.
     """
     result = RelationshipAgentResult()
+
+    def _stopped() -> bool:
+        return stop_event is not None and stop_event.is_set()
 
     contacts = relationships.list_contacts(db, user_id)
     result.contacts_seen = len(contacts)
     if not contacts:
         result.summary = "No contacts yet — nothing to work."
         result.stop_reason = "empty"
+        return result
+
+    if _stopped():
+        result.summary = "Stopped — the stream was closed."
+        result.stop_reason = "aborted"
         return result
 
     by_id = {c.id: c for c in contacts}
@@ -1427,6 +1440,8 @@ def run_relationship_agent_concurrent(
     # no DB) under a bounded semaphore. Each draft stages its card the moment
     # it resolves, so they stream in as they finish. ───────────────────────
     def _draft_one(job: dict) -> None:
+        if _stopped():
+            return  # client gone : don't start another Claude call
         sel, ctx, name = job["sel"], job["ctx"], job["name"]
         cid = sel["contact_id"]
         brief = _context_brief(sel, ctx)
@@ -1525,6 +1540,13 @@ def run_relationship_agent_concurrent(
         await asyncio.gather(*[_bounded(j) for j in jobs], return_exceptions=True)
 
     asyncio.run(_fan_out())
+
+    if _stopped():
+        # Client disconnected mid-run : whatever staged before the stop is in
+        # result.proposals; don't pretend the run completed.
+        result.summary = "Stopped — the stream was closed before finishing."
+        result.stop_reason = "aborted"
+        return result
 
     # Reconcile the summary against what ACTUALLY got staged. The triage closing
     # was written BEFORE the per-person drafters ran, so it can promise a draft
