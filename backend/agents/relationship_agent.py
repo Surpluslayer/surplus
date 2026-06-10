@@ -1316,11 +1316,47 @@ def run_relationship_agent_concurrent(
 
     def _context(c) -> dict:
         timeline = relationships.contact_timeline(db, c)
+        prior = _thread_from_timeline(timeline)
+        # Email channel : when the host CONFIRMED a mailbox thread for this
+        # contact, pull it live and weave it into prior_messages (same
+        # {when, who, channel, text} shape) so drafts continue the ACTUAL
+        # email conversation, not just the LinkedIn one. Best-effort + only
+        # for linked contacts, so the common path costs nothing.
+        thread_id = getattr(c, "email_thread_id", None)
+        if thread_id:
+            try:
+                import os
+                from ..db import SessionLocal as _SL  # noqa: F401 (db given)
+                from .email_sync import thread_messages
+                from .. import models as _m
+                host = db.get(_m.User, user_id)
+                acct = getattr(host, "unipile_email_account_id", None)
+                dsn = (os.environ.get("UNIPILE_DSN", "") or "").strip().rstrip("/")
+                if dsn and not dsn.startswith(("http://", "https://")):
+                    dsn = f"https://{dsn}"
+                key = (os.environ.get("UNIPILE_API_KEY", "") or "").strip()
+                if acct and dsn and key:
+                    mails = thread_messages(
+                        dsn=dsn, api_key=key, account_id=acct,
+                        thread_id=thread_id, with_bodies=True,
+                        own_address=getattr(host, "email_account_address", "") or "")
+                    for m in mails[-10:]:
+                        prior.append({
+                            "when": m.get("date"),
+                            "who": "host" if m.get("direction") == "out" else "them",
+                            "channel": "email",
+                            "text": (f"[{m.get('subject') or ''}] "
+                                     f"{(m.get('body') or '')[:600]}").strip(),
+                        })
+                    prior.sort(key=lambda x: str(x.get("when") or ""))
+            except Exception as exc:  # noqa: BLE001 : email context is a bonus
+                print(f"  [agent.email] thread pull failed for contact "
+                      f"{getattr(c, 'id', '?')}: {type(exc).__name__}: {exc}")
         return {
             "summary": relationships.contact_summary(db, c),
             "events": relationships.contact_events(db, c),
             "timeline": timeline[-12:],
-            "prior_messages": _thread_from_timeline(timeline),
+            "prior_messages": prior,
         }
 
     def _name_of(contact_id: int) -> str:

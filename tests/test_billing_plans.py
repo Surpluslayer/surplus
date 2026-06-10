@@ -163,3 +163,13 @@ def test_usage_snapshot_shape():
     assert snap["usage"] == {"drafts": 4, "contacts": 10}
     assert snap["remaining"] == {"drafts": 26, "contacts": 240}
     assert snap["unlimited"] is False
+
+
+def test_billing_disabled_env_makes_everyone_unlimited(monkeypatch):
+    """SURPLUS_BILLING_DISABLED=1 : the demo/staging kill switch — no
+    paywall, no caps, for ANY account."""
+    monkeypatch.setenv("SURPLUS_BILLING_DISABLED", "1")
+    u = _user(plan="free", drafts_used_this_period=9999)
+    assert bp.is_unlimited(u) is True
+    assert bp.can_generate_draft(u) is True
+    assert bp.usage_snapshot(u)["unlimited"] is True

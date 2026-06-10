@@ -110,6 +110,32 @@ app.include_router(billing.router)
 # temporarily : see git blame for the exact handler.
 
 
+# Frontend fingerprint : which BookApp bundle is actually baked into THIS image,
+# and whether it's the redesigned one. Lets you confirm from /api/health whether
+# the new UI shipped — independent of build_time (which moves on a backend-only
+# rebuild) — without loading the page or eyeballing the UI. "bk-conn-row" is a
+# redesign-only CSS class that survives minification (string literal). Computed
+# once and cached : the bundle can't change during a container's life, so the
+# healthcheck stays cheap.
+_FRONTEND_FP = None
+
+
+def _frontend_fingerprint() -> dict:
+    global _FRONTEND_FP
+    if _FRONTEND_FP is not None:
+        return _FRONTEND_FP
+    info = {"book_bundle": None, "has_redesign": None}
+    try:
+        assets = sorted((_FRONTEND_DIST / "assets").glob("BookApp-*.js"))
+        if assets:
+            info["book_bundle"] = assets[0].name
+            info["has_redesign"] = "bk-conn-row" in assets[0].read_text(errors="ignore")
+    except Exception:
+        pass
+    _FRONTEND_FP = info
+    return info
+
+
 @app.get("/api/health", tags=["meta"])
 def health(deep: bool = False):
     """API discovery JSON. Moved from `/` so the frontend can own `/`.
@@ -141,6 +167,15 @@ def health(deep: bool = False):
         platform = "fly"
     else:
         platform = "unknown"
+    # Build stamp baked into the image by the Dockerfile. Unlike git_sha (which
+    # is "unknown" unless a build-arg / RAILWAY_GIT_COMMIT_SHA is passed), this
+    # refreshes whenever the copied frontend/backend layers actually rebuild —
+    # so a stale deploy that silently serves an old bundle is visible at a glance
+    # (the value won't have moved since the last real rebuild).
+    try:
+        build_time = (Path(__file__).resolve().parent / ".build_time").read_text().strip()
+    except Exception:
+        build_time = "unknown"
     # DB-engine surface so we never again silently fall back to SQLite in
     # prod without noticing. Defensive : a broken ENGINE attribute access
     # must NOT 5xx this endpoint — Railway's healthcheck hits it, and a
@@ -205,6 +240,15 @@ def health(deep: bool = False):
         "version": "0.1.0",
         "platform": platform,
         "git_sha": git_sha,
+        # Baked at image build (Dockerfile). Moves on every real rebuild, so a
+        # value that hasn't changed after a deploy means the build was a full
+        # cache hit / stale source — i.e. your new code did NOT ship.
+        "build_time": build_time,
+        # Which BookApp bundle is in this image + whether it's the redesign.
+        # frontend_has_redesign==false with a fresh build_time => the BACKEND
+        # rebuilt but the FRONTEND stage was served from cache (stale dist).
+        "frontend_book_bundle": _frontend_fingerprint()["book_bundle"],
+        "frontend_has_redesign": _frontend_fingerprint()["has_redesign"],
         # Fly stamps this per deploy even without a build-arg, so a changed
         # value confirms a fresh deploy landed even if GIT_SHA wasn't passed.
         "image_ref": os.environ.get("FLY_IMAGE_REF"),

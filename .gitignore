@@ -35,3 +35,7 @@ Dockerfile.batch
 Dockerfile.batch.dockerignore
 fly.batch.toml
 /tmp_results/
+
+# Build stamp baked into the Docker image at build time (see Dockerfile); never
+# committed — only generated inside the image so /api/health can report it.
+backend/.build_time

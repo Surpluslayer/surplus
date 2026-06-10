@@ -1055,6 +1055,9 @@ class ScheduledFollowup(Base):
     __tablename__ = "scheduled_followups"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Transport for the dispatch : "linkedin" (historical default) | "email"
+    # (sends via the owner's connected mailbox + linked thread).
+    channel: Mapped[str] = mapped_column(String(20), default="linkedin")
     prospect_id: Mapped[int] = mapped_column(
         ForeignKey("prospects.id"), index=True
     )

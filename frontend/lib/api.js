@@ -348,10 +348,10 @@ export const api = {
   },
   // Approve one drafted follow-up for a contact. Honors the host's auto-send
   // toggle server-side: returns { status: "sent" | "drafted", ... }.
-  sendContactFollowup: (contactId, message) =>
+  sendContactFollowup: (contactId, message, channel = "linkedin") =>
     request(`/api/relationships/contacts/${contactId}/followup`, {
       method: "POST",
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, channel }),
     }),
   // Schedule a chat-drafted follow-up (Gmail-style). `sendAt` is an ISO string
   // for a future fire time, or null to send now. Returns { status: "sent" |

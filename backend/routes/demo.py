@@ -151,12 +151,21 @@ def _demo_user_for_visit(db: DbSession) -> User:
 
 # Where a demo visit can land. Keyed allowlist (not raw paths) so the public
 # ?surface= value can never be turned into an open redirect : an unknown value
-# silently falls back to the desktop pipeline at "/".
+# silently falls back to the per-env default below.
 _SURFACE_PATHS = {
     "book": "/book",          # advisor "Your book today" surface (BookApp)
     "inperson": "/inperson",  # phone-first capture surface (InPersonApp)
-    "app": "/",               # desktop pipeline (default)
+    "app": "/",               # desktop pipeline
 }
+
+
+def _default_surface() -> str:
+    """Which surface a demo link lands on when ?surface= is omitted. Set per
+    environment via DEMO_DEFAULT_SURFACE (book | inperson | app) so e.g. the
+    staging demo can open straight onto 'Your book today' while production keeps
+    the desktop pipeline. Unknown / unset -> "app" (the original behavior)."""
+    val = (os.environ.get("DEMO_DEFAULT_SURFACE") or "app").strip().lower()
+    return val if val in _SURFACE_PATHS else "app"
 
 
 @router.get("/enter")
@@ -170,8 +179,9 @@ def demo_enter(
 
     `surface` lets a single demo link open straight onto a specific phone
     surface — e.g. ?surface=book drops the visitor on "Your book today".
-    Unknown / omitted values fall back to "/" (the desktop pipeline), so the
-    existing demo link keeps working unchanged.
+    When omitted, the landing is the per-environment default (DEMO_DEFAULT_SURFACE,
+    "app" if unset) so e.g. staging can default to book while production keeps
+    the desktop pipeline. Unknown values fall back to that same default.
 
     Returns 404 when:
       - DEMO_ACCESS_TOKEN env var is unset (feature disabled)
@@ -191,7 +201,8 @@ def demo_enter(
 
     demo_user = _demo_user_for_visit(db)
 
-    target = _SURFACE_PATHS.get((surface or "").strip().lower(), "/")
+    surface_key = (surface or "").strip().lower() or _default_surface()
+    target = _SURFACE_PATHS.get(surface_key, _SURFACE_PATHS[_default_surface()])
     sess = create_session(db, demo_user)
     response = RedirectResponse(target, status_code=303)
     for k, v in _NO_STORE.items():

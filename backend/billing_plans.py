@@ -67,7 +67,13 @@ def _unlimited_allowlist() -> set[str]:
 
 def is_unlimited(user) -> bool:
     """True for accounts that bypass metering: demo-link users and anything in
-    SURPLUS_UNLIMITED_ACCOUNTS (match by email OR numeric id)."""
+    SURPLUS_UNLIMITED_ACCOUNTS (match by email OR numeric id).
+
+    SURPLUS_BILLING_DISABLED=1 makes EVERY account unlimited — the kill
+    switch for environments where billing must not exist at all (the demo /
+    staging deployment, so a live demo never sees a paywall)."""
+    if (os.environ.get("SURPLUS_BILLING_DISABLED") or "").strip().lower()             in ("1", "true", "yes"):
+        return True
     # Lazy import avoids a module-load cycle (auth imports models, not us).
     try:
         from .auth import is_demo_user

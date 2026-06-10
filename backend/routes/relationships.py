@@ -271,12 +271,15 @@ def send_contact_email(
             print(f"  [email.send] thread lookup failed, sending fresh: "
                   f"{type(exc).__name__}: {exc}")
 
+    from ..agents.email_sync import format_email_html
+    to_first = ((contact.name or prospect.name or "").split() or [""])[0]
+    host_first = ((user.name or "").split() or [""])[0]
     res = provider.send_email(
         email_account_id=email_account_id,
         to_address=to_address,
         to_name=(contact.name or prospect.name or ""),
         subject=subject,
-        body=text,
+        body=format_email_html(text, to_first, host_first),
         prospect_id=prospect.id,
         reply_to=reply_to,
     )
@@ -707,8 +710,12 @@ def relationship_chat_stream(
 
 class FollowupSendIn(BaseModel):
     """Approve one drafted follow-up for a contact. `message` is the (possibly
-    host-edited) body to act on."""
+    host-edited) body to act on. `channel` picks the transport: "linkedin"
+    (default, the historical behavior) or "email" — which routes through the
+    contact's stored address + linked thread, no manual typing."""
     message: str
+    channel: str = "linkedin"
+    subject: Optional[str] = None  # email-only; default derived/Re: threaded
 
 
 @router.post("/contacts/{contact_id}/followup")
@@ -733,6 +740,14 @@ def send_contact_followup(
     text = (body.message or "").strip()
     if not text:
         raise HTTPException(422, "message is required")
+
+    # Email transport : same approve flow, different wire. Routes through
+    # the contact's STORED address (+ linked thread when confirmed), so the
+    # agent's drafts can go out as email without the host typing anything.
+    if (body.channel or "linkedin").lower() == "email":
+        return send_contact_email(
+            contact_id, EmailSendIn(message=text, subject=body.subject),
+            db, user)
 
     prospect = _sendable_prospect(contact)
 
@@ -771,6 +786,7 @@ class FollowupScheduleIn(BaseModel):
     Gmail-style 'Schedule send' the chat cards drive."""
     message: str
     send_at: Optional[datetime] = None
+    channel: str = "linkedin"  # "linkedin" | "email"
 
 
 @router.post("/contacts/{contact_id}/schedule")
@@ -810,7 +826,20 @@ def schedule_contact_followup(
 
     # Send now: no future time chosen. Explicit host action, sends regardless of
     # the auto toggle (same as the followups send-now route).
+    want_email = (getattr(body, "channel", "") or "linkedin") == "email"
     if send_at is None or send_at <= now:
+        if want_email:
+            from ..agents.sender import send_followup_email
+            try:
+                res = send_followup_email(db, prospect, text)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc))
+            db.commit()
+            if res.error and res.state == "failed":
+                raise HTTPException(502, f"email send failed: {res.error}")
+            return {"status": "sent", "contact_id": contact_id,
+                    "prospect_id": prospect.id, "channel": "email",
+                    "dry_run": res.dry_run}
         from ..agents.sender import send_and_log
         from ..providers import get_provider
         try:
@@ -836,6 +865,7 @@ def schedule_contact_followup(
         row.body = text
         row.send_at = send_at
         row.updated_at = now
+    row.channel = "email" if want_email else "linkedin"
     db.commit()
     db.refresh(row)
     return {"status": "scheduled", "contact_id": contact_id,

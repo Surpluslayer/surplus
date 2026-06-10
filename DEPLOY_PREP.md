@@ -141,6 +141,45 @@ flyctl secrets list | findstr UNIPILE_DRY_RUN
 
 ---
 
+## 2.5 · Staging (Railway) — make a deploy actually ship
+
+The staging demo is `https://surplus-staging.up.railway.app`. Two failure modes
+have bitten here; both look like "my merge didn't change anything."
+
+### How staging should deploy
+- **Preferred: GitHub auto-deploy from `demo`.** Railway → staging service →
+  Settings → Source → connect repo `jjin18/surplus`, branch **`demo`**, enable
+  **Automatic Deploys**. A GitHub-triggered build clones the branch fresh (so
+  source is never stale) and auto-injects `RAILWAY_GIT_COMMIT_SHA`, so
+  `/api/health` `git_sha` shows the real commit.
+- **If you instead `railway up` (CLI):** it uploads your **local** directory, so
+  deploy from a clean checkout or you'll ship stale code:
+  ```bash
+  git fetch origin && git checkout demo && git reset --hard origin/demo
+  railway up
+  ```
+
+### Verify the deploy actually rebuilt — don't trust "Deployed"
+Hit `https://surplus-staging.up.railway.app/api/health` and check **two** fields:
+- **`build_time`** — baked into the image by the Dockerfile. It moves on every
+  real rebuild. **If it didn't change after your deploy, your code did NOT ship**
+  (stale source, or a full Docker cache hit — watch for `COPY frontend/ ./ cached`
+  + `RUN npm run build cached` in the build log).
+- **`git_sha`** — the live commit (real on GitHub deploys; `unknown` on a bare
+  `railway up` unless you pass `--build-arg GIT_SHA=$(git rev-parse --short HEAD)`).
+
+A cache-bust knob in the Dockerfile ties the frontend build to `GIT_SHA`, so
+passing a new sha guarantees a fresh bundle even on a coarse remote cache.
+
+### The book/advisor redesign surface
+The redesign lives on the **`/book`** surface only. To make the plain demo link
+land there, set **`DEMO_DEFAULT_SURFACE=book`** in the staging service's
+Variables (see `routes/demo.py`). Without it, `/api/demo/enter` defaults to the
+desktop pipeline at `/`. The redesign is reachable regardless at
+`…/api/demo/enter?key=<DEMO_ACCESS_TOKEN>&surface=book`.
+
+---
+
 ## 3 · Cloudflare Load Balancer config
 
 Set this up **after** Fly is deployed and Neon is the shared DB so both
