@@ -925,6 +925,22 @@ function ProposalCard({ proposal, auto }) {
     }
   };
 
+  // Email transport : same draft, the contact's STORED address + linked
+  // thread (no manual typing). Backend 409s with a clear message when the
+  // contact has no email on file yet.
+  const sendAsEmail = async () => {
+    setState("sending"); setErr("");
+    try {
+      const r = await api.sendContactFollowup(
+        proposal.contact_id, draft.trim(), "email");
+      setResult({ sent: true, when: null,
+                  via: `email → ${r.to}${r.dry_run ? " (dry-run)" : ""}` });
+      setState("done");
+    } catch (e) {
+      setState("error"); setErr(e.message || String(e));
+    }
+  };
+
   const done = state === "done";
   const sending = state === "sending";
   const PRESETS = [
@@ -1004,9 +1020,21 @@ function ProposalCard({ proposal, auto }) {
                          color: result?.sent ? "#1c8c4e" : C.accent,
                          fontSize: 13, fontWeight: 600 }}>
             <Check size={15} />
-            {result?.sent ? "Sent"
+            {result?.sent ? (result?.via ? `Sent via ${result.via}` : "Sent")
               : `Scheduled for ${result?.when ? _fmtWhen(result.when) : "later"}`}
           </span>
+        )}
+        {!done && (
+          <button onClick={sendAsEmail} disabled={sending || !draft.trim()}
+                  title="Send this draft as an email to the contact's stored address (uses the linked thread when confirmed)"
+                  style={{ display: "flex", alignItems: "center", gap: 6,
+                           background: "#fff", color: C.accent,
+                           border: `1px solid ${C.accent}`, borderRadius: 8,
+                           padding: "7px 12px", fontSize: 13, fontWeight: 600,
+                           cursor: "pointer", fontFamily: FONT,
+                           opacity: sending || !draft.trim() ? 0.6 : 1 }}>
+            <Mail size={14} /> Email
+          </button>
         )}
         {!done && (
           <span style={{ fontSize: 11.5, color: C.faint }}>

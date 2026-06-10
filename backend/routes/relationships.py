@@ -707,8 +707,12 @@ def relationship_chat_stream(
 
 class FollowupSendIn(BaseModel):
     """Approve one drafted follow-up for a contact. `message` is the (possibly
-    host-edited) body to act on."""
+    host-edited) body to act on. `channel` picks the transport: "linkedin"
+    (default, the historical behavior) or "email" — which routes through the
+    contact's stored address + linked thread, no manual typing."""
     message: str
+    channel: str = "linkedin"
+    subject: Optional[str] = None  # email-only; default derived/Re: threaded
 
 
 @router.post("/contacts/{contact_id}/followup")
@@ -733,6 +737,14 @@ def send_contact_followup(
     text = (body.message or "").strip()
     if not text:
         raise HTTPException(422, "message is required")
+
+    # Email transport : same approve flow, different wire. Routes through
+    # the contact's STORED address (+ linked thread when confirmed), so the
+    # agent's drafts can go out as email without the host typing anything.
+    if (body.channel or "linkedin").lower() == "email":
+        return send_contact_email(
+            contact_id, EmailSendIn(message=text, subject=body.subject),
+            db, user)
 
     prospect = _sendable_prospect(contact)
 
