@@ -176,13 +176,12 @@ function ContactsPeek({ onClose }) {
 //     full-page CRM).
 export default function ContactsButton({ variant = "desktop", active = false, onClick }) {
   const [open, setOpen] = useState(false);
-  // The two surfaces have opposite chrome: the desktop topbar is light
-  // (white pills, purple accent), the in-person bar is dark. Theme the
-  // button to its host so it reads as native, and use the purple accent
-  // to signal the active (CRM) state in both.
+  // Both surfaces are on the light Surplus design system now; the in-person
+  // variant uses the soft surface pill so it matches the reskinned event bar,
+  // with the blue accent signalling the active (CRM) state in both.
   const palette = variant === "inperson"
-    ? { onBg: "#2f6df6", onInk: "#ffffff", offBg: "#141923",
-        offInk: "#cfd6e4", offBorder: "#232936" }
+    ? { onBg: "#2f6df6", onInk: "#ffffff", offBg: "#f4f5f7",
+        offInk: "#5b616a", offBorder: "rgba(20,23,28,.16)" }
     : { onBg: "#2f6df6", onInk: "#ffffff", offBg: "#ffffff",
         offInk: "#1a1d24", offBorder: "#e6e8ee" };
   const base = {
