@@ -17,7 +17,7 @@ send, mirroring the original /invite behavior so demos stay non-destructive.
 from __future__ import annotations
 import json as _json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import HTTPException
@@ -25,6 +25,56 @@ from fastapi import HTTPException
 from .. import models
 from ..providers.base import ProviderResult
 from .outreach import Message, compose
+
+# ── Double-send guards ───────────────────────────────────────────────────────
+# An "unconfirmed" send (request dispatched, response lost) MAY be live on
+# LinkedIn; blind-retrying it is exactly how a contact gets two invites. Hold
+# further sends to that prospect for a window so a human (or the
+# invite_accepted / message webhook) can settle what actually happened.
+_UNCONFIRMED_HOLD = timedelta(minutes=10)
+# And a just-confirmed send blocks an immediate repeat : the operator
+# double-clicking Send (or two tabs racing) must not double-message someone.
+_JUST_SENT_HOLD = timedelta(seconds=60)
+_SENT_STATES = ("invite_sent", "message_sent", "follow_up_sent")
+
+
+def _aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """Postgres hands back naive UTC datetimes; coerce so comparisons hold."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _assert_no_recent_send(db, prospect: models.Prospect) -> None:
+    """409 if the last real send to this prospect is unconfirmed-and-recent or
+    confirmed-but-seconds-old. Dry-run rows never block (their state is
+    dry_run_queued), so demos are unaffected."""
+    last = (
+        db.query(models.OutreachLog)
+        .filter(models.OutreachLog.prospect_id == prospect.id,
+                models.OutreachLog.channel == "linkedin",
+                models.OutreachLog.state.in_(_SENT_STATES + ("unconfirmed",)))
+        .order_by(models.OutreachLog.ts.desc())
+        .first())
+    if last is None:
+        return
+    ts = _aware(last.ts)
+    if ts is None:
+        return
+    age = datetime.now(timezone.utc) - ts
+    if last.state == "unconfirmed" and age < _UNCONFIRMED_HOLD:
+        mins_left = max(0, int((_UNCONFIRMED_HOLD - age).total_seconds() // 60))
+        raise HTTPException(
+            409,
+            "The previous send to this person didn't confirm (the request "
+            "went out but the response was lost) — it may already be on "
+            "LinkedIn. Check their profile/thread before retrying; this "
+            f"guard lifts in {mins_left} min.")
+    if last.state in _SENT_STATES and age < _JUST_SENT_HOLD:
+        raise HTTPException(
+            409, "A message to this person was sent seconds ago — refusing "
+                 "an immediate repeat. If you meant to send another, wait a "
+                 "minute.")
 
 
 def _refresh_connection_status(provider, prospect: models.Prospect) -> str:
@@ -79,6 +129,11 @@ def route_and_send(
     ev = event or prospect.event
     if ev is None:
         raise ValueError(f"prospect {prospect.id} has no event")
+
+    # Live sends only : refuse a blind retry after an unconfirmed send, and
+    # absorb double-clicks. Dry-run is exempt so demos stay frictionless.
+    if not provider.dry_run:
+        _assert_no_recent_send(db, prospect)
 
     status = (
         _refresh_connection_status(provider, prospect)

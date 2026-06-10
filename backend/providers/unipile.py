@@ -30,6 +30,7 @@ from __future__ import annotations
 import hmac
 import hashlib
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -40,6 +41,7 @@ from .base import (
     ProviderResult,
     CanonicalEvent,
     CANONICAL_STATES,
+    AmbiguousSendError,
 )
 
 
@@ -199,6 +201,20 @@ class UnipileProvider(LinkedInProvider):
         payload = self._build_invite_payload(lead, provider_id)
         try:
             data = self._post("/api/v1/users/invite", payload)
+        except AmbiguousSendError as exc:
+            # The invite was dispatched but the response was lost : it MAY be
+            # live on LinkedIn. "unconfirmed" (not "failed") so send paths
+            # refuse a blind retry — a retry here is a double-invite.
+            return ProviderResult(
+                prospect_id=lead.prospect_id,
+                state="unconfirmed",
+                provider=self.name,
+                provider_lead_id=None,
+                dry_run=False,
+                payload=payload,
+                error=f"invite unconfirmed: {exc}",
+                linkedin_provider_id=provider_id,
+            )
         except Exception as exc:  # noqa: BLE001
             return ProviderResult(
                 prospect_id=lead.prospect_id,
@@ -274,6 +290,19 @@ class UnipileProvider(LinkedInProvider):
         payload = self._build_chat_payload(lead, provider_id)
         try:
             data = self._post("/api/v1/chats", payload)
+        except AmbiguousSendError as exc:
+            # DM dispatched, response lost : it MAY have been delivered.
+            # "unconfirmed" blocks the blind retry that double-texts them.
+            return ProviderResult(
+                prospect_id=lead.prospect_id,
+                state="unconfirmed",
+                provider=self.name,
+                provider_lead_id=None,
+                dry_run=False,
+                payload=payload,
+                error=f"send_message unconfirmed: {exc}",
+                linkedin_provider_id=provider_id,
+            )
         except Exception as exc:  # noqa: BLE001
             return ProviderResult(
                 prospect_id=lead.prospect_id,
@@ -578,7 +607,22 @@ class UnipileProvider(LinkedInProvider):
             raise RuntimeError(f"Unipile lookup: no provider_id in response body keys={list(data)[:10]}")
         return str(pid)
 
+    # 429 backoff schedule (seconds). Bounded: 3 tries total, then give up.
+    # A 429 means Unipile REJECTED the call (nothing was actioned), so a
+    # retry is always safe — unlike a timeout, which may have landed.
+    _RETRY_429_SLEEPS = (1.0, 2.0)
+
     def _post(self, path: str, body: dict) -> dict:
+        """POST to Unipile with two failure modes kept strictly apart:
+
+        - CLEAN failures (4xx/5xx response, connect error before the request
+          left) raise RuntimeError : the action did NOT happen, retry freely.
+          429s are retried here with bounded backoff before giving up.
+        - AMBIGUOUS failures (read timeout / connection dropped AFTER the
+          request was dispatched) raise AmbiguousSendError : the action MAY
+          have happened on LinkedIn. Callers must not blind-retry — for send
+          endpoints a retry here is exactly how a contact gets two invites.
+        """
         self._require_creds()
         import httpx
         url = f"{self.dsn}{path}"
@@ -587,14 +631,45 @@ class UnipileProvider(LinkedInProvider):
             "accept": "application/json",
             "Content-Type": "application/json",
         }
-        with httpx.Client(timeout=15.0) as client:
-            resp = client.post(url, headers=headers, json=body)
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Unipile {path} {resp.status_code}: {resp.text[:300]}")
-        try:
-            return resp.json() if resp.text else {}
-        except Exception:
-            return {}
+        attempt = 0
+        while True:
+            try:
+                with httpx.Client(timeout=15.0) as client:
+                    resp = client.post(url, headers=headers, json=body)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                # Never reached the server : clean failure, safe to retry.
+                raise RuntimeError(f"Unipile {path} connect failed: {exc}") from exc
+            except httpx.HTTPError as exc:
+                # Read timeout / reset / protocol error AFTER dispatch : the
+                # request may have been processed. Do NOT mask this as a
+                # plain failure — callers treat it as state="unconfirmed".
+                raise AmbiguousSendError(
+                    f"Unipile {path} dispatched but response lost "
+                    f"({type(exc).__name__}: {exc}) — it may have gone out; "
+                    "verify on LinkedIn before retrying") from exc
+
+            if resp.status_code == 429 and attempt < len(self._RETRY_429_SLEEPS):
+                # Honor Retry-After when sane, else our backoff schedule.
+                delay = self._RETRY_429_SLEEPS[attempt]
+                ra = resp.headers.get("retry-after")
+                try:
+                    if ra is not None:
+                        delay = min(max(float(ra), delay), 30.0)
+                except ValueError:
+                    pass
+                print(f"  [unipile] 429 on {path}, retry {attempt + 1}/"
+                      f"{len(self._RETRY_429_SLEEPS)} in {delay:.1f}s")
+                time.sleep(delay)
+                attempt += 1
+                continue
+
+            if resp.status_code >= 400:
+                raise RuntimeError(
+                    f"Unipile {path} {resp.status_code}: {resp.text[:300]}")
+            try:
+                return resp.json() if resp.text else {}
+            except Exception:
+                return {}
 
     # ---- webhook normalization + verification ---------------------------
 

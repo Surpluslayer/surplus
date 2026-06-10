@@ -127,7 +127,20 @@ CANONICAL_STATES: tuple[str, ...] = (
     "message_replied",     # recipient replied to the DM
     "follow_up_sent",      # an additional follow-up DM went out
     "failed",              # provider returned an error for this lead
+    "unconfirmed",         # request dispatched but outcome unknown (timeout
+                           # mid-flight) : it MAY have landed on LinkedIn.
+                           # Retrying blindly risks a double-send; send paths
+                           # hold off (see send_flow's recent-send guard).
 )
+
+
+class AmbiguousSendError(RuntimeError):
+    """A send request was dispatched to the provider but the response never
+    arrived (read timeout / connection dropped mid-flight). The action MAY
+    have been performed on LinkedIn. Callers must NOT auto-retry: surface the
+    ambiguity (canonical state "unconfirmed") and let a human or a later
+    webhook reconcile it. Distinct from a clean failure (4xx/5xx/connect
+    error), where the provider definitely did not act."""
 
 
 @dataclass(frozen=True)

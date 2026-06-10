@@ -43,10 +43,20 @@ def send_and_log(
     res = provider.send_message(
         lead, linkedin_provider_id=prospect.linkedin_provider_id,
     )
+    # Record the truthful state : clean success -> sent_state, clean failure
+    # -> "failed", AMBIGUOUS outcome (request dispatched, response lost — it
+    # may have landed) -> "unconfirmed" so send_flow's recent-send guard can
+    # hold off blind retries to this person.
+    if not res.error:
+        log_state = sent_state
+    elif res.state == "unconfirmed":
+        log_state = "unconfirmed"
+    else:
+        log_state = "failed"
     db.add(models.OutreachLog(
         prospect_id=prospect.id,
         channel="linkedin",
-        state=sent_state if not res.error else "failed",
+        state=log_state,
         body=text[:8000],
         ts=datetime.now(timezone.utc),
         provider=res.provider,
