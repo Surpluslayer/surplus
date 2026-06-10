@@ -137,6 +137,7 @@ def init_db() -> None:
         _migrate_user_onboarding,
         _migrate_prospect_vip,
         _migrate_user_email_account,
+        _migrate_prospect_email,
     ]
     for migration in migrations:
         try:
@@ -810,6 +811,29 @@ def _migrate_prospect_vip() -> None:
         conn.execute(text(
             f"ALTER TABLE prospects ADD COLUMN {ine}vip BOOLEAN DEFAULT {default}"
         ))
+
+
+def _migrate_prospect_email() -> None:
+    """Add prospects.email (VARCHAR(200), NULL, indexed) : the contact's
+    email address when known (captured at scan time or backfilled by
+    enrichment). Gates the email send channel for that contact."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "prospects" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("prospects")}
+    if "email" in cols:
+        return
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            f"ALTER TABLE prospects ADD COLUMN {ine}email VARCHAR(200)"
+        ))
+        if ENGINE.dialect.name == "postgresql":
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_prospects_email "
+                "ON prospects (email)"
+            ))
 
 
 def _migrate_user_email_account() -> None:

@@ -179,6 +179,12 @@ class Prospect(Base):
     # first message, e.g. "grab a coffee — book a time: <calendly link>".
     contact_type: Mapped[Optional[str]] = mapped_column(String(20), default=None)
     next_step: Mapped[Optional[str]] = mapped_column(String(300), default=None)
+    # The person's email address, when known : captured at scan time or
+    # backfilled by enrichment. Unlocks the email channel for this contact
+    # (send a follow-up from the host's connected mailbox instead of, or in
+    # addition to, LinkedIn). NULL = unknown — email sends are gated on it.
+    email: Mapped[Optional[str]] = mapped_column(String(200), default=None,
+                                                 index=True)
     # VIP flag : the operator starred this person at capture time as someone
     # to prioritize. Icon-only toggle in the in-person UI. False is the norm.
     vip: Mapped[bool] = mapped_column(default=False)

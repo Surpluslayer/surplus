@@ -326,6 +326,84 @@ class UnipileProvider(LinkedInProvider):
             linkedin_provider_id=provider_id,
         )
 
+    # ---- send_email (the email channel) ---------------------------------
+
+    def send_email(
+        self,
+        *,
+        email_account_id: str,
+        to_address: str,
+        to_name: str = "",
+        subject: str,
+        body: str,
+        prospect_id: int = 0,
+        reply_to: Optional[str] = None,
+    ) -> ProviderResult:
+        """Send one email from a user's connected mailbox (their own Gmail /
+        Outlook seat — NOT the workspace LinkedIn account this provider was
+        built for, which is why the account id is an explicit argument).
+
+        POST /api/v1/emails. `reply_to` is the provider_id of a prior mail
+        for in-thread replies — per Unipile the subject must then match the
+        original (or carry a Re: prefix), which is the CALLER's job to keep.
+
+        Rides _post, so 429s back off and an ambiguous timeout surfaces as
+        state="unconfirmed" (it may have landed in their inbox — same
+        double-send discipline as the LinkedIn sends)."""
+        if self._dry_run:
+            payload = {"account_id": email_account_id,
+                       "to": [{"display_name": to_name or to_address,
+                               "identifier": to_address}],
+                       "subject": subject, "body": body}
+            if reply_to:
+                payload["reply_to"] = reply_to
+            return ProviderResult(
+                prospect_id=prospect_id,
+                state="dry_run_queued",
+                provider=self.name,
+                provider_lead_id=f"dry_{uuid.uuid4().hex[:12]}",
+                dry_run=True,
+                payload=payload,
+            )
+
+        if not email_account_id:
+            return ProviderResult(
+                prospect_id=prospect_id, state="failed", provider=self.name,
+                provider_lead_id=None, dry_run=False, payload={},
+                error="no connected email account (email_account_id missing)")
+
+        payload = {
+            "account_id": email_account_id,
+            "to": [{"display_name": to_name or to_address,
+                    "identifier": to_address}],
+            "subject": subject,
+            "body": body,
+        }
+        if reply_to:
+            payload["reply_to"] = reply_to
+        try:
+            data = self._post("/api/v1/emails", payload)
+        except AmbiguousSendError as exc:
+            return ProviderResult(
+                prospect_id=prospect_id, state="unconfirmed",
+                provider=self.name, provider_lead_id=None, dry_run=False,
+                payload=payload, error=f"send_email unconfirmed: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            return ProviderResult(
+                prospect_id=prospect_id, state="failed", provider=self.name,
+                provider_lead_id=None, dry_run=False, payload=payload,
+                error=f"send_email failed: {exc}")
+
+        mail_id = (data or {}).get("provider_id") or (data or {}).get("id")
+        return ProviderResult(
+            prospect_id=prospect_id,
+            state="message_sent",
+            provider=self.name,
+            provider_lead_id=str(mail_id) if mail_id else None,
+            dry_run=False,
+            payload=payload,
+        )
+
     # ---- is_relation (cold vs warm routing) ----------------------------
 
     def is_relation(self, linkedin_url: str) -> bool:
