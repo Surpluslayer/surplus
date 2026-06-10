@@ -222,6 +222,30 @@ def test_demo_enter_surface_routing(db, monkeypatch):
     assert _enter("BOOK") == "/book"  # case-insensitive
 
 
+def test_demo_enter_default_surface_is_env_configurable(db, monkeypatch):
+    """DEMO_DEFAULT_SURFACE sets where an omitted ?surface= lands, per env, so
+    e.g. staging can default to book while production keeps the desktop app.
+    An explicit surface still wins; an unknown env value falls back to "app"."""
+    from backend.routes import demo as demo_mod
+
+    monkeypatch.setenv("DEMO_ACCESS_TOKEN", "s3cret")
+    monkeypatch.setenv("DEMO_DEFAULT_SURFACE", "book")
+
+    def _enter(surface):
+        resp = demo_mod.demo_enter(key="s3cret", surface=surface, db=db)
+        return resp.headers["location"]
+
+    # Omitted / unknown now land on the configured default (book), not "/".
+    assert _enter(None) == "/book"
+    assert _enter("https://evil.example.com") == "/book"
+    # An explicit surface still overrides the default.
+    assert _enter("inperson") == "/inperson"
+    assert _enter("app") == "/"
+    # A bogus default value is ignored (back to the desktop pipeline).
+    monkeypatch.setenv("DEMO_DEFAULT_SURFACE", "nonsense")
+    assert _enter(None) == "/"
+
+
 def test_demo_enter_bad_key_is_404_regardless_of_surface(db, monkeypatch):
     """Surface never bypasses the token gate : a wrong key is still 404."""
     from backend.routes import demo as demo_mod
