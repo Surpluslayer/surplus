@@ -263,52 +263,88 @@ export const api = {
   // onProposal(proposal), onDone({summary, auto_send_enabled}), onError({message}).
   // Resolves when the stream closes. Nothing is sent — proposals are staged only.
   relationshipChatStream: async (message, { onMeta, onProposal, onDone, onError } = {}) => {
-    const res = await fetch("/api/relationships/chat/stream", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message }),
-    });
-    if (!res.ok || !res.body) {
-      const text = await res.text().catch(() => "");
-      const err = new Error(`${res.status} ${res.statusText} : ${text.slice(0, 240)}`);
-      // Mirror request(): surface status + parsed body so the caller can
-      // branch on the 402 relationship-quota paywall (LIMIT_REACHED /
-      // CONTACT_LIMIT_REACHED) instead of just showing a raw error string.
-      err.status = res.status;
-      try { err.body = JSON.parse(text); } catch { err.body = null; }
-      throw err;
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    // SSE frames are separated by a blank line; each frame has an `event:` and
-    // a `data:` line. Buffer across chunks since a frame can split mid-read.
-    const dispatch = (frame) => {
-      let ev = "message", data = "";
-      for (const line of frame.split("\n")) {
-        if (line.startsWith("event:")) ev = line.slice(6).trim();
-        else if (line.startsWith("data:")) data += line.slice(5).trim();
-      }
-      if (!data) return;
-      let payload;
-      try { payload = JSON.parse(data); } catch { return; }
-      if (ev === "meta") onMeta?.(payload);
-      else if (ev === "proposal") onProposal?.(payload);
-      else if (ev === "done") onDone?.(payload);
-      else if (ev === "error") onError?.(payload);
+    // Stall watchdog. The server emits a keepalive comment every ~10s even
+    // while the agent is mid-think, so a healthy stream is never silent for
+    // long. If NOTHING arrives for STALL_MS (4+ missed heartbeats) the
+    // connection is black-holed (proxy died, wifi dropped without a reset) —
+    // abort so the caller gets a clean error instead of an infinite spinner.
+    const STALL_MS = 45000;
+    const controller = new AbortController();
+    let stalled = false;
+    let stallTimer = null;
+    const armWatchdog = () => {
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => { stalled = true; controller.abort(); }, STALL_MS);
     };
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let i;
-      while ((i = buf.indexOf("\n\n")) !== -1) {
-        dispatch(buf.slice(0, i));
-        buf = buf.slice(i + 2);
+    const stallError = () =>
+      new Error("the connection went quiet and was closed — try asking again");
+
+    armWatchdog();
+    try {
+      let res;
+      try {
+        res = await fetch("/api/relationships/chat/stream", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message }),
+          signal: controller.signal,
+        });
+      } catch (e) {
+        throw stalled ? stallError() : e;
       }
+      if (!res.ok || !res.body) {
+        const text = await res.text().catch(() => "");
+        const err = new Error(`${res.status} ${res.statusText} : ${text.slice(0, 240)}`);
+        // Mirror request(): surface status + parsed body so the caller can
+        // branch on the 402 relationship-quota paywall (LIMIT_REACHED /
+        // CONTACT_LIMIT_REACHED) instead of just showing a raw error string.
+        err.status = res.status;
+        try { err.body = JSON.parse(text); } catch { err.body = null; }
+        throw err;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      // SSE frames are separated by a blank line; each frame has an `event:` and
+      // a `data:` line. Buffer across chunks since a frame can split mid-read.
+      const dispatch = (frame) => {
+        let ev = "message", data = "";
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("event:")) ev = line.slice(6).trim();
+          else if (line.startsWith("data:")) data += line.slice(5).trim();
+        }
+        if (!data) return;
+        let payload;
+        try { payload = JSON.parse(data); } catch { return; }
+        if (ev === "meta") onMeta?.(payload);
+        else if (ev === "proposal") onProposal?.(payload);
+        else if (ev === "done") onDone?.(payload);
+        else if (ev === "error") onError?.(payload);
+      };
+      for (;;) {
+        let chunk;
+        try {
+          chunk = await reader.read();
+        } catch (e) {
+          // A mid-stream network failure rejects read(); surface it as a
+          // clean error (the keepalive watchdog maps to its own message).
+          throw stalled ? stallError() : e;
+        }
+        armWatchdog(); // any bytes (frames OR keepalives) prove liveness
+        const { value, done } = chunk;
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n\n")) !== -1) {
+          dispatch(buf.slice(0, i));
+          buf = buf.slice(i + 2);
+        }
+      }
+      if (buf.trim()) dispatch(buf);
+    } finally {
+      clearTimeout(stallTimer);
     }
-    if (buf.trim()) dispatch(buf);
   },
   // Approve one drafted follow-up for a contact. Honors the host's auto-send
   // toggle server-side: returns { status: "sent" | "drafted", ... }.
