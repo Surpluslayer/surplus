@@ -381,6 +381,10 @@ export const api = {
   me: () => request("/api/auth/me"),
   // returns { url } : frontend sets window.location = url to begin the flow
   startLinkedinAuth: () => request("/api/auth/linkedin/start", { method: "POST" }),
+  // Connect the signed-in user's mailbox (Gmail/Outlook) as a second Unipile
+  // seat. Returns { url } — redirect the browser there; the hosted page does
+  // the OAuth and bounces back with the Integrations tile flipped.
+  startEmailAuth: () => request("/api/auth/email/start", { method: "POST" }),
   // First-time-user onboarding tour : persist progress so the coachmark flow
   // survives a refresh / device switch. Pass { step } to advance, { status }
   // to finish ("done") / dismiss ("skipped"), or { status:"active", step:0 }
@@ -390,6 +394,20 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(patch),
     }),
+  // ── advisor "book today" surface (BookApp) ──
+  // The Today feed : { date, advisor_name, updates:[...], needs_outreach:[...] }.
+  // Built server-side by scoring + update-detection over the book (cached shape;
+  // loads instantly). refresh re-runs the batch.
+  bookToday: () => request("/api/book/today"),
+  bookRefresh: () => request("/api/book/refresh", { method: "POST" }),
+  // Draft the note behind a "Draft" tap. Pass { contact_id | name, trigger,
+  // channel }. Returns { channel, subject, body }.
+  bookDraft: (body) =>
+    request("/api/book/draft", { method: "POST", body: JSON.stringify(body) }),
+  // The agent ask bar + chips. { query } -> { answer, people:[{name,reason,draft}] }.
+  bookAsk: (query) =>
+    request("/api/book/ask", { method: "POST", body: JSON.stringify({ query }) }),
+
   // in-person guest : mint a LinkedIn-less anonymous session so the capture
   // flow works on event.surpluslayer.com without signing in (real sends stay
   // blocked until LinkedIn is connected). 403s on non-in-person hosts.

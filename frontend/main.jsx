@@ -52,10 +52,25 @@ initAnalytics();
   }
 })();
 
+// Advisor "Your book today" surface lives at /book (or ?surface=book). Like the
+// in-person surface it's a separate root from the desktop pipeline App : same
+// origin + session cookie, different one-handed shell (the relationship-led
+// "keep my book warm" home).
+function isBookSurface() {
+  try {
+    const { pathname, search, hostname } = window.location;
+    if (hostname.startsWith("book.")) return true;
+    if (pathname === "/book" || pathname.startsWith("/book/")) return true;
+    return new URLSearchParams(search).get("surface") === "book";
+  } catch { return false; }
+}
+
 // Dynamic import so the phone surface (incl. the jsQR decoder) and the desktop
 // pipeline ship as separate chunks : a phone never downloads the desktop App,
 // and desktop never downloads jsQR.
-const load = isInPersonSurface()
+const load = isBookSurface()
+  ? () => import("./BookApp.jsx")
+  : isInPersonSurface()
   ? () => import("./InPersonApp.jsx")
   : () => import("./App.jsx");
 

@@ -179,6 +179,12 @@ class Prospect(Base):
     # first message, e.g. "grab a coffee — book a time: <calendly link>".
     contact_type: Mapped[Optional[str]] = mapped_column(String(20), default=None)
     next_step: Mapped[Optional[str]] = mapped_column(String(300), default=None)
+    # The person's email address, when known : captured at scan time or
+    # backfilled by enrichment. Unlocks the email channel for this contact
+    # (send a follow-up from the host's connected mailbox instead of, or in
+    # addition to, LinkedIn). NULL = unknown — email sends are gated on it.
+    email: Mapped[Optional[str]] = mapped_column(String(200), default=None,
+                                                 index=True)
     # VIP flag : the operator starred this person at capture time as someone
     # to prioritize. Icon-only toggle in the in-person UI. False is the norm.
     vip: Mapped[bool] = mapped_column(default=False)
@@ -557,6 +563,25 @@ class User(Base):
     # Connection health : flipped to "disconnected" if Unipile webhook fires
     # CREDENTIALS / DISCONNECTED. Re-auth flips it back to "active".
     linkedin_status: Mapped[str] = mapped_column(String(20), default="active")
+
+    # ─── Email channel (Unipile GOOGLE / MICROSOFT account) ─────────────
+    # A SECOND Unipile account on the same workspace, pointing at the user's
+    # real mailbox (Gmail / Outlook). Independent of the LinkedIn seat above:
+    # either can be connected without the other. Connected via the hosted-auth
+    # flow in routes/auth.py (/email/start → /email/webhook), which is the
+    # only writer of these fields.
+    unipile_email_account_id: Mapped[Optional[str]] = mapped_column(
+        String(80), unique=True, index=True, default=None,
+    )
+    # The mailbox address Unipile reports for the connected account (e.g.
+    # "daniel@gmail.com"). Display-only; may differ from `email` above (the
+    # profile/login email). Best-effort: NULL if the fetch didn't surface it.
+    email_account_address: Mapped[Optional[str]] = mapped_column(
+        String(200), default=None)
+    # "disconnected" | "active" | "credentials" — mirrors linkedin_status
+    # semantics (credentials = OAuth lapsed, needs the reconnect flow).
+    email_status: Mapped[str] = mapped_column(String(20), default="disconnected")
+    email_connected_at: Mapped[Optional[datetime]] = mapped_column(default=None)
     # Operator-curated outreach exemplars used as style guides when Claude
     # composes personalized notes/DMs for their events. JSON-encoded list
     # of strings (each = one past outreach message). Empty / unset means
@@ -896,6 +921,11 @@ class Contact(Base):
     email: Mapped[Optional[str]] = mapped_column(String(200), default=None)
     company: Mapped[Optional[str]] = mapped_column(String(120), default=None)
     company_domain: Mapped[Optional[str]] = mapped_column(String(160), default=None)
+    # The Unipile email thread the HOST CONFIRMED as "my thread with this
+    # person" (manual link via /contacts/{id}/email-thread — never guessed).
+    # Once set, the email channel reads (pull) and replies (push) within
+    # this one thread, so Gmail/Outlook threading stays intact.
+    email_thread_id: Mapped[Optional[str]] = mapped_column(String(160), default=None)
 
     # --- Relationship-watch snapshot (CRM auto-updates) ---------------------
     # The last-seen LinkedIn state for this person, refreshed by the scheduled

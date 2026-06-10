@@ -80,6 +80,7 @@ class ScanIn(BaseModel):
     private_note: Optional[str] = None  # operator-only memo : never sent
     contact_type: Optional[str] = None  # "sales"|"hiring"|"investor"|"partner"|"follow_up"|"other"
     next_step: Optional[str] = None     # follow-up woven into the first message
+    email: Optional[str] = None         # their email, if exchanged : unlocks the email channel
     vip: Optional[bool] = None          # icon-only "star this person" toggle
     # Optional enrichment carried over from a confirmed /resolve candidate so
     # the captured Prospect (and its draft) isn't just a bare handle.
@@ -293,6 +294,10 @@ def scan_capture(
     p.private_note = (body.private_note or None)   # operator-only : never sent
     p.contact_type = (body.contact_type or None)
     p.next_step = (body.next_step or None)         # woven into the first message
+    # Email, when exchanged at capture : only overwrite with a plausible
+    # address, never blank an existing one on a re-scan that omitted it.
+    if body.email and "@" in body.email:
+        p.email = body.email.strip().lower()
     if body.vip is not None:
         p.vip = bool(body.vip)
 

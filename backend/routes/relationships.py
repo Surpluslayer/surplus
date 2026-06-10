@@ -173,6 +173,220 @@ def list_relationships(
     return {"count": len(rows), "relationships": rows}
 
 
+@router.post("/email/sync")
+def sync_email(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Pull who the user actually corresponds with from their connected
+    mailbox into the Contact spine (see agents/email_sync.py). Synchronous —
+    a few Unipile pages — so the Integrations tile can await real counts.
+    409 until a mailbox is connected. Also auto-kicked once by the email
+    connect webhook, so most users never need to call this by hand."""
+    import os
+    if not getattr(user, "unipile_email_account_id", None):
+        raise HTTPException(409, "no email account connected")
+    from ..agents.email_sync import sync_email_contacts
+    dsn = (os.environ.get("UNIPILE_DSN", "") or "").strip().rstrip("/")
+    if dsn and not dsn.startswith(("http://", "https://")):
+        dsn = f"https://{dsn}"
+    api_key = (os.environ.get("UNIPILE_API_KEY", "") or "").strip()
+    if not (dsn and api_key):
+        raise HTTPException(503, "Unipile not configured")
+    stats = sync_email_contacts(db, user, dsn=dsn, api_key=api_key)
+    return {"ok": stats.get("error") is None, **stats}
+
+
+class EmailSendIn(BaseModel):
+    """One outbound email to a contact, from the host's connected mailbox."""
+    message: str
+    subject: Optional[str] = None  # default derived from the shared event
+
+
+@router.post("/contacts/{contact_id}/send-email")
+def send_contact_email(
+    contact_id: int,
+    body: EmailSendIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Send `message` to one owned contact AS AN EMAIL from the host's own
+    connected mailbox (their Unipile GOOGLE/OUTLOOK seat — never a shared
+    account). The email twin of /contacts/{id}/followup.
+
+    Gates: the contact must have a known email (prospect.email or the
+    Contact spine's), and the host must have a connected, active mailbox —
+    except in dry-run, where the payload is built but nothing leaves the
+    box (demos exercise the full path). The per-channel double-send guard
+    applies: an unconfirmed email send blocks a blind retry."""
+    contact = _owned_contact(db, contact_id, user)
+    text = (body.message or "").strip()
+    if not text:
+        raise HTTPException(422, "message is required")
+    prospect = _sendable_prospect(contact)
+
+    to_address = ((getattr(prospect, "email", None) or "").strip().lower()
+                  or (contact.email or "").strip().lower())
+    if not to_address:
+        raise HTTPException(409, "no email address on file for this contact")
+
+    from ..providers import get_provider_for_user
+    provider = get_provider_for_user(user)
+    email_account_id = getattr(user, "unipile_email_account_id", None) or ""
+    if not provider.dry_run:
+        if not email_account_id or \
+                getattr(user, "email_status", "") != "active":
+            raise HTTPException(
+                409, "connect your email in Integrations before sending")
+
+    from ..agents.send_flow import _assert_no_recent_send
+    if not provider.dry_run:
+        _assert_no_recent_send(db, prospect, channel="email")
+
+    ev = getattr(prospect, "event", None)
+    label = (getattr(ev, "label", "") or "").strip() if ev else ""
+    subject = (body.subject or "").strip() or (
+        f"Great meeting you at {label}" if label else "Great meeting you")
+
+    # PUSH-in-thread: when the host confirmed a thread for this contact,
+    # reply to its LATEST message (reply_to + matching 'Re:' subject is
+    # Unipile's threading contract) so Gmail/Outlook keep one conversation.
+    reply_to = None
+    if contact.email_thread_id and not provider.dry_run:
+        try:
+            from ..agents.email_sync import thread_messages
+            dsn, api_key = _unipile_cfg()
+            msgs = thread_messages(
+                dsn=dsn, api_key=api_key, account_id=email_account_id,
+                thread_id=contact.email_thread_id,
+                own_address=getattr(user, "email_account_address", "") or "")
+            if msgs:
+                last = msgs[-1]
+                reply_to = last.get("provider_id")
+                orig = (last.get("subject") or "").strip()
+                if orig:
+                    subject = orig if orig.lower().startswith("re:") \
+                        else f"Re: {orig}"
+        except Exception as exc:  # noqa: BLE001 : fall back to a fresh email
+            print(f"  [email.send] thread lookup failed, sending fresh: "
+                  f"{type(exc).__name__}: {exc}")
+
+    res = provider.send_email(
+        email_account_id=email_account_id,
+        to_address=to_address,
+        to_name=(contact.name or prospect.name or ""),
+        subject=subject,
+        body=text,
+        prospect_id=prospect.id,
+        reply_to=reply_to,
+    )
+
+    # Truthful log on the email channel : message_sent / unconfirmed / failed
+    # (dry runs log dry_run_queued). Same discipline as sender.send_and_log.
+    db.add(models.OutreachLog(
+        prospect_id=prospect.id,
+        channel="email",
+        state=res.state,
+        body=f"[{subject}] {text}"[:8000],
+        ts=datetime.now(timezone.utc),
+        provider=res.provider,
+        provider_lead_id=res.provider_lead_id,
+    ))
+    db.commit()
+
+    if res.error and res.state == "failed":
+        raise HTTPException(502, f"email send failed: {res.error}")
+    return {"status": "unconfirmed" if res.state == "unconfirmed" else "sent",
+            "dry_run": res.dry_run, "contact_id": contact_id,
+            "prospect_id": prospect.id, "to": to_address, "subject": subject}
+
+
+def _unipile_cfg() -> tuple[str, str]:
+    import os
+    dsn = (os.environ.get("UNIPILE_DSN", "") or "").strip().rstrip("/")
+    if dsn and not dsn.startswith(("http://", "https://")):
+        dsn = f"https://{dsn}"
+    api_key = (os.environ.get("UNIPILE_API_KEY", "") or "").strip()
+    if not (dsn and api_key):
+        raise HTTPException(503, "Unipile not configured")
+    return dsn, api_key
+
+
+def _email_channel_ready(user) -> str:
+    """The user's email account id, 409ing when no mailbox is connected."""
+    acct = getattr(user, "unipile_email_account_id", None)
+    if not acct or getattr(user, "email_status", "") != "active":
+        raise HTTPException(409, "connect your email in Integrations first")
+    return acct
+
+
+@router.get("/contacts/{contact_id}/email-threads")
+def list_contact_email_threads(
+    contact_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Candidate mailbox threads with this contact's address — what the host
+    picks from to CONFIRM 'this is my thread with them'. Manual by design:
+    we never guess the thread, the host links it."""
+    contact = _owned_contact(db, contact_id, user)
+    if not (contact.email or "").strip():
+        raise HTTPException(409, "no email address on file for this contact")
+    acct = _email_channel_ready(user)
+    dsn, api_key = _unipile_cfg()
+    from ..agents.email_sync import list_threads_for_address
+    threads = list_threads_for_address(
+        dsn=dsn, api_key=api_key, account_id=acct,
+        address=contact.email.strip().lower(),
+        own_address=getattr(user, "email_account_address", "") or "")
+    return {"contact_id": contact_id, "address": contact.email,
+            "linked_thread_id": contact.email_thread_id, "threads": threads}
+
+
+class ThreadLinkIn(BaseModel):
+    thread_id: Optional[str] = None  # null unlinks
+
+
+@router.post("/contacts/{contact_id}/email-thread")
+def link_contact_email_thread(
+    contact_id: int,
+    body: ThreadLinkIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """The host's manual confirmation: set (or clear) the ONE mailbox thread
+    that belongs to this contact. Pull and push both key off it."""
+    contact = _owned_contact(db, contact_id, user)
+    contact.email_thread_id = (body.thread_id or "").strip() or None
+    db.commit()
+    return {"contact_id": contact_id,
+            "linked_thread_id": contact.email_thread_id}
+
+
+@router.get("/contacts/{contact_id}/email-thread")
+def read_contact_email_thread(
+    contact_id: int,
+    with_bodies: bool = False,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """PULL: the linked thread's messages, oldest first (live read from the
+    mailbox — nothing stored). 409 until the host has linked a thread."""
+    contact = _owned_contact(db, contact_id, user)
+    if not contact.email_thread_id:
+        raise HTTPException(409, "no email thread linked for this contact")
+    acct = _email_channel_ready(user)
+    dsn, api_key = _unipile_cfg()
+    from ..agents.email_sync import thread_messages
+    msgs = thread_messages(
+        dsn=dsn, api_key=api_key, account_id=acct,
+        thread_id=contact.email_thread_id,
+        own_address=getattr(user, "email_account_address", "") or "",
+        with_bodies=with_bodies)
+    return {"contact_id": contact_id,
+            "thread_id": contact.email_thread_id, "messages": msgs}
+
+
 @router.get("/contacts")
 def list_contacts(
     db: Session = Depends(get_db),
