@@ -337,6 +337,7 @@ function EmailTestPanel({ s }) {
   const [threads, setThreads] = useState(null);
   const [msgs, setMsgs] = useState(null);
   const [draft, setDraft] = useState("");
+  const [subject, setSubject] = useState("");
   const [status, setStatus] = useState("");
   const run = async (fn, okMsg) => {
     setStatus("…");
@@ -364,11 +365,16 @@ function EmailTestPanel({ s }) {
     setMsgs(r.messages || []);
     if (!draft) setDraft(`Hey ${(s.name || "").split(" ")[0]}, following up on our thread — `);
   }, "thread loaded");
-  const send = () => run(async () => {
-    const r = await api.sendContactEmail(cid, draft);
-    setStatus(`sent (${r.status}${r.dry_run ? ", dry-run" : ""}) → ${r.to}`);
-    setMsgs(null);
-  });
+  const send = async () => {
+    setStatus("…");
+    try {
+      const r = await api.sendContactEmail(cid, draft, subject.trim() || null);
+      setStatus(r.dry_run
+        ? `DRY-RUN only — nothing actually sent (flip UNIPILE_EMAIL_LIVE)`
+        : `sent (${r.status}) → ${r.to} · "${r.subject}"`);
+      setMsgs(null);
+    } catch (e) { setStatus(e.message || "failed"); }
+  };
   const box = { width: "100%", border: `1px solid ${C.line}`, borderRadius: 8,
                 padding: "8px 10px", fontSize: 13, fontFamily: FONT };
   const btn = { border: "none", background: C.accent, color: "#fff",
@@ -431,6 +437,11 @@ function EmailTestPanel({ s }) {
       )}
       {email && (
         <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+          <input value={subject} onChange={(e) => setSubject(e.target.value)}
+                 placeholder={threadId
+                   ? "subject (auto: Re: thread subject)"
+                   : "subject — e.g. Great meeting you at NYC Tech Week"}
+                 style={box} />
           <textarea value={draft} onChange={(e) => setDraft(e.target.value)}
                     rows={3} placeholder="email body…" style={box} />
           <button onClick={send} style={{ ...btn, width: 140 }}

@@ -349,8 +349,13 @@ class UnipileProvider(LinkedInProvider):
 
         Rides _post, so 429s back off and an ambiguous timeout surfaces as
         state="unconfirmed" (it may have landed in their inbox — same
-        double-send discipline as the LinkedIn sends)."""
-        if self._dry_run:
+        double-send discipline as the LinkedIn sends).
+
+        UNIPILE_EMAIL_LIVE=true makes EMAIL sends real even under
+        UNIPILE_DRY_RUN — a narrow escape hatch for testing the email
+        channel on staging without un-dry-running LinkedIn sends too."""
+        email_live = _env_bool("UNIPILE_EMAIL_LIVE", False)
+        if self._dry_run and not email_live:
             payload = {"account_id": email_account_id,
                        "to": [{"display_name": to_name or to_address,
                                "identifier": to_address}],
