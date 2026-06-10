@@ -271,12 +271,15 @@ def send_contact_email(
             print(f"  [email.send] thread lookup failed, sending fresh: "
                   f"{type(exc).__name__}: {exc}")
 
+    from ..agents.email_sync import format_email_html
+    to_first = ((contact.name or prospect.name or "").split() or [""])[0]
+    host_first = ((user.name or "").split() or [""])[0]
     res = provider.send_email(
         email_account_id=email_account_id,
         to_address=to_address,
         to_name=(contact.name or prospect.name or ""),
         subject=subject,
-        body=text,
+        body=format_email_html(text, to_first, host_first),
         prospect_id=prospect.id,
         reply_to=reply_to,
     )

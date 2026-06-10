@@ -122,11 +122,14 @@ def send_followup_email(db, prospect, text: str):
         except Exception:  # noqa: BLE001 : fall back to a fresh email
             pass
 
+    from .email_sync import format_email_html
+    to_first = ((getattr(prospect, "name", "") or "").split() or [""])[0]
+    host_first = ((getattr(owner, "name", "") or "").split() or [""])[0]
     res = provider.send_email(
         email_account_id=acct, to_address=to_addr,
         to_name=(getattr(prospect, "name", "") or ""),
-        subject=subject, body=text, prospect_id=prospect.id,
-        reply_to=reply_to)
+        subject=subject, body=format_email_html(text, to_first, host_first),
+        prospect_id=prospect.id, reply_to=reply_to)
     db.add(models.OutreachLog(
         prospect_id=prospect.id, channel="email", state=res.state,
         body=f"[{subject}] {text}"[:8000], ts=datetime.now(timezone.utc),

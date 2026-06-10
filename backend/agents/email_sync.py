@@ -347,3 +347,24 @@ def thread_messages(*, dsn: str, api_key: str, account_id: str,
     msgs.sort(key=lambda m: _parse_date(m["date"])
               or datetime.min.replace(tzinfo=timezone.utc))
     return msgs
+
+
+def format_email_html(text: str, to_first: str = "", host_first: str = "") -> str:
+    """Shape a DM-style draft into a proper email: greeting line, body
+    paragraphs, sign-off with the host's name. An inline 'Hey Jia, ...'
+    opener is lifted onto its own line; newlines become <br> (Unipile body
+    is HTML, where plain \n collapses into one run-on line)."""
+    import re
+    body = (text or "").strip()
+    m = re.match(r"^(hi|hey|hello)[ ,]+([A-Za-z'\-]+)[,!.]?\s*", body, re.I)
+    if m:
+        greeting = f"{m.group(1).capitalize()} {m.group(2)},"
+        body = body[m.end():].strip()
+    else:
+        greeting = f"Hi {to_first.strip()}," if to_first.strip() else "Hi,"
+    if body:
+        body = body[0].upper() + body[1:]
+    paras = "<br><br>".join(p.strip().replace("\n", "<br>")
+                            for p in body.split("\n\n") if p.strip()) or body
+    sig = f"Best,<br>{host_first.strip()}" if host_first.strip() else "Best,"
+    return f"{greeting}<br><br>{paras}<br><br>{sig}"
