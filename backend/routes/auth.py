@@ -932,6 +932,18 @@ def triage_signup(
         db.add(user)
         db.commit()
         db.refresh(user)
+        # TOCTOU backstop. users.email has NO unique constraint, so two
+        # concurrent signups (double-click, retried request) can BOTH pass
+        # the read above and BOTH insert — a silent duplicate identity that
+        # later splits the account's data. Converge deterministically: every
+        # racer re-reads, adopts the OLDEST row for this email, and the
+        # losers delete their own insert (no session points at it yet).
+        oldest = (db.query(User).filter(User.email == email)
+                  .order_by(User.id.asc()).first())
+        if oldest is not None and oldest.id != user.id:
+            db.delete(user)
+            db.commit()
+            user = oldest
 
     sess = create_session(db, user)
     # Cookie has to be set on the SAME response we return : FastAPI gotcha

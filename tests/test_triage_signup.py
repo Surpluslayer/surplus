@@ -146,3 +146,51 @@ def test_signup_does_not_touch_existing_linkedin_user(db):
     assert refreshed.email == "existing@example.com"
     new_user = db.query(models.User).filter_by(email="new@example.com").first()
     assert new_user.unipile_account_id is None
+
+
+def test_signup_race_converges_on_oldest_row(db):
+    """TOCTOU backstop. users.email has no unique constraint, so two
+    concurrent signups can BOTH miss the existence read and BOTH insert.
+    Simulate the loser: the competitor's row is committed, but OUR first
+    read returns None (it ran before their commit landed). The route must
+    detect the duplicate on re-read, delete its own insert, and hand back
+    the oldest row — one user per email, deterministically."""
+    from backend.routes.auth import triage_signup
+
+    competitor = models.User(name="First Wins", email="daniel@example.com")
+    db.add(competitor)
+    db.commit()
+    db.refresh(competitor)
+
+    class _RaceSession:
+        """Pass-through session whose FIRST User query returns None,
+        replaying the stale read that opens the race window."""
+        def __init__(self, real):
+            self._real = real
+            self._stale_reads = 1
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+        def query(self, *a, **kw):
+            q = self._real.query(*a, **kw)
+            if self._stale_reads and a and a[0] is models.User:
+                self._stale_reads -= 1
+                outer = self
+
+                class _StaleQuery:
+                    def __init__(self, inner): self._inner = inner
+                    def filter(self, *fa, **fk):
+                        return _StaleQuery(self._inner.filter(*fa, **fk))
+                    def first(self):
+                        return None  # the competitor's commit isn't visible yet
+                return _StaleQuery(q)
+            return q
+
+    result = triage_signup(_body(name="Second Loses"), _RaceSession(db))
+    payload = json.loads(result.body)
+
+    users = db.query(models.User).filter_by(email="daniel@example.com").all()
+    assert len(users) == 1                      # the duplicate was removed
+    assert users[0].id == competitor.id         # oldest row won
+    assert payload["user_id"] == competitor.id  # and the session points at it
