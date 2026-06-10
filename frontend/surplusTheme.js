@@ -1,17 +1,19 @@
 export const SURPLUS_APP_CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;1,500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap');
 * { box-sizing:border-box; margin:0; padding:0; }
 .root {
-  --bg:#f6f7f9; --panel:#ffffff; --panel-2:#fbfcfd; --panel-3:#f1f3f6;
-  --line:#e4e8ee; --line-soft:#edf1f5;
-  --ink:#1f1c2e; --ink-dim:#5f5b73; --ink-faint:#9b96ac;
-  --acc:#6b46e0; --acc-deep:#5836c6; --acc-soft:#ede9fb; --acc-light:#9d8ae8;
-  --ok:#1f9d6b; --ok-soft:#e3f4ec; --no:#d8654f; --no-soft:#fbe9e4;
-  --build:#6b46e0; --hire:#3f7fd6; --op:#cf5fa6;
-  --shadow:0 8px 30px rgba(76,52,143,0.08); --shadow-sm:0 3px 14px rgba(76,52,143,0.06);
-  --r-card:16px; --r-panel:13px; --r-el:10px; --r-pill:999px;
-  --gray-soft:#f0f0f5;
-  font-family:'Plus Jakarta Sans',system-ui,sans-serif; background:var(--bg);
+  --bg:#f4f5f7; --panel:#ffffff; --panel-2:#fafbfc; --panel-3:#f1f3f6;
+  --line:#e6e8eb; --line-soft:#eef0f2;
+  --ink:#1b1e22; --ink-dim:#5b616a; --ink-faint:#99a0a8;
+  --acc:#2f6df6; --acc-deep:#2257d6; --acc-soft:#eaf1fe; --acc-light:#86abf9;
+  --ok:#1f9d62; --ok-soft:#e7f5ee; --no:#c0433d; --no-soft:#fbeceb;
+  --build:#2f6df6; --hire:#3f7fd6; --op:#cf5fa6;
+  --shadow:0 8px 30px rgba(20,23,28,0.06); --shadow-sm:0 3px 14px rgba(20,23,28,0.05);
+  --r-card:14px; --r-panel:12px; --r-el:10px; --r-pill:999px;
+  --gray-soft:#f0f1f4;
+  --font-ui:'Inter',system-ui,sans-serif;
+  --font-display:'Newsreader',Georgia,'Times New Roman',serif;
+  font-family:var(--font-ui); background:var(--bg);
   color:var(--ink); min-height:100vh; padding:24px;
   background-image:none;
 }
@@ -24,7 +26,7 @@ export const SURPLUS_APP_CSS = `
 }
 .brand { display:flex; align-items:center; gap:12px; isolation:isolate; }
 .brand-logo { width:44px; height:44px; display:block; object-fit:contain;
-  mix-blend-mode:multiply; filter:drop-shadow(0 8px 18px rgba(108,67,217,0.14)); }
+  mix-blend-mode:multiply; filter:drop-shadow(0 8px 18px rgba(47,109,246,0.14)); }
 .brand-text { min-height:44px; display:flex; flex-direction:column; justify-content:center; gap:1px; }
 .brand-name { font-family:'Inter',system-ui,sans-serif; font-weight:800;
   letter-spacing:-0.05em; font-size:1.85rem; line-height:1; color:var(--ink); }
@@ -32,7 +34,7 @@ export const SURPLUS_APP_CSS = `
 .live-badge { margin-left:14px; padding:4px 10px; border-radius:var(--r-pill);
   font-size:10.5px; font-weight:600; letter-spacing:0.02em; text-transform:uppercase;
   background:var(--acc-soft); color:var(--acc);
-  border:1px solid rgba(108,67,217,0.18); }
+  border:1px solid rgba(47,109,246,0.18); }
 .api-error { padding:10px 18px; background:#fff5f5; color:#b03030;
   border-bottom:1px solid #f3d6d6; font-size:13px; font-weight:500; }
 
@@ -131,7 +133,7 @@ export const SURPLUS_APP_CSS = `
 .rail-item:disabled { cursor:not-allowed; opacity:0.45; }
 .rail-item:not(:disabled):hover { color:var(--acc); background:var(--acc-soft); }
 .rail-item.active { color:#fff; background:var(--acc); border-color:var(--acc);
-  box-shadow:0 4px 12px rgba(108,67,217,0.3); }
+  box-shadow:0 4px 12px rgba(47,109,246,0.3); }
 .rail-item.done { color:var(--ink-dim); }
 .rail-dot { display:flex; }
 .rail-label { font-size:11.5px; font-weight:500; }
@@ -140,8 +142,8 @@ export const SURPLUS_APP_CSS = `
 @keyframes fade { from{opacity:0;transform:translateY(6px);} to{opacity:1;transform:none;} }
 .stage { display:flex; flex-direction:column; gap:22px; }
 .stage-head { max-width:560px; margin-bottom:2px; }
-.stage-head h1 { font-family:inherit; font-weight:700;
-  font-size:clamp(1.35rem, 2.2vw, 1.75rem); line-height:1.22; letter-spacing:-0.03em;
+.stage-head h1 { font-family:var(--font-display); font-weight:500;
+  font-size:clamp(1.5rem, 2.4vw, 1.95rem); line-height:1.18; letter-spacing:-0.01em;
   margin:0; color:var(--ink); }
 .lede { font-size:13.5px; line-height:1.7; color:var(--ink-dim); }
 .lede em { color:var(--acc); font-style:normal; font-weight:600; }
@@ -166,7 +168,7 @@ export const SURPLUS_APP_CSS = `
   border-radius:var(--r-pill); cursor:pointer; transition:all 0.15s; }
 .chip:hover { border-color:var(--acc-light); color:var(--acc); }
 .chip-on { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:600;
-  box-shadow:0 3px 10px rgba(108,67,217,0.25); }
+  box-shadow:0 3px 10px rgba(47,109,246,0.25); }
 .range-in { width:100%; accent-color:var(--acc); cursor:pointer; }
 .topo-inline { font-size:10.5px; color:var(--ink-faint); display:flex; align-items:center; gap:5px; }
 .derived { display:flex; gap:12px; margin-top:6px; padding-top:13px; border-top:1px dashed var(--line); }
@@ -180,9 +182,9 @@ export const SURPLUS_APP_CSS = `
 .btn-primary { background:var(--acc); color:#fff; border:none; font-family:inherit;
   font-size:12.5px; font-weight:700; padding:12px 20px; cursor:pointer; display:flex;
   align-items:center; gap:8px; letter-spacing:-0.01em; border-radius:var(--r-el);
-  box-shadow:0 6px 16px rgba(108,67,217,0.3); transition:all 0.16s; white-space:nowrap; }
+  box-shadow:0 6px 16px rgba(47,109,246,0.3); transition:all 0.16s; white-space:nowrap; }
 .btn-primary:hover { background:var(--acc-deep); transform:translateY(-1px);
-  box-shadow:0 8px 20px rgba(108,67,217,0.38); }
+  box-shadow:0 8px 20px rgba(47,109,246,0.38); }
 .pipe-sources { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
 .pipe-card { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card);
   padding:16px; box-shadow:var(--shadow-sm); }
@@ -243,7 +245,7 @@ export const SURPLUS_APP_CSS = `
 .st-below { background:var(--no-soft); color:var(--no); }
 .side-tag { font-size:8px; letter-spacing:0.03em; text-transform:uppercase; padding:3px 7px;
   border-radius:var(--r-pill); font-weight:700; white-space:nowrap; }
-.side-build { color:var(--build); background:rgba(107,70,224,0.1); }
+.side-build { color:var(--build); background:rgba(47,109,246,0.1); }
 .side-hire { color:var(--hire); background:rgba(63,127,214,0.1); }
 .side-op { color:var(--op); background:rgba(207,95,166,0.1); }
 .locked-prospects { position:relative; overflow:hidden; }
@@ -305,7 +307,7 @@ export const SURPLUS_APP_CSS = `
   border-radius:8px; padding:10px 12px; resize:vertical; box-sizing:border-box;
   transition:border-color 0.15s, box-shadow 0.15s; }
 .msg-edit:focus { outline:none; border-color:var(--acc);
-  box-shadow:0 0 0 3px rgba(108,67,217,0.12); }
+  box-shadow:0 0 0 3px rgba(47,109,246,0.12); }
 .msg-edit-long { min-height:120px; }
 .msg-warn { color:#b03030; font-weight:600; }
 .below-threshold-warn { font-size:11px; color:#8a6a1f; background:#fff8e1;
@@ -324,7 +326,7 @@ export const SURPLUS_APP_CSS = `
   background:var(--acc); color:#fff; font-family:inherit; font-size:11.5px; font-weight:600;
   cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:6px;
   transition:all 0.18s; }
-.btn-send:hover:not(:disabled) { transform:translateY(-1px); box-shadow:0 4px 12px rgba(108,67,217,0.25); }
+.btn-send:hover:not(:disabled) { transform:translateY(-1px); box-shadow:0 4px 12px rgba(47,109,246,0.25); }
 .btn-send:disabled { opacity:0.5; cursor:not-allowed; }
 .btn-send-dm { background:#fff; color:var(--acc); }
 .send-result { margin-top:6px; font-size:10.5px; padding:7px 10px; border-radius:6px;
@@ -370,28 +372,28 @@ export const SURPLUS_APP_CSS = `
   color:var(--ink-dim); cursor:pointer; }
 .radar-graph-reset:hover { color:var(--acc); border-color:var(--acc-light); }
 .graph { width:100%; height:auto; display:block; }
-.hull { fill:rgba(108,67,217,0.035); stroke:var(--line); stroke-dasharray:3 4; }
+.hull { fill:rgba(47,109,246,0.035); stroke:var(--line); stroke-dasharray:3 4; }
 .hull-label { fill:var(--ink-faint); font-size:9px; letter-spacing:0.1em; text-anchor:middle;
-  font-family:'Plus Jakarta Sans',sans-serif; text-transform:uppercase; font-weight:700; }
+  font-family:'Inter',sans-serif; text-transform:uppercase; font-weight:700; }
 .edge { stroke-linecap:round; }
 .edge-sym { stroke:var(--acc); stroke-width:2; opacity:0.5; }
 .edge-aff { stroke:var(--ink-faint); stroke-width:1; opacity:0.35; stroke-dasharray:2 3; }
 .edge-cross { opacity:0.13; }
 .node { stroke-width:1.5; }
-.node-side-build { fill:rgba(107,70,224,0.12); stroke:var(--build); }
+.node-side-build { fill:rgba(47,109,246,0.12); stroke:var(--build); }
 .node-side-hire { fill:rgba(63,127,214,0.12); stroke:var(--hire); }
 .node-side-op { fill:rgba(207,95,166,0.12); stroke:var(--op); }
 .node-init { fill:var(--ink); font-size:10px; font-weight:700; text-anchor:middle;
-  font-family:'Plus Jakarta Sans',sans-serif; }
+  font-family:'Inter',sans-serif; }
 .node-name { fill:var(--ink-faint); font-size:9px; text-anchor:middle;
-  font-family:'Plus Jakarta Sans',sans-serif; font-weight:500; }
+  font-family:'Inter',sans-serif; font-weight:500; }
 .legend { display:flex; flex-wrap:wrap; gap:16px; padding:10px 6px 4px; }
 .legend span { font-size:9px; color:var(--ink-faint); display:flex; align-items:center; gap:5px;
   text-transform:uppercase; letter-spacing:0.03em; font-weight:600; }
 .legend i { width:14px; height:0; display:inline-block; }
 .lg-sym { border-top:2px solid var(--acc); }
 .lg-aff { border-top:1px dashed var(--ink-faint); }
-.lg-build { width:9px; height:9px; border-radius:50%; background:rgba(107,70,224,0.15);
+.lg-build { width:9px; height:9px; border-radius:50%; background:rgba(47,109,246,0.15);
   border:1.5px solid var(--build); }
 .lg-hire { width:9px; height:9px; border-radius:50%; background:rgba(63,127,214,0.15);
   border:1.5px solid var(--hire); }
@@ -418,9 +420,9 @@ export const SURPLUS_APP_CSS = `
   padding:6px 0; color:var(--ink-dim); border-bottom:1px dotted var(--line); }
 .table-rationale { font-size:10px; color:var(--ink-faint); line-height:1.55; margin-top:9px; }
 .roi-top { display:grid; grid-template-columns:1fr 1.2fr; gap:16px; }
-.roi-hero { background:linear-gradient(145deg,#7d5ae8,#6b46e0); color:#fff; padding:24px;
+.roi-hero { background:linear-gradient(145deg,#4f86f8,#2f6df6); color:#fff; padding:24px;
   border-radius:var(--r-card); display:flex; flex-direction:column; gap:7px;
-  box-shadow:0 10px 30px rgba(108,67,217,0.35); }
+  box-shadow:0 10px 30px rgba(47,109,246,0.35); }
 .roi-hero-label { font-size:11px; letter-spacing:0.05em; text-transform:uppercase;
   font-weight:700; opacity:0.85; }
 .roi-hero-num { font-size:62px; font-weight:800; line-height:1; letter-spacing:-0.02em; }

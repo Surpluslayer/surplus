@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from "react";
 
 const SIDE_COLORS = {
-  Builds: { fill: "rgba(107,70,224,0.18)", stroke: "#6b46e0" },
+  Builds: { fill: "rgba(47,109,246,0.18)", stroke: "#2f6df6" },
   Hires: { fill: "rgba(63,127,214,0.18)", stroke: "#3f7fd6" },
   Operates: { fill: "rgba(207,95,166,0.18)", stroke: "#cf5fa6" },
 };
@@ -265,8 +265,8 @@ export default function MatchingRadarGraph({
       ctx.stroke();
       ctx.setLineDash([]);
 
-      ctx.fillStyle = "#5f5b73";
-      ctx.font = "700 11px 'Plus Jakarta Sans', system-ui, sans-serif";
+      ctx.fillStyle = "#5b616a";
+      ctx.font = "700 11px 'Inter', system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "bottom";
       ctx.fillText(`${groupWord} ${g}`, gc.x, gc.y - gc.radius - 24);
@@ -307,26 +307,26 @@ export default function MatchingRadarGraph({
       ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
       ctx.fillStyle = colors.fill;
       ctx.fill();
-      ctx.strokeStyle = isPicked ? "#6b46e0" : colors.stroke;
+      ctx.strokeStyle = isPicked ? "#2f6df6" : colors.stroke;
       ctx.lineWidth = isPicked ? 2.5 : 1.5;
       ctx.stroke();
 
-      ctx.fillStyle = "#1f1c2e";
-      ctx.font = "700 10px 'Plus Jakarta Sans', system-ui, sans-serif";
+      ctx.fillStyle = "#1b1e22";
+      ctx.font = "700 10px 'Inter', system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(initials(n.name), p.x, p.y);
 
-      ctx.fillStyle = "#5f5b73";
-      ctx.font = "500 9px 'Plus Jakarta Sans', system-ui, sans-serif";
+      ctx.fillStyle = "#5b616a";
+      ctx.font = "500 9px 'Inter', system-ui, sans-serif";
       ctx.textBaseline = "top";
       ctx.fillText((n.name || "").split(" ")[0], p.x, p.y + r + 4);
     });
 
     ctx.restore();
 
-    ctx.fillStyle = "#9b96ac";
-    ctx.font = "500 10px 'Plus Jakarta Sans', system-ui, sans-serif";
+    ctx.fillStyle = "#99a0a8";
+    ctx.font = "500 10px 'Inter', system-ui, sans-serif";
     ctx.textAlign = "left";
     const hint = hoverId || picked.length
       ? "Showing links for selected guest(s) · drag to rearrange · scroll to zoom"

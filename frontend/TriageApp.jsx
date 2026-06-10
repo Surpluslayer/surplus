@@ -1227,17 +1227,17 @@ function DimBar({ label, v }) {
 export const TRIAGE_CSS = `
 /* Triage-only: upload / review / drawer / landing (shell + configure use surplusTheme) */
 .triage-landing {
-  --bg:#f6f7f9; --panel:#ffffff; --panel-2:#fbfcfd; --line:#e4e8ee;
-  --ink:#1f1c2e; --ink-dim:#5f5b73; --ink-faint:#9b96ac;
-  --acc:#6b46e0; --acc-deep:#5836c6; --acc-soft:#ede9fb;
+  --bg:#f4f5f7; --panel:#ffffff; --panel-2:#fbfcfd; --line:#e6e8eb;
+  --ink:#1b1e22; --ink-dim:#5b616a; --ink-faint:#99a0a8;
+  --acc:#2f6df6; --acc-deep:#2257d6; --acc-soft:#eaf1fe;
   --r-card:16px; --r-pill:999px;
   --warn:#a87100; --warn-soft:#fef5e0;
   --bad:#c43146; --bad-soft:#fce6ea;
   --gray:#5b596b; --gray-soft:#f0f0f5;
-  --shadow:0 8px 30px rgba(76,52,143,0.08); --shadow-sm:0 3px 14px rgba(76,52,143,0.06);
+  --shadow:0 8px 30px rgba(20,23,28,0.08); --shadow-sm:0 3px 14px rgba(20,23,28,0.06);
   --shadow-md:0 8px 24px rgba(15,15,30,0.08);
   --li:#0a66c2; --li-deep:#084e96;
-  font-family:'Plus Jakarta Sans',system-ui,sans-serif;
+  font-family:'Inter',system-ui,sans-serif;
   color:var(--ink);
   background:var(--bg);
   min-height:100vh;
