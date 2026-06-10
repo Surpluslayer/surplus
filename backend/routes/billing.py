@@ -33,6 +33,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session as DbSession
 
+from .. import billing_plans as bp
 from .. import models
 from ..auth import (
     SESSION_COOKIE,
@@ -221,16 +222,123 @@ def create_checkout_session(
     return resp
 
 
+def _sub_period(sub: dict) -> tuple[Optional[datetime], Optional[datetime]]:
+    """Pull (period_start, period_end) out of a Stripe Subscription object,
+    converting the unix timestamps to aware UTC. Missing → (None, None)."""
+    def _ts(v) -> Optional[datetime]:
+        try:
+            return datetime.fromtimestamp(int(v), tz=timezone.utc) if v else None
+        except (TypeError, ValueError):
+            return None
+    return _ts(sub.get("current_period_start")), _ts(sub.get("current_period_end"))
+
+
+def _sub_price_id(sub: dict) -> Optional[str]:
+    """The price id off the first line item of a Subscription object."""
+    items = ((sub.get("items") or {}).get("data") or [])
+    if not items:
+        return None
+    price = (items[0] or {}).get("price") or {}
+    return price.get("id")
+
+
+def _apply_subscription(user: models.User, sub: dict) -> None:
+    """Stamp recurring-plan fields onto `user` from a Stripe Subscription.
+
+    Maps the price → plan via bp.price_to_plan, records the subscription id +
+    status + billing window, and resets the metered counters ONLY when the
+    period actually rolls (start changed) so frequent subscription.updated
+    events don't wipe mid-period usage. Caller commits. Does NOT touch
+    paid_at — the recurring relationship-layer plan is independent of the
+    legacy one-time LinkedIn-send unlock."""
+    price_id = _sub_price_id(sub)
+    plan = bp.price_to_plan(price_id)
+    p_start, p_end = _sub_period(sub)
+
+    prev_start = getattr(user, "billing_period_start", None)
+    period_rolled = (
+        p_start is not None
+        and (prev_start is None or _aware(prev_start) != p_start))
+
+    user.plan = plan
+    user.subscription_status = (sub.get("status") or "active")
+    sub_id = sub.get("id")
+    if sub_id:
+        user.stripe_subscription_id = sub_id
+    if price_id:
+        user.stripe_price_id = price_id
+    cust = sub.get("customer")
+    if cust and not user.stripe_customer_id:
+        user.stripe_customer_id = cust
+    if p_start is not None:
+        user.billing_period_start = p_start
+    if p_end is not None:
+        user.billing_period_end = p_end
+    if period_rolled:
+        user.drafts_used_this_period = 0
+        user.contacts_scanned_this_period = 0
+
+
+def _aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """Naive datetimes (SQLite round-trips drop tzinfo) → treat as UTC."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _retrieve_subscription(sub_id: Optional[str]) -> Optional[dict]:
+    """Fetch a full Subscription object from Stripe (a checkout.session only
+    carries the id). Returns a plain dict, or None if we can't (no id, SDK
+    missing, API error) — the caller degrades gracefully."""
+    if not sub_id:
+        return None
+    try:
+        stripe = _stripe()
+        sub = stripe.Subscription.retrieve(sub_id)
+        # Stripe objects behave dict-like; normalize to a plain dict so the
+        # downstream helpers can .get() uniformly.
+        return dict(sub)
+    except Exception as exc:  # noqa: BLE001 : SDK missing / API / network
+        print(f"  [billing.webhook] Subscription.retrieve({sub_id}) failed : "
+              f"{type(exc).__name__}: {exc}")
+        return None
+
+
+def _user_by_subscription(db: DbSession, sub: dict) -> Optional[models.User]:
+    """Resolve the owning user for a Subscription event: by stored
+    stripe_subscription_id first, then by stripe_customer_id."""
+    sub_id = sub.get("id")
+    if sub_id:
+        u = (db.query(models.User)
+             .filter(models.User.stripe_subscription_id == sub_id).first())
+        if u:
+            return u
+    cust = sub.get("customer")
+    if cust:
+        return (db.query(models.User)
+                .filter(models.User.stripe_customer_id == cust).first())
+    return None
+
+
 @router.post("/webhook")
 async def stripe_webhook(request: Request,
                          db: DbSession = Depends(get_db)) -> JSONResponse:
-    """Signature-verified webhook. On checkout.session.completed we stamp
-    paid_at + stripe_customer_id on the user identified by metadata.user_id
-    (or client_reference_id, whichever is present).
+    """Signature-verified webhook. Handles two billing surfaces:
+
+      - One-time LinkedIn-send unlock (legacy) : a checkout.session.completed
+        in `mode=payment` stamps paid_at + stripe_customer_id on the user
+        identified by client_reference_id / metadata.user_id.
+
+      - Recurring relationship-layer plan : a checkout.session.completed in
+        `mode=subscription` (and the later customer.subscription.updated /
+        .deleted events) maps the Stripe price → plan and stamps the plan /
+        status / billing window via _apply_subscription. paid_at is left
+        untouched — the two surfaces are independent.
 
     Idempotent : Stripe retries on non-2xx, so re-running this with the
-    same event must not double-write. We only stamp paid_at when it's NULL
-    (or older than the event time) and always coalesce customer_id."""
+    same event must not double-write. We coalesce customer_id, only reset
+    metered counters when the billing period actually rolls, and ack
+    unknown event types quietly so Stripe stops retrying."""
     secret = _env("STRIPE_WEBHOOK_SECRET")
     if not secret:
         raise HTTPException(
@@ -252,6 +360,25 @@ async def stripe_webhook(request: Request,
     obj = event.get("data", {}).get("object", {}) or {}
     print(f"  [billing.webhook] event={et} obj_id={obj.get('id')}")
 
+    # ── Idempotency ledger ────────────────────────────────────────────────
+    # Stripe delivery is at-least-once: timeouts / deploys / transient
+    # non-2xx all trigger re-delivery of the SAME event (possibly hours
+    # later, possibly out of order). Ack anything we've fully processed
+    # before, WITHOUT re-running side effects — re-applying a stale
+    # subscription.updated can overwrite a newer plan, and equality-based
+    # heuristics (period_rolled) shouldn't be the only line of defense on
+    # the money path. The marker row is committed in the same transaction
+    # as the handler's mutations (each branch's db.commit() below), so a
+    # crash mid-handler rolls back BOTH and the retry processes cleanly.
+    evt_id = event.get("id")
+    if evt_id:
+        seen = db.get(models.StripeWebhookEvent, evt_id)
+        if seen is not None:
+            print(f"  [billing.webhook] duplicate {evt_id} ({et}) : acking, "
+                  "no re-processing")
+            return JSONResponse({"ok": True, "duplicate": True})
+        db.add(models.StripeWebhookEvent(event_id=evt_id, event_type=et))
+
     if et == "checkout.session.completed":
         user_id = (obj.get("client_reference_id")
                    or (obj.get("metadata") or {}).get("user_id"))
@@ -266,8 +393,6 @@ async def stripe_webhook(request: Request,
         if not user:
             print(f"  [billing.webhook] user_id={uid_int} not found")
             return JSONResponse({"ok": True, "noop": True})
-        now = datetime.now(timezone.utc)
-        user.paid_at = now
         cust = obj.get("customer")
         if cust and not user.stripe_customer_id:
             user.stripe_customer_id = cust
@@ -288,10 +413,60 @@ async def stripe_webhook(request: Request,
         stripe_name = (obj.get("customer_details") or {}).get("name")
         if stripe_name and (user.name or "").strip() in ("", "Surplus user"):
             user.name = stripe_name.strip()
-        db.commit()
-        print(f"  [billing.webhook] stamped paid_at on user.id={uid_int}")
 
-    # Unknown event types ack quietly so Stripe stops retrying.
+        # Subscription vs one-time. A subscription checkout carries a
+        # `subscription` id (and mode == "subscription"); retrieve the full
+        # object so we can map price → plan + stamp the billing window. A
+        # one-time payment stamps the legacy paid_at LinkedIn-send unlock.
+        sub_id = obj.get("subscription")
+        if sub_id or obj.get("mode") == "subscription":
+            sub = _retrieve_subscription(sub_id)
+            if sub is not None:
+                _apply_subscription(user, sub)
+                print(f"  [billing.webhook] applied subscription "
+                      f"plan={user.plan!r} to user.id={uid_int}")
+            else:
+                # Couldn't expand the subscription : at least mark them active
+                # so the SPA stops paywalling; updated event will fill details.
+                user.subscription_status = "active"
+                if sub_id:
+                    user.stripe_subscription_id = sub_id
+        else:
+            user.paid_at = datetime.now(timezone.utc)
+            print(f"  [billing.webhook] stamped paid_at on user.id={uid_int}")
+        db.commit()
+
+    elif et in ("customer.subscription.updated",
+                "customer.subscription.created"):
+        user = _user_by_subscription(db, obj)
+        if not user:
+            print(f"  [billing.webhook] no user for sub {obj.get('id')}")
+            return JSONResponse({"ok": True, "noop": True})
+        _apply_subscription(user, obj)
+        db.commit()
+        print(f"  [billing.webhook] {et} → plan={user.plan!r} "
+              f"status={user.subscription_status!r} user.id={user.id}")
+
+    elif et == "customer.subscription.deleted":
+        user = _user_by_subscription(db, obj)
+        if not user:
+            print(f"  [billing.webhook] no user for sub {obj.get('id')}")
+            return JSONResponse({"ok": True, "noop": True})
+        user.plan = "free"
+        user.subscription_status = "canceled"
+        user.stripe_subscription_id = None
+        user.stripe_price_id = None
+        user.drafts_used_this_period = 0
+        user.contacts_scanned_this_period = 0
+        db.commit()
+        print(f"  [billing.webhook] subscription canceled → free "
+              f"user.id={user.id}")
+
+    # Unknown event types ack quietly so Stripe stops retrying. Persist the
+    # ledger marker for them too (the branches above already committed it
+    # alongside their mutations; noop early-returns deliberately don't — a
+    # 200-acked noop is never retried, and re-running one writes nothing).
+    db.commit()
     return JSONResponse({"ok": True})
 
 

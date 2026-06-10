@@ -17,7 +17,7 @@ import jsQR from "jsqr";
 import {
   Camera, Link2, Search, Send, Bookmark, ArrowLeft, Check, Loader2,
   QrCode, User, Users, RefreshCw, AlertCircle, ChevronRight, Activity,
-  LogOut, Mic, MicOff, MapPin,
+  LogOut, Mic, MicOff, MapPin, Star, HelpCircle, Sparkles, ArrowRight, X,
 } from "lucide-react";
 import { api } from "./lib/api.js";
 import ContactsButton from "./components/ContactsButton.jsx";
@@ -113,6 +113,37 @@ function InPersonAppInner() {
   const [reloadKey, setReloadKey] = useState(0);
   const [isOperator, setIsOperator] = useState(false);  // can see the Activity page
 
+  // ─── First-time-user onboarding tour ──────────────────────────────────
+  // The server is the source of truth (user.onboarding_status/step, armed the
+  // instant LinkedIn is first connected). We mirror it into local state so the
+  // coachmarks react instantly, and persist every advance back to the API so
+  // the tour resumes in place after a refresh or device switch.
+  const [onb, setOnb] = useState({ status: "", step: 0 });
+  useEffect(() => {
+    if (user && typeof user === "object") {
+      setOnb({ status: user.onboarding_status || "",
+               step: user.onboarding_step || 0 });
+    }
+  }, [user]);
+  const persistOnb = (patch) => { api.setOnboarding(patch).catch(() => {}); };
+  const onbAdvanceTo = (step) => {
+    setOnb((o) => ({ ...o, step }));
+    persistOnb({ step });
+  };
+  const onbFinish = () => {
+    setOnb({ status: "done", step: ONB_STEPS.length - 1 });
+    persistOnb({ status: "done" });
+  };
+  const onbSkip = () => {
+    setOnb((o) => ({ ...o, status: "skipped" }));
+    persistOnb({ status: "skipped" });
+  };
+  const onbRestart = () => {
+    setOnb({ status: "active", step: 0 });
+    persistOnb({ status: "active", step: 0 });
+    setView("flow"); setTab("capture"); setResult(null); setOpenCapture(null);
+  };
+
   useEffect(() => { ensureNotifyPermission(); }, []);
 
   useEffect(() => {
@@ -207,7 +238,8 @@ function InPersonAppInner() {
 
       <EventBar event={event} onPick={pickEvent} user={user} onSignOut={signOut}
                 crmActive={view === "crm"}
-                onToggleCrm={() => setView((v) => (v === "crm" ? "flow" : "crm"))} />
+                onToggleCrm={() => setView((v) => (v === "crm" ? "flow" : "crm"))}
+                onReplayTour={onbRestart} />
 
       {notConnected && view !== "crm" && (
         <div className="ip-banner">
@@ -235,6 +267,8 @@ function InPersonAppInner() {
           event={event}
           result={result}
           canSend={!notConnected}
+          savedLink={(user && user.saved_send_link) || ""}
+          onbStepKey={onb.status === "active" ? (ONB_STEPS[onb.step]?.key || null) : null}
           onDone={() => { setResult(null); setTab("people"); }}
           onCancel={() => setResult(null)}
         />
@@ -259,7 +293,7 @@ function InPersonAppInner() {
           </button>
           <button className={view === "flow" && tab === "people" ? "on" : ""}
                   onClick={() => { setView("flow"); setTab("people"); }}>
-            <Users size={20} /><span>People</span>
+            <Users size={20} /><span>Relationship</span>
           </button>
           {isOperator && (
             <button className={view === "flow" && tab === "activity" ? "on" : ""}
@@ -268,6 +302,27 @@ function InPersonAppInner() {
             </button>
           )}
         </nav>
+      )}
+
+      {onb.status === "active" && (
+        <OnboardingCoach
+          step={onb.step}
+          context={{
+            hasEvent: !!event,
+            screen:
+              view === "crm" ? "crm"
+              : (tab === "activity" && isOperator) ? "activity"
+              : !event ? "empty"
+              : result ? "result"
+              : openCapture ? "detail"
+              : tab === "capture" ? "capture"
+              : "people",
+            openHub: () => { setView("crm"); },
+          }}
+          onAdvance={onbAdvanceTo}
+          onSkip={onbSkip}
+          onComplete={onbFinish}
+        />
       )}
     </div>
   );
@@ -337,7 +392,7 @@ function SignInBounce({ authError = null, onRetry = null }) {
 
 // ── event bar ────────────────────────────────────────────────────────────────
 
-function EventBar({ event, onPick, user, onSignOut, crmActive, onToggleCrm }) {
+function EventBar({ event, onPick, user, onSignOut, crmActive, onToggleCrm, onReplayTour }) {
   const [open, setOpen] = useState(!event);
   const [label, setLabel] = useState("");
   const [busy, setBusy] = useState(false);
@@ -361,16 +416,26 @@ function EventBar({ event, onPick, user, onSignOut, crmActive, onToggleCrm }) {
   return (
     <div className="ip-eventbar">
       <div className="ip-eventhead">
-        <button className={`ip-eventpick${event ? "" : " empty"}`} onClick={() => setOpen((o) => !o)}>
+        <button data-onb="add-event"
+                className={`ip-eventpick${event ? "" : " empty"}`} onClick={() => setOpen((o) => !o)}>
           <span className="ip-eventlabel">
             {event ? <><MapPin size={15} /> {event.label}</> : "Pick event to start →"}
           </span>
           <ChevronRight size={16} className={open ? "rot" : ""} />
         </button>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {user && <ContactsButton variant="inperson"
-                                   active={crmActive}
-                                   onClick={onToggleCrm} />}
+          {onReplayTour && (
+            <button className="ip-signout" title="Replay the getting-started tour"
+                    aria-label="Replay the getting-started tour"
+                    onClick={onReplayTour}>
+              <HelpCircle size={15} />
+            </button>
+          )}
+          {user && <span data-onb="hub" style={{ display: "inline-flex" }}>
+                     <ContactsButton variant="inperson"
+                                     active={crmActive}
+                                     onClick={onToggleCrm} />
+                   </span>}
           {onSignOut && (
             <button className="ip-signout"
                     title={user?.unipile_account_id
@@ -433,7 +498,7 @@ function CaptureScreen({ event, onResult }) {
       <div className="ip-howto">
         <b>1.</b> Add the person · <b>2.</b> Connect. That’s it.
       </div>
-      <div className="ip-seg">
+      <div className="ip-seg" data-onb="add-contact">
         {[["scan", "Scan QR", QrCode], ["paste", "Paste link", Link2], ["type", "By name", Search]]
           .map(([k, lbl, Icon]) => (
             <button key={k} className={mode === k ? "on" : ""} onClick={() => setMode(k)}>
@@ -623,14 +688,17 @@ function TypeSearch({ onConfirm, busy }) {
 
 // ── scan result : draft + send / save ────────────────────────────────────────
 
-function ScanResult({ event, result, onDone, onCancel, canSend }) {
+function ScanResult({ event, result, onDone, onCancel, canSend, savedLink = "", onbStepKey = null }) {
   const p = result.prospect || {};
   const [draftNote, setDraftNote] = useState(result.draft_note || "");
   const [draftMsg, setDraftMsg] = useState(result.draft_message || "");
   const [note, setNote] = useState(p.note || "");               // fun fact
   const [privateNote, setPrivateNote] = useState(p.private_note || "");
   const [contactType, setContactType] = useState(p.contact_type || "");
-  const [nextStep, setNextStep] = useState(p.next_step || "");
+  // "Captured once, reused forever" : a fresh capture pre-fills the next step
+  // with the user's saved demo / Calendly link so it rides along on every send.
+  const [nextStep, setNextStep] = useState(p.next_step || savedLink || "");
+  const [vip, setVip] = useState(!!p.vip);                       // icon-only star
   const [busy, setBusy] = useState("");      // "" | "send" | "save" | "personalize" | "nonote"
   const [err, setErr] = useState("");
   // The draft on screen was composed BEFORE the fun fact was typed. Track
@@ -643,6 +711,12 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
   // Capture stays minimal for mobile : the optional extras (note, private memo,
   // first message, contact type, next step) all hide behind a disclosure.
   const [showMore, setShowMore] = useState(false);
+  // The classify / attach-link onboarding coachmarks anchor to controls that
+  // live behind the "Add more" disclosure, so auto-expand it while the tour is
+  // pointing at them (otherwise the popover would have nothing to anchor to).
+  useEffect(() => {
+    if (onbStepKey === "classify" || onbStepKey === "link") setShowMore(true);
+  }, [onbStepKey]);
   // Re-compose when EITHER the fun fact or the next step moved the draft out of
   // sync : both feed the composed copy.
   const stale = (note || "").trim() !== (draftFromNote || "").trim()
@@ -659,6 +733,7 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
         event_id: event.event_id, linkedin_url: p.linkedin_url,
         source: p.source || "scan", note, private_note: privateNote,
         contact_type: contactType || undefined, next_step: nextStep || undefined,
+        vip,
       });
       setDraftNote(r.draft_note || "");
       setDraftMsg(r.draft_message || "");
@@ -668,7 +743,7 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
     } catch (e) { setErr(e.message || "Couldn’t personalize"); }
     finally { setBusy(""); }
   }, [event.event_id, p.linkedin_url, p.source, note, privateNote,
-      contactType, nextStep]);
+      contactType, nextStep, vip]);
 
   // Quick + frictionless : auto-personalize ~0.7s after the fun fact stops
   // changing, so the operator never has to tap a button. We only do this while
@@ -686,11 +761,13 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
     if ((note || "") === (p.note || "") &&
         (privateNote || "") === (p.private_note || "") &&
         (contactType || "") === (p.contact_type || "") &&
-        (nextStep || "") === (p.next_step || "")) return;
+        (nextStep || "") === (p.next_step || "") &&
+        !!vip === !!p.vip) return;
     await api.inpersonScan({
       event_id: event.event_id, linkedin_url: p.linkedin_url,
       source: p.source || "scan", note, private_note: privateNote,
       contact_type: contactType || undefined, next_step: nextStep || undefined,
+      vip,
     });
   };
   const stashDraft = () => {
@@ -726,13 +803,23 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
       <button className="ip-back" onClick={onCancel}><ArrowLeft size={18} /> Back</button>
 
       <div className="ip-person">
-        <div className="ip-person-name">{p.name || "Unknown"}</div>
+        <div className="ip-person-head">
+          <div className="ip-person-name">{p.name || "Unknown"}</div>
+          <button type="button" data-onb="vip"
+                  className={`ip-star${vip ? " on" : ""}`}
+                  aria-pressed={vip}
+                  aria-label={vip ? "Unmark VIP" : "Mark as VIP"}
+                  title={vip ? "Unmark VIP" : "Mark as VIP"}
+                  onClick={() => setVip((v) => !v)}>
+            <Star size={22} fill={vip ? "currentColor" : "none"} />
+          </button>
+        </div>
         <div className="ip-person-sub">
           {[p.role, p.company].filter(Boolean).join(" · ") || p.linkedin_url}
         </div>
         {result.resolve_failed && (
           <div className="ip-warn"><AlertCircle size={13} /> Couldn’t resolve on
-            LinkedIn — saved anyway, retry from People.</div>
+            LinkedIn — saved anyway, retry from Relationship.</div>
         )}
       </div>
 
@@ -740,7 +827,7 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
           The draft auto-updates as you type/dictate : no button to tap. */}
       <label className="ip-lbl">What you talked about
         <span className="ip-dim"> · personalizes the message</span></label>
-      <div className="ip-microw">
+      <div className="ip-microw" data-onb="notes">
         <input className="ip-input" placeholder="e.g. from Ottawa · loves bagels · rock climbing"
           value={note} onChange={(e) => setNote(e.target.value)} />
         <MicButton value={note} onChange={setNote} title="Dictate the fun fact" />
@@ -767,9 +854,10 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
         <div className="ip-more">
           {/* Who is this to you : tags the capture for later triage. */}
           <label className="ip-lbl">This person is…</label>
-          <div className="ip-chiprow">
-            {[["sales", "Sales"], ["recruiting", "Recruiting"],
-              ["follow_up", "Follow-up"], ["other", "Other"]].map(([v, lbl]) => (
+          <div className="ip-chiprow" data-onb="classify">
+            {[["sales", "Sales"], ["hiring", "Hiring"], ["investor", "Investor"],
+              ["partner", "Partner"], ["follow_up", "Follow-up"], ["other", "Other"]]
+              .map(([v, lbl]) => (
               <button key={v} type="button"
                       className={`ip-chip${contactType === v ? " on" : ""}`}
                       onClick={() => setContactType(contactType === v ? "" : v)}>
@@ -791,11 +879,16 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
               </button>
             ))}
           </div>
-          <div className="ip-microw">
-            <input className="ip-input" placeholder="…or paste a Calendly link"
+          <div className="ip-microw" data-onb="link">
+            <input className="ip-input" placeholder="…or paste a Calendly / demo link"
               value={nextStep} onChange={(e) => setNextStep(e.target.value)} />
             <MicButton value={nextStep} onChange={setNextStep} title="Dictate the next step" />
           </div>
+          {savedLink && (nextStep || "").trim() === savedLink.trim() && (
+            <div className="ip-dim ip-microw-hint">
+              <Check size={13} /> Using your saved link · reused on every send
+            </div>
+          )}
 
           <label className="ip-lbl">Connection note
             <span className="ip-dim"> · optional, ≤300</span></label>
@@ -823,7 +916,7 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
       {/* Connect is the one obvious action. "Save for later" and the bare-invite
           variant are secondary. The first message is drafted later in People. */}
       <div className="ip-actions">
-        <button className="ip-btn primary lg" onClick={() => send(false)}
+        <button data-onb="send" className="ip-btn primary lg" onClick={() => send(false)}
                 disabled={!!busy || !canSend}
                 title={canSend ? "" : "Connect LinkedIn to send"}>
           {busy === "send" ? <Loader2 className="spin" size={18} />
@@ -845,7 +938,7 @@ function ScanResult({ event, result, onDone, onCancel, canSend }) {
       </div>
       {!canSend && <div className="ip-dim ip-center">Connect LinkedIn to send now.</div>}
       <div className="ip-dim ip-center ip-laterhint">
-        You can also edit any of this later from <b>People</b>.
+        You can also edit any of this later from <b>Relationship</b>.
       </div>
     </div>
   );
@@ -1038,10 +1131,17 @@ function CaptureDetail({ event, capture, onBack, canSend }) {
 
   return (
     <div className="ip-screen ip-result">
-      <button className="ip-back" onClick={onBack}><ArrowLeft size={18} /> People</button>
+      <button className="ip-back" onClick={onBack}><ArrowLeft size={18} /> Relationship</button>
 
       <div className="ip-person">
-        <div className="ip-person-name">{capture.name}</div>
+        <div className="ip-person-head">
+          <div className="ip-person-name">{capture.name}</div>
+          {capture.vip && (
+            <span className="ip-star on" title="VIP" aria-label="VIP">
+              <Star size={20} fill="currentColor" />
+            </span>
+          )}
+        </div>
         <div className="ip-person-sub">
           {[capture.role, capture.company].filter(Boolean).join(" · ") || capture.linkedin_url}
         </div>
@@ -1184,6 +1284,186 @@ function fmtTs(ts) {
     const d = new Date(ts);
     return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   } catch { return ""; }
+}
+
+// ── first-time-user onboarding tour ──────────────────────────────────────────
+//
+// Seven lightweight coachmarks that ride alongside the real capture flow : each
+// one anchors to a live control (by [data-onb] selector) and points the user at
+// the next thing to do — add an event, add a contact, star a VIP, capture the
+// conversation, classify, attach a link, send, then hand off to the agent. The
+// popovers are ambient (pointer-events stay on the underlying UI) and dismiss
+// naturally; progress + which-step persist server-side so they appear once, in
+// order, and survive a refresh.
+
+const ONB_STEPS = [
+  {
+    key: "event",
+    title: "Add your first event",
+    body: () => "Tap here to create an event — name it and set the date. Everyone you meet gets captured under it.",
+    anchor: () => '[data-onb="add-event"]',
+    place: "bottom",
+    // Self-advance the moment an event is set : the user just did the thing.
+    auto: (ctx) => ctx.hasEvent,
+  },
+  {
+    key: "contact",
+    title: (ctx) => (ctx.screen === "result" ? "Star a VIP" : "Add someone you met"),
+    body: (ctx) =>
+      ctx.screen === "result"
+        ? "Tap the star to flag a VIP. Then keep going — there’s more to capture just below."
+        : "Scan their LinkedIn QR, paste their profile link, or type their name to add them.",
+    anchor: (ctx) => (ctx.screen === "result" ? '[data-onb="vip"]' : '[data-onb="add-contact"]'),
+    place: "bottom",
+  },
+  {
+    key: "notes",
+    title: "Capture the conversation",
+    body: () => "Jot what you talked about — we use it to personalize the follow-up automatically.",
+    anchor: () => '[data-onb="notes"]',
+    place: "bottom",
+  },
+  {
+    key: "classify",
+    title: "Classify the relationship",
+    body: () => "Tag how they fit — sales, hiring, investor, partner. It sorts your follow-ups later.",
+    anchor: () => '[data-onb="classify"]',
+    place: "top",
+  },
+  {
+    key: "link",
+    title: "Attach a link",
+    body: () => "Drop your demo or Calendly link. We save it to your profile and pre-fill it on every future send.",
+    anchor: () => '[data-onb="link"]',
+    place: "top",
+  },
+  {
+    key: "send",
+    title: "Send the follow-up",
+    body: () => "Hit Connect — we generate the message from your notes, the relationship, and your saved link.",
+    anchor: () => '[data-onb="send"]',
+    place: "top",
+    // Advance once the send navigates away from the result screen.
+    auto: (ctx, prev) => prev && prev.screen === "result" && ctx.screen !== "result",
+  },
+  {
+    key: "hub",
+    title: "Hand off to your agent",
+    body: () => "That’s it. Open your relationships hub and let the agent do your follow-ups and find updates.",
+    anchor: () => '[data-onb="hub"]',
+    place: "bottom",
+    final: true,
+    cta: "Open the hub",
+  },
+];
+
+const ONB_CARD_W = 300;
+
+function onbRingStyle(rect) {
+  const pad = 6;
+  return {
+    position: "fixed",
+    top: rect.top - pad,
+    left: rect.left - pad,
+    width: rect.width + pad * 2,
+    height: rect.height + pad * 2,
+  };
+}
+
+function onbCardStyle(rect, place) {
+  const vw = typeof window !== "undefined" ? window.innerWidth : 380;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 720;
+  const w = Math.min(ONB_CARD_W, vw - 24);
+  const base = { position: "fixed", width: w, zIndex: 60 };
+  if (!rect) {
+    // No live anchor (the target screen isn't open yet) : fall back to an
+    // ambient toast pinned above the bottom tab bar.
+    return { ...base, left: "50%", bottom: 90, transform: "translateX(-50%)" };
+  }
+  let left = rect.left + rect.width / 2 - w / 2;
+  left = Math.max(10, Math.min(left, vw - w - 10));
+  const spaceBelow = vh - rect.bottom;
+  const spaceAbove = rect.top;
+  const NEED = 190;
+  let above;
+  if (place === "top") above = spaceAbove >= NEED || spaceAbove >= spaceBelow;
+  else above = !(spaceBelow >= NEED || spaceBelow >= spaceAbove);
+  const style = { ...base, left };
+  if (above) style.bottom = vh - rect.top + 12;
+  else style.top = rect.bottom + 12;
+  return style;
+}
+
+function OnboardingCoach({ step, context, onAdvance, onSkip, onComplete }) {
+  const total = ONB_STEPS.length;
+  const idx = Math.min(Math.max(step | 0, 0), total - 1);
+  const def = ONB_STEPS[idx];
+  const [rect, setRect] = useState(null);
+  const prevCtxRef = useRef(context);
+
+  const title = typeof def.title === "function" ? def.title(context) : def.title;
+  const body = typeof def.body === "function" ? def.body(context) : def.body;
+  const selector = def.anchor(context);
+
+  // Poll the anchor's rect (the underlying app re-renders as the user acts).
+  // Cheap, and only while the tour is mounted.
+  useEffect(() => {
+    const measure = () => {
+      const el = selector ? document.querySelector(selector) : null;
+      if (el) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) { setRect(r); return; }
+      }
+      setRect(null);
+    };
+    measure();
+    const id = setInterval(measure, 250);
+    window.addEventListener("scroll", measure, true);
+    window.addEventListener("resize", measure);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("scroll", measure, true);
+      window.removeEventListener("resize", measure);
+    };
+  }, [selector]);
+
+  // Self-advance when a step's predicate fires (event picked, send done, …).
+  // Manual Next still works for every step.
+  useEffect(() => {
+    const prev = prevCtxRef.current;
+    if (def.auto && def.auto(context, prev)) {
+      if (def.final) onComplete();
+      else onAdvance(idx + 1);
+    }
+    prevCtxRef.current = context;
+  }, [context, def, idx, onAdvance, onComplete]);
+
+  const next = () => { if (def.final) onComplete(); else onAdvance(idx + 1); };
+  const back = () => { if (idx > 0) onAdvance(idx - 1); };
+  const cta = () => { if (context.openHub) context.openHub(); onComplete(); };
+
+  return (
+    <div className="ip-onb" role="dialog" aria-label="Getting started">
+      {rect && <div className="ip-onb-ring" style={onbRingStyle(rect)} />}
+      <div className={`ip-onb-card${rect ? "" : " floating"}`} style={onbCardStyle(rect, def.place)}>
+        <div className="ip-onb-top">
+          <span className="ip-onb-progress"><Sparkles size={13} /> Step {idx + 1} of {total}</span>
+          <button className="ip-onb-x" onClick={onSkip} aria-label="Skip the tour"><X size={15} /></button>
+        </div>
+        <div className="ip-onb-title">{title}</div>
+        <div className="ip-onb-body">{body}</div>
+        <div className="ip-onb-actions">
+          <button className="ip-onb-skip" onClick={onSkip}>Skip tour</button>
+          <div className="ip-onb-nav">
+            {idx > 0 && <button className="ip-onb-back" onClick={back}>Back</button>}
+            <button className="ip-onb-next" onClick={def.final ? cta : next}>
+              {def.final ? def.cta : "Next"} <ArrowRight size={15} />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const IP_CSS = `
@@ -1374,4 +1654,44 @@ button.ip-microw-hint { cursor:pointer; }
   flex-direction:column; align-items:center; gap:4px; font-size:11.5px; font-weight:600;
   color:var(--ip-dim); }
 .ip-tabs button.on { color:var(--ip-accent); }
+
+/* VIP star (icon-only) */
+.ip-person-head { display:flex; align-items:flex-start; justify-content:space-between;
+  gap:10px; }
+.ip-star { flex-shrink:0; background:none; border:0; padding:2px; line-height:0;
+  color:#c2c8d2; cursor:pointer; transition:transform .08s ease, color .12s ease; }
+.ip-star:active { transform:scale(.9); }
+.ip-star.on { color:#f5b301; }
+
+/* onboarding coachmarks : ambient (the underlying UI stays clickable) */
+.ip-onb { position:fixed; inset:0; z-index:58; pointer-events:none; }
+.ip-onb-ring { border:2px solid var(--ip-accent); border-radius:14px; z-index:59;
+  pointer-events:none; box-shadow:0 0 0 3px rgba(10,102,194,.18),
+  0 0 0 9999px rgba(18,26,40,.12); animation:iponbpulse 1.6s ease-in-out infinite; }
+@keyframes iponbpulse { 0%,100% { box-shadow:0 0 0 3px rgba(10,102,194,.18),
+  0 0 0 9999px rgba(18,26,40,.12); } 50% { box-shadow:0 0 0 6px rgba(10,102,194,.10),
+  0 0 0 9999px rgba(18,26,40,.12); } }
+.ip-onb-card { pointer-events:auto; background:var(--ip-card); border:1px solid var(--ip-line);
+  border-radius:16px; padding:14px 15px 13px; box-shadow:0 12px 34px rgba(18,26,40,.22);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+.ip-onb-card.floating { box-shadow:0 14px 40px rgba(18,26,40,.3); }
+.ip-onb-top { display:flex; align-items:center; justify-content:space-between; }
+.ip-onb-progress { display:inline-flex; align-items:center; gap:5px; font-size:11.5px;
+  font-weight:700; color:var(--ip-accent); text-transform:uppercase; letter-spacing:.03em; }
+.ip-onb-x { background:none; border:0; color:var(--ip-dim); cursor:pointer; padding:2px;
+  line-height:0; border-radius:6px; }
+.ip-onb-x:active { background:var(--ip-line); }
+.ip-onb-title { font-size:16px; font-weight:800; color:var(--ip-ink); margin:7px 0 4px; }
+.ip-onb-body { font-size:13.5px; line-height:1.45; color:var(--ip-dim); }
+.ip-onb-actions { display:flex; align-items:center; justify-content:space-between;
+  margin-top:13px; gap:10px; }
+.ip-onb-skip { background:none; border:0; color:var(--ip-dim); font-size:12.5px;
+  cursor:pointer; padding:6px 2px; }
+.ip-onb-nav { display:flex; align-items:center; gap:8px; }
+.ip-onb-back { background:none; border:0; color:var(--ip-ink); font-size:13px;
+  font-weight:600; cursor:pointer; padding:8px 6px; }
+.ip-onb-next { display:inline-flex; align-items:center; gap:5px; background:var(--ip-accent);
+  color:var(--ip-accent-ink); border:0; border-radius:10px; padding:9px 14px;
+  font-size:13.5px; font-weight:700; cursor:pointer; box-shadow:0 2px 8px rgba(10,102,194,.25); }
+.ip-onb-next:active { transform:scale(.98); }
 `;

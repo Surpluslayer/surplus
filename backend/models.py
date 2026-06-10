@@ -179,6 +179,9 @@ class Prospect(Base):
     # first message, e.g. "grab a coffee — book a time: <calendly link>".
     contact_type: Mapped[Optional[str]] = mapped_column(String(20), default=None)
     next_step: Mapped[Optional[str]] = mapped_column(String(300), default=None)
+    # VIP flag : the operator starred this person at capture time as someone
+    # to prioritize. Icon-only toggle in the in-person UI. False is the norm.
+    vip: Mapped[bool] = mapped_column(default=False)
     captured_at: Mapped[Optional[datetime]] = mapped_column(default=None)
     source: Mapped[Optional[str]] = mapped_column(String(20), default=None)
 
@@ -581,6 +584,31 @@ class User(Base):
     # whole feature is off for a user until they explicitly turn it on.
     auto_followups_enabled: Mapped[bool] = mapped_column(default=False)
 
+    # ─── First-time-user onboarding (in-person coachmark tour) ──────────
+    # Lifecycle of the guided coachmark flow that walks a brand-new user
+    # through their first event → contact → send → relationships hub.
+    #   ""        : never armed (guest / pre-feature account, or not yet
+    #               connected). The default for a fresh row.
+    #   "active"  : armed — set the INSTANT the user first gains a LinkedIn
+    #               connection (see routes/auth: webhook + callback). The
+    #               in-person surface runs the tour from onboarding_step.
+    #   "done"    : finished the flow (or auto-backfilled for users who were
+    #               already connected before this feature shipped).
+    #   "skipped" : dismissed the whole flow. Re-runnable from settings,
+    #               which flips this back to "active" + step 0.
+    # Gated on the empty default so the arm fires exactly once per user and
+    # never on a re-connect / profile refresh.
+    onboarding_status: Mapped[str] = mapped_column(String(20), default="")
+    # Which coachmark the user is on (0-based index into the 7-step flow).
+    # Persisted on every advance so the tour resumes in place after a refresh
+    # or a device switch — the server is the source of truth.
+    onboarding_step: Mapped[int] = mapped_column(default=0)
+    # The host's reusable demo / Calendly link. Captured once during the
+    # "attach a link" onboarding step (or any in-person capture whose next
+    # step is a URL) and then pre-filled / auto-suggested on every future
+    # send. NULL until the first link is captured.
+    saved_send_link: Mapped[Optional[str]] = mapped_column(String(400), default=None)
+
     # ─── Billing ───────────────────────────────────────────────────────
     # Stripe customer id, set by the checkout webhook on first successful
     # payment. Indexed because the webhook path looks users up by it.
@@ -591,7 +619,40 @@ class User(Base):
     # paid (or refunded out). require_can_send_linkedin() blocks real LinkedIn
     # sends when NULL : free tier can browse + run prospecting + see
     # composed previews, paid tier unlocks the actual outreach.
+    #
+    # NOTE: paid_at is the LEGACY one-time-unlock gate for LinkedIn SENDS and
+    # stays independent of the plan/usage fields below. The plan tier meters a
+    # DIFFERENT surface — the relationship layer's drafting + contact scanning —
+    # so a user can be on a paid plan without paid_at set, and vice versa.
     paid_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+
+    # ─── Subscription plan + metered usage (relationship layer) ─────────
+    # Tier the user is on. One of "free" | "starter" | "pro". Drives the
+    # per-period draft + contact-scan limits in backend/billing_plans.py.
+    # Stamped by the Stripe pricing-table webhook (price_id -> plan); demo
+    # accounts (is_demo_user) bypass limits entirely regardless of plan.
+    plan: Mapped[str] = mapped_column(String(20), default="free")
+    # Mirrors the Stripe Subscription.status ("active", "trialing",
+    # "past_due", "canceled", ...) or "free" when there's no subscription.
+    subscription_status: Mapped[str] = mapped_column(String(30), default="free")
+    # Stripe Subscription / Price ids, set by the subscription webhooks. Both
+    # NULL on the free tier. subscription_id is how subscription.updated /
+    # .deleted events resolve back to this row.
+    stripe_subscription_id: Mapped[Optional[str]] = mapped_column(
+        String(120), default=None, index=True,
+    )
+    stripe_price_id: Mapped[Optional[str]] = mapped_column(String(120), default=None)
+    # Metered usage in the CURRENT billing period. Reset to 0 by the webhook on
+    # a fresh checkout/renewal and by the in-app period roll when now passes
+    # billing_period_end. Each staged follow-up DRAFT card increments drafts;
+    # each contact the agent triages increments contacts_scanned.
+    drafts_used_this_period: Mapped[int] = mapped_column(default=0)
+    contacts_scanned_this_period: Mapped[int] = mapped_column(default=0)
+    # Current period bounds. For paid plans these come from Stripe
+    # (current_period_start/end). For the free tier we roll a 30-day window
+    # in-app (NULL until the user's first metered action seeds it).
+    billing_period_start: Mapped[Optional[datetime]] = mapped_column(default=None)
+    billing_period_end: Mapped[Optional[datetime]] = mapped_column(default=None)
 
 
 # ─── Curation (Stage 1-5: ingested-audience workflow) ─────────────────
@@ -749,6 +810,27 @@ class LLMCall(Base):
     error: Mapped[Optional[str]] = mapped_column(Text, default=None)
     latency_ms: Mapped[Optional[int]] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
+class StripeWebhookEvent(Base):
+    """One row per Stripe event the billing webhook has fully processed.
+
+    Stripe delivery is at-least-once: a timeout / deploy / transient non-2xx
+    means the SAME event is re-sent (possibly hours later, possibly out of
+    order). This table is the idempotency ledger — the handler acks any
+    event_id it has already seen without re-running side effects, instead of
+    relying on every write happening to be harmless to repeat.
+
+    The marker is committed in the SAME transaction as the handler's
+    mutations: a crash mid-handler rolls back both, so Stripe's retry
+    processes the event cleanly (never half-applied, never double-applied).
+    """
+    __tablename__ = "stripe_webhook_events"
+
+    # Stripe event ids ("evt_...") are globally unique; natural primary key.
+    event_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    event_type: Mapped[Optional[str]] = mapped_column(String(80), default=None)
+    processed_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
 
 class AuthState(Base):

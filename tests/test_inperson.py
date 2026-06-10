@@ -149,6 +149,57 @@ def test_scan_creates_pending_capture_with_draft(db, user):
     assert p.linkedin_url == "https://www.linkedin.com/in/maya-rodriguez"
 
 
+def test_scan_persists_vip_flag_and_exposes_it(db, user):
+    from backend.routes.inperson import scan_capture, ScanIn
+    ev = _make_event(db, user)
+    out = scan_capture(
+        ScanIn(event_id=ev["event_id"],
+               linkedin_url="https://www.linkedin.com/in/maya-rodriguez/",
+               source="scan", vip=True, name="Maya Rodriguez"),
+        db, user)
+    assert out["prospect"]["vip"] is True
+    p = db.query(models.Prospect).one()
+    assert p.vip is True
+    # A later scan that omits vip leaves it untouched (None -> no change).
+    scan_capture(
+        ScanIn(event_id=ev["event_id"],
+               linkedin_url="https://www.linkedin.com/in/maya-rodriguez/",
+               source="scan", note="follow up"),
+        db, user)
+    db.refresh(p)
+    assert p.vip is True
+    # Explicit False unstars.
+    scan_capture(
+        ScanIn(event_id=ev["event_id"],
+               linkedin_url="https://www.linkedin.com/in/maya-rodriguez/",
+               source="scan", vip=False),
+        db, user)
+    db.refresh(p)
+    assert p.vip is False
+
+
+def test_scan_promotes_link_next_step_to_saved_send_link(db, user):
+    from backend.routes.inperson import scan_capture, ScanIn
+    ev = _make_event(db, user)
+    assert (user.saved_send_link or "") == ""
+    # A scheduling URL in next_step is promoted to the reusable profile link.
+    scan_capture(
+        ScanIn(event_id=ev["event_id"],
+               linkedin_url="https://www.linkedin.com/in/maya-rodriguez/",
+               source="scan", next_step="https://calendly.com/me/demo"),
+        db, user)
+    db.refresh(user)
+    assert user.saved_send_link == "https://calendly.com/me/demo"
+    # A freeform phrase never clobbers the saved link.
+    scan_capture(
+        ScanIn(event_id=ev["event_id"],
+               linkedin_url="https://www.linkedin.com/in/jordan-lee/",
+               source="scan", next_step="grab a coffee"),
+        db, user)
+    db.refresh(user)
+    assert user.saved_send_link == "https://calendly.com/me/demo"
+
+
 def test_scan_is_upsert_no_duplicate(db, user):
     from backend.routes.inperson import scan_capture, ScanIn
     ev = _make_event(db, user)

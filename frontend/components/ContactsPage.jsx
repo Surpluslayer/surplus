@@ -11,6 +11,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { Users, ArrowLeft, Building2, CalendarDays, Activity, Sparkles,
          MessageSquare, Send, Check, Clock } from "lucide-react";
 import { api } from "../lib/api.js";
+import { UsageMeter, PaywallModal, paywallFromError } from "./UpgradePaywall.jsx";
 
 const C = {
   ink: "#1a1d24", muted: "#6b7280", faint: "#9aa1ad",
@@ -306,7 +307,21 @@ function FollowupChat() {
   const [turns, setTurns] = useState([]);   // {role:"host"|"agent", text, proposals?, auto?}
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  // Relationship-layer metered usage (from /me) + the active 402 paywall, if
+  // the agent run hit the cap.
+  const [user, setUser] = useState(null);
+  const [billing, setBilling] = useState(null);
+  const [paywall, setPaywall] = useState(null);
   const scrollRef = useRef(null);
+
+  const refreshUsage = async () => {
+    try {
+      const me = await api.me();
+      setUser(me);
+      setBilling(me.billing || null);
+    } catch { /* signed-out / offline : just skip the meter */ }
+  };
+  useEffect(() => { refreshUsage(); }, []);
 
   useEffect(() => {
     if (scrollRef.current)
@@ -371,10 +386,20 @@ function FollowupChat() {
     } catch (e) {
       streamDone = true;
       await pump.catch(() => {});
-      setTurns((t) => [...t, { role: "agent",
-        text: `Sorry — ${e.message || String(e)}`, proposals: [] }]);
+      // A 402 from the relationship-quota gate means the free cap is hit:
+      // open the upgrade paywall instead of dumping a raw error in the chat.
+      const pw = paywallFromError(e);
+      if (pw) {
+        if (pw.billing) setBilling(pw.billing);
+        setPaywall(pw);
+        setTurns((t) => t.slice(0, -1));  // drop the unanswered host bubble
+      } else {
+        setTurns((t) => [...t, { role: "agent",
+          text: `Sorry — ${e.message || String(e)}`, proposals: [] }]);
+      }
     } finally {
       setBusy(false);
+      refreshUsage();  // reflect the drafts/contacts this run consumed
     }
   };
 
@@ -397,6 +422,12 @@ function FollowupChat() {
   }
 
   return (
+   <>
+    {paywall && (
+      <PaywallModal user={user} reason={paywall.reason}
+                    message={paywall.message}
+                    onClose={() => { setPaywall(null); refreshUsage(); }} />
+    )}
     <div style={{ marginBottom: 20, background: C.card,
                   border: `1px solid ${C.line}`, borderRadius: 16,
                   overflow: "hidden" }}>
@@ -407,8 +438,9 @@ function FollowupChat() {
         <span style={{ fontWeight: 700, color: C.ink, fontSize: 14 }}>
           Follow-up assistant
         </span>
+        <UsageMeter billing={billing} style={{ marginLeft: "auto" }} />
         <button onClick={() => setOpen(false)}
-                style={{ marginLeft: "auto", background: "none", border: "none",
+                style={{ background: "none", border: "none",
                          color: C.muted, cursor: "pointer", fontSize: 13 }}>
           Hide
         </button>
@@ -496,6 +528,7 @@ function FollowupChat() {
         </button>
       </div>
     </div>
+   </>
   );
 }
 

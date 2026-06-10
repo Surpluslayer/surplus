@@ -120,6 +120,7 @@ def init_db() -> None:
         _migrate_event_event_date,
         _migrate_event_event_name,
         _migrate_user_billing_columns,
+        _migrate_user_plan_usage_columns,
         _migrate_applicant_evaluation_verifier,
         _migrate_applicant_enrichment_raw,
         _migrate_event_kind_label,
@@ -133,6 +134,8 @@ def init_db() -> None:
         _migrate_prospect_role_width,
         _migrate_contact_watch,
         _migrate_user_auto_followups,
+        _migrate_user_onboarding,
+        _migrate_prospect_vip,
     ]
     for migration in migrations:
         try:
@@ -530,6 +533,42 @@ def _migrate_user_billing_columns() -> None:
             ))
 
 
+def _migrate_user_plan_usage_columns() -> None:
+    """Add the subscription-plan + metered-usage columns to users.
+
+    Tier (plan/subscription_status), Stripe linkage (subscription_id/price_id),
+    per-period counters (drafts_used_this_period / contacts_scanned_this_period)
+    and the period bounds. Cross-dialect-safe: every ADD COLUMN carries a
+    server-side DEFAULT so existing rows backfill without a follow-up UPDATE,
+    and the whole thing is idempotent (skips any column already present)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    # name -> column DDL (type + default). TIMESTAMP/varchar columns are NULL.
+    additions = {
+        "plan": "VARCHAR(20) DEFAULT 'free'",
+        "subscription_status": "VARCHAR(30) DEFAULT 'free'",
+        "stripe_subscription_id": "VARCHAR(120)",
+        "stripe_price_id": "VARCHAR(120)",
+        "drafts_used_this_period": "INTEGER DEFAULT 0",
+        "contacts_scanned_this_period": "INTEGER DEFAULT 0",
+        "billing_period_start": "TIMESTAMP",
+        "billing_period_end": "TIMESTAMP",
+    }
+    with ENGINE.begin() as conn:
+        for name, ddl in additions.items():
+            if name in cols:
+                continue
+            conn.execute(text(f"ALTER TABLE users ADD COLUMN {name} {ddl}"))
+        if "stripe_subscription_id" not in cols and ENGINE.dialect.name == "postgresql":
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_users_stripe_subscription_id "
+                "ON users (stripe_subscription_id)"
+            ))
+
+
 def _migrate_user_unipile_account_id_nullable() -> None:
     """Drop the NOT NULL constraint on users.unipile_account_id so triage-only
     users (no LinkedIn / Unipile connection) can have a User row. SQLite is
@@ -707,6 +746,68 @@ def _migrate_user_auto_followups() -> None:
         conn.execute(text(
             f"ALTER TABLE users ADD COLUMN {ine}auto_followups_enabled "
             f"BOOLEAN DEFAULT {default}"
+        ))
+
+
+def _migrate_user_onboarding() -> None:
+    """Add the first-time-user onboarding columns to users:
+      onboarding_status (VARCHAR(20), default ''),
+      onboarding_step   (INTEGER, default 0),
+      saved_send_link   (VARCHAR(400), NULL).
+
+    Critically, BACKFILL every already-connected user to 'done' : the tour is
+    only for people adding LinkedIn for the FIRST time, so users who were
+    already connected before this feature shipped must never see it. Fresh
+    rows default to '' and get armed to 'active' at the moment of their first
+    LinkedIn connect (routes/auth)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        if "onboarding_status" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE users ADD COLUMN {ine}onboarding_status "
+                f"VARCHAR(20) DEFAULT ''"
+            ))
+            # Existing connected users have already used the product : mark
+            # them done so the post-deploy boot doesn't drop everyone into a
+            # tour. Pre-feature rows that never connected stay '' and arm
+            # naturally if/when they connect LinkedIn.
+            conn.execute(text(
+                "UPDATE users SET onboarding_status='done' "
+                "WHERE unipile_account_id IS NOT NULL"
+            ))
+        if "onboarding_step" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE users ADD COLUMN {ine}onboarding_step "
+                f"INTEGER DEFAULT 0"
+            ))
+        if "saved_send_link" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE users ADD COLUMN {ine}saved_send_link "
+                f"VARCHAR(400)"
+            ))
+
+
+def _migrate_prospect_vip() -> None:
+    """Add prospects.vip (BOOLEAN, default False) : the operator's icon-only
+    'star this person as a VIP' toggle at in-person capture time. Existing
+    rows default to not-VIP."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "prospects" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("prospects")}
+    if "vip" in cols:
+        return
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    default = "FALSE" if ENGINE.dialect.name == "postgresql" else "0"
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            f"ALTER TABLE prospects ADD COLUMN {ine}vip BOOLEAN DEFAULT {default}"
         ))
 
 

@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from .. import billing_plans as bp
 from .. import models
 from ..agents import relationships
 from ..auth import current_user
@@ -29,6 +30,47 @@ router = APIRouter(prefix="/api/relationships", tags=["relationships"])
 # Sorts never-touched / timeless relationships to the END when sorting newest
 # touch first (reverse=True).
 _MIN_DT = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _enforce_relationship_quota(db: Session, user: models.User) -> None:
+    """Roll the user into the current billing period, then HARD-BLOCK (402) if
+    they've exhausted their drafting or contact-scan budget for the period.
+
+    Demo + allowlisted accounts bypass entirely (bp.is_unlimited), so live
+    demos never hit a wall mid-run. The SPA reads detail.error + detail.redirectTo
+    to bounce the user to the pricing table. Kept separate from the legacy
+    paid_at LinkedIn-send gate."""
+    if bp.ensure_current_period(user):
+        db.commit()
+    if not bp.can_generate_draft(user):
+        raise HTTPException(
+            status_code=402,
+            detail={"error": "LIMIT_REACHED", "redirectTo": "/billing",
+                    "message": "You've used all your follow-up drafts for this "
+                               "period. Upgrade to keep going.",
+                    "billing": bp.usage_snapshot(user)})
+    if not bp.can_scan_contacts(user, 1):
+        raise HTTPException(
+            status_code=402,
+            detail={"error": "CONTACT_LIMIT_REACHED", "redirectTo": "/billing",
+                    "message": "You've reached your contact-scan limit for this "
+                               "period. Upgrade to scan more.",
+                    "billing": bp.usage_snapshot(user)})
+
+
+def _record_relationship_usage(db: Session, user: models.User, res) -> None:
+    """Meter one relationship run: +1 per staged DRAFT card, +contacts_seen for
+    the triage scan. Best-effort — a metering failure must never break an
+    otherwise-successful run, so we swallow + roll back on error."""
+    try:
+        drafts = sum(1 for p in res.proposals if p.kind == "draft_message")
+        contacts = int(getattr(res, "contacts_seen", 0) or 0)
+        if drafts or contacts:
+            bp.record_usage(user, drafts=drafts, contacts=contacts)
+            db.commit()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [billing] usage record failed: {type(exc).__name__}: {exc}")
+        db.rollback()
 
 
 def _owned_contact(db: Session, contact_id: int, user: models.User) -> models.Contact:
@@ -257,8 +299,10 @@ def run_relationship_agent(
     next-step / draft-message proposals — but NEVER sends or writes: it
     returns suggestions for the host to approve. Owner-scoped (it only ever
     sees this user's contacts)."""
+    _enforce_relationship_quota(db, user)
     from ..agents.relationship_agent import run_relationship_agent as _run
     res = _run(db, user.id)
+    _record_relationship_usage(db, user, res)
     return res.as_dict()
 
 
@@ -281,9 +325,11 @@ def relationship_chat(
     staged proposals (each a contact + drafted follow-up + rationale). NOTHING
     is sent here — the host approves a draft separately via the followup route,
     which is where the auto-send toggle is honored. Owner-scoped."""
+    _enforce_relationship_quota(db, user)
     from ..agents.relationship_agent import (
         run_relationship_agent_concurrent as _run)
     res = _run(db, user.id, instruction=(body.message or "").strip())
+    _record_relationship_usage(db, user, res)
     out = res.as_dict()
     # Surface the host's auto-send preference so the chat can label the approve
     # button correctly ("Send now" when on, "Save draft" when off) without a
@@ -325,6 +371,7 @@ def _drain_stream(q: "queue.Queue", *, heartbeat_secs: float = _HEARTBEAT_SECS):
 @router.post("/chat/stream")
 def relationship_chat_stream(
     body: ChatIn,
+    db: Session = Depends(get_db),
     user: models.User = Depends(current_user),
 ):
     """Streaming twin of /chat: same propose-only loop, but each drafted
@@ -344,6 +391,11 @@ def relationship_chat_stream(
     bounded parallel fan-out of per-person drafts, each card streaming the moment
     its draft resolves. Cards arrive in completion order (not strict priority),
     which is the trade for collapsing time-to-all-cards from Σ to ~max."""
+    # Pre-flight the paywall BEFORE we open the stream: a 402 here is a clean
+    # JSON error the SPA can redirect on, whereas raising mid-stream would only
+    # surface as an SSE `error` frame after the connection is already open.
+    _enforce_relationship_quota(db, user)
+
     from ..agents.relationship_agent import (
         run_relationship_agent_concurrent as _run)
 
@@ -375,6 +427,11 @@ def relationship_chat_stream(
                 }))
             res = _run(db, user_id, instruction=instruction,
                        on_proposal=_emit, stop_event=stop)
+            # Meter on the worker's own session/row (the request user can't
+            # cross threads). Best-effort; never fails the completed run.
+            worker_user = db.get(models.User, user_id)
+            if worker_user is not None:
+                _record_relationship_usage(db, worker_user, res)
             q.put(("done", {"summary": res.summary or "Done.",
                             "auto_send_enabled": auto}))
         except Exception as exc:  # noqa: BLE001 : surface to the client, don't 500 mid-stream

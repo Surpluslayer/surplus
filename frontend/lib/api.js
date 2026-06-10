@@ -295,7 +295,13 @@ export const api = {
       }
       if (!res.ok || !res.body) {
         const text = await res.text().catch(() => "");
-        throw new Error(`${res.status} ${res.statusText} : ${text.slice(0, 240)}`);
+        const err = new Error(`${res.status} ${res.statusText} : ${text.slice(0, 240)}`);
+        // Mirror request(): surface status + parsed body so the caller can
+        // branch on the 402 relationship-quota paywall (LIMIT_REACHED /
+        // CONTACT_LIMIT_REACHED) instead of just showing a raw error string.
+        err.status = res.status;
+        try { err.body = JSON.parse(text); } catch { err.body = null; }
+        throw err;
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -375,6 +381,15 @@ export const api = {
   me: () => request("/api/auth/me"),
   // returns { url } : frontend sets window.location = url to begin the flow
   startLinkedinAuth: () => request("/api/auth/linkedin/start", { method: "POST" }),
+  // First-time-user onboarding tour : persist progress so the coachmark flow
+  // survives a refresh / device switch. Pass { step } to advance, { status }
+  // to finish ("done") / dismiss ("skipped"), or { status:"active", step:0 }
+  // to replay from settings. Returns the new { onboarding_status, onboarding_step }.
+  setOnboarding: (patch) =>
+    request("/api/auth/onboarding", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
   // in-person guest : mint a LinkedIn-less anonymous session so the capture
   // flow works on event.surpluslayer.com without signing in (real sends stay
   // blocked until LinkedIn is connected). 403s on non-in-person hosts.

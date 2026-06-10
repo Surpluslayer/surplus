@@ -78,8 +78,9 @@ class ScanIn(BaseModel):
     source: str                       # "scan" | "link" | "text"
     note: Optional[str] = None          # fun fact : personalizes the draft
     private_note: Optional[str] = None  # operator-only memo : never sent
-    contact_type: Optional[str] = None  # "sales"|"recruiting"|"follow_up"|"other"
+    contact_type: Optional[str] = None  # "sales"|"hiring"|"investor"|"partner"|"follow_up"|"other"
     next_step: Optional[str] = None     # follow-up woven into the first message
+    vip: Optional[bool] = None          # icon-only "star this person" toggle
     # Optional enrichment carried over from a confirmed /resolve candidate so
     # the captured Prospect (and its draft) isn't just a bare handle.
     name: Optional[str] = None
@@ -101,6 +102,21 @@ class SendIn(BaseModel):
 def _handle_from_url(url: str) -> str:
     """Extract the LinkedIn vanity handle from a canonical /in/<handle> URL."""
     return (url or "").rstrip("/").split("/")[-1]
+
+
+def _looks_like_link(text: Optional[str]) -> bool:
+    """True if `text` is a scheduling / demo URL (Calendly, cal.com, a bare
+    https link, ...) rather than a freeform next-step phrase like 'grab a
+    coffee'. Used to decide whether a capture's next_step should be promoted
+    to the user's reusable saved_send_link."""
+    s = (text or "").strip().lower()
+    if not s:
+        return False
+    return ("http://" in s or "https://" in s
+            or "calendly.com" in s or "cal.com" in s
+            or "www." in s
+            # bare domain-ish token: has a dot and no spaces (e.g. "acme.com/demo")
+            or ("." in s and "/" in s and " " not in s))
 
 
 def _owned_prospect(db: Session, prospect_id: int, user: models.User) -> models.Prospect:
@@ -133,6 +149,7 @@ def _capture_row(p: models.Prospect) -> dict:
         "private_note": p.private_note,       # operator-only memo (never sent)
         "contact_type": p.contact_type,
         "next_step": p.next_step,
+        "vip": bool(getattr(p, "vip", False)),
         # No dedicated column : an unresolved capture is exactly one with no
         # provider id, so the UI can surface a "retry resolve" affordance.
         "resolve_failed": p.linkedin_provider_id is None,
@@ -276,6 +293,18 @@ def scan_capture(
     p.private_note = (body.private_note or None)   # operator-only : never sent
     p.contact_type = (body.contact_type or None)
     p.next_step = (body.next_step or None)         # woven into the first message
+    if body.vip is not None:
+        p.vip = bool(body.vip)
+
+    # "Captured once, reused forever" : if this capture's next step is a real
+    # scheduling / demo URL, promote it to the user's reusable saved_send_link
+    # so it pre-fills on every future send. Latest link wins; freeform phrases
+    # ("grab a coffee") never clobber a saved link.
+    if _looks_like_link(body.next_step):
+        link = body.next_step.strip()
+        if (user.saved_send_link or "") != link:
+            user.saved_send_link = link
+
     db.commit()
     db.refresh(p)
 
