@@ -291,8 +291,8 @@ function InPersonAppInner() {
                   onClick={() => { setView("flow"); setTab("capture"); }}>
             <Camera size={20} /><span>Capture</span>
           </button>
-          <button className={view === "flow" && tab === "people" ? "on" : ""}
-                  onClick={() => { setView("flow"); setTab("people"); }}>
+          <button className={view === "crm" ? "on" : ""}
+                  onClick={() => setView("crm")}>
             <Users size={20} /><span>Relationship</span>
           </button>
           {isOperator && (
