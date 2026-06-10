@@ -198,6 +198,39 @@ def test_mint_demo_user_is_not_connected_and_per_visitor(db):
     assert u2.id != u1.id
 
 
+# ── demo entry lands on the chosen surface ───────────────────────────────
+
+def test_demo_enter_surface_routing(db, monkeypatch):
+    """A demo link can target a surface : ?surface=book lands on /book, the
+    advisor "Your book today" page. Omitted / unknown / bad values fall back
+    to "/" (the desktop pipeline) so the value can't become an open redirect."""
+    from backend.routes import demo as demo_mod
+
+    monkeypatch.setenv("DEMO_ACCESS_TOKEN", "s3cret")
+
+    def _enter(surface):
+        resp = demo_mod.demo_enter(key="s3cret", surface=surface, db=db)
+        assert resp.status_code == 303
+        return resp.headers["location"]
+
+    assert _enter("book") == "/book"
+    assert _enter("inperson") == "/inperson"
+    assert _enter("app") == "/"
+    # default + unknown both fall back to the desktop pipeline (no open redirect)
+    assert _enter(None) == "/"
+    assert _enter("https://evil.example.com") == "/"
+    assert _enter("BOOK") == "/book"  # case-insensitive
+
+
+def test_demo_enter_bad_key_is_404_regardless_of_surface(db, monkeypatch):
+    """Surface never bypasses the token gate : a wrong key is still 404."""
+    from backend.routes import demo as demo_mod
+
+    monkeypatch.setenv("DEMO_ACCESS_TOKEN", "s3cret")
+    resp = demo_mod.demo_enter(key="wrong", surface="book", db=db)
+    assert resp.status_code == 404
+
+
 # ── /me exposes is_demo so the SPA can hide demo-only surfaces ───────────
 
 def test_me_flags_demo_user_only(db):

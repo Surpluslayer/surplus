@@ -149,12 +149,29 @@ def _demo_user_for_visit(db: DbSession) -> User:
     return _mint_demo_user(db)
 
 
+# Where a demo visit can land. Keyed allowlist (not raw paths) so the public
+# ?surface= value can never be turned into an open redirect : an unknown value
+# silently falls back to the desktop pipeline at "/".
+_SURFACE_PATHS = {
+    "book": "/book",          # advisor "Your book today" surface (BookApp)
+    "inperson": "/inperson",  # phone-first capture surface (InPersonApp)
+    "app": "/",               # desktop pipeline (default)
+}
+
+
 @router.get("/enter")
 def demo_enter(
     key: str = Query(..., description="Shared secret matching DEMO_ACCESS_TOKEN"),
+    surface: Optional[str] = Query(
+        None, description="Which surface to land on: book | inperson | app (default)"),
     db: DbSession = Depends(get_db),
 ):
-    """Issue a session for the demo user and redirect to /.
+    """Issue a session for the demo user and redirect to the chosen surface.
+
+    `surface` lets a single demo link open straight onto a specific phone
+    surface — e.g. ?surface=book drops the visitor on "Your book today".
+    Unknown / omitted values fall back to "/" (the desktop pipeline), so the
+    existing demo link keeps working unchanged.
 
     Returns 404 when:
       - DEMO_ACCESS_TOKEN env var is unset (feature disabled)
@@ -174,8 +191,9 @@ def demo_enter(
 
     demo_user = _demo_user_for_visit(db)
 
+    target = _SURFACE_PATHS.get((surface or "").strip().lower(), "/")
     sess = create_session(db, demo_user)
-    response = RedirectResponse("/", status_code=303)
+    response = RedirectResponse(target, status_code=303)
     for k, v in _NO_STORE.items():
         response.headers[k] = v
     set_session_cookie(response, sess.session_token)
