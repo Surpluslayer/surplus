@@ -70,7 +70,9 @@ def test_email_create_body_targets_mail_providers_and_email_routes():
     body = auth_route._email_create_body(
         "https://api40.unipile.com:17054", "2026-01-01T00:00:00.000Z",
         "tok123", "https://www.surpluslayer.com", "https://x/fail")
-    assert body["providers"] == ["GOOGLE", "MICROSOFT"]
+    # "OUTLOOK" (not "MICROSOFT") is Unipile's Microsoft-mail token —
+    # the API rejects MICROSOFT with invalid_parameters. Pin it.
+    assert body["providers"] == ["GOOGLE", "OUTLOOK"]
     assert body["type"] == "create"
     assert body["name"] == "tok123"
     assert body["notify_url"].endswith("/api/auth/email/webhook")

@@ -869,10 +869,14 @@ async def linkedin_callback(
 def _email_create_body(dsn: str, expires: str, state_token: str,
                        base: str, failure_url: str) -> dict:
     """Hosted-auth create body for the email channel. Mirrors _create_body
-    but with the mail providers and the email webhook/callback URLs."""
+    but with the mail providers and the email webhook/callback URLs.
+
+    NOTE: Unipile's provider token for Microsoft mail is "OUTLOOK" — the
+    docs prose says "Microsoft" but the API schema rejects "MICROSOFT"
+    with errors/invalid_parameters (verified against the live API)."""
     return {
         "type": "create",
-        "providers": ["GOOGLE", "MICROSOFT"],
+        "providers": ["GOOGLE", "OUTLOOK"],
         "api_url": dsn,
         "expiresOn": expires,
         "success_redirect_url": f"{base}/api/auth/email/callback?state={state_token}",
