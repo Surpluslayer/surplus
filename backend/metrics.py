@@ -60,6 +60,36 @@ def _pct(samples, q):
     return round(s[i])
 
 
+def _diagnose(recent: list, gate: dict, llm: dict) -> str:
+    """Turn the numbers into one plain-English sentence: what's wrong, or healthy.
+    So you read an answer, not a blob -- no interpreting raw metrics."""
+    saturated = bool(gate) and gate.get("in_flight", 0) >= gate.get("total", 1) \
+        and gate.get("fg_waiting", 0) > 0
+    # newest-first
+    slow = [e for e in recent if e.get("kind") == "req" and (e.get("ms") or 0) >= 5000]
+    errs = [e for e in recent if e.get("kind") == "req" and (e.get("status") or 0) >= 500]
+    llm_err = [e for e in recent if e.get("kind") == "llm"]
+    if saturated:
+        return (f"THROTTLING NOW: Claude gate saturated "
+                f"({gate['in_flight']}/{gate['total']} in flight, "
+                f"{gate['fg_waiting']} user call(s) waiting). Fan-out is starving "
+                f"live requests -- the relationship-layer throttle.")
+    if slow:
+        e = slow[0]
+        return (f"SLOW REQUEST {e['age_s']}s ago: {e['method']} {e['path']} took "
+                f"{e['ms']/1000:.0f}s -- likely a Claude fan-out / rate-limit backoff "
+                f"(this is what shows the user 'server took too long').")
+    if errs:
+        e = errs[0]
+        return (f"SERVER ERROR {e['age_s']}s ago: {e['method']} {e['path']} -> "
+                f"{e['status']}. Check the [req] traceback in logs for the exception.")
+    if llm_err:
+        e = llm_err[0]
+        return (f"CLAUDE CALL FAILED {e['age_s']}s ago [{e.get('label','')}]: "
+                f"{e.get('detail','')} -- usually a 429 (rate limit) or bad JSON.")
+    return "Healthy -- no errors, slow requests, or throttling recently."
+
+
 def snapshot() -> dict:
     # Pull the gate's live state without a hard import dependency.
     try:
@@ -75,11 +105,14 @@ def snapshot() -> dict:
                 routes[r] = {"n": len(d), "p50": _pct(d, 0.50),
                              "p95": _pct(d, 0.95), "max": round(max(d))}
         recent = [{**e, "age_s": round(now - e["ts"], 1)} for e in _recent]
+        recent_newest = list(reversed(recent))
+        llm = {**dict(_llm), "p50_ms": _pct(_llm_ms, 0.50),
+               "p95_ms": _pct(_llm_ms, 0.95)}
         return {
+            "summary": _diagnose(recent_newest, gate, llm),
             "uptime_s": round(now - _BOOT),
             "requests": dict(_req),
-            "llm": {**dict(_llm), "p50_ms": _pct(_llm_ms, 0.50),
-                    "p95_ms": _pct(_llm_ms, 0.95)},
+            "llm": llm,
             "gate": gate,
-            "recent": list(reversed(recent)),  # newest first
+            "recent": recent_newest,  # newest first
         }
