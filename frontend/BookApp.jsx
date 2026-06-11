@@ -49,11 +49,24 @@ export default function BookApp() {
   // its own type), injected once so the design tokens resolve.
   useEffect(() => { _ensureFonts(); }, []);
 
+  // Fire me + bookToday in parallel — no reason to wait for auth before
+  // starting the book fetch; both resolve independently.
   useEffect(() => {
     let cancelled = false;
-    api.me()
-      .then((u) => { if (!cancelled) setUser(u && u.id ? u : undefined); })
-      .catch((e) => { if (!cancelled) setUser(e?.status === 401 ? undefined : {}); });
+    Promise.allSettled([api.me(), api.bookToday()]).then(([meRes, todayRes]) => {
+      if (cancelled) return;
+      if (meRes.status === "fulfilled") {
+        const u = meRes.value;
+        setUser(u && u.id ? u : undefined);
+      } else {
+        setUser(meRes.reason?.status === 401 ? undefined : {});
+      }
+      if (todayRes.status === "fulfilled") {
+        setFeed(todayRes.value);
+      } else {
+        setErr(todayRes.reason?.message || String(todayRes.reason));
+      }
+    });
     return () => { cancelled = true; };
   }, []);
 
@@ -61,7 +74,6 @@ export default function BookApp() {
     setErr("");
     api.bookToday().then(setFeed).catch((e) => setErr(e.message || String(e)));
   }, []);
-  useEffect(() => { load(); }, [load]);
 
   // Signed out → the same LinkedIn sign-in bounce as the event surface (this
   // is the shell event hosts serve, so it must gate, not error).

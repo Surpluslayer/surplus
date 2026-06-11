@@ -1,7 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 
-import { initAnalytics } from "./lib/analytics.js";
 import { ErrorBoundary, installPreloadRecovery } from "./lib/resilience.jsx";
 
 installPreloadRecovery();
@@ -24,7 +23,10 @@ function isInPersonSurface() {
 
 // Boot PostHog before React mounts so autocapture + session replay catch
 // the very first interactions. No-op when no key is configured.
-initAnalytics();
+// Analytics (PostHog, ~390KB) loads lazily after first paint : capture-on-
+// event-wifi should never wait on a telemetry bundle.
+const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 1500));
+idle(() => import("./lib/analytics.js").then((m) => m.initAnalytics()).catch(() => {}));
 
 // ?fresh=true (or ?fresh=1) escape hatch : wipe the cached unified
 // session so a returning user with a stale eventId lands on the

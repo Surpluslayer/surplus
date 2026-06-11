@@ -238,8 +238,13 @@ def _load_user_by_session(db: DbSession, token: Optional[str]) -> Optional[User]
     expires = _as_aware_utc(sess.expires_at)
     if expires and expires < _utcnow():
         return None
-    sess.last_seen_at = _utcnow()
-    db.commit()
+    # Only write last_seen_at when it's stale enough to matter — SQLite is
+    # single-writer, so a commit on every request serializes concurrent reads.
+    now = _utcnow()
+    last = _as_aware_utc(sess.last_seen_at) if sess.last_seen_at else None
+    if last is None or (now - last).total_seconds() > 300:
+        sess.last_seen_at = now
+        db.commit()
     return db.query(User).filter(User.id == sess.user_id).first()
 
 

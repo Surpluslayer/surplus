@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..agents import relationships, resolver
+from ..agents import capture_enrich, relationships, resolver
 from ..agents.outreach import compose
 from ..agents.send_flow import route_and_send
 from ..auth import (
@@ -310,13 +310,24 @@ def scan_capture(
         if (user.saved_send_link or "") != link:
             user.saved_send_link = link
 
+    # Prompt-5 capture enrichment : turn the raw capture (handle + whatever the
+    # operator typed) into a real name / title / firm BEFORE the row is
+    # committed, linked to its Contact, or composed against — so neither the
+    # Book nor the draft ever sees "Unknown" / a bare handle. Fill-only (never
+    # overwrites operator input) and fail-soft (LLM when ANTHROPIC_API_KEY is
+    # set, a handle heuristic otherwise).
+    capture_enrich.enrich_capture(p, ev)
+
     db.commit()
     db.refresh(p)
 
     # Spine: an in-person capture is a real "we met" touch, so link this person
     # to their durable Contact (idempotent, fail-soft, no-op without a strong
     # identity key) so they show up in the cross-event relationship graph.
-    relationships.link_contact(db, p, user.id)
+    contact = relationships.link_contact(db, p, user.id)
+    # A re-scan of someone first captured pre-enrichment : back-fill the
+    # Contact's placeholder name/company from the now-enriched row.
+    capture_enrich.refresh_contact(db, contact, p)
 
     # ev.kind == "in_person", so compose() takes the warm "we just met" branch.
     # p.note was just persisted, so the draft is composed FROM the fun fact :

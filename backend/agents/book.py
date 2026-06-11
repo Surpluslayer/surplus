@@ -263,6 +263,74 @@ def invalidate_assessments() -> None:
     """Drop every cached verdict (the /refresh endpoint's 'Refresh now')."""
     with _assess_lock:
         _assess_cache.clear()
+    with _draft_lock:
+        _draft_cache.clear()
+
+
+# ─── Draft cache + pre-drafting ──────────────────────────────────────────────
+#
+# Drafting is the one model call that's supposed to be live — but waiting 3-8s
+# on every relationship open, including re-opens of the same person, is wasted.
+# Cache by (contact, trigger, channel) with the same TTL as assessments, and
+# let build_today kick off background pre-drafts for the people the user is
+# about to be told to contact, so the panel is usually instant by the time
+# they tap.
+
+_draft_cache: dict[str, tuple[float, dict]] = {}
+_draft_inflight: set[str] = set()
+_draft_lock = threading.Lock()
+
+
+def _draft_key(contact: dict, trigger: str, channel: str) -> str:
+    raw = json.dumps([contact.get("id"), contact.get("name"), trigger, channel,
+                      contact.get("interaction_history")],
+                     sort_keys=True, default=str)
+    return hashlib.sha1(raw.encode()).hexdigest()
+
+
+def draft_message_cached(contact: dict, trigger: str, *, channel: str = "email",
+                         user_name: str = "your advisor",
+                         user_role: str = "wealth advisor") -> dict:
+    """draft_message with a TTL cache: a re-open of the same person + trigger
+    returns instantly instead of re-paying the model call."""
+    key = _draft_key(contact, trigger, channel)
+    now = time.time()
+    with _draft_lock:
+        hit = _draft_cache.get(key)
+        if hit and now - hit[0] < _ASSESS_TTL:
+            return hit[1]
+    msg = draft_message(contact, trigger, channel=channel,
+                        user_name=user_name, user_role=user_role)
+    with _draft_lock:
+        _draft_cache[key] = (now, msg)
+    return msg
+
+
+def predraft(contacts_with_triggers: list[tuple[dict, str]],
+             *, user_name: str = "your advisor",
+             user_role: str = "wealth advisor") -> None:
+    """Warm the draft cache in the background for (contact, trigger) pairs the
+    Today feed is about to surface. Fire-and-forget; never blocks a request."""
+    if not _anthropic_available():
+        return  # the heuristic draft is instant anyway — nothing to warm
+    pending = []
+    with _draft_lock:
+        for c, trig in contacts_with_triggers:
+            key = _draft_key(c, trig, "email")
+            if key in _draft_cache or key in _draft_inflight:
+                continue
+            _draft_inflight.add(key)
+            pending.append((c, trig, key))
+
+    def _run(c, trig, key):
+        try:
+            draft_message_cached(c, trig, user_name=user_name, user_role=user_role)
+        finally:
+            with _draft_lock:
+                _draft_inflight.discard(key)
+
+    for c, trig, key in pending:
+        threading.Thread(target=_run, args=(c, trig, key), daemon=True).start()
 
 
 # ─── 3. Draft a message ──────────────────────────────────────────────────────

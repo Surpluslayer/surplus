@@ -5,16 +5,17 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import BookApp from "./BookApp.jsx";
-import InPersonApp from "./InPersonApp.jsx";
-import { initAnalytics } from "./lib/analytics.js";
 import { ErrorBoundary, installPreloadRecovery } from "./lib/resilience.jsx";
 
-initAnalytics();
+// Analytics (PostHog) loads lazily after first paint — event wifi should never
+// wait on a telemetry bundle.
+const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 1500));
+idle(() => import("./lib/analytics.js").then((m) => m.initAnalytics()).catch(() => {}));
 installPreloadRecovery();
 
-// The event hosts now serve the BookApp surface (Today · Add · Book) — the
-// capture flow lives in its Add tab. The legacy in-person surface stays
-// reachable at /legacy (and keeps powering /guest) while it's retired.
+// The event hosts serve BookApp (Today · Add · Book). The legacy in-person
+// surface stays at /legacy and /guest. InPersonApp is lazy — it's 186KB and
+// 99% of users never need it; BookApp is always the fast path.
 function wantsLegacy() {
   try {
     const p = window.location.pathname || "";
@@ -23,12 +24,31 @@ function wantsLegacy() {
   } catch { return false; }
 }
 
-const Root = wantsLegacy() ? InPersonApp : BookApp;
-
-ReactDOM.createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <Root />
-    </ErrorBoundary>
-  </React.StrictMode>
-);
+if (wantsLegacy()) {
+  // @vite-ignore prevents Vite from statically analysing this path and adding
+  // InPersonApp to the preload graph — 99% of users are on BookApp and should
+  // never download the legacy surface's 186KB chunk.
+  const _legacy = /* @vite-ignore */ "./InPersonApp.jsx";
+  import(/* @vite-ignore */ _legacy).then(({ default: InPersonApp }) => {
+    ReactDOM.createRoot(document.getElementById("root")).render(
+      <React.StrictMode>
+        <ErrorBoundary>
+          <InPersonApp />
+        </ErrorBoundary>
+      </React.StrictMode>
+    );
+  }).catch(() => {
+    const el = document.getElementById("root");
+    if (el) el.innerHTML =
+      '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:Inter,system-ui,sans-serif">' +
+      '<button onclick="window.location.reload()" style="font-size:15px;padding:10px 22px;border-radius:999px;border:0.5px solid #d6dae1;background:#14171c;color:#fff;cursor:pointer">Reload</button></div>';
+  });
+} else {
+  ReactDOM.createRoot(document.getElementById("root")).render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <BookApp />
+      </ErrorBoundary>
+    </React.StrictMode>
+  );
+}
