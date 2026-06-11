@@ -330,7 +330,7 @@ function InPersonAppInner() {
 
 // ── sign-in bounce ───────────────────────────────────────────────────────────
 
-function SignInBounce({ authError = null, onRetry = null }) {
+export function SignInBounce({ authError = null, onRetry = null }) {
   const [busy, setBusy] = useState(false);
   // Mirror the desktop App's onSignIn: LinkedIn-connect is gated behind Stripe
   // payment (pay-first product flow), so /linkedin/start returns 402

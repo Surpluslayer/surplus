@@ -16,10 +16,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from .. import models
 from ..agents import book as book_agent
+from ..agents import relationships as rel_agent
 from ..auth import current_user
+from ..db import get_db
 
 router = APIRouter(prefix="/api/book", tags=["book"])
 
@@ -135,6 +138,76 @@ def _demo_book() -> list[dict]:
     ]
 
 
+def _book_from_spine(db: Session, user: models.User) -> list[dict]:
+    """Map the real Contact spine (the cross-event 'who I've met' rollup) into
+    the book shape the agent prompts expect. Empty when the user has no
+    contacts yet — the caller falls back to the demo book so the surface still
+    renders end-to-end."""
+    contacts = rel_agent.list_contacts(db, user.id)
+    if not contacts:
+        return []
+    inter_index = rel_agent.prefetch_interactions_by_prospect(db, contacts)
+    update_index = rel_agent.prefetch_activity_updates_by_contact(db, contacts)
+    now = datetime.now(timezone.utc)
+    book: list[dict] = []
+    for c in contacts:
+        row = rel_agent.contact_summary(db, c, inter_index,
+                                        update_index.get(c.id))
+        # Days since the freshest touch; a never-touched capture counts as new
+        # (0 days) rather than dormant.
+        days = 0
+        last = row.get("last_touch_at")
+        if last is not None:
+            try:
+                dt = last if isinstance(last, datetime) else datetime.fromisoformat(str(last))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                days = max(0, (now - dt).days)
+            except Exception:
+                days = 0
+        # The freshest watch-poller change becomes the raw signal feeding the
+        # Updates feed (prompt 2 / its heuristic).
+        upd = row.get("latest_update") or {}
+        headline = upd.get("title") or upd.get("summary")
+        signals = None
+        if headline:
+            occurred = upd.get("occurred_at")
+            signals = {
+                "type": upd.get("type") or "company_news",
+                "headline": headline,
+                "detected_at": (occurred.isoformat()
+                                if isinstance(occurred, datetime)
+                                else (occurred or _ago())),
+                "significance": "medium",
+                "outreach_trigger": True,
+            }
+        identity = row.get("identity") or {}
+        book.append({
+            "id": str(row.get("contact_id")),
+            "name": row.get("name") or "Unknown",
+            "vip": False,
+            "title": identity.get("headline") or "",
+            "firm": row.get("company") or identity.get("company") or "",
+            "tier": "core",
+            "days_since": days,
+            "cadence_days": 30,
+            "review_due": False,
+            "met_at": "",
+            "value": "",
+            "is_prospect": not row.get("is_connection"),
+            "interaction_history": row.get("next_step") or "",
+            "raw_signals": signals,
+        })
+    return book
+
+
+def _load_book(db: Session, user: models.User) -> list[dict]:
+    """The caller's real book when the spine has people in it, else the demo
+    roster (so a brand-new account still sees a working surface)."""
+    book = _book_from_spine(db, user)
+    return book if book else _demo_book()
+
+
 def _advisor_identity(user: models.User) -> tuple[str, str]:
     name = (getattr(user, "name", None) or "").strip() or "your advisor"
     return name, "wealth advisor"
@@ -166,27 +239,30 @@ class AskIn(BaseModel):
 # ─── routes ──────────────────────────────────────────────────────────────────
 
 @router.get("/today")
-def today(user: models.User = Depends(current_user)):
+def today(db: Session = Depends(get_db),
+          user: models.User = Depends(current_user)):
     """The cached-shape Today feed : time-ordered Updates + priority-ranked
     Needs-outreach. Built by running detection + scoring across the book."""
-    feed = book_agent.build_today(_demo_book())
+    feed = book_agent.build_today(_load_book(db, user))
     name, _ = _advisor_identity(user)
     feed["advisor_name"] = name
     return feed
 
 
 @router.post("/refresh")
-def refresh(user: models.User = Depends(current_user)):
+def refresh(db: Session = Depends(get_db),
+            user: models.User = Depends(current_user)):
     """Re-run the batch over the book. Same shape as /today (the heavy LLM
     passes would be scheduled + cached in production; here it recomputes)."""
-    return today(user)
+    return today(db, user)
 
 
 @router.post("/draft")
-def draft(body: DraftIn, user: models.User = Depends(current_user)):
+def draft(body: DraftIn, db: Session = Depends(get_db),
+          user: models.User = Depends(current_user)):
     """The note behind a 'Draft' tap : warm congratulation or cold re-engage,
     chosen from the trigger."""
-    book = _demo_book()
+    book = _load_book(db, user)
     contact = _find_contact(book, contact_id=body.contact_id, name=body.name)
     if contact is None:
         # Still draftable from just a name + trigger (the agent can work with
@@ -201,20 +277,22 @@ def draft(body: DraftIn, user: models.User = Depends(current_user)):
 
 
 @router.post("/ask")
-def ask(body: AskIn, user: models.User = Depends(current_user)):
+def ask(body: AskIn, db: Session = Depends(get_db),
+        user: models.User = Depends(current_user)):
     """The 'Ask your agent anything' bar + chip queries."""
     q = (body.query or "").strip()
     if not q:
         raise HTTPException(422, "query is required")
-    return book_agent.ask_agent(_demo_book(), q)
+    return book_agent.ask_agent(_load_book(db, user), q)
 
 
 @router.get("/relationship/{contact_id}")
-def relationship(contact_id: str, user: models.User = Depends(current_user)):
+def relationship(contact_id: str, db: Session = Depends(get_db),
+                 user: models.User = Depends(current_user)):
     """The relationship detail screen : health, the plain-language 'why', the
     relationship value, and a synthesized timeline. The drafted message is
     fetched separately via /draft so it can be refined independently."""
-    contact = _find_contact(_demo_book(), contact_id=contact_id, name=None)
+    contact = _find_contact(_load_book(db, user), contact_id=contact_id, name=None)
     if contact is None:
         raise HTTPException(404, "contact not found")
     return book_agent.relationship_detail(contact)

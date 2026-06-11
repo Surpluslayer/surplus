@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { api } from "./lib/api.js";
 import {
-  CaptureScreen, ScanResult, IP_CSS,
+  CaptureScreen, ScanResult, SignInBounce, IP_CSS,
   loadActiveEvent, saveActiveEvent, loadRecentLabels, pushRecentLabel,
 } from "./InPersonApp.jsx";
 
@@ -61,6 +61,10 @@ export default function BookApp() {
     api.bookToday().then(setFeed).catch((e) => setErr(e.message || String(e)));
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  // Signed out → the same LinkedIn sign-in bounce as the event surface (this
+  // is the shell event hosts serve, so it must gate, not error).
+  if (user === undefined) return <SignInBounce />;
 
   const openDetail = (row) => setRoute({ name: "detail", row });
   const openDraft = (d) => setDraftFor(d);
