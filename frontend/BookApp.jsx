@@ -40,9 +40,8 @@ export default function BookApp() {
   const [user, setUser] = useState(null);       // null=loading, undefined=signed out
   const [feed, setFeed] = useState(null);        // null=loading
   const [err, setErr] = useState("");
-  const [tab, setTab] = useState("today");       // "today" | "book"
+  const [tab, setTab] = useState("today");       // "today" | "add" | "book"
   const [route, setRoute] = useState(null);      // {name:"detail",row} | {name:"account"} | {name:"connections"} | null
-  const [addOpen, setAddOpen] = useState(false);
   const [draftFor, setDraftFor] = useState(null);// {name, contact_id, trigger}
 
   // Fonts: load Inter + Newsreader only for this surface (the desktop App ships
@@ -84,6 +83,8 @@ export default function BookApp() {
   } else if (tab === "book") {
     screen = <BookView feed={feed} err={err} onReload={load}
                        onOpen={openDetail} onDraft={openDraft} />;
+  } else if (tab === "add") {
+    screen = <AddScreen user={user} onAdded={() => { load(); goTab("book"); }} />;
   } else {
     screen = <TodayView feed={feed} err={err} user={user} onReload={load}
                         onAccount={() => setRoute({ name: "account" })}
@@ -100,8 +101,8 @@ export default function BookApp() {
                   onClick={() => goTab("today")}>
             <LayoutDashboard size={19} /><span>Today</span>
           </button>
-          <button className="bk-nav-add" onClick={() => setAddOpen(true)}
-                  aria-label="Add contact">
+          <button className={"bk-nav-add" + (activeNav === "add" ? " on" : "")}
+                  onClick={() => goTab("add")} aria-label="Add contact">
             <span className="bk-fab"><Plus size={22} /></span><span>Add</span>
           </button>
           <button className={"bk-nav-item" + (activeNav === "book" ? " on" : "")}
@@ -111,8 +112,6 @@ export default function BookApp() {
         </nav>
       </div>
 
-      {addOpen && <AddSheet user={user} onClose={() => setAddOpen(false)}
-                            onAdded={load} />}
       {draftFor && <DraftSheet draft={draftFor} onClose={() => setDraftFor(null)} />}
     </div>
   );
@@ -485,7 +484,7 @@ function ConnRow({ icon, name, sub, connected, onConnect }) {
 
 // ── Add contact (bottom sheet) ────────────────────────────────────────────────
 
-function AddSheet({ user, onClose, onAdded }) {
+function AddScreen({ user, onAdded }) {
   // Real capture flow — shares the active event + capture/send components with
   // InPersonApp so a contact added here is the same as one scanned at the door.
   const [event, setEvent] = useState(() => loadActiveEvent());
@@ -508,18 +507,18 @@ function AddSheet({ user, onClose, onAdded }) {
   };
 
   return (
-    <div className="bk-sheet-scrim" onClick={onClose}>
-      <div className="bk-sheet" onClick={(e) => e.stopPropagation()}>
-        <style>{IP_CSS}</style>
-        <div className="bk-grabber"><span /></div>
-        <div className="bk-sheet-title">
-          <span className="bk-display">Add contact</span>
-          <button className="bk-sheet-x" onClick={onClose} aria-label="Close"><X size={20} /></button>
+    <div className="bk-scroll">
+      <style>{IP_CSS}</style>
+      <header className="bk-topbar">
+        <div>
+          <p className="bk-eyebrow">Capture someone you just met</p>
+          <p className="bk-display">Add contact</p>
         </div>
-
+      </header>
+      <div className="bk-addbody">
         {result ? (
           <ScanResult event={event} result={result}
-                      onDone={() => { setResult(null); onAdded && onAdded(); onClose(); }}
+                      onDone={() => { setResult(null); onAdded && onAdded(); }}
                       onCancel={() => setResult(null)}
                       canSend={!!user?.unipile_account_id}
                       savedLink={(user && user.saved_send_link) || ""} />
