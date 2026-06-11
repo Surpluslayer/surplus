@@ -24,8 +24,11 @@ demo book looks right) with no key configured. Prompts 1 & 2 are batch-shaped
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import threading
+import time
 from datetime import date, datetime, timezone
 from typing import Optional
 
@@ -195,6 +198,73 @@ def _detect_update_heuristic(contact: dict) -> Optional[dict]:
     return None
 
 
+# ─── Assessment cache ────────────────────────────────────────────────────────
+#
+# Page loads must never wait on the model (spec: prompts 1 & 2 are batch-shaped;
+# render from cache). assess() returns instantly — the cached LLM verdict when
+# fresh, the deterministic heuristic otherwise — and warms the LLM verdict on a
+# background thread. The fingerprint folds in everything the prompts read, so a
+# contact's verdict refreshes naturally when their state (or the day) changes.
+
+_ASSESS_TTL = 6 * 3600  # seconds; days_since shifting daily re-keys anyway
+_assess_cache: dict[str, tuple[float, dict, Optional[dict]]] = {}
+_assess_inflight: set[str] = set()
+_assess_lock = threading.Lock()
+
+
+def _assess_key(contact: dict) -> str:
+    raw = json.dumps(
+        [contact.get("id"), contact.get("name"), contact.get("days_since"),
+         contact.get("stage"), contact.get("review_due"), contact.get("tier"),
+         contact.get("raw_signals")],
+        sort_keys=True, default=str)
+    return hashlib.sha1(raw.encode()).hexdigest()
+
+
+def _assess_llm(contact: dict, key: str) -> None:
+    try:
+        h = score_health(contact)
+        u = detect_update(contact)
+        with _assess_lock:
+            _assess_cache[key] = (time.time(), h, u)
+    finally:
+        with _assess_lock:
+            _assess_inflight.discard(key)
+
+
+def assess(contact: dict) -> tuple[dict, Optional[dict]]:
+    """One cached (health, update) verdict per contact. Never blocks on the
+    model: cold-cache requests get the heuristic and kick off the LLM refresh
+    in the background."""
+    key = _assess_key(contact)
+    now = time.time()
+    spawn = False
+    with _assess_lock:
+        hit = _assess_cache.get(key)
+        if hit and now - hit[0] < _ASSESS_TTL:
+            return hit[1], hit[2]
+        if _anthropic_available() and key not in _assess_inflight:
+            _assess_inflight.add(key)
+            spawn = True
+    if spawn:
+        threading.Thread(target=_assess_llm, args=(contact, key),
+                         daemon=True).start()
+    h = _score_health_heuristic(contact)
+    u = _detect_update_heuristic(contact)
+    if not _anthropic_available():
+        # The heuristic IS the final verdict with no key — cache it so repeat
+        # loads skip even the recompute.
+        with _assess_lock:
+            _assess_cache[key] = (now, h, u)
+    return h, u
+
+
+def invalidate_assessments() -> None:
+    """Drop every cached verdict (the /refresh endpoint's 'Refresh now')."""
+    with _assess_lock:
+        _assess_cache.clear()
+
+
 # ─── 3. Draft a message ──────────────────────────────────────────────────────
 
 def _draft_system(user_name: str, user_role: str) -> str:
@@ -309,9 +379,10 @@ def _ask_agent_heuristic(book: list[dict], query: str) -> dict:
 def build_today(book: list[dict]) -> dict:
     """Run detection + scoring across the whole book and assemble the Today
     feed: time-ordered Updates and priority-ranked Needs-outreach."""
+    assessed = [(c, *assess(c)) for c in book]
+
     updates = []
-    for c in book:
-        u = detect_update(c)
+    for c, _h, u in assessed:
         if not u:
             continue
         updates.append({
@@ -328,8 +399,7 @@ def build_today(book: list[dict]) -> dict:
     updates.sort(key=lambda x: x.get("detected_at") or "", reverse=True)
 
     needs = []
-    for c in book:
-        h = score_health(c)
+    for c, h, _u in assessed:
         if not h.get("needs_outreach"):
             continue
         needs.append({
@@ -362,8 +432,7 @@ def build_roster(book: list[dict]) -> list[dict]:
     (cached upstream in production)."""
     rows = []
     for c in book:
-        h = score_health(c)
-        upd = detect_update(c)
+        h, upd = assess(c)
         rows.append({
             "contact_id": c.get("id"),
             "name": c.get("name"),
@@ -392,7 +461,7 @@ def relationship_detail(contact: dict) -> dict:
     """The relationship screen: health, a plain-language 'why', the timeline,
     and the relationship value line. The drafted message is fetched separately
     (draft_message) on open so it can be refined independently."""
-    h = score_health(contact)
+    h, _ = assess(contact)
     status = h.get("status")
     days = int(contact.get("days_since") or 0)
     return {

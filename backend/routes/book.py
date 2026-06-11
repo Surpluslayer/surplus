@@ -255,8 +255,9 @@ def today(db: Session = Depends(get_db),
 @router.post("/refresh")
 def refresh(db: Session = Depends(get_db),
             user: models.User = Depends(current_user)):
-    """Re-run the batch over the book. Same shape as /today (the heavy LLM
-    passes would be scheduled + cached in production; here it recomputes)."""
+    """Re-run the batch over the book. Same shape as /today; busts the
+    assessment cache so the next loads pick up fresh LLM verdicts."""
+    book_agent.invalidate_assessments()
     return today(db, user)
 
 
