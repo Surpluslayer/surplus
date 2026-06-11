@@ -86,10 +86,13 @@ export default function BookApp() {
     screen = <ConnectionsScreen user={user}
                                 onBack={() => setRoute({ name: "account" })} />;
   } else if (tab === "book") {
-    screen = <BookView feed={feed} err={err} onReload={load}
+    screen = <BookView feed={feed} err={err} user={user} onReload={load}
+                       onAccount={() => setRoute({ name: "account" })}
                        onOpen={openDetail} onDraft={openDraft} />;
   } else if (tab === "add") {
-    screen = <AddScreen user={user} onAdded={() => { load(); goTab("book"); }} />;
+    screen = <AddScreen user={user}
+                        onAccount={() => setRoute({ name: "account" })}
+                        onAdded={() => { load(); goTab("book"); }} />;
   } else {
     screen = <TodayView feed={feed} err={err} user={user} onReload={load}
                         onAccount={() => setRoute({ name: "account" })}
@@ -124,10 +127,19 @@ export default function BookApp() {
 
 // ── Today ────────────────────────────────────────────────────────────────────
 
+// The JL/DW avatar — the entry to Account, present in every screen's topbar.
+function Avatar({ user, feed, onAccount }) {
+  return (
+    <button className="bk-avatar" onClick={onAccount} aria-label="Account"
+            title={user?.name || ""}>
+      {_initials(user?.name || feed?.advisor_name)}
+    </button>
+  );
+}
+
 function TodayView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
   const updates = feed?.updates || [];
   const needs = feed?.needs_outreach || [];
-  const initials = _initials(user?.name || feed?.advisor_name);
 
   return (
     <div className="bk-scroll">
@@ -136,8 +148,7 @@ function TodayView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
           <p className="bk-eyebrow">{_today_long()}</p>
           <p className="bk-display">Your book today</p>
         </div>
-        <button className="bk-avatar" onClick={onAccount} aria-label="Account"
-                title={user?.name || ""}>{initials}</button>
+        <Avatar user={user} feed={feed} onAccount={onAccount} />
       </header>
 
       <AskBar variant="bar" onOpen={onOpen} onDraft={onDraft} />
@@ -192,7 +203,7 @@ const FILTERS = [
   { key: "prospects", label: "Prospects" },
 ];
 
-function BookView({ feed, err, onReload, onOpen, onDraft }) {
+function BookView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
   const [filter, setFilter] = useState("all");
   const [expanded, setExpanded] = useState(false);
   const [q, setQ] = useState("");
@@ -214,10 +225,11 @@ function BookView({ feed, err, onReload, onOpen, onDraft }) {
 
   return (
     <div className="bk-scroll">
-      <header className="bk-topbar bk-topbar--center">
+      <header className="bk-topbar">
         <span className="bk-display bk-display--row">
           Your book <span className="bk-count-lg">{roster.length}</span>
         </span>
+        <Avatar user={user} feed={feed} onAccount={onAccount} />
       </header>
 
       <div className="bk-ask-wrap">
@@ -509,7 +521,7 @@ function ConnRow({ icon, name, sub, connected, onConnect }) {
 
 // ── Add contact (bottom sheet) ────────────────────────────────────────────────
 
-function AddScreen({ user, onAdded }) {
+function AddScreen({ user, onAccount, onAdded }) {
   // Real capture flow — shares the active event + capture/send components with
   // InPersonApp so a contact added here is the same as one scanned at the door.
   const [event, setEvent] = useState(() => loadActiveEvent());
@@ -539,6 +551,7 @@ function AddScreen({ user, onAdded }) {
           <p className="bk-eyebrow">Capture someone you just met</p>
           <p className="bk-display">Add contact</p>
         </div>
+        <Avatar user={user} onAccount={onAccount} />
       </header>
       <div className="bk-addbody">
         {result ? (
