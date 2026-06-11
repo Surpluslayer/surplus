@@ -289,7 +289,7 @@ def _how_we_met(prospect: Any) -> dict:
 # is pure CPU (build_timeline); `events` is the whole contact_events call. If
 # timeline ~= events ~= total, it's CPU in the timeline builder; if both are
 # small, the cost is a lazy-load DB hit elsewhere.
-_SPINE_PROF = {"events": 0.0, "timeline": 0.0}
+_SPINE_PROF = {"events": 0.0, "timeline": 0.0, "prospects": 0.0, "identity": 0.0}
 
 
 def _spine_prof_reset() -> None:
@@ -788,7 +788,9 @@ def contact_summary(db, contact, interactions_by_prospect=None,
     feeds the 'what's new' card fields — latest_update + n_updates — so the CRM
     can show 'Maya changed roles' and float fresh-news contacts to the top.
     None on the detail path -> fetched directly for this one contact."""
+    _t = time.monotonic()
     prospects = list(getattr(contact, "prospects", None) or [])
+    _SPINE_PROF["prospects"] += time.monotonic() - _t
     _t = time.monotonic()
     events = contact_events(db, contact, interactions_by_prospect)
     _SPINE_PROF["events"] += time.monotonic() - _t
@@ -805,12 +807,14 @@ def contact_summary(db, contact, interactions_by_prospect=None,
     # Identity : prefer a linked Prospect carrying real enrichment, else the
     # first one; fall back to the Contact's own stored fields.
     identity: dict = {}
+    _t = time.monotonic()
     for p in prospects:
         cand = _identity(p)
         identity = identity or cand
         if cand.get("headline") or cand.get("company"):
             identity = cand
             break
+    _SPINE_PROF["identity"] += time.monotonic() - _t
 
     return {
         "contact_id": getattr(contact, "id", None),

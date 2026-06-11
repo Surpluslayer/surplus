@@ -525,8 +525,8 @@ def build_today(book: list[dict]) -> dict:
         _cold = sum(1 for c in book
                     if _assess_key(c) not in _assess_cache
                     and _assess_key(c) not in _assess_inflight)
-    _btrace(f"build_today: {len(book)} contacts, ~{_cold} cold -> spawning "
-            f"~{_cold * 2} background LLM calls (UNBOUNDED)")
+    _btrace(f"build_today: {len(book)} contacts, ~{_cold} cold "
+            f"(LLM assess {'ON' if _BOOK_LLM_ASSESS else 'OFF -> heuristic, no storm'})")
     assessed = [(c, *assess(c)) for c in book]
 
     updates = []

@@ -184,7 +184,8 @@ def _book_from_spine(db: Session, user: models.User) -> list[dict]:
     _trace(f"_book_from_spine {len(contacts)} contacts: list={t_list:.2f}s "
            f"prefetch_inter={t_inter:.2f}s prefetch_upd={t_upd:.2f}s "
            f"summary_loop={t_loop:.2f}s "
-           f"(events={prof['events']:.2f}s timeline={prof['timeline']:.2f}s)")
+           f"(prospects={prof['prospects']:.2f}s events={prof['events']:.2f}s "
+           f"timeline={prof['timeline']:.2f}s identity={prof['identity']:.2f}s)")
     return out
 
 
