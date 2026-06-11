@@ -172,6 +172,18 @@ def _book_from_spine(db: Session, user: models.User) -> list[dict]:
     return out
 
 
+def _find_contact_orm(db: Session, user: models.User, contact_id: Optional[str]):
+    """Resolve the durable Contact ORM row for a numeric book id, so the
+    consolidated drafter can pull this person's real thread + the host's voice.
+    None when the id isn't a plain int (the demo book uses slugs) or no match."""
+    try:
+        cid = int(contact_id)
+    except (TypeError, ValueError):
+        return None
+    return next((c for c in rel_agent.list_contacts(db, user.id) if c.id == cid),
+                None)
+
+
 def _find_contact_fast(db: Session, user: models.User,
                        contact_id: str) -> Optional[dict]:
     """Single-contact lookup by numeric DB id — skips rebuilding the full book.
@@ -329,11 +341,23 @@ def draft(body: DraftIn, db: Session = Depends(get_db),
                    "interaction_history": ""}
     name, role = _advisor_identity(user)
     t0 = time.monotonic()
-    msg = book_agent.draft_message_cached(
-        contact, body.trigger, channel=body.channel,
-        user_name=name, user_role=role)
+    # Consolidated path: when this maps to a real Contact, draft through the ONE
+    # shared composer (voice + real prior-message thread + no em dashes). Falls
+    # back to the book heuristic drafter for demo-book slugs or on any miss.
+    msg = None
+    engine = "shared"
+    contact_orm = _find_contact_orm(db, user, body.contact_id)
+    if contact_orm is not None:
+        from ..agents import drafting
+        msg = drafting.compose_followup(
+            db, user.id, contact_orm, reason=body.trigger, channel=body.channel)
+    if msg is None:
+        engine = "heuristic"
+        msg = book_agent.draft_message_cached(
+            contact, body.trigger, channel=body.channel,
+            user_name=name, user_role=role)
     _trace(f"POST /draft user={user.id} to={contact.get('name')!r} "
-           f"channel={body.channel} trigger={body.trigger!r} "
+           f"channel={body.channel} trigger={body.trigger!r} engine={engine} "
            f"in {time.monotonic()-t0:.2f}s")
     return {"channel": body.channel, **msg}
 
