@@ -704,11 +704,11 @@ function AskBar({ variant, onOpen, onDraft }) {
                    ph === "selecting" ? "Finding who to follow up with…" : "Thinking…"),
         onPeople: ({ people, answer }) =>
           setRes({ answer: answer || "", people: people || [] }),
-        onPerson: ({ index, draft }) =>
+        onToken: ({ index, t }) =>     // each card types out live
           setRes((r) => {
-            if (!r) return r;
+            if (!r || !r.people[index]) return r;
             const people = r.people.slice();
-            if (people[index]) people[index] = { ...people[index], draft };
+            people[index] = { ...people[index], draft: (people[index].draft || "") + t };
             return { ...r, people };
           }),
         onError: ({ detail }) => setErr(detail || "Couldn't ask the agent"),

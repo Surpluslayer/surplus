@@ -518,7 +518,7 @@ export const api = {
   // fire. Callbacks: onStatus({phase,name}), onPeople({people,answer}),
   // onPerson({index,contact_id,name,draft}), onDone({total_s,count}),
   // onError({detail}). Resolves when the stream closes.
-  bookAskStream: async (query, { onStatus, onPeople, onPerson, onDone, onError } = {}) => {
+  bookAskStream: async (query, { onStatus, onPeople, onToken, onPerson, onDone, onError } = {}) => {
     const STALL_MS = 45000;
     const controller = new AbortController();
     let stalled = false;
@@ -564,7 +564,8 @@ export const api = {
         try { payload = JSON.parse(data); } catch { return; }
         if (ev === "status") onStatus?.(payload);
         else if (ev === "people") onPeople?.(payload);
-        else if (ev === "person") onPerson?.(payload);
+        else if (ev === "token") onToken?.(payload);     // {index, t} : append
+        else if (ev === "person") onPerson?.(payload);   // {index} : that card done
         else if (ev === "done") onDone?.(payload);
         else if (ev === "error") onError?.(payload);
       };

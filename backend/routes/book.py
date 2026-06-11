@@ -563,21 +563,24 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
                 if orm is not None:
                     targets.append((idx, p, drafting.build_context(wdb, user_id, orm)))
             if targets:
+                # Token-stream every card: each person's draft TYPES OUT (tagged
+                # by index) instead of popping in complete. The threads each emit
+                # `token {index,t}` deltas onto the shared queue, then a `person`
+                # marker; the gate bounds concurrency so this can't burst.
+                def _stream_one(idx, p, ctx):
+                    events.put(("status", {"phase": "drafting", "name": p.get("name")}))
+                    for delta in drafting.stream_from_context(
+                            ctx, p.get("reason") or "following up", "email"):
+                        events.put(("token", {"index": idx, "t": delta}))
+                    events.put(("person", {"index": idx, "contact_id": p.get("contact_id"),
+                                           "name": p.get("name")}))
                 with ThreadPoolExecutor(max_workers=6) as ex:
-                    futs = {}
-                    for idx, p, ctx in targets:
-                        events.put(("status", {"phase": "drafting", "name": p.get("name")}))
-                        futs[ex.submit(drafting.compose_from_context, ctx,
-                                       p.get("reason") or "following up", "email")] = (idx, p)
+                    futs = [ex.submit(_stream_one, idx, p, ctx) for idx, p, ctx in targets]
                     for fut in as_completed(futs):
-                        idx, p = futs[fut]
                         try:
-                            d = fut.result()
-                        except Exception:  # noqa: BLE001
-                            d = None
-                        events.put(("person", {"index": idx, "contact_id": p.get("contact_id"),
-                                               "name": p.get("name"),
-                                               "draft": (d or {}).get("body")}))
+                            fut.result()
+                        except Exception:  # noqa: BLE001 : one bad draft must not sink the stream
+                            pass
             events.put(("done", {"total_s": round(time.monotonic() - t0, 1),
                                  "count": len(people)}))
             _trace(f"POST /ask/stream user={user_id} q={q!r} -> {len(people)} people "

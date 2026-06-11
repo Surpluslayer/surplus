@@ -111,13 +111,10 @@ _FOLLOWUP_STREAM_SYSTEM = (
 )
 
 
-def compose_stream(db, user_id: int, contact, *, reason: str,
-                   channel: str = "email"):
-    """Yield the follow-up body token-by-token (live 'typing'). Same voice + real
-    prior-thread context as compose_followup, but streamed as plain text (no JSON
-    wrapper, so deltas render directly). For the streamed /draft tap. Yields
-    nothing when no key is set -- the caller falls back to compose_followup."""
-    ctx = build_context(db, user_id, contact)
+def stream_from_context(ctx: dict, reason: str, channel: str = "email"):
+    """The pure-LLM half of streamed drafting: yield body tokens from a prebuilt
+    context dict (no DB), so the agent can build all contexts serially then fan
+    out token streams across threads. Mirrors compose_from_context, streamed."""
     system = _FOLLOWUP_STREAM_SYSTEM + (ctx.get("voice_block") or "")
     user = (
         f"Follow up with {ctx.get('name') or 'there'}.\n"
@@ -127,6 +124,16 @@ def compose_stream(db, user_id: int, contact, *, reason: str,
         f"Channel: {channel}\n"
     )
     yield from stream_text(system, user, max_tokens=500)
+
+
+def compose_stream(db, user_id: int, contact, *, reason: str,
+                   channel: str = "email"):
+    """Yield the follow-up body token-by-token (live 'typing'). Same voice + real
+    prior-thread context as compose_followup, but streamed as plain text (no JSON
+    wrapper, so deltas render directly). For the streamed /draft tap. Yields
+    nothing when no key is set -- the caller falls back to compose_followup."""
+    yield from stream_from_context(build_context(db, user_id, contact),
+                                   reason, channel)
 
 
 def compose_followup(db, user_id: int, contact, *, reason: str,
