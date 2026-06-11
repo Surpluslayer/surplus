@@ -60,7 +60,19 @@ async function request(path, opts = {}) {
     }
     // some endpoints return empty body
     const ct = res.headers.get("content-type") || "";
-    return ct.includes("application/json") ? res.json() : null;
+    if (!ct.includes("application/json")) return null;
+    try {
+      return await res.json();
+    } catch {
+      // 200 + JSON content-type but an unparseable body : the connection was
+      // cut mid-response (container restart during a deploy). Safari surfaces
+      // this as the cryptic "The string did not match the expected pattern."
+      // Treat it as transient — reads retry, writes get a friendly message.
+      lastErr = new Error("The connection dropped mid-response — try again.");
+      lastErr.status = 0;
+      lastErr.body = null;
+      continue;
+    }
   }
   throw lastErr;
 }
