@@ -152,12 +152,24 @@ def _real(val: Optional[str]) -> str:
 def _book_from_spine(db: Session, user: models.User) -> list[dict]:
     """Map the real Contact spine into the book shape. Empty when the user has
     no contacts — caller falls back to the demo book."""
+    t = time.monotonic()
     contacts = rel_agent.list_contacts(db, user.id)
+    t_list = time.monotonic() - t
     if not contacts:
         return []
+    t = time.monotonic()
     inter_index = rel_agent.prefetch_interactions_by_prospect(db, contacts)
+    t_inter = time.monotonic() - t
+    t = time.monotonic()
     update_index = rel_agent.prefetch_activity_updates_by_contact(db, contacts)
-    return _book_from_spine_contacts(db, user, contacts, inter_index, update_index)
+    t_upd = time.monotonic() - t
+    t = time.monotonic()
+    out = _book_from_spine_contacts(db, user, contacts, inter_index, update_index)
+    t_loop = time.monotonic() - t
+    _trace(f"_book_from_spine {len(contacts)} contacts: list={t_list:.2f}s "
+           f"prefetch_inter={t_inter:.2f}s prefetch_upd={t_upd:.2f}s "
+           f"summary_loop={t_loop:.2f}s")
+    return out
 
 
 def _find_contact_fast(db: Session, user: models.User,
