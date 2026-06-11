@@ -56,6 +56,15 @@ def _btrace(msg: str) -> None:
 _BOOK_BG_SEM = threading.BoundedSemaphore(
     max(1, int(os.environ.get("BOOK_LLM_CONCURRENCY", "6"))))
 
+# Whether /today LLM-scores every contact's relationship health in the
+# background. OFF by default: it fired ~2N Anthropic calls per cold load (N
+# contacts x health+update), which saturated the rate limit and starved the
+# FOREGROUND /ask + /draft (a "follow up to everyone" ask was seen taking ~177s
+# of backoff). The deterministic heuristic produces the same status / needs-
+# outreach / priority instantly. Flip BOOK_LLM_ASSESS=1 to re-enable richer
+# LLM-written reasons once the rate-limit headroom is there.
+_BOOK_LLM_ASSESS = (os.environ.get("BOOK_LLM_ASSESS", "0") == "1")
+
 
 def _llm_json(system: str, user: str, *, max_tokens: int = 700) -> Optional[dict]:
     """Call Claude in JSON mode and parse the first JSON object out of the reply.
@@ -271,7 +280,10 @@ def assess(contact: dict) -> tuple[dict, Optional[dict]]:
         hit = _assess_cache.get(key)
         if hit and now - hit[0] < _ASSESS_TTL:
             return hit[1], hit[2]
-        if _anthropic_available() and key not in _assess_inflight:
+        # Only spawn the background LLM refresh when explicitly enabled; the
+        # default heuristic path makes /today storm-free (and keeps the rate
+        # limit free for the user-facing /ask + /draft).
+        if _BOOK_LLM_ASSESS and _anthropic_available() and key not in _assess_inflight:
             _assess_inflight.add(key)
             spawn = True
     if spawn:
@@ -279,9 +291,9 @@ def assess(contact: dict) -> tuple[dict, Optional[dict]]:
                          daemon=True).start()
     h = _score_health_heuristic(contact)
     u = _detect_update_heuristic(contact)
-    if not _anthropic_available():
-        # The heuristic IS the final verdict with no key — cache it so repeat
-        # loads skip even the recompute.
+    if not (_BOOK_LLM_ASSESS and _anthropic_available()):
+        # The heuristic IS the final verdict (no LLM refresh coming) — cache it
+        # so repeat loads skip even the recompute.
         with _assess_lock:
             _assess_cache[key] = (now, h, u)
     return h, u
