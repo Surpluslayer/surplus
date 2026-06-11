@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -850,6 +851,13 @@ _DRAFT_MAX_TOKENS = 1024
 _AGENT_CLIENT = None
 
 
+def _trace(msg: str) -> None:
+    """Lightweight stdout trace for the concurrent agent so a run's timing is
+    visible in Railway logs (grep `[rel-agent]`). No-op-cheap; flush so lines
+    appear live while a slow fan-out is still in flight."""
+    print(f"[rel-agent] {msg}", flush=True)
+
+
 def _agent_client():
     """Shared Anthropic client for the concurrent path's parallel draft calls.
 
@@ -1410,6 +1418,10 @@ def run_relationship_agent_concurrent(
             "warmth, or reasons to reconnect."
         )
 
+    t_run = time.monotonic()
+    _trace(f"run start: user={user_id} contacts={len(contacts)} "
+           f"instruction={steer!r} concurrency={concurrency} model={_AGENT_MODEL}")
+    t_triage = time.monotonic()
     try:
         triage_resp = cli.messages.create(
             model=_AGENT_MODEL,
@@ -1422,7 +1434,9 @@ def run_relationship_agent_concurrent(
     except Exception as exc:  # noqa: BLE001 : transport failure ends the run
         result.error = f"{type(exc).__name__}: {exc}"
         result.stop_reason = "error"
+        _trace(f"triage FAILED after {time.monotonic()-t_triage:.1f}s: {result.error}")
         return result
+    _trace(f"triage done in {time.monotonic()-t_triage:.1f}s")
 
     selections: list[dict] = []
     closing = ""
@@ -1454,9 +1468,12 @@ def run_relationship_agent_concurrent(
                       "angle": (sel.get("angle") or "").strip()})
 
     result.steps = 1  # the triage call
+    _trace(f"triage selected {len(clean)} of {len(contacts)} contacts to draft "
+           f"(cap MAX_DEEP_DIVES={MAX_DEEP_DIVES})")
     if not clean:
         result.summary = closing or "Everyone looks warm right now, nothing urgent to draft."
         result.stop_reason = "end_turn"
+        _trace(f"run done (nothing to draft) in {time.monotonic()-t_run:.1f}s")
         return result
 
     # ── Phase 1.5 : materialise context SEQUENTIALLY (DB session is not
@@ -1529,17 +1546,26 @@ def run_relationship_agent_concurrent(
             + json.dumps(ctx, default=str)
             + "\n</full_context_json>"
         )
-        resp = cli.messages.create(
-            model=_AGENT_MODEL,
-            max_tokens=_DRAFT_MAX_TOKENS,
-            # Cache the (identical-across-people) system block so the 2nd..Nth
-            # parallel draft read it from cache instead of reprocessing it.
-            system=[{"type": "text", "text": draft_system,
-                     "cache_control": {"type": "ephemeral"}}],
-            tools=_DRAFT_TOOLS,
-            tool_choice={"type": "any"},
-            messages=[{"role": "user", "content": prompt}],
-        )
+        t_draft = time.monotonic()
+        try:
+            resp = cli.messages.create(
+                model=_AGENT_MODEL,
+                max_tokens=_DRAFT_MAX_TOKENS,
+                # Cache the (identical-across-people) system block so the 2nd..Nth
+                # parallel draft read it from cache instead of reprocessing it.
+                system=[{"type": "text", "text": draft_system,
+                         "cache_control": {"type": "ephemeral"}}],
+                tools=_DRAFT_TOOLS,
+                tool_choice={"type": "any"},
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as exc:  # noqa: BLE001
+            _trace(f"draft cid={cid} ({name}) ERRORED after "
+                   f"{time.monotonic()-t_draft:.1f}s: {type(exc).__name__}: {exc}")
+            raise
+        fired = [_tu_name(tu) for tu in _tool_uses(resp)] or ["<none>"]
+        _trace(f"draft cid={cid} ({name}) done in {time.monotonic()-t_draft:.1f}s "
+               f"-> {','.join(fired)}")
         for tu in _tool_uses(resp):
             tname = _tu_name(tu)
             inp = _tu_input(tu)
@@ -1575,7 +1601,12 @@ def run_relationship_agent_concurrent(
         # produces no card; the rest of the batch still completes cleanly.
         await asyncio.gather(*[_bounded(j) for j in jobs], return_exceptions=True)
 
+    t_fan = time.monotonic()
     asyncio.run(_fan_out())
+    _trace(f"fan-out of {len(jobs)} drafts done in {time.monotonic()-t_fan:.1f}s "
+           f"({len(result.proposals)} proposals staged, "
+           f"{len(jobs)-len(result.proposals)} skipped/empty)")
+    _trace(f"run TOTAL {time.monotonic()-t_run:.1f}s")
 
     if _stopped():
         # Client disconnected mid-run : whatever staged before the stop is in

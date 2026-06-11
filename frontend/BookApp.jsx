@@ -685,7 +685,7 @@ function AskBar({ variant, onOpen, onDraft }) {
                     {p.reason && <div className="bk-ap-reason">{p.reason}</div>}
                     {p.draft && <div className="bk-ap-draft">"{p.draft}"</div>}
                   </div>
-                  <DraftLink onClick={() => onDraft({ name: p.name, trigger: p.reason || "catch up" })} />
+                  <DraftLink onClick={() => onDraft({ name: p.name, contact_id: p.contact_id, trigger: p.reason || "catch up", body: p.draft })} />
                 </div>
               ))}
             </div>
@@ -700,27 +700,65 @@ function AskBar({ variant, onOpen, onDraft }) {
 // ── Draft sheet (Draft → tap) ──────────────────────────────────────────────────
 
 function DraftSheet({ draft, onClose }) {
-  const [busy, setBusy] = useState(true);
+  const hasInline = !!(draft.body && draft.body.trim());
+  const [busy, setBusy] = useState(!hasInline);   // reuse the card's draft if present
   const [subject, setSubject] = useState("");
-  const [body, setBody] = useState("");
+  const [body, setBody] = useState(draft.body || "");
   const [err, setErr] = useState("");
   const [copied, setCopied] = useState(false);
+  const [working, setWorking] = useState("");      // "send" | "schedule" | ""
+  const [done, setDone] = useState("");            // success line
+  const [showSched, setShowSched] = useState(false);
+  const [sendAt, setSendAt] = useState("");
 
-  useEffect(() => {
-    let cancelled = false;
-    setBusy(true); setErr("");
+  // Send / Schedule are keyed on a real numeric contact id; demo-book slugs
+  // can't send, so we only offer Copy for those.
+  const canSend = !!draft.contact_id && /^\d+$/.test(String(draft.contact_id));
+
+  const generate = useCallback(() => {
+    setBusy(true); setErr(""); setDone("");
     api.bookDraft({ name: draft.name, contact_id: draft.contact_id,
                     trigger: draft.trigger, channel: "email" })
-      .then((r) => { if (!cancelled) { setSubject(r.subject || ""); setBody(r.body || ""); } })
-      .catch((e) => { if (!cancelled) setErr(e.message || "Couldn't draft"); })
-      .finally(() => { if (!cancelled) setBusy(false); });
-    return () => { cancelled = true; };
+      .then((r) => { setSubject(r.subject || ""); setBody(r.body || ""); })
+      .catch((e) => setErr(e.message || "Couldn't draft"))
+      .finally(() => setBusy(false));
+  }, [draft]);
+
+  useEffect(() => {
+    // Instant: the /ask card already composed this through the shared composer.
+    if (hasInline) { setBody(draft.body); setBusy(false); }
+    else generate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft]);
 
   const copy = async () => {
     const text = subject ? `Subject: ${subject}\n\n${body}` : body;
     try { await navigator.clipboard.writeText(text); setCopied(true);
           setTimeout(() => setCopied(false), 1600); } catch {}
+  };
+
+  const sendNow = async () => {
+    if (!canSend || working) return;
+    setWorking("send"); setErr(""); setDone("");
+    try {
+      const r = await api.sendContactFollowup(draft.contact_id, body, "linkedin");
+      setDone(r.status === "drafted" ? "Saved as draft (auto-send is off)" : "Sent");
+    } catch (e) { setErr(e.message || "Couldn't send"); }
+    finally { setWorking(""); }
+  };
+
+  const schedule = async () => {
+    if (!canSend || !sendAt || working) return;
+    setWorking("schedule"); setErr(""); setDone("");
+    try {
+      const iso = new Date(sendAt).toISOString();
+      const r = await api.scheduleContactFollowup(draft.contact_id, body, iso);
+      const when = new Date(r.send_at || iso).toLocaleString([],
+        { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      setDone(r.status === "sent" ? "Sent" : `Scheduled for ${when}`);
+      setShowSched(false);
+    } catch (e) { setErr(e.message || "Couldn't schedule"); }
+    finally { setWorking(""); }
   };
 
   return (
@@ -739,6 +777,13 @@ function DraftSheet({ draft, onClose }) {
           <div className="bk-loading"><Loader2 className="bk-spin" size={18} /> Writing in your voice…</div>
         ) : err ? (
           <div className="bk-err">{err}</div>
+        ) : done ? (
+          <>
+            <div className="bk-done"><CheckCircle2 size={16} /> {done}</div>
+            <div className="bk-sheet-actions">
+              <button className="bk-btn bk-btn--primary bk-btn--block" onClick={onClose}>Done</button>
+            </div>
+          </>
         ) : (
           <>
             {subject !== "" && (
@@ -747,11 +792,40 @@ function DraftSheet({ draft, onClose }) {
             )}
             <textarea className="bk-sheet-body" value={body}
                       onChange={(e) => setBody(e.target.value)} rows={6} />
-            <div className="bk-actions" style={{ marginTop: 14 }}>
-              <button className="bk-btn bk-btn--block" onClick={copy}>
-                {copied ? "Copied" : "Copy message"}
-              </button>
-              <button className="bk-btn bk-btn--primary bk-btn--block" onClick={onClose}>Looks good</button>
+
+            <div className="bk-sheet-minor">
+              <button className="bk-link-btn" onClick={copy}>{copied ? "Copied" : "Copy"}</button>
+              <button className="bk-link-btn" onClick={generate}>Rewrite</button>
+              {canSend && (
+                <button className="bk-link-btn" onClick={() => setShowSched((v) => !v)}>
+                  {showSched ? "Cancel schedule" : "Schedule for later"}
+                </button>
+              )}
+            </div>
+
+            {showSched && canSend && (
+              <div className="bk-sched-row">
+                <input type="datetime-local" value={sendAt}
+                       onChange={(e) => setSendAt(e.target.value)} />
+                <button className="bk-btn bk-btn--primary" disabled={!sendAt || !!working}
+                        onClick={schedule}>
+                  {working === "schedule" ? "…" : "Schedule"}
+                </button>
+              </div>
+            )}
+
+            <div className="bk-sheet-actions">
+              {canSend ? (
+                <button className="bk-btn bk-btn--primary bk-btn--block"
+                        disabled={!!working} onClick={sendNow}>
+                  <Send size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
+                  {working === "send" ? "Sending…" : "Send now"}
+                </button>
+              ) : (
+                <button className="bk-btn bk-btn--block" onClick={copy}>
+                  {copied ? "Copied" : "Copy message"}
+                </button>
+              )}
             </div>
           </>
         )}
@@ -1028,6 +1102,25 @@ const BOOK_CSS = `
 .bk-grabber span{width:40px; height:4px; border-radius:999px; background:var(--line-2);}
 .bk-sheet-title{display:flex; align-items:center; justify-content:space-between; padding:8px 18px 12px;}
 .bk-sheet-x{background:none; border:0; color:var(--faint); cursor:pointer; padding:2px;}
+.bk-sheet-subject{display:block; box-sizing:border-box; width:calc(100% - 36px); margin:0 18px 8px;
+  padding:10px 12px; border:.5px solid var(--line-2); border-radius:var(--r-md);
+  font-family:var(--font-ui); font-size:14px; font-weight:500; color:var(--ink); background:var(--surface);}
+.bk-sheet-body{display:block; box-sizing:border-box; width:calc(100% - 36px); margin:0 18px;
+  padding:13px 14px; border:.5px solid var(--line-2); border-radius:var(--r-md);
+  font-family:var(--font-ui); font-size:14px; line-height:1.55; color:var(--ink);
+  background:var(--surface); resize:vertical; min-height:132px;}
+.bk-sheet-body:focus, .bk-sheet-subject:focus{outline:none; border-color:var(--accent);}
+.bk-sheet-minor{display:flex; gap:4px; justify-content:center; margin:10px 18px 2px; flex-wrap:wrap;}
+.bk-link-btn{background:none; border:0; color:var(--muted); font-size:13px; cursor:pointer;
+  padding:6px 10px; border-radius:var(--r-md); font-family:var(--font-ui);}
+.bk-link-btn:hover{background:var(--surface); color:var(--ink);}
+.bk-sched-row{display:flex; gap:8px; margin:6px 18px 2px;}
+.bk-sched-row input{flex:1; min-width:0; box-sizing:border-box; padding:9px 11px;
+  border:.5px solid var(--line-2); border-radius:var(--r-md); font-family:var(--font-ui);
+  font-size:13px; color:var(--ink); background:var(--surface);}
+.bk-sheet-actions{margin:12px 18px 4px; display:flex; flex-direction:column; gap:8px;}
+.bk-done{display:flex; align-items:center; justify-content:center; gap:7px; margin:22px 18px 6px;
+  color:var(--accent); font-size:15px; font-weight:500;}
 .bk-event{margin:0 18px 14px; background:var(--surface); border:.5px solid var(--line);
   border-radius:var(--r-lg); padding:12px 14px;}
 .bk-event-current{display:flex; align-items:center; justify-content:space-between; gap:10px;
