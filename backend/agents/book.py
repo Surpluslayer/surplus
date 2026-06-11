@@ -39,6 +39,24 @@ def _anthropic_available() -> bool:
     return bool((os.environ.get("ANTHROPIC_API_KEY") or "").strip())
 
 
+def _btrace(msg: str) -> None:
+    """Lightweight stdout trace for the book agent so a run's LLM timing is
+    visible in Railway logs (grep `[book]`). Flush so lines appear live while a
+    slow background fan-out is still in flight."""
+    print(f"[book] {msg}", flush=True)
+
+
+# Caps how many BACKGROUND book LLM calls (assess + predraft) run at once. A
+# cold /today otherwise fires ~2N calls (N contacts x health+update) through one
+# Anthropic client simultaneously, saturating the HTTP connection pool: each
+# call's latency climbs as they queue, and a foreground /ask/draft then has to
+# fight through the jam. A bounded gate runs the background work in calm waves so
+# the pool stays free for foreground requests (which DON'T take this gate, so
+# they keep priority). Tune live via BOOK_LLM_CONCURRENCY without a redeploy.
+_BOOK_BG_SEM = threading.BoundedSemaphore(
+    max(1, int(os.environ.get("BOOK_LLM_CONCURRENCY", "6"))))
+
+
 def _llm_json(system: str, user: str, *, max_tokens: int = 700) -> Optional[dict]:
     """Call Claude in JSON mode and parse the first JSON object out of the reply.
 
@@ -46,6 +64,10 @@ def _llm_json(system: str, user: str, *, max_tokens: int = 700) -> Optional[dict
     every caller can fall back to its deterministic path. Never raises."""
     if not _anthropic_available():
         return None
+    # A short label from the system prompt's first words, so the trace can tell
+    # health/update/ask/draft calls apart without threading a label param.
+    label = " ".join(system.split()[:4])[:32]
+    t0 = time.monotonic()
     try:
         from . import llm  # reuse the configured client + model constant
         resp = llm._client().messages.create(
@@ -56,12 +78,15 @@ def _llm_json(system: str, user: str, *, max_tokens: int = 700) -> Optional[dict
         )
         text = "".join(getattr(b, "text", "") for b in resp.content
                        if getattr(b, "type", "") == "text").strip()
+        _btrace(f"llm ok  in {time.monotonic()-t0:.1f}s [{label}…]")
         # Be forgiving: the model occasionally wraps JSON in prose/fences.
         start, end = text.find("{"), text.rfind("}")
         if start == -1 or end == -1 or end < start:
             return None
         return json.loads(text[start:end + 1])
-    except Exception:  # noqa: BLE001 : LLM is best-effort, fall back silently
+    except Exception as exc:  # noqa: BLE001 : LLM is best-effort, fall back silently
+        _btrace(f"llm ERR in {time.monotonic()-t0:.1f}s [{label}…]: "
+                f"{type(exc).__name__}: {exc}")
         return None
 
 
@@ -223,8 +248,11 @@ def _assess_key(contact: dict) -> str:
 
 def _assess_llm(contact: dict, key: str) -> None:
     try:
-        h = score_health(contact)
-        u = detect_update(contact)
+        # Background work: throttle through the shared gate so a cold /today's
+        # fan-out can't flood the connection pool and starve foreground calls.
+        with _BOOK_BG_SEM:
+            h = score_health(contact)
+            u = detect_update(contact)
         with _assess_lock:
             _assess_cache[key] = (time.time(), h, u)
     finally:
@@ -298,9 +326,14 @@ def draft_message_cached(contact: dict, trigger: str, *, channel: str = "email",
     with _draft_lock:
         hit = _draft_cache.get(key)
         if hit and now - hit[0] < _ASSESS_TTL:
+            _btrace(f"draft CACHE HIT to={contact.get('name')!r} "
+                    f"channel={channel} (0.0s)")
             return hit[1]
+    t0 = time.monotonic()
     msg = draft_message(contact, trigger, channel=channel,
                         user_name=user_name, user_role=user_role)
+    _btrace(f"draft FRESH to={contact.get('name')!r} channel={channel} "
+            f"in {time.monotonic()-t0:.2f}s")
     with _draft_lock:
         _draft_cache[key] = (now, msg)
     return msg
@@ -324,7 +357,10 @@ def predraft(contacts_with_triggers: list[tuple[dict, str]],
 
     def _run(c, trig, key):
         try:
-            draft_message_cached(c, trig, user_name=user_name, user_role=user_role)
+            # Same background gate as assess: predraft warming must not flood
+            # the pool and slow the foreground request that triggered it.
+            with _BOOK_BG_SEM:
+                draft_message_cached(c, trig, user_name=user_name, user_role=user_role)
         finally:
             with _draft_lock:
                 _draft_inflight.discard(key)
@@ -402,16 +438,42 @@ _ASK_SYSTEM = (
 )
 
 
+def _ask_payload(book: list[dict]) -> list[dict]:
+    """Slim each contact to the fields the ask model reasons over (who's cooling /
+    due / worth a touch). Smaller prompt -> the SELECTION call stays fast; the
+    actual drafts are composed afterward by the shared composer, per person."""
+    slim = []
+    for c in book:
+        sig = c.get("raw_signals")
+        slim.append({
+            "id": c.get("id"), "name": c.get("name"), "firm": c.get("firm"),
+            "title": c.get("title"), "tier": c.get("tier"),
+            "days_since": c.get("days_since"), "stage": c.get("stage"),
+            "review_due": c.get("review_due"),
+            "signal": (sig.get("headline") if isinstance(sig, dict) else None),
+            "next_step": c.get("interaction_history") or None,
+        })
+    return slim
+
+
 def ask_agent(book: list[dict], query: str) -> dict:
-    """The freeform ask bar + chip queries. {answer, people}."""
+    """The freeform ask bar + chip queries. {answer, people}. SELECTION ONLY:
+    it picks who + why and returns draft=null; the caller (routes/book.py) then
+    drafts each selected person through the shared composer (voice + their real
+    thread + dash scrub). Keeping drafting out of this call keeps it fast and
+    avoids the model inventing generic, em-dash-laden messages over a big book."""
     user = (
-        "The user's book (scored contacts with history):\n"
-        + json.dumps(book, default=str)
+        "The user's book (scored contacts):\n"
+        + json.dumps(_ask_payload(book), default=str)
         + f"\n\nUser's question: {query}\n"
+        + "\nSELECT who to act on and why. Return draft:null for every person "
+          "(messages are drafted separately) and keep each reason under 10 words."
     )
-    out = _llm_json(_ASK_SYSTEM, user, max_tokens=900)
+    out = _llm_json(_ASK_SYSTEM, user, max_tokens=1200)
     if out and "answer" in out:
         out.setdefault("people", [])
+        for p in out["people"]:
+            p["draft"] = None  # enforce selection-only; route fills real drafts
         return out
     return _ask_agent_heuristic(book, query)
 
@@ -447,6 +509,12 @@ def _ask_agent_heuristic(book: list[dict], query: str) -> dict:
 def build_today(book: list[dict]) -> dict:
     """Run detection + scoring across the whole book and assemble the Today
     feed: time-ordered Updates and priority-ranked Needs-outreach."""
+    with _assess_lock:
+        _cold = sum(1 for c in book
+                    if _assess_key(c) not in _assess_cache
+                    and _assess_key(c) not in _assess_inflight)
+    _btrace(f"build_today: {len(book)} contacts, ~{_cold} cold -> spawning "
+            f"~{_cold * 2} background LLM calls (UNBOUNDED)")
     assessed = [(c, *assess(c)) for c in book]
 
     updates = []
