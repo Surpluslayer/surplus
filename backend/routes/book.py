@@ -11,6 +11,7 @@ otherwise. Wiring the demo book to live Contacts is the next slice.
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -23,6 +24,10 @@ from ..agents import book as book_agent
 from ..agents import relationships as rel_agent
 from ..auth import current_user
 from ..db import get_db
+
+# Reuse the agent's stdout tracer so route- and agent-level [book] lines
+# interleave in one Railway stream (grep `[book]`).
+_trace = book_agent._btrace
 
 router = APIRouter(prefix="/api/book", tags=["book"])
 
@@ -226,8 +231,13 @@ def _book_from_spine_contacts(db, user, contacts, inter_index, update_index):
 def _load_book(db: Session, user: models.User) -> list[dict]:
     """The caller's real book when the spine has people in it, else the demo
     roster (so a brand-new account still sees a working surface)."""
+    t0 = time.monotonic()
     book = _book_from_spine(db, user)
-    return book if book else _demo_book()
+    src = "spine" if book else "demo"
+    book = book if book else _demo_book()
+    _trace(f"load_book user={user.id} -> {len(book)} contacts ({src}) "
+           f"in {time.monotonic()-t0:.2f}s")
+    return book
 
 
 def _advisor_identity(user: models.User) -> tuple[str, str]:
@@ -265,6 +275,7 @@ def today(db: Session = Depends(get_db),
           user: models.User = Depends(current_user)):
     """The cached-shape Today feed : time-ordered Updates + priority-ranked
     Needs-outreach. Built by running detection + scoring across the book."""
+    t0 = time.monotonic()
     book = _load_book(db, user)
     feed = book_agent.build_today(book)
     name, role = _advisor_identity(user)
@@ -276,6 +287,9 @@ def today(db: Session = Depends(get_db),
              for r in feed["needs_outreach"] + feed["updates"]
              if r.get("contact_id") in by_id and (r.get("can_draft") is not False)]
     book_agent.predraft(pairs, user_name=name, user_role=role)
+    _trace(f"GET /today user={user.id}: {len(feed['updates'])} updates, "
+           f"{len(feed['needs_outreach'])} needs-outreach, predraft {len(pairs)} "
+           f"in {time.monotonic()-t0:.2f}s")
     return feed
 
 
@@ -284,6 +298,7 @@ def refresh(db: Session = Depends(get_db),
             user: models.User = Depends(current_user)):
     """Re-run the batch over the book. Same shape as /today; busts the
     assessment cache so the next loads pick up fresh LLM verdicts."""
+    _trace(f"POST /refresh user={user.id}: busting assessment+draft caches")
     book_agent.invalidate_assessments()
     return today(db, user)
 
@@ -301,9 +316,13 @@ def draft(body: DraftIn, db: Session = Depends(get_db),
         contact = {"name": body.name or "there", "title": "", "firm": "",
                    "interaction_history": ""}
     name, role = _advisor_identity(user)
+    t0 = time.monotonic()
     msg = book_agent.draft_message_cached(
         contact, body.trigger, channel=body.channel,
         user_name=name, user_role=role)
+    _trace(f"POST /draft user={user.id} to={contact.get('name')!r} "
+           f"channel={body.channel} trigger={body.trigger!r} "
+           f"in {time.monotonic()-t0:.2f}s")
     return {"channel": body.channel, **msg}
 
 
@@ -314,7 +333,11 @@ def ask(body: AskIn, db: Session = Depends(get_db),
     q = (body.query or "").strip()
     if not q:
         raise HTTPException(422, "query is required")
-    return book_agent.ask_agent(_load_book(db, user), q)
+    t0 = time.monotonic()
+    res = book_agent.ask_agent(_load_book(db, user), q)
+    _trace(f"POST /ask user={user.id} q={q!r} -> {len(res.get('people') or [])} "
+           f"people in {time.monotonic()-t0:.2f}s")
+    return res
 
 
 @router.get("/relationship/{contact_id}")
@@ -323,10 +346,16 @@ def relationship(contact_id: str, db: Session = Depends(get_db),
     """The relationship detail screen : health, the plain-language 'why', the
     relationship value, and a synthesized timeline. The drafted message is
     fetched separately via /draft so it can be refined independently."""
+    t0 = time.monotonic()
     # Try to look up the contact directly by DB id first (avoids rebuilding the
     # entire book just to find one person).
-    contact = _find_contact_fast(db, user, contact_id) or \
-              _find_contact(_load_book(db, user), contact_id=contact_id, name=None)
+    fast = _find_contact_fast(db, user, contact_id)
+    contact = fast or _find_contact(_load_book(db, user), contact_id=contact_id, name=None)
     if contact is None:
+        _trace(f"GET /relationship/{contact_id} user={user.id}: NOT FOUND "
+               f"in {time.monotonic()-t0:.2f}s")
         raise HTTPException(404, "contact not found")
-    return book_agent.relationship_detail(contact)
+    detail = book_agent.relationship_detail(contact)
+    _trace(f"GET /relationship/{contact_id} user={user.id} "
+           f"({'fast' if fast else 'full-book'}) in {time.monotonic()-t0:.2f}s")
+    return detail

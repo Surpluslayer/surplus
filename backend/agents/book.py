@@ -433,46 +433,16 @@ _ASK_SYSTEM = (
 )
 
 
-def _ask_payload(book: list[dict]) -> list[dict]:
-    """Slim each contact down to the fields the ask model actually reasons over
-    (who's cooling / due / worth a touch). Dropping the heavier blobs keeps the
-    prompt small so the call stays fast even over an 80-contact book."""
-    slim = []
-    for c in book:
-        sig = c.get("raw_signals")
-        slim.append({
-            "id": c.get("id"),
-            "name": c.get("name"),
-            "firm": c.get("firm"),
-            "title": c.get("title"),
-            "tier": c.get("tier"),
-            "days_since": c.get("days_since"),
-            "stage": c.get("stage"),
-            "review_due": c.get("review_due"),
-            # one short signal string instead of the whole raw_signals dict
-            "signal": (sig.get("headline") if isinstance(sig, dict) else None),
-            "next_step": c.get("interaction_history") or None,
-        })
-    return slim
-
-
 def ask_agent(book: list[dict], query: str) -> dict:
     """The freeform ask bar + chip queries. {answer, people}."""
     user = (
-        "The user's book (scored contacts):\n"
-        + json.dumps(_ask_payload(book), default=str)
+        "The user's book (scored contacts with history):\n"
+        + json.dumps(book, default=str)
         + f"\n\nUser's question: {query}\n"
-        # Drafts are produced on demand (the per-person Draft button calls
-        # /draft), so a list/who answer must NOT pre-write messages: set
-        # draft=null for each person and keep each reason to <=8 words. Only
-        # write an inline draft when the question explicitly asks to draft/ping.
-        + "\nIf this is a list/who question, return draft:null for every person "
-          "and keep each reason under 8 words. Only inline a draft when the "
-          "question explicitly asks you to draft or ping someone."
     )
-    # 2500-token ceiling protects against truncation (a 900 cap JSONDecodeError'd
-    # mid-object); the concise-output instruction above keeps the actual reply
-    # small for list queries, so this is a safety bound, not the typical size.
+    # 2500-token ceiling: a 900 cap truncated the JSON mid-object on multi-person
+    # answers (JSONDecodeError -> silent heuristic fallback). Drafts ride inline
+    # in the response (the card shows them directly), so the answer needs room.
     out = _llm_json(_ASK_SYSTEM, user, max_tokens=2500)
     if out and "answer" in out:
         out.setdefault("people", [])
