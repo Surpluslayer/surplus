@@ -381,6 +381,10 @@ def ask(body: AskIn, db: Session = Depends(get_db),
     jobs, idxs = [], []
     for i, p in enumerate(people):
         bd = by_name.get((p.get("name") or "").strip().lower())
+        # Carry the real contact_id onto the card so its Draft sheet can Send /
+        # Schedule (those endpoints are contact-id keyed).
+        if bd and bd.get("id"):
+            p["contact_id"] = bd["id"]
         orm = orm_by_id.get(str(bd.get("id"))) if bd else None
         if orm is not None:
             jobs.append({"contact": orm,
