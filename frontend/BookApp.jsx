@@ -386,10 +386,16 @@ function DraftPanel({ detail }) {
   const [busy, setBusy] = useState(true);
   const [body, setBody] = useState("");
   const [err, setErr] = useState("");
-  const [sent, setSent] = useState(false);
+  const [working, setWorking] = useState("");      // "send" | "schedule" | ""
+  const [done, setDone] = useState("");
+  const [showSched, setShowSched] = useState(false);
+  const [sendAt, setSendAt] = useState("");
+
+  // Real Send/Schedule need a numeric contact id; demo-book slugs get Copy.
+  const canSend = !!detail.contact_id && /^\d+$/.test(String(detail.contact_id));
 
   const fetchDraft = useCallback(() => {
-    setBusy(true); setErr(""); setSent(false);
+    setBusy(true); setErr(""); setDone("");
     api.bookDraft({ contact_id: detail.contact_id, name: detail.name,
                     trigger: detail.reason || "catching up", channel: "email" })
       .then((r) => setBody(r.body || ""))
@@ -398,9 +404,31 @@ function DraftPanel({ detail }) {
   }, [detail]);
   useEffect(() => { fetchDraft(); }, [fetchDraft]);
 
-  const send = async () => {
-    try { await navigator.clipboard.writeText(body); setSent(true);
-          setTimeout(() => setSent(false), 1800); } catch {}
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(body); setDone("Copied");
+          setTimeout(() => setDone(""), 1600); } catch {}
+  };
+  const sendNow = async () => {
+    if (!canSend || working) return;
+    setWorking("send"); setErr(""); setDone("");
+    try {
+      const r = await api.sendContactFollowup(detail.contact_id, body, "linkedin");
+      setDone(r.status === "drafted" ? "Saved as draft (auto-send is off)" : "Sent");
+    } catch (e) { setErr(e.message || "Couldn't send"); }
+    finally { setWorking(""); }
+  };
+  const schedule = async () => {
+    if (!canSend || !sendAt || working) return;
+    setWorking("schedule"); setErr(""); setDone("");
+    try {
+      const iso = new Date(sendAt).toISOString();
+      const r = await api.scheduleContactFollowup(detail.contact_id, body, iso);
+      const when = new Date(r.send_at || iso).toLocaleString([],
+        { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      setDone(r.status === "sent" ? "Sent" : `Scheduled for ${when}`);
+      setShowSched(false);
+    } catch (e) { setErr(e.message || "Couldn't schedule"); }
+    finally { setWorking(""); }
   };
 
   return (
@@ -414,12 +442,33 @@ function DraftPanel({ detail }) {
         <>
           <textarea className="bk-quote-edit" value={body}
                     onChange={(e) => setBody(e.target.value)} rows={6} />
+          {done && <div className="bk-done bk-done--tight"><CheckCircle2 size={15} /> {done}</div>}
+          {showSched && canSend && (
+            <div className="bk-sched-row">
+              <input type="datetime-local" value={sendAt}
+                     onChange={(e) => setSendAt(e.target.value)} />
+              <button className="bk-btn bk-btn--primary" disabled={!sendAt || !!working}
+                      onClick={schedule}>{working === "schedule" ? "…" : "Schedule"}</button>
+            </div>
+          )}
           <div className="bk-actions">
-            <button className="bk-btn bk-btn--primary" onClick={send}>
-              <Send size={13} style={{ marginRight: 5, verticalAlign: -1 }} />{sent ? "Copied" : "Send"}
-            </button>
+            {canSend ? (
+              <button className="bk-btn bk-btn--primary" disabled={!!working} onClick={sendNow}>
+                <Send size={13} style={{ marginRight: 5, verticalAlign: -1 }} />
+                {working === "send" ? "Sending…" : "Send"}
+              </button>
+            ) : (
+              <button className="bk-btn bk-btn--primary" onClick={copy}>
+                <Send size={13} style={{ marginRight: 5, verticalAlign: -1 }} />
+                {done === "Copied" ? "Copied" : "Copy"}
+              </button>
+            )}
+            {canSend && (
+              <button className="bk-btn" onClick={() => setShowSched((v) => !v)}>
+                {showSched ? "Cancel" : "Schedule"}
+              </button>
+            )}
             <button className="bk-btn" onClick={fetchDraft}>Refine</button>
-            <button className="bk-btn" onClick={() => {}}>Snooze</button>
           </div>
         </>
       )}
@@ -1132,6 +1181,7 @@ const BOOK_CSS = `
 .bk-sheet-actions{margin:12px 18px 4px; display:flex; flex-direction:column; gap:8px;}
 .bk-done{display:flex; align-items:center; justify-content:center; gap:7px; margin:22px 18px 6px;
   color:var(--accent); font-size:15px; font-weight:500;}
+.bk-done--tight{justify-content:flex-start; margin:8px 0 2px; font-size:13px;}
 .bk-event{margin:0 18px 14px; background:var(--surface); border:.5px solid var(--line);
   border-radius:var(--r-lg); padding:12px 14px;}
 .bk-event-current{display:flex; align-items:center; justify-content:space-between; gap:10px;
