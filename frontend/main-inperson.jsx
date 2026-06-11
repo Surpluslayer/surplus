@@ -7,8 +7,10 @@ import ReactDOM from "react-dom/client";
 import BookApp from "./BookApp.jsx";
 import InPersonApp from "./InPersonApp.jsx";
 import { initAnalytics } from "./lib/analytics.js";
+import { ErrorBoundary, installPreloadRecovery } from "./lib/resilience.jsx";
 
 initAnalytics();
+installPreloadRecovery();
 
 // The event hosts now serve the BookApp surface (Today · Add · Book) — the
 // capture flow lives in its Add tab. The legacy in-person surface stays
@@ -25,6 +27,8 @@ const Root = wantsLegacy() ? InPersonApp : BookApp;
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <Root />
+    <ErrorBoundary>
+      <Root />
+    </ErrorBoundary>
   </React.StrictMode>
 );
