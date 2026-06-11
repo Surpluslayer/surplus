@@ -2,6 +2,9 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import { initAnalytics } from "./lib/analytics.js";
+import { ErrorBoundary, installPreloadRecovery } from "./lib/resilience.jsx";
+
+installPreloadRecovery();
 
 // Phone-first in-person surface lives at /inperson (or ?surface=inperson). It's
 // a separate root from the desktop pipeline App : same origin, same session
@@ -77,7 +80,22 @@ const load = isBookSurface()
 load().then(({ default: Root }) => {
   ReactDOM.createRoot(document.getElementById("root")).render(
     <React.StrictMode>
-      <Root />
+      <ErrorBoundary>
+        <Root />
+      </ErrorBoundary>
     </React.StrictMode>
   );
+}).catch(() => {
+  // Chunk import failed (a deploy replaced the hashed files under us) and the
+  // one-shot reload in installPreloadRecovery already ran : leave a usable
+  // fallback instead of a silently blank page.
+  const el = document.getElementById("root");
+  if (el) {
+    el.innerHTML =
+      '<div style="min-height:100vh;display:flex;align-items:center;' +
+      'justify-content:center;font-family:Inter,system-ui,sans-serif">' +
+      '<button onclick="window.location.reload()" style="font-size:15px;' +
+      'padding:10px 22px;border-radius:999px;border:0.5px solid #d6dae1;' +
+      'background:#14171c;color:#fff;cursor:pointer">Reload</button></div>';
+  }
 });

@@ -7,31 +7,62 @@
 // Every call throws on non-2xx so the caller can use try/catch + render
 // errors normally.
 
+// Statuses worth one quiet retry on idempotent reads: gateway hiccups during a
+// deploy (502/503/504) and edge timeouts (Cloudflare 524). Anything else is a
+// real answer and surfaces immediately.
+const TRANSIENT = new Set([502, 503, 504, 524]);
+
+function _friendly(status, text) {
+  // Never echo a raw error body at the user : gateway/edge failures ship whole
+  // HTML pages (Cloudflare's 524 template) that are noise in an error chip.
+  const isHtml = /^\s*</.test(text || "");
+  if (TRANSIENT.has(status)) return "The server took too long — try again in a moment.";
+  if (isHtml) return `Request failed (${status}).`;
+  return `${status} : ${(text || "").slice(0, 240)}`;
+}
+
 async function request(path, opts = {}) {
-  const res = await fetch(path, {
-    // include cookies on every call : the surplus_session cookie carries
-    // the signed-in user. "same-origin" works in prod (FastAPI serves the
-    // SPA + API at one origin) and in dev (Vite proxies /api → :8000).
-    credentials: "same-origin",
-    headers: { "content-type": "application/json", ...(opts.headers || {}) },
-    ...opts,
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    const err = new Error(`${res.status} ${res.statusText} : ${text.slice(0, 240)}`);
-    // Surface the status so callers can branch on 404 (event wiped by a
-    // backend redeploy) vs 409 (precondition not met) vs 5xx (server error)
-    // without parsing the message string.
-    err.status = res.status;
-    // 402 paywall responses ship a structured body { code, message } the
-    // SPA branches on (payment_required vs linkedin_send_locked). Try
-    // parsing JSON and attach to the error; non-JSON bodies leave .body null.
-    try { err.body = JSON.parse(text); } catch { err.body = null; }
-    throw err;
+  const method = (opts.method || "GET").toUpperCase();
+  const tries = method === "GET" ? 2 : 1; // reads retry once; writes never auto-repeat
+  let lastErr = null;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 1500));
+    let res;
+    try {
+      res = await fetch(path, {
+        // include cookies on every call : the surplus_session cookie carries
+        // the signed-in user. "same-origin" works in prod (FastAPI serves the
+        // SPA + API at one origin) and in dev (Vite proxies /api → :8000).
+        credentials: "same-origin",
+        headers: { "content-type": "application/json", ...(opts.headers || {}) },
+        ...opts,
+      });
+    } catch (e) {
+      // Network drop / deploy blip : retriable for reads, friendly either way.
+      lastErr = new Error("Couldn't reach the server — check your connection.");
+      lastErr.status = 0;
+      lastErr.body = null;
+      continue;
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      const err = new Error(_friendly(res.status, text));
+      // Surface the status so callers can branch on 404 (event wiped by a
+      // backend redeploy) vs 409 (precondition not met) vs 5xx (server error)
+      // without parsing the message string.
+      err.status = res.status;
+      // 402 paywall responses ship a structured body { code, message } the
+      // SPA branches on (payment_required vs linkedin_send_locked). Try
+      // parsing JSON and attach to the error; non-JSON bodies leave .body null.
+      try { err.body = JSON.parse(text); } catch { err.body = null; }
+      if (TRANSIENT.has(res.status)) { lastErr = err; continue; }
+      throw err;
+    }
+    // some endpoints return empty body
+    const ct = res.headers.get("content-type") || "";
+    return ct.includes("application/json") ? res.json() : null;
   }
-  // some endpoints return empty body
-  const ct = res.headers.get("content-type") || "";
-  return ct.includes("application/json") ? res.json() : null;
+  throw lastErr;
 }
 
 // Start an async job and poll it to completion, resolving to the SAME shape the
