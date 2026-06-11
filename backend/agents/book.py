@@ -39,6 +39,13 @@ def _anthropic_available() -> bool:
     return bool((os.environ.get("ANTHROPIC_API_KEY") or "").strip())
 
 
+def _btrace(msg: str) -> None:
+    """Lightweight stdout trace for the book agent so a run's LLM timing is
+    visible in Railway logs (grep `[book]`). Flush so lines appear live while a
+    slow background fan-out is still in flight."""
+    print(f"[book] {msg}", flush=True)
+
+
 def _llm_json(system: str, user: str, *, max_tokens: int = 700) -> Optional[dict]:
     """Call Claude in JSON mode and parse the first JSON object out of the reply.
 
@@ -46,6 +53,10 @@ def _llm_json(system: str, user: str, *, max_tokens: int = 700) -> Optional[dict
     every caller can fall back to its deterministic path. Never raises."""
     if not _anthropic_available():
         return None
+    # A short label from the system prompt's first words, so the trace can tell
+    # health/update/ask/draft calls apart without threading a label param.
+    label = " ".join(system.split()[:4])[:32]
+    t0 = time.monotonic()
     try:
         from . import llm  # reuse the configured client + model constant
         resp = llm._client().messages.create(
@@ -56,12 +67,15 @@ def _llm_json(system: str, user: str, *, max_tokens: int = 700) -> Optional[dict
         )
         text = "".join(getattr(b, "text", "") for b in resp.content
                        if getattr(b, "type", "") == "text").strip()
+        _btrace(f"llm ok  in {time.monotonic()-t0:.1f}s [{label}…]")
         # Be forgiving: the model occasionally wraps JSON in prose/fences.
         start, end = text.find("{"), text.rfind("}")
         if start == -1 or end == -1 or end < start:
             return None
         return json.loads(text[start:end + 1])
-    except Exception:  # noqa: BLE001 : LLM is best-effort, fall back silently
+    except Exception as exc:  # noqa: BLE001 : LLM is best-effort, fall back silently
+        _btrace(f"llm ERR in {time.monotonic()-t0:.1f}s [{label}…]: "
+                f"{type(exc).__name__}: {exc}")
         return None
 
 
@@ -447,6 +461,12 @@ def _ask_agent_heuristic(book: list[dict], query: str) -> dict:
 def build_today(book: list[dict]) -> dict:
     """Run detection + scoring across the whole book and assemble the Today
     feed: time-ordered Updates and priority-ranked Needs-outreach."""
+    with _assess_lock:
+        _cold = sum(1 for c in book
+                    if _assess_key(c) not in _assess_cache
+                    and _assess_key(c) not in _assess_inflight)
+    _btrace(f"build_today: {len(book)} contacts, ~{_cold} cold -> spawning "
+            f"~{_cold * 2} background LLM calls (UNBOUNDED)")
     assessed = [(c, *assess(c)) for c in book]
 
     updates = []
