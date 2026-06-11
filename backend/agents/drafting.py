@@ -18,17 +18,24 @@ LLM calls share the same client + [book] tracing.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import os
 from typing import Optional
 
 from . import relationships
-from .book import _llm_json  # generic Claude->JSON helper (shared client + trace)
+from .book import _btrace, _llm_json  # shared Claude->JSON helper + [book] trace
 from .relationship_agent import (
     _host_voice_examples,
     _strip_dashes,
     _thread_from_timeline,
     _voice_block,
 )
+
+# Foreground per-person draft fan-out width for compose_batch. Bounded so a
+# multi-person /ask can't open a flood of Anthropic connections at once (same
+# pool-saturation lesson as the book background gate). Tunable live.
+_DRAFT_CONCURRENCY = max(1, int(os.environ.get("DRAFT_CONCURRENCY", "6")))
 
 
 _FOLLOWUP_SYSTEM = (
@@ -46,26 +53,38 @@ _FOLLOWUP_SYSTEM = (
 )
 
 
-def compose_followup(db, user_id: int, contact, *, reason: str,
-                     channel: str = "email") -> Optional[dict]:
-    """Compose one voice-matched, thread-aware follow-up to `contact` (a Contact
-    ORM row owned by user_id). Returns {"subject", "body"} (subject is None off
-    email), or None on any failure so the caller can fall back to its heuristic.
+# ── two-phase split: DB read (serial, thread-unsafe) vs LLM call (concurrent) ──
+#
+# A multi-person /ask must draft many people, but a SQLAlchemy Session isn't
+# thread-safe, so we can't touch the DB from the fan-out threads. Split the work:
+#   build_context(db, ...)  -- all DB reads, on the request thread
+#   compose_from_context()  -- pure LLM call, safe to run concurrently
+# compose_followup() chains both for the single-draft (/draft tap) caller.
 
-    `reason` is why we're reaching out now (the trigger / next step). The prior
-    message thread and the host's voice are loaded here, so callers only need a
-    Contact and a reason -- the same contract everywhere."""
+
+def build_context(db, user_id: int, contact, voice_block: Optional[str] = None) -> dict:
+    """Gather everything the composer needs for `contact` via the DB (the host's
+    voice + this person's real prior-message thread). Runs on the request thread;
+    `voice_block` can be passed in pre-rendered to avoid re-loading it per person
+    in a batch (it's the same for every contact of one host)."""
     name = (getattr(contact, "name", None) or "there").strip() or "there"
     try:
         prior = _thread_from_timeline(relationships.contact_timeline(db, contact))
     except Exception:  # noqa: BLE001 : a timeline read failure must not break drafting
         prior = []
-    voice = _host_voice_examples(db, user_id)
-    system = _FOLLOWUP_SYSTEM + _voice_block(voice)
+    if voice_block is None:
+        voice_block = _voice_block(_host_voice_examples(db, user_id))
+    return {"name": name, "prior": prior, "voice_block": voice_block}
+
+
+def compose_from_context(ctx: dict, reason: str, channel: str = "email") -> Optional[dict]:
+    """The pure-LLM half: compose from a context dict (no DB), so it's safe to
+    fan out across threads. Returns {"subject", "body"} or None on failure."""
+    system = _FOLLOWUP_SYSTEM + (ctx.get("voice_block") or "")
     user = (
-        f"Follow up with {name}.\n"
+        f"Follow up with {ctx.get('name') or 'there'}.\n"
         f"Prior conversation (oldest first; [] means no prior messages):\n"
-        f"{json.dumps(prior, default=str)}\n"
+        f"{json.dumps(ctx.get('prior') or [], default=str)}\n"
         f"Reason to reach out now: {reason}\n"
         f"Channel: {channel}\n"
     )
@@ -76,3 +95,41 @@ def compose_followup(db, user_id: int, contact, *, reason: str,
     subject = out.get("subject")
     subject = _strip_dashes(subject) if (channel == "email" and subject) else None
     return {"subject": subject, "body": body}
+
+
+def compose_followup(db, user_id: int, contact, *, reason: str,
+                     channel: str = "email") -> Optional[dict]:
+    """One voice-matched, thread-aware follow-up to `contact` (a Contact ORM row).
+    Returns {"subject", "body"} or None on failure (caller falls back). Loads the
+    thread + voice, then composes -- the single-draft contract used by /draft."""
+    return compose_from_context(build_context(db, user_id, contact),
+                                reason, channel)
+
+
+def compose_batch(db, user_id: int, jobs: list[dict],
+                  *, concurrency: int = _DRAFT_CONCURRENCY) -> list[Optional[dict]]:
+    """Draft a follow-up for each job, returned in input order. Each job is
+    {"contact": <Contact ORM>, "reason": str, "channel"?: str}. DB context is
+    built SERIALLY here (session not thread-safe), then the LLM calls fan out
+    under a bounded thread pool. Used by /ask to draft every selected person
+    inline (voice + their real thread + dash scrub) without one-at-a-time waits."""
+    if not jobs:
+        return []
+    # Voice is per-host, identical across contacts: load once, reuse.
+    voice_block = _voice_block(_host_voice_examples(db, user_id))
+    ctxs = [build_context(db, user_id, j["contact"], voice_block) for j in jobs]
+    results: list[Optional[dict]] = [None] * len(jobs)
+
+    def _one(i: int) -> None:
+        results[i] = compose_from_context(
+            ctxs[i], jobs[i].get("reason") or "following up",
+            jobs[i].get("channel") or "email")
+
+    import time as _t
+    t0 = _t.monotonic()
+    with concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, concurrency)) as ex:
+        list(ex.map(_one, range(len(jobs))))
+    _btrace(f"compose_batch {len(jobs)} drafts (concurrency={concurrency}) "
+            f"in {_t.monotonic()-t0:.2f}s")
+    return results

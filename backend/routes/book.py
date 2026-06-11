@@ -370,11 +370,34 @@ def ask(body: AskIn, db: Session = Depends(get_db),
     if not q:
         raise HTTPException(422, "query is required")
     t0 = time.monotonic()
-    res = book_agent.ask_agent(_load_book(db, user), q)
+    book = _load_book(db, user)
+    res = book_agent.ask_agent(book, q)        # selection only: draft=null
     people = res.get("people") or []
+    # Backfill each selected person with a real voice + thread draft via the ONE
+    # shared composer. Resolve Contact ORMs ONCE (list_contacts is expensive),
+    # then fan the drafts out concurrently. Cards still show drafts inline.
+    orm_by_id = {str(c.id): c for c in rel_agent.list_contacts(db, user.id)}
+    by_name = {(c.get("name") or "").strip().lower(): c for c in book}
+    jobs, idxs = [], []
+    for i, p in enumerate(people):
+        bd = by_name.get((p.get("name") or "").strip().lower())
+        orm = orm_by_id.get(str(bd.get("id"))) if bd else None
+        if orm is not None:
+            jobs.append({"contact": orm,
+                         "reason": p.get("reason") or "following up",
+                         "channel": "email"})
+            idxs.append(i)
+    if jobs:
+        from ..agents import drafting
+        drafts = drafting.compose_batch(db, user.id, jobs)
+        for j, i in enumerate(idxs):
+            d = drafts[j]
+            if d and (d.get("body") or "").strip():
+                people[i]["draft"] = d["body"]
+    res["people"] = people
     drafted = sum(1 for p in people if (p.get("draft") or "").strip())
     _trace(f"POST /ask user={user.id} q={q!r} -> {len(people)} people "
-           f"({drafted} with inline drafts) in {time.monotonic()-t0:.2f}s")
+           f"({drafted} drafted via shared composer) in {time.monotonic()-t0:.2f}s")
     return res
 
 

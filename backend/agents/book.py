@@ -438,19 +438,42 @@ _ASK_SYSTEM = (
 )
 
 
+def _ask_payload(book: list[dict]) -> list[dict]:
+    """Slim each contact to the fields the ask model reasons over (who's cooling /
+    due / worth a touch). Smaller prompt -> the SELECTION call stays fast; the
+    actual drafts are composed afterward by the shared composer, per person."""
+    slim = []
+    for c in book:
+        sig = c.get("raw_signals")
+        slim.append({
+            "id": c.get("id"), "name": c.get("name"), "firm": c.get("firm"),
+            "title": c.get("title"), "tier": c.get("tier"),
+            "days_since": c.get("days_since"), "stage": c.get("stage"),
+            "review_due": c.get("review_due"),
+            "signal": (sig.get("headline") if isinstance(sig, dict) else None),
+            "next_step": c.get("interaction_history") or None,
+        })
+    return slim
+
+
 def ask_agent(book: list[dict], query: str) -> dict:
-    """The freeform ask bar + chip queries. {answer, people}."""
+    """The freeform ask bar + chip queries. {answer, people}. SELECTION ONLY:
+    it picks who + why and returns draft=null; the caller (routes/book.py) then
+    drafts each selected person through the shared composer (voice + their real
+    thread + dash scrub). Keeping drafting out of this call keeps it fast and
+    avoids the model inventing generic, em-dash-laden messages over a big book."""
     user = (
-        "The user's book (scored contacts with history):\n"
-        + json.dumps(book, default=str)
+        "The user's book (scored contacts):\n"
+        + json.dumps(_ask_payload(book), default=str)
         + f"\n\nUser's question: {query}\n"
+        + "\nSELECT who to act on and why. Return draft:null for every person "
+          "(messages are drafted separately) and keep each reason under 10 words."
     )
-    # 2500-token ceiling: a 900 cap truncated the JSON mid-object on multi-person
-    # answers (JSONDecodeError -> silent heuristic fallback). Drafts ride inline
-    # in the response (the card shows them directly), so the answer needs room.
-    out = _llm_json(_ASK_SYSTEM, user, max_tokens=2500)
+    out = _llm_json(_ASK_SYSTEM, user, max_tokens=1200)
     if out and "answer" in out:
         out.setdefault("people", [])
+        for p in out["people"]:
+            p["draft"] = None  # enforce selection-only; route fills real drafts
         return out
     return _ask_agent_heuristic(book, query)
 
