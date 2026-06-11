@@ -194,15 +194,20 @@ const FILTERS = [
 function BookView({ feed, err, onReload, onOpen, onDraft }) {
   const [filter, setFilter] = useState("all");
   const [expanded, setExpanded] = useState(false);
+  const [q, setQ] = useState("");
   const roster = feed?.roster || [];
 
+  const needle = q.trim().toLowerCase();
   const shown = roster.filter((r) => {
+    if (needle && ![r.name, r.title, r.firm, r.met_at]
+        .some((v) => (v || "").toLowerCase().includes(needle))) return false;
     if (filter === "starred") return r.vip;
     if (filter === "cooling") return r.status === "cooling" || r.status === "dormant";
     if (filter === "prospects") return r.is_prospect;
     return true;
   });
-  const cap = expanded ? shown.length : 6;
+  // A live search shows every hit; the capped view is for browsing.
+  const cap = (expanded || needle) ? shown.length : 6;
   const visible = shown.slice(0, cap);
   const more = shown.length - visible.length;
 
@@ -214,7 +219,18 @@ function BookView({ feed, err, onReload, onOpen, onDraft }) {
         </span>
       </header>
 
-      <AskBar variant="card" onOpen={onOpen} onDraft={onDraft} />
+      <div className="bk-ask-wrap">
+        <div className="bk-ask">
+          <Search size={17} className="bk-ask-spark" />
+          <input className="bk-ask-input" placeholder="Search your book…"
+                 value={q} onChange={(e) => setQ(e.target.value)} />
+          {q && (
+            <button className="bk-ask-go" onClick={() => setQ("")} aria-label="Clear">
+              <X size={14} />
+            </button>
+          )}
+        </div>
+      </div>
 
       <div className="bk-pills">
         {FILTERS.map((f) => (
