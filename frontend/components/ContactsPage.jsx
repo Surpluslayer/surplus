@@ -214,28 +214,28 @@ export default function ContactsPage() {
   // ── list view ──────────────────────────────────────────────────────
   return (
     <div style={{ maxWidth: 980, margin: "0 auto", fontFamily: FONT }}>
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 26, fontWeight: 800, color: C.ink,
-                      display: "flex", alignItems: "center", gap: 10 }}>
-          <Users size={24} /> Relationships
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 12, color: C.faint, marginBottom: 2 }}>
+          Everyone you've met across your events
         </div>
-        <div style={{ fontSize: 14, color: C.muted, marginTop: 4 }}>
-          Everyone you've met across your events — auto-populated as you scan,
-          connect, and message.
+        <div style={{ fontFamily: "'Newsreader',Georgia,serif", fontSize: 23,
+                      fontWeight: 400, color: C.ink }}>
+          Relationships
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 6, marginBottom: 20 }}>
+      <div style={{ display: "flex", gap: 7, marginBottom: 16 }}>
         {[["contacts", "Contacts", Users],
           ["integrations", "Integrations", Plug2]].map(([key, label, Icon]) => (
           <button key={key} onClick={() => setTab(key)}
-                  style={{ display: "inline-flex", alignItems: "center", gap: 7,
-                           background: tab === key ? C.chipBg : "transparent",
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6,
+                           background: tab === key ? C.chipBg : C.bg,
                            color: tab === key ? C.chipInk : C.muted,
-                           border: `1px solid ${tab === key ? "transparent" : C.line}`,
-                           borderRadius: 999, padding: "8px 15px", cursor: "pointer",
-                           fontSize: 13.5, fontWeight: 700, fontFamily: FONT }}>
-            <Icon size={15} /> {label}
+                           border: "none",
+                           borderRadius: 999, padding: "5px 12px", cursor: "pointer",
+                           fontSize: 12, fontWeight: tab === key ? 500 : 400,
+                           fontFamily: FONT }}>
+            <Icon size={13} /> {label}
           </button>
         ))}
       </div>
@@ -273,44 +273,58 @@ export default function ContactsPage() {
       )}
 
       {!detailLoading && list && list.length > 0 && (
-        <div style={{ display: "grid",
-                      gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
-                      gap: 12 }}>
-          {list.map((c) => (
-            <button key={c.contact_id} onClick={() => open(c.contact_id)}
-                    style={{ textAlign: "left", background: C.card,
-                             border: `1px solid ${C.line}`, borderRadius: 14,
-                             padding: "16px 18px", cursor: "pointer",
-                             transition: "border-color .12s, box-shadow .12s" }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.borderColor = C.accent;
-                      e.currentTarget.style.boxShadow =
-                        "0 4px 16px rgba(109,77,246,0.10)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.borderColor = C.line;
-                      e.currentTarget.style.boxShadow = "none";
-                    }}>
-              <div style={{ display: "flex", justifyContent: "space-between",
-                            alignItems: "flex-start" }}>
-                <span style={{ fontWeight: 700, color: C.ink, fontSize: 15 }}>
-                  {c.name || "Unknown"}
-                </span>
+        <>
+          <div style={{ padding: "0 2px 6px", display: "flex",
+                        alignItems: "baseline", gap: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 500, color: C.ink }}>
+              Contacts
+            </span>
+            <span style={{ fontSize: 13, color: C.faint }}>· {list.length}</span>
+          </div>
+          {/* One grouped container with hairline divider rows — matches
+              BookApp's .bk-group / .bk-row list on the Today screen. */}
+          <div style={{ background: C.bg, border: `0.5px solid ${C.line}`,
+                        borderRadius: 14, overflow: "hidden" }}>
+            {list.map((c, i) => (
+              <button key={c.contact_id} onClick={() => open(c.contact_id)}
+                      style={{ display: "flex", alignItems: "center", gap: 8,
+                               width: "100%", textAlign: "left",
+                               background: "none", cursor: "pointer",
+                               border: "none", padding: "11px 14px",
+                               borderTop: i === 0 ? "none"
+                                                  : `0.5px solid ${C.line}`,
+                               fontFamily: FONT }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: C.ink }}>
+                    {c.name || "Unknown"}
+                  </div>
+                  <div style={{ fontSize: 12.5, color: C.muted, marginTop: 1,
+                                whiteSpace: "nowrap", overflow: "hidden",
+                                textOverflow: "ellipsis" }}>
+                    {[c.company,
+                      `${c.n_events} event${c.n_events === 1 ? "" : "s"}`,
+                      c.is_connection ? "connected" : null,
+                      `last ${fmtDate(c.last_touch_at)}`]
+                      .filter(Boolean).join(" · ")}
+                  </div>
+                  {c.latest_update && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 5,
+                                  fontSize: 12, color: C.accent, marginTop: 3 }}>
+                      <Sparkles size={11} style={{ flex: "none" }} />
+                      <span style={{ whiteSpace: "nowrap", overflow: "hidden",
+                                     textOverflow: "ellipsis" }}>
+                        {UPDATE_LABEL[c.latest_update.type] || "Update"}
+                        {c.latest_update.summary
+                          ? ` — ${c.latest_update.summary}` : ""}
+                      </span>
+                    </div>
+                  )}
+                </div>
                 <StageChip stage={c.relationship_stage} />
-              </div>
-              <div style={{ fontSize: 13, color: C.muted, marginTop: 4 }}>
-                {c.company || "—"}
-              </div>
-              <WhatsNew update={c.latest_update} />
-              <div style={{ fontSize: 12, color: C.faint, marginTop: 10,
-                            display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <span>{c.n_events} event{c.n_events === 1 ? "" : "s"}</span>
-                {c.is_connection && <span>· connected</span>}
-                <span>· last {fmtDate(c.last_touch_at)}</span>
-              </div>
-            </button>
-          ))}
-        </div>
+              </button>
+            ))}
+          </div>
+        </>
       )}
       </>
       )}
@@ -741,18 +755,25 @@ function FollowupChat() {
   };
 
   if (!open) {
+    // Styled like BookApp's agent ask bar (.bk-ask): a rounded-full surface
+    // pill with the sparkle, placeholder-toned prompt, and a circular accent
+    // go-button.
     return (
       <button onClick={() => setOpen(true)}
-              style={{ display: "flex", alignItems: "center", gap: 8,
-                       width: "100%", marginBottom: 18, cursor: "pointer",
-                       background: "#eaf1fe", border: "1px solid #cfe0fd",
-                       borderRadius: 14, padding: "14px 18px", color: C.accent,
-                       fontSize: 14.5, fontWeight: 700, fontFamily: FONT }}>
-        <MessageSquare size={18} />
-        Ask who to follow up with
-        <span style={{ marginLeft: "auto", fontWeight: 500, color: C.muted,
-                       fontSize: 12.5 }}>
-          AI drafts a message for each →
+              style={{ display: "flex", alignItems: "center", gap: 10,
+                       width: "100%", marginBottom: 20, cursor: "pointer",
+                       background: C.bg, border: `0.5px solid ${C.line}`,
+                       borderRadius: 999, padding: "9px 11px 9px 15px",
+                       fontFamily: FONT }}>
+        <Sparkles size={16} color={C.accent} style={{ flex: "none" }} />
+        <span style={{ flex: 1, textAlign: "left", fontSize: 13,
+                       color: C.faint }}>
+          Ask who to follow up with…
+        </span>
+        <span style={{ flex: "none", width: 28, height: 28, borderRadius: "50%",
+                       background: C.accent, color: "#fff", display: "flex",
+                       alignItems: "center", justifyContent: "center" }}>
+          <ArrowRight size={15} />
         </span>
       </button>
     );
