@@ -17,6 +17,7 @@ Run on a schedule: GitHub Actions -> POST /admin/run-updates (see
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -27,7 +28,8 @@ from .book import _llm_json          # shared Claude->JSON helper (+ tracing)
 from .relationship_watch import _emit  # writes the activity_update row
 
 
-_LOOKBACK_DAYS = 35
+# "Last month" window for a recent update. Env-tunable.
+_LOOKBACK_DAYS = max(1, int(os.environ.get("UPDATES_LOOKBACK_DAYS", "30")))
 _KNOWN_KINDS = {"job_change", "new_post", "profile_update"}
 
 _EXTRACT_SYSTEM = (
