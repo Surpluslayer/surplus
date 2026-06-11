@@ -269,11 +269,9 @@ function BookView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
                   <p className="bk-sub">{[r.title, r.firm].filter(Boolean).join(" · ")}</p>
                   <p className="bk-meta">{_book_meta(r)}</p>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column",
-                              alignItems: "flex-end", gap: 6 }}>
-                  <Health status={r.is_prospect ? "new" : r.status} />
-                  {r.stage && <StageChip stage={r.stage} />}
-                </div>
+                {r.stage
+                  ? <StageChip stage={r.stage} />
+                  : <Health status={r.is_prospect ? "new" : r.status} />}
               </Row>
             ))}
             {visible.length === 0 && <Empty text="No one matches this filter." />}
