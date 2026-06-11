@@ -335,8 +335,10 @@ def ask(body: AskIn, db: Session = Depends(get_db),
         raise HTTPException(422, "query is required")
     t0 = time.monotonic()
     res = book_agent.ask_agent(_load_book(db, user), q)
-    _trace(f"POST /ask user={user.id} q={q!r} -> {len(res.get('people') or [])} "
-           f"people in {time.monotonic()-t0:.2f}s")
+    people = res.get("people") or []
+    drafted = sum(1 for p in people if (p.get("draft") or "").strip())
+    _trace(f"POST /ask user={user.id} q={q!r} -> {len(people)} people "
+           f"({drafted} with inline drafts) in {time.monotonic()-t0:.2f}s")
     return res
 
 
