@@ -138,6 +138,12 @@ def _demo_book() -> list[dict]:
     ]
 
 
+def _real(val: Optional[str]) -> str:
+    """Strip the 'Unknown' schema placeholder; treat it as empty."""
+    s = (val or "").strip()
+    return "" if s.lower() == "unknown" else s
+
+
 def _book_from_spine(db: Session, user: models.User) -> list[dict]:
     """Map the real Contact spine into the book shape. Empty when the user has
     no contacts — caller falls back to the demo book."""
