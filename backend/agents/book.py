@@ -67,7 +67,7 @@ _BOOK_LLM_ASSESS = (os.environ.get("BOOK_LLM_ASSESS", "0") == "1")
 
 
 def _llm_json(system: str, user: str, *, max_tokens: int = 700,
-              cheap: bool = False) -> Optional[dict]:
+              cheap: bool = False, background: bool = False) -> Optional[dict]:
     """Call Claude in JSON mode and parse the first JSON object out of the reply.
 
     `cheap=True` routes the call to the small/fast model (Haiku) -- use it for
@@ -76,25 +76,33 @@ def _llm_json(system: str, user: str, *, max_tokens: int = 700,
     outreach drafts + nuanced reasons. The system block is prompt-cached, so a
     stable prefix (rubric / voice / context) shared across calls is paid once.
 
+    `background=True` marks the call as background (bulk scoring / sweeps) so the
+    shared rate-gate throttles it harder and yields to foreground user requests.
+
     Returns None on any failure (no key, SDK missing, rate-limit, unparseable) so
     every caller can fall back to its deterministic path. Never raises."""
     if not _anthropic_available():
         return None
+    from . import rategate
     # A short label from the system prompt's first words, so the trace can tell
     # health/update/ask/draft calls apart without threading a label param.
     label = " ".join(system.split()[:4])[:32]
     t0 = time.monotonic()
     try:
         from . import llm  # reuse the configured client + model constants
-        resp = llm._client().messages.create(
-            model=(llm.JUDGE_MODEL if cheap else llm.MODEL),
-            max_tokens=max_tokens,
-            # Cache the (stable) system prefix so repeated calls with the same
-            # rubric/voice/context read it from cache instead of reprocessing.
-            system=[{"type": "text", "text": system,
-                     "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user}],
-        )
+        # One gate in front of every relationship-layer call: caps total in-flight
+        # Claude calls and lets foreground jump ahead of background, so a fan-out
+        # can't burst past the key's limit and stall a user.
+        with rategate.gate(background=background):
+            resp = llm._client().messages.create(
+                model=(llm.JUDGE_MODEL if cheap else llm.MODEL),
+                max_tokens=max_tokens,
+                # Cache the (stable) system prefix so repeated calls with the same
+                # rubric/voice/context read it from cache instead of reprocessing.
+                system=[{"type": "text", "text": system,
+                         "cache_control": {"type": "ephemeral"}}],
+                messages=[{"role": "user", "content": user}],
+            )
         text = "".join(getattr(b, "text", "") for b in resp.content
                        if getattr(b, "type", "") == "text").strip()
         _btrace(f"llm ok  in {time.monotonic()-t0:.1f}s [{label}…]")
@@ -122,7 +130,7 @@ _HEALTH_SYSTEM = (
 )
 
 
-def score_health(contact: dict) -> dict:
+def score_health(contact: dict, *, background: bool = False) -> dict:
     """Health + outreach verdict for one contact. {status, needs_outreach,
     reason, priority}."""
     user = (
@@ -136,7 +144,7 @@ def score_health(contact: dict) -> dict:
         f"{contact.get('next_review_date')}\n"
         f"- Recent interactions: {contact.get('interaction_history')}\n"
     )
-    out = _llm_json(_HEALTH_SYSTEM, user, max_tokens=300, cheap=True)
+    out = _llm_json(_HEALTH_SYSTEM, user, max_tokens=300, cheap=True, background=background)
     if out and "status" in out and "needs_outreach" in out:
         out.setdefault("reason", "")
         out.setdefault("priority", 50)
@@ -201,7 +209,7 @@ _UPDATE_SYSTEM = (
 )
 
 
-def detect_update(contact: dict) -> Optional[dict]:
+def detect_update(contact: dict, *, background: bool = False) -> Optional[dict]:
     """Decide if a contact has a noteworthy update. Returns the update dict, or
     None when there's nothing worth a note."""
     signals = contact.get("raw_signals")
@@ -212,7 +220,7 @@ def detect_update(contact: dict) -> Optional[dict]:
         f"{contact.get('firm')}\n"
         f"Signals (with detected dates): {signals}\n"
     )
-    out = _llm_json(_UPDATE_SYSTEM, user, max_tokens=300, cheap=True)
+    out = _llm_json(_UPDATE_SYSTEM, user, max_tokens=300, cheap=True, background=background)
     if out is not None:
         if not out.get("has_update"):
             return None
@@ -270,8 +278,8 @@ def _assess_llm(contact: dict, key: str) -> None:
         # Background work: throttle through the shared gate so a cold /today's
         # fan-out can't flood the connection pool and starve foreground calls.
         with _BOOK_BG_SEM:
-            h = score_health(contact)
-            u = detect_update(contact)
+            h = score_health(contact, background=True)
+            u = detect_update(contact, background=True)
         with _assess_lock:
             _assess_cache[key] = (time.time(), h, u)
     finally:
@@ -340,7 +348,8 @@ def _draft_key(contact: dict, trigger: str, channel: str) -> str:
 
 def draft_message_cached(contact: dict, trigger: str, *, channel: str = "email",
                          user_name: str = "your advisor",
-                         user_role: str = "wealth advisor") -> dict:
+                         user_role: str = "wealth advisor",
+                         background: bool = False) -> dict:
     """draft_message with a TTL cache: a re-open of the same person + trigger
     returns instantly instead of re-paying the model call."""
     key = _draft_key(contact, trigger, channel)
@@ -353,7 +362,8 @@ def draft_message_cached(contact: dict, trigger: str, *, channel: str = "email",
             return hit[1]
     t0 = time.monotonic()
     msg = draft_message(contact, trigger, channel=channel,
-                        user_name=user_name, user_role=user_role)
+                        user_name=user_name, user_role=user_role,
+                        background=background)
     _btrace(f"draft FRESH to={contact.get('name')!r} channel={channel} "
             f"in {time.monotonic()-t0:.2f}s")
     with _draft_lock:
@@ -382,7 +392,8 @@ def predraft(contacts_with_triggers: list[tuple[dict, str]],
             # Same background gate as assess: predraft warming must not flood
             # the pool and slow the foreground request that triggered it.
             with _BOOK_BG_SEM:
-                draft_message_cached(c, trig, user_name=user_name, user_role=user_role)
+                draft_message_cached(c, trig, user_name=user_name,
+                                     user_role=user_role, background=True)
         finally:
             with _draft_lock:
                 _draft_inflight.discard(key)
@@ -409,7 +420,8 @@ def _draft_system(user_name: str, user_role: str) -> str:
 
 def draft_message(contact: dict, trigger: str, *, channel: str = "email",
                   user_name: str = "your advisor",
-                  user_role: str = "wealth advisor") -> dict:
+                  user_role: str = "wealth advisor",
+                  background: bool = False) -> dict:
     """The note behind a 'Draft' tap. Returns {subject, body}."""
     user = (
         f"To: {contact.get('name')}, {contact.get('title')} @ {contact.get('firm')}\n"
@@ -417,7 +429,8 @@ def draft_message(contact: dict, trigger: str, *, channel: str = "email",
         f"Shared history to draw on: {contact.get('interaction_history')}\n"
         f"Channel: {channel}\n"
     )
-    out = _llm_json(_draft_system(user_name, user_role), user, max_tokens=500)
+    out = _llm_json(_draft_system(user_name, user_role), user, max_tokens=500,
+                    background=background)
     if out and out.get("body"):
         if channel != "email":
             out["subject"] = None

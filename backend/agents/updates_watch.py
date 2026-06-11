@@ -96,7 +96,7 @@ def find_updates(db, contact: models.Contact) -> list[dict]:
                "text": (x.get("text") or "")[:500]} for x in results[:6]]
     user = (f"Contact: {name}" + (f", {company}" if company else "") + "\n"
             f"Recent web results:\n{json.dumps(packed, default=str)}")
-    out = _llm_json(_EXTRACT_SYSTEM, user, max_tokens=300, cheap=True)
+    out = _llm_json(_EXTRACT_SYSTEM, user, max_tokens=300, cheap=True, background=True)
     if not out or not out.get("has_update") or not (out.get("summary") or "").strip():
         return []
     url = (out.get("url") or "").strip()
