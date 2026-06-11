@@ -29,6 +29,19 @@ from ..db import get_db
 # interleave in one Railway stream (grep `[book]`).
 _trace = book_agent._btrace
 
+# Relationship-type tags = the capture "This person is…" set. They drive the
+# Book filter pills + search vocabulary. Legacy `recruiting` folds into hiring.
+BOOK_TAGS = ["sales", "hiring", "investor", "partner", "follow_up"]
+
+
+def _book_tags(contact_types) -> list[str]:
+    out: list[str] = []
+    for t in (contact_types or []):
+        t = "hiring" if t == "recruiting" else t
+        if t in BOOK_TAGS and t not in out:
+            out.append(t)
+    return out
+
 router = APIRouter(prefix="/api/book", tags=["book"])
 
 
@@ -251,6 +264,9 @@ def _book_from_spine_contacts(db, user, contacts, inter_index, update_index):
             "stage": row.get("relationship_stage"),
             "interaction_history": row.get("next_step") or "",
             "raw_signals": signals,
+            # Relationship-type tags (sales/hiring/investor/partner/follow_up)
+            # for the Book filter pills + search.
+            "tags": _book_tags(row.get("contact_types")),
         })
     return book
 

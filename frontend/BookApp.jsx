@@ -208,12 +208,17 @@ function TodayView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
 
 // ── Book (roster) ─────────────────────────────────────────────────────────────
 
+// Relationship-type filters = the capture "This person is…" tags.
 const FILTERS = [
   { key: "all", label: "All" },
-  { key: "starred", label: "Starred" },
-  { key: "cooling", label: "Cooling" },
-  { key: "prospects", label: "Prospects" },
+  { key: "sales", label: "Sales" },
+  { key: "hiring", label: "Hiring" },
+  { key: "investor", label: "Investor" },
+  { key: "partner", label: "Partner" },
+  { key: "follow_up", label: "Follow-up" },
 ];
+const TAG_LABEL = { sales: "Sales", hiring: "Hiring", investor: "Investor",
+                    partner: "Partner", follow_up: "Follow-up" };
 
 function BookView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
   const [filter, setFilter] = useState("all");
@@ -223,11 +228,16 @@ function BookView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
 
   const needle = q.trim().toLowerCase();
   const shown = roster.filter((r) => {
-    if (needle && ![r.name, r.title, r.firm, r.met_at]
-        .some((v) => (v || "").toLowerCase().includes(needle))) return false;
-    if (filter === "starred") return r.vip;
-    if (filter === "cooling") return r.status === "cooling" || r.status === "dormant";
-    if (filter === "prospects") return r.is_prospect;
+    const tags = r.tags || [];
+    // Search matches name / title / firm / event AND the relationship-type
+    // tags (so "follow-up", "sales", or an event name all find people).
+    if (needle) {
+      const hay = [r.name, r.title, r.firm, r.met_at,
+                   ...tags.map((t) => TAG_LABEL[t] || t)];
+      if (!hay.some((v) => (v || "").toLowerCase().includes(needle))) return false;
+    }
+    // Pills filter by relationship type.
+    if (filter !== "all" && !tags.includes(filter)) return false;
     return true;
   });
   // A live search shows every hit; the capped view is for browsing.

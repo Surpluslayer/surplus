@@ -1522,7 +1522,8 @@ body { background:#e9ebee; }
 .ip-signout:active { background:var(--ip-accent-bg); }
 .ip-eventmenu { padding:0 12px 12px; }
 .ip-eventrow { display:flex; gap:8px; }
-.ip-recents { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.ip-recents { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;
+  max-height:96px; overflow-y:auto; }
 .ip-chip { border:.5px solid var(--ip-line-2); background:var(--ip-bg); border-radius:10px;
   padding:5px 10px; font-size:11px; color:var(--ip-ink); cursor:pointer;
   font-family:var(--ip-font-ui); }

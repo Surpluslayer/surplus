@@ -587,6 +587,8 @@ def build_roster(book: list[dict]) -> list[dict]:
             "value": c.get("value") or "",
             "has_update": upd is not None,
             "headline": (upd or {}).get("headline"),
+            # Relationship-type tags for the Book filter pills + search.
+            "tags": c.get("tags") or [],
         })
     # New prospects float to the top, then by attention (priority) desc.
     rows.sort(key=lambda r: (not r["is_prospect"], -(r.get("priority") or 0)))
