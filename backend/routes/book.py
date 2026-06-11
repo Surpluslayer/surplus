@@ -163,12 +163,15 @@ def _book_from_spine(db: Session, user: models.User) -> list[dict]:
     t = time.monotonic()
     update_index = rel_agent.prefetch_activity_updates_by_contact(db, contacts)
     t_upd = time.monotonic() - t
+    rel_agent._spine_prof_reset()
     t = time.monotonic()
     out = _book_from_spine_contacts(db, user, contacts, inter_index, update_index)
     t_loop = time.monotonic() - t
+    prof = rel_agent.spine_prof()
     _trace(f"_book_from_spine {len(contacts)} contacts: list={t_list:.2f}s "
            f"prefetch_inter={t_inter:.2f}s prefetch_upd={t_upd:.2f}s "
-           f"summary_loop={t_loop:.2f}s")
+           f"summary_loop={t_loop:.2f}s "
+           f"(events={prof['events']:.2f}s timeline={prof['timeline']:.2f}s)")
     return out
 
 

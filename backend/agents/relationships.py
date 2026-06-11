@@ -22,6 +22,7 @@ functions also work against lightweight stand-ins in tests.
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -283,6 +284,23 @@ def _how_we_met(prospect: Any) -> dict:
     }
 
 
+# Coarse profiler for the book spine loop : where contact_summary's ~12s goes.
+# Reset + read by routes/book.py around the per-contact summary loop. `timeline`
+# is pure CPU (build_timeline); `events` is the whole contact_events call. If
+# timeline ~= events ~= total, it's CPU in the timeline builder; if both are
+# small, the cost is a lazy-load DB hit elsewhere.
+_SPINE_PROF = {"events": 0.0, "timeline": 0.0}
+
+
+def _spine_prof_reset() -> None:
+    for k in _SPINE_PROF:
+        _SPINE_PROF[k] = 0.0
+
+
+def spine_prof() -> dict:
+    return dict(_SPINE_PROF)
+
+
 def relationship_summary(prospect: Any, interactions: Any = None) -> dict:
     """Deterministic, ML-free snapshot of where this relationship stands.
 
@@ -306,7 +324,9 @@ def relationship_summary(prospect: Any, interactions: Any = None) -> dict:
     captured_at = getattr(prospect, "captured_at", None)
 
     # last_touch = most recent item that carries a real timestamp.
+    _t = time.monotonic()
     timeline = build_timeline(prospect, interactions)
+    _SPINE_PROF["timeline"] += time.monotonic() - _t
     touched = [it for it in timeline if it["occurred_at"] is not None]
     last_touch_at = touched[-1]["occurred_at"] if touched else None
     last_touch_type = touched[-1]["interaction_type"] if touched else None
@@ -769,7 +789,9 @@ def contact_summary(db, contact, interactions_by_prospect=None,
     can show 'Maya changed roles' and float fresh-news contacts to the top.
     None on the detail path -> fetched directly for this one contact."""
     prospects = list(getattr(contact, "prospects", None) or [])
+    _t = time.monotonic()
     events = contact_events(db, contact, interactions_by_prospect)
+    _SPINE_PROF["events"] += time.monotonic() - _t
     updates = (activity_updates if activity_updates is not None
                else fetch_activity_updates(db, contact))
 
