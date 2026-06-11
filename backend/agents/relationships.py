@@ -804,6 +804,8 @@ def contact_summary(db, contact, interactions_by_prospect=None,
         "identity": identity,
         "is_connection": connected,
         "n_events": len(events),
+        # Where we FIRST met them (events are newest-first) : the Book's met_at.
+        "met_at": (events[-1]["event_title"] if events else None),
         "first_met_at": min(first_touches) if first_touches else None,
         "last_touch_at": max(last_touches) if last_touches else None,
         "relationship_stage": _strongest_stage(stages),
