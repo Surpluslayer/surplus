@@ -326,9 +326,14 @@ def draft_message_cached(contact: dict, trigger: str, *, channel: str = "email",
     with _draft_lock:
         hit = _draft_cache.get(key)
         if hit and now - hit[0] < _ASSESS_TTL:
+            _btrace(f"draft CACHE HIT to={contact.get('name')!r} "
+                    f"channel={channel} (0.0s)")
             return hit[1]
+    t0 = time.monotonic()
     msg = draft_message(contact, trigger, channel=channel,
                         user_name=user_name, user_role=user_role)
+    _btrace(f"draft FRESH to={contact.get('name')!r} channel={channel} "
+            f"in {time.monotonic()-t0:.2f}s")
     with _draft_lock:
         _draft_cache[key] = (now, msg)
     return msg
