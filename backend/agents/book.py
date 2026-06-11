@@ -46,6 +46,17 @@ def _btrace(msg: str) -> None:
     print(f"[book] {msg}", flush=True)
 
 
+# Caps how many BACKGROUND book LLM calls (assess + predraft) run at once. A
+# cold /today otherwise fires ~2N calls (N contacts x health+update) through one
+# Anthropic client simultaneously, saturating the HTTP connection pool: each
+# call's latency climbs as they queue, and a foreground /ask/draft then has to
+# fight through the jam. A bounded gate runs the background work in calm waves so
+# the pool stays free for foreground requests (which DON'T take this gate, so
+# they keep priority). Tune live via BOOK_LLM_CONCURRENCY without a redeploy.
+_BOOK_BG_SEM = threading.BoundedSemaphore(
+    max(1, int(os.environ.get("BOOK_LLM_CONCURRENCY", "6"))))
+
+
 def _llm_json(system: str, user: str, *, max_tokens: int = 700) -> Optional[dict]:
     """Call Claude in JSON mode and parse the first JSON object out of the reply.
 
@@ -237,8 +248,11 @@ def _assess_key(contact: dict) -> str:
 
 def _assess_llm(contact: dict, key: str) -> None:
     try:
-        h = score_health(contact)
-        u = detect_update(contact)
+        # Background work: throttle through the shared gate so a cold /today's
+        # fan-out can't flood the connection pool and starve foreground calls.
+        with _BOOK_BG_SEM:
+            h = score_health(contact)
+            u = detect_update(contact)
         with _assess_lock:
             _assess_cache[key] = (time.time(), h, u)
     finally:
@@ -338,7 +352,10 @@ def predraft(contacts_with_triggers: list[tuple[dict, str]],
 
     def _run(c, trig, key):
         try:
-            draft_message_cached(c, trig, user_name=user_name, user_role=user_role)
+            # Same background gate as assess: predraft warming must not flood
+            # the pool and slow the foreground request that triggered it.
+            with _BOOK_BG_SEM:
+                draft_message_cached(c, trig, user_name=user_name, user_role=user_role)
         finally:
             with _draft_lock:
                 _draft_inflight.discard(key)
@@ -423,7 +440,10 @@ def ask_agent(book: list[dict], query: str) -> dict:
         + json.dumps(book, default=str)
         + f"\n\nUser's question: {query}\n"
     )
-    out = _llm_json(_ASK_SYSTEM, user, max_tokens=900)
+    # 900 tokens truncated the JSON mid-object on a multi-person answer over a
+    # large book (observed JSONDecodeError -> silent heuristic fallback). Give
+    # the list-style answer room so the JSON closes cleanly.
+    out = _llm_json(_ASK_SYSTEM, user, max_tokens=2500)
     if out and "answer" in out:
         out.setdefault("people", [])
         return out
