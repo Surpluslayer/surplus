@@ -27,6 +27,7 @@ import {
   CaptureScreen, ScanResult, SignInBounce, IP_CSS,
   loadActiveEvent, saveActiveEvent, loadRecentLabels, pushRecentLabel,
 } from "./InPersonApp.jsx";
+import { StageChip } from "./components/ContactsPage.jsx";
 
 // Health word + colour token by relationship status.
 const HEALTH = {
@@ -256,7 +257,11 @@ function BookView({ feed, err, onReload, onOpen, onDraft }) {
                   <p className="bk-sub">{[r.title, r.firm].filter(Boolean).join(" · ")}</p>
                   <p className="bk-meta">{_book_meta(r)}</p>
                 </div>
-                <Health status={r.is_prospect ? "new" : r.status} />
+                <div style={{ display: "flex", flexDirection: "column",
+                              alignItems: "flex-end", gap: 6 }}>
+                  <Health status={r.is_prospect ? "new" : r.status} />
+                  {r.stage && <StageChip stage={r.stage} />}
+                </div>
               </Row>
             ))}
             {visible.length === 0 && <Empty text="No one matches this filter." />}

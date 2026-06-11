@@ -61,7 +61,7 @@ function WhatsNew({ update }) {
   );
 }
 
-function StageChip({ stage }) {
+export function StageChip({ stage }) {
   const c = STAGE_COLORS[stage] || STAGE_COLORS.captured;
   return (
     <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 9px",

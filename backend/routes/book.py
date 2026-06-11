@@ -195,6 +195,9 @@ def _book_from_spine(db: Session, user: models.User) -> list[dict]:
             "met_at": "",
             "value": "",
             "is_prospect": not row.get("is_connection"),
+            # Outreach pipeline stage (captured -> contacted -> replied ->
+            # converted / stale) — shown as the chip on the Book rows.
+            "stage": row.get("relationship_stage"),
             "interaction_history": row.get("next_step") or "",
             "raw_signals": signals,
         })

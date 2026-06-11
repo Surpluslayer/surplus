@@ -378,6 +378,7 @@ def build_roster(book: list[dict]) -> list[dict]:
             "needs_outreach": bool(h.get("needs_outreach")),
             "priority": h.get("priority"),
             "is_prospect": bool(c.get("is_prospect")),
+            "stage": c.get("stage"),
             "value": c.get("value") or "",
             "has_update": upd is not None,
             "headline": (upd or {}).get("headline"),
