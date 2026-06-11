@@ -28,21 +28,21 @@ import { actionLabel, statusMeta, outreachStateLabel } from "./lib/labels.js";
 const ACTIVE_EVENT_KEY = "surplus_inperson_event";   // sessionStorage
 const RECENT_LABELS_KEY = "surplus_inperson_recent";  // localStorage
 
-function loadActiveEvent() {
+export function loadActiveEvent() {
   try { return JSON.parse(sessionStorage.getItem(ACTIVE_EVENT_KEY) || "null"); }
   catch { return null; }
 }
-function saveActiveEvent(ev) {
+export function saveActiveEvent(ev) {
   try { sessionStorage.setItem(ACTIVE_EVENT_KEY, JSON.stringify(ev)); } catch {}
 }
 function clearActiveEvent() {
   try { sessionStorage.removeItem(ACTIVE_EVENT_KEY); } catch {}
 }
-function loadRecentLabels() {
+export function loadRecentLabels() {
   try { return JSON.parse(localStorage.getItem(RECENT_LABELS_KEY) || "[]"); }
   catch { return []; }
 }
-function pushRecentLabel(label) {
+export function pushRecentLabel(label) {
   try {
     const cur = loadRecentLabels().filter((l) => l !== label);
     localStorage.setItem(RECENT_LABELS_KEY,
@@ -476,7 +476,7 @@ function EventBar({ event, onPick, user, onSignOut, crmActive, onToggleCrm, onRe
 
 // ── capture screen (3 modes) ────────────────────────────────────────────────
 
-function CaptureScreen({ event, onResult }) {
+export function CaptureScreen({ event, onResult }) {
   const [mode, setMode] = useState("scan");   // "scan" | "paste" | "type"
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -688,7 +688,7 @@ function TypeSearch({ onConfirm, busy }) {
 
 // ── scan result : draft + send / save ────────────────────────────────────────
 
-function ScanResult({ event, result, onDone, onCancel, canSend, savedLink = "", onbStepKey = null }) {
+export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink = "", onbStepKey = null }) {
   const p = result.prospect || {};
   const [draftNote, setDraftNote] = useState(result.draft_note || "");
   const [draftMsg, setDraftMsg] = useState(result.draft_message || "");
@@ -1469,7 +1469,7 @@ function OnboardingCoach({ step, context, onAdvance, onSkip, onComplete }) {
 // Design tokens mirror BookApp's BOOK_CSS (the new Surplus design system):
 // Inter UI / Newsreader display, #2f6df6 accent, hairline borders, soft
 // surface panels. Class names are unchanged — this is a pure reskin.
-const IP_CSS = `
+export const IP_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap');
 :root { --ip-bg:#ffffff; --ip-card:#ffffff; --ip-surface:#f4f5f7;
   --ip-line:rgba(20,23,28,.08); --ip-line-2:rgba(20,23,28,.16);

@@ -23,6 +23,10 @@ import {
   Mail, Calendar, Plug, CreditCard, LogOut, CheckCircle2,
 } from "lucide-react";
 import { api } from "./lib/api.js";
+import {
+  CaptureScreen, ScanResult, IP_CSS,
+  loadActiveEvent, saveActiveEvent, loadRecentLabels, pushRecentLabel,
+} from "./InPersonApp.jsx";
 
 // Health word + colour token by relationship status.
 const HEALTH = {
@@ -107,7 +111,8 @@ export default function BookApp() {
         </nav>
       </div>
 
-      {addOpen && <AddSheet feed={feed} onClose={() => setAddOpen(false)} />}
+      {addOpen && <AddSheet user={user} onClose={() => setAddOpen(false)}
+                            onAdded={load} />}
       {draftFor && <DraftSheet draft={draftFor} onClose={() => setDraftFor(null)} />}
     </div>
   );
@@ -480,82 +485,84 @@ function ConnRow({ icon, name, sub, connected, onConnect }) {
 
 // ── Add contact (bottom sheet) ────────────────────────────────────────────────
 
-const CAPTURE_TABS = [
-  { key: "qr", label: "Scan QR", icon: QrCode },
-  { key: "link", label: "Paste link", icon: Link2 },
-  { key: "name", label: "By name", icon: Search },
-];
-
-function AddSheet({ feed, onClose }) {
-  const [event, setEvent] = useState("Founders Inc");
+function AddSheet({ user, onClose, onAdded }) {
+  // Real capture flow — shares the active event + capture/send components with
+  // InPersonApp so a contact added here is the same as one scanned at the door.
+  const [event, setEvent] = useState(() => loadActiveEvent());
   const [draftEvent, setDraftEvent] = useState("");
-  const [tab, setTab] = useState("qr");
-  const recents = ["Founders Inc", "NYC Tech Week", "SALT Conference"];
+  const [creating, setCreating] = useState(false);
+  const [evErr, setEvErr] = useState("");
+  const [result, setResult] = useState(null);   // scan result → ScanResult screen
+  const recents = loadRecentLabels();
+
+  const createEvent = async (label) => {
+    const name = (label || "").trim();
+    if (!name || creating) return;
+    setCreating(true); setEvErr("");
+    try {
+      const ev = await api.inpersonCreateEvent(name);
+      saveActiveEvent(ev); pushRecentLabel(ev.label);
+      setEvent(ev); setDraftEvent("");
+    } catch (e) { setEvErr(e.message || "Couldn't set the event"); }
+    finally { setCreating(false); }
+  };
 
   return (
     <div className="bk-sheet-scrim" onClick={onClose}>
       <div className="bk-sheet" onClick={(e) => e.stopPropagation()}>
+        <style>{IP_CSS}</style>
         <div className="bk-grabber"><span /></div>
         <div className="bk-sheet-title">
           <span className="bk-display">Add contact</span>
           <button className="bk-sheet-x" onClick={onClose} aria-label="Close"><X size={20} /></button>
         </div>
 
-        <div className="bk-event">
-          <div className="bk-event-current">
-            <span className="bk-event-name"><MapPin size={18} />{event}</span>
-            <ChevronDown size={18} className="bk-faint" />
-          </div>
-          <div className="bk-field" style={{ marginTop: 11 }}>
-            <input value={draftEvent} onChange={(e) => setDraftEvent(e.target.value)}
-                   placeholder="e.g. NYC Tech Week — Founders Inc" />
-            <button className="bk-btn bk-btn--primary" style={{ height: 36 }}
-                    onClick={() => { if (draftEvent.trim()) { setEvent(draftEvent.trim()); setDraftEvent(""); } }}>Set</button>
-          </div>
-          <div className="bk-chips bk-recents">
-            {recents.map((r) => (
-              <button key={r} className={"bk-pill" + (event === r ? " on" : "")}
-                      onClick={() => setEvent(r)}>{r}</button>
-            ))}
-          </div>
-        </div>
-
-        <div className="bk-banner"><b>1.</b> Add the person · <b>2.</b> Connect. That's it.</div>
-
-        <div className="bk-tabs">
-          {CAPTURE_TABS.map((t) => {
-            const I = t.icon;
-            return (
-              <button key={t.key} className={"bk-tab" + (tab === t.key ? " on" : "")}
-                      onClick={() => setTab(t.key)}><I size={16} /> {t.label}</button>
-            );
-          })}
-        </div>
-
-        {tab === "qr" && (
-          <div className="bk-scan">
-            <div className="bk-target"><QrCode size={42} /></div>
-            <p className="bk-scan-lead">Point at their badge or QR</p>
-            <p className="bk-scan-sub">It lands in your book in seconds. No camera? Switch to <b>Paste link</b>.</p>
-          </div>
-        )}
-        {tab === "link" && (
-          <div className="bk-scan">
-            <div className="bk-field">
-              <input placeholder="Paste a LinkedIn URL" />
-              <button className="bk-btn bk-btn--primary" style={{ height: 36 }}>Add</button>
+        {result ? (
+          <ScanResult event={event} result={result}
+                      onDone={() => { setResult(null); onAdded && onAdded(); onClose(); }}
+                      onCancel={() => setResult(null)}
+                      canSend={!!user?.unipile_account_id}
+                      savedLink={(user && user.saved_send_link) || ""} />
+        ) : (
+          <>
+            <div className="bk-event">
+              {event && (
+                <div className="bk-event-current">
+                  <span className="bk-event-name"><MapPin size={18} />{event.label}</span>
+                  <ChevronDown size={18} className="bk-faint" />
+                </div>
+              )}
+              <div className="bk-field" style={{ marginTop: event ? 11 : 0 }}>
+                <input value={draftEvent} onChange={(e) => setDraftEvent(e.target.value)}
+                       placeholder="e.g. NYC Tech Week — Founders Inc"
+                       onKeyDown={(e) => { if (e.key === "Enter") createEvent(draftEvent); }} />
+                <button className="bk-btn bk-btn--primary" style={{ height: 36 }}
+                        disabled={creating || !draftEvent.trim()}
+                        onClick={() => createEvent(draftEvent)}>
+                  {creating ? <Loader2 size={15} className="bk-spin" /> : "Set"}
+                </button>
+              </div>
+              {recents.length > 0 && (
+                <div className="bk-chips bk-recents">
+                  {recents.map((r) => (
+                    <button key={r} className={"bk-pill" + (event?.label === r ? " on" : "")}
+                            onClick={() => createEvent(r)}>{r}</button>
+                  ))}
+                </div>
+              )}
+              {evErr && <p className="bk-scan-sub" style={{ color: "#c0433d", marginTop: 8 }}>{evErr}</p>}
             </div>
-            <p className="bk-scan-sub" style={{ marginTop: 14 }}>We'll enrich name, title and firm from the profile.</p>
-          </div>
-        )}
-        {tab === "name" && (
-          <div className="bk-scan">
-            <div className="bk-field">
-              <input placeholder="Full name" />
-              <button className="bk-btn bk-btn--primary" style={{ height: 36 }}>Add</button>
-            </div>
-            <p className="bk-scan-sub" style={{ marginTop: 14 }}>Best when you already know who they are.</p>
-          </div>
+
+            {event ? (
+              <CaptureScreen event={event} onResult={setResult} />
+            ) : (
+              <div className="bk-scan">
+                <div className="bk-target"><QrCode size={42} /></div>
+                <p className="bk-scan-lead">Set the event first</p>
+                <p className="bk-scan-sub">Name where you are — everyone you add gets filed under it.</p>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
