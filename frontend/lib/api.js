@@ -468,6 +468,81 @@ export const api = {
   // The agent ask bar + chips. { query } -> { answer, people:[{name,reason,draft}] }.
   bookAsk: (query) =>
     request("/api/book/ask", { method: "POST", body: JSON.stringify({ query }) }),
+  // Streaming twin of bookAsk: emits the ranked people the instant selection
+  // finishes, then each drafted card as it completes -- with a heartbeat, so the
+  // connection is never silent and Cloudflare's 100s read timeout (the 524) can't
+  // fire. Callbacks: onStatus({phase,name}), onPeople({people,answer}),
+  // onPerson({index,contact_id,name,draft}), onDone({total_s,count}),
+  // onError({detail}). Resolves when the stream closes.
+  bookAskStream: async (query, { onStatus, onPeople, onPerson, onDone, onError } = {}) => {
+    const STALL_MS = 45000;
+    const controller = new AbortController();
+    let stalled = false;
+    let stallTimer = null;
+    const armWatchdog = () => {
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => { stalled = true; controller.abort(); }, STALL_MS);
+    };
+    const stallError = () =>
+      new Error("the connection went quiet and was closed — try asking again");
+    armWatchdog();
+    try {
+      let res;
+      try {
+        res = await fetch("/api/book/ask/stream", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ query }),
+          signal: controller.signal,
+        });
+      } catch (e) {
+        throw stalled ? stallError() : e;
+      }
+      if (!res.ok || !res.body) {
+        const text = await res.text().catch(() => "");
+        const err = new Error(`${res.status} ${res.statusText} : ${text.slice(0, 240)}`);
+        err.status = res.status;
+        try { err.body = JSON.parse(text); } catch { err.body = null; }
+        throw err;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      const dispatch = (frame) => {
+        let ev = "message", data = "";
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("event:")) ev = line.slice(6).trim();
+          else if (line.startsWith("data:")) data += line.slice(5).trim();
+        }
+        if (!data) return;  // keepalive comment (": ...") has no data: line
+        let payload;
+        try { payload = JSON.parse(data); } catch { return; }
+        if (ev === "status") onStatus?.(payload);
+        else if (ev === "people") onPeople?.(payload);
+        else if (ev === "person") onPerson?.(payload);
+        else if (ev === "done") onDone?.(payload);
+        else if (ev === "error") onError?.(payload);
+      };
+      for (;;) {
+        let chunk;
+        try { chunk = await reader.read(); }
+        catch (e) { throw stalled ? stallError() : e; }
+        armWatchdog();
+        const { value, done } = chunk;
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n\n")) !== -1) {
+          dispatch(buf.slice(0, i));
+          buf = buf.slice(i + 2);
+        }
+      }
+      if (buf.trim()) dispatch(buf);
+    } finally {
+      clearTimeout(stallTimer);
+    }
+  },
 
   // in-person guest : mint a LinkedIn-less anonymous session so the capture
   // flow works on event.surpluslayer.com without signing in (real sends stay

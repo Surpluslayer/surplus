@@ -688,14 +688,33 @@ function AskBar({ variant, onOpen, onDraft }) {
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState(null);   // {answer, people}
   const [err, setErr] = useState("");
+  const [phase, setPhase] = useState("");  // live "thinking / drafting X…" label
 
   const ask = async (query) => {
     const text = (query ?? q).trim();
     if (!text || busy) return;
-    setBusy(true); setErr(""); setRes(null); setQ(text);
-    try { setRes(await api.bookAsk(text)); }
-    catch (e) { setErr(e.message || "Couldn't ask the agent"); }
-    finally { setBusy(false); }
+    setBusy(true); setErr(""); setRes(null); setQ(text); setPhase("Thinking…");
+    try {
+      // Streamed: the ranked people show the instant selection finishes, then
+      // each draft fills in as it lands. A heartbeat keeps the connection alive
+      // so a slow moment shows "drafting…" instead of a 524 "server took too long".
+      await api.bookAskStream(text, {
+        onStatus: ({ phase: ph, name }) =>
+          setPhase(ph === "drafting" ? `Drafting ${name || "…"}` :
+                   ph === "selecting" ? "Finding who to follow up with…" : "Thinking…"),
+        onPeople: ({ people, answer }) =>
+          setRes({ answer: answer || "", people: people || [] }),
+        onPerson: ({ index, draft }) =>
+          setRes((r) => {
+            if (!r) return r;
+            const people = r.people.slice();
+            if (people[index]) people[index] = { ...people[index], draft };
+            return { ...r, people };
+          }),
+        onError: ({ detail }) => setErr(detail || "Couldn't ask the agent"),
+      });
+    } catch (e) { setErr(e.message || "Couldn't ask the agent"); }
+    finally { setBusy(false); setPhase(""); }
   };
 
   const input = (
@@ -735,6 +754,13 @@ function AskBar({ variant, onOpen, onDraft }) {
       )}
 
       {err && <div className="bk-err" style={{ marginTop: 8 }}>{err}</div>}
+
+      {busy && phase && (
+        <div className="bk-ap-reason" style={{ marginTop: 10, display: "flex",
+             alignItems: "center", gap: 6 }}>
+          <Loader2 size={13} className="bk-spin" /> {phase}
+        </div>
+      )}
 
       {res && (
         <div className="bk-answer">

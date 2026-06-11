@@ -12,13 +12,16 @@ otherwise. Wiring the demo book to live Contacts is the next slice.
 from __future__ import annotations
 
 import hmac
+import json
 import os
+import queue
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -455,6 +458,101 @@ def ask(body: AskIn, db: Session = Depends(get_db),
             f"draft={t_draft:.1f}, {len(jobs)} drafted]")
     _trace((">>> SLOW " if total > 60 else "") + line)
     return res
+
+
+@router.post("/ask/stream")
+def ask_stream(body: AskIn, db: Session = Depends(get_db),
+               user: models.User = Depends(current_user)):
+    """Streaming `/ask` (Server-Sent Events). Same work as /ask, but emits the
+    ranked people the instant selection finishes, then each drafted card as it
+    completes, with a heartbeat so the connection is NEVER silent. Because bytes
+    start flowing immediately and keep flowing, Cloudflare's 100s read timeout
+    (the 524 'server took too long') can't fire -- a slow moment degrades to
+    'still drafting…' instead of a hard error.
+
+    Events: status {phase[,name]} · people {people,answer} · person {index,
+    contact_id,name,draft} · done {total_s,count} · error {detail}.
+    """
+    q = (body.query or "").strip()
+    if not q:
+        raise HTTPException(422, "query is required")
+    user_id = user.id
+    events: "queue.Queue" = queue.Queue()
+
+    def work():
+        from ..db import SessionLocal
+        from ..agents import drafting
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        wdb = SessionLocal()
+        t0 = time.monotonic()
+        try:
+            wuser = wdb.query(models.User).get(user_id)
+            events.put(("status", {"phase": "selecting"}))
+            book = _load_book(wdb, wuser)
+            res = book_agent.ask_agent(book, q)          # selection (Haiku, gated)
+            people = res.get("people") or []
+            orm_by_id = {str(c.id): c for c in rel_agent.list_contacts(wdb, user_id)}
+            by_name = {(c.get("name") or "").strip().lower(): c for c in book}
+            for p in people:
+                bd = by_name.get((p.get("name") or "").strip().lower())
+                if bd and bd.get("id"):
+                    p["contact_id"] = bd["id"]
+            # Show the ranked list NOW (drafts fill in next) -- first paint ~3s.
+            events.put(("people", {"people": people, "answer": res.get("answer")}))
+            # Draft the top few, emitting each as it lands. Build DB contexts
+            # SERIALLY (session not thread-safe), then fan the pure-LLM calls out.
+            inline = max(0, int(os.environ.get("ASK_INLINE_DRAFTS", "6")))
+            targets = []
+            for idx, p in enumerate(people[:inline]):
+                bd = by_name.get((p.get("name") or "").strip().lower())
+                orm = orm_by_id.get(str(bd.get("id"))) if bd else None
+                if orm is not None:
+                    targets.append((idx, p, drafting.build_context(wdb, user_id, orm)))
+            if targets:
+                with ThreadPoolExecutor(max_workers=6) as ex:
+                    futs = {}
+                    for idx, p, ctx in targets:
+                        events.put(("status", {"phase": "drafting", "name": p.get("name")}))
+                        futs[ex.submit(drafting.compose_from_context, ctx,
+                                       p.get("reason") or "following up", "email")] = (idx, p)
+                    for fut in as_completed(futs):
+                        idx, p = futs[fut]
+                        try:
+                            d = fut.result()
+                        except Exception:  # noqa: BLE001
+                            d = None
+                        events.put(("person", {"index": idx, "contact_id": p.get("contact_id"),
+                                               "name": p.get("name"),
+                                               "draft": (d or {}).get("body")}))
+            events.put(("done", {"total_s": round(time.monotonic() - t0, 1),
+                                 "count": len(people)}))
+            _trace(f"POST /ask/stream user={user_id} q={q!r} -> {len(people)} people "
+                   f"in {time.monotonic()-t0:.1f}s (streamed)")
+        except Exception as exc:  # noqa: BLE001
+            events.put(("error", {"detail": f"{type(exc).__name__}: {exc}"}))
+            _trace(f"POST /ask/stream user={user_id} FAILED: {type(exc).__name__}: {exc}")
+        finally:
+            wdb.close()
+            events.put(None)  # sentinel: end of stream
+
+    threading.Thread(target=work, daemon=True).start()
+
+    def gen():
+        yield ": open\n\n"  # flush headers immediately -> CF read-timeout satisfied
+        while True:
+            try:
+                item = events.get(timeout=15)
+            except queue.Empty:
+                yield ": keepalive\n\n"  # never silent > 15s, so CF can't 524
+                continue
+            if item is None:
+                break
+            event, data = item
+            yield f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.get("/relationship/{contact_id}")
