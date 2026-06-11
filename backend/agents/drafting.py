@@ -24,7 +24,7 @@ import os
 from typing import Optional
 
 from . import relationships
-from .book import _btrace, _llm_json  # shared Claude->JSON helper + [book] trace
+from .book import _btrace, _llm_json, stream_text  # shared Claude helpers + trace
 from .relationship_agent import (
     _host_voice_examples,
     _strip_dashes,
@@ -95,6 +95,38 @@ def compose_from_context(ctx: dict, reason: str, channel: str = "email") -> Opti
     subject = out.get("subject")
     subject = _strip_dashes(subject) if (channel == "email" and subject) else None
     return {"subject": subject, "body": body}
+
+
+_FOLLOWUP_STREAM_SYSTEM = (
+    "You write a short follow-up message for an event host reconnecting with "
+    "someone they met. CONTINUE the existing conversation in the prior messages "
+    "below: pick up where it left off and reference what was actually said, then "
+    "add the reason to reach out now. Never a generic cold restart. "
+    "Rules: 2-4 sentences, warm and specific, never salesy. NEVER use em dashes "
+    "(—) or en dashes (–); use a comma, a period, or restructure. If a "
+    "<style_examples> block is provided, write in that exact voice (greeting, "
+    "sign-off, sentence length, punctuation, emoji habits). "
+    "Write ONLY the message body as plain text: no subject line, no JSON, no "
+    "surrounding quotes, no preamble or labels. Just the message to send."
+)
+
+
+def compose_stream(db, user_id: int, contact, *, reason: str,
+                   channel: str = "email"):
+    """Yield the follow-up body token-by-token (live 'typing'). Same voice + real
+    prior-thread context as compose_followup, but streamed as plain text (no JSON
+    wrapper, so deltas render directly). For the streamed /draft tap. Yields
+    nothing when no key is set -- the caller falls back to compose_followup."""
+    ctx = build_context(db, user_id, contact)
+    system = _FOLLOWUP_STREAM_SYSTEM + (ctx.get("voice_block") or "")
+    user = (
+        f"Follow up with {ctx.get('name') or 'there'}.\n"
+        f"Prior conversation (oldest first; [] means no prior messages):\n"
+        f"{json.dumps(ctx.get('prior') or [], default=str)}\n"
+        f"Reason to reach out now: {reason}\n"
+        f"Channel: {channel}\n"
+    )
+    yield from stream_text(system, user, max_tokens=500)
 
 
 def compose_followup(db, user_id: int, contact, *, reason: str,

@@ -805,12 +805,27 @@ function DraftSheet({ draft, onClose }) {
   const canSend = !!draft.contact_id && /^\d+$/.test(String(draft.contact_id));
 
   const generate = useCallback(() => {
-    setBusy(true); setErr(""); setDone("");
-    api.bookDraft({ name: draft.name, contact_id: draft.contact_id,
-                    trigger: draft.trigger, channel: "email" })
-      .then((r) => { setSubject(r.subject || ""); setBody(r.body || ""); })
-      .catch((e) => setErr(e.message || "Couldn't draft"))
-      .finally(() => setBusy(false));
+    // Token-level streaming: the message types out live (like Claude) instead of
+    // a blank spinner then a sudden block of text. Falls back to the non-stream
+    // endpoint if the stream can't open.
+    setBusy(true); setErr(""); setDone(""); setBody("");
+    let acc = "";
+    api.bookDraftStream(
+      { name: draft.name, contact_id: draft.contact_id,
+        trigger: draft.trigger, channel: "email" },
+      {
+        onToken: (t) => { acc += t; setBody(acc); },
+        onDone: () => setBusy(false),
+        onError: (e) => { setErr(e.detail || "Couldn't draft"); setBusy(false); },
+      },
+    ).catch(() => {
+      // Stream failed to open : fall back to the one-shot draft.
+      api.bookDraft({ name: draft.name, contact_id: draft.contact_id,
+                      trigger: draft.trigger, channel: "email" })
+        .then((r) => { setSubject(r.subject || ""); setBody(r.body || ""); })
+        .catch((e) => setErr(e.message || "Couldn't draft"))
+        .finally(() => setBusy(false));
+    });
   }, [draft]);
 
   useEffect(() => {

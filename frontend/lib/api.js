@@ -465,6 +465,50 @@ export const api = {
   // channel }. Returns { channel, subject, body }.
   bookDraft: (body) =>
     request("/api/book/draft", { method: "POST", body: JSON.stringify(body) }),
+  // Token-level streamed draft: types the message out word-by-word (like Claude).
+  // Callbacks: onToken(text) append to the draft, onDone({total_s}), onError({detail}).
+  // Tokens are JSON-wrapped so their leading/trailing spaces survive SSE framing.
+  bookDraftStream: async (body, { onToken, onDone, onError } = {}) => {
+    const res = await fetch("/api/book/draft/stream", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => "");
+      const err = new Error(`${res.status} ${res.statusText} : ${text.slice(0, 240)}`);
+      err.status = res.status;
+      throw err;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    const dispatch = (frame) => {
+      let ev = "message", data = "";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event:")) ev = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (!data) return;  // keepalive / open comment
+      let payload;
+      try { payload = JSON.parse(data); } catch { return; }
+      if (ev === "token") onToken?.(payload.t || "");
+      else if (ev === "done") onDone?.(payload);
+      else if (ev === "error") onError?.(payload);
+    };
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) !== -1) {
+        dispatch(buf.slice(0, i));
+        buf = buf.slice(i + 2);
+      }
+    }
+    if (buf.trim()) dispatch(buf);
+  },
   // The agent ask bar + chips. { query } -> { answer, people:[{name,reason,draft}] }.
   bookAsk: (query) =>
     request("/api/book/ask", { method: "POST", body: JSON.stringify({ query }) }),

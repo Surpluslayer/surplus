@@ -56,6 +56,41 @@ def _record_llm(label: str, ms: float, ok: bool, detail: str = "") -> None:
         pass
 
 
+def stream_text(system: str, user: str, *, max_tokens: int = 500,
+                background: bool = False):
+    """Stream a PLAIN-TEXT Claude reply token-by-token, for live 'typing' UIs.
+
+    Yields text deltas (em/en dashes scrubbed inline). Goes through the same rate
+    gate + prompt cache as _llm_json; holds its slot for the generation's life.
+    Yields nothing if no key is configured (caller falls back to the non-stream
+    path). Never raises -- a mid-stream failure just ends the generator."""
+    if not _anthropic_available():
+        return
+    from . import llm, rategate
+    label = " ".join(system.split()[:4])[:32]
+    t0 = time.monotonic()
+    try:
+        with rategate.gate(background=background):
+            with llm._client().messages.stream(
+                model=llm.MODEL,
+                max_tokens=max_tokens,
+                system=[{"type": "text", "text": system,
+                         "cache_control": {"type": "ephemeral"}}],
+                messages=[{"role": "user", "content": user}],
+            ) as stream:
+                for delta in stream.text_stream:
+                    yield delta.replace("—", ", ").replace("–", "-")
+        dt = time.monotonic() - t0
+        _btrace(f"llm stream ok in {dt:.1f}s [{label}…]")
+        _record_llm(label, dt * 1000, True)
+    except Exception as exc:  # noqa: BLE001 : streaming is best-effort
+        dt = time.monotonic() - t0
+        _btrace(f"llm stream ERR in {dt:.1f}s [{label}…]: "
+                f"{type(exc).__name__}: {exc}")
+        _record_llm(label, dt * 1000, False, f"{type(exc).__name__}: {exc}")
+        return
+
+
 # Caps how many BACKGROUND book LLM calls (assess + predraft) run at once. A
 # cold /today otherwise fires ~2N calls (N contacts x health+update) through one
 # Anthropic client simultaneously, saturating the HTTP connection pool: each

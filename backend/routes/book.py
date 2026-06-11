@@ -396,6 +396,60 @@ def draft(body: DraftIn, db: Session = Depends(get_db),
     return {"channel": body.channel, **msg}
 
 
+@router.post("/draft/stream")
+def draft_stream(body: DraftIn, db: Session = Depends(get_db),
+                 user: models.User = Depends(current_user)):
+    """Token-by-token streamed draft (live 'typing', like Claude). Real contacts
+    stream through the shared composer (voice + real thread); demo-book slugs fall
+    back to the heuristic emitted as one chunk. Bytes flow immediately and never
+    stop until done, so the edge timeout (524) can't fire.
+
+    Events: token {t} (append to the draft) · done {total_s} · error {detail}.
+    """
+    user_id = user.id
+    cid, nm = body.contact_id, body.name
+    trigger, channel = body.trigger, body.channel
+    name, role = _advisor_identity(user)
+
+    def gen():
+        yield ": open\n\n"  # flush headers immediately
+        from ..db import SessionLocal
+        wdb = SessionLocal()
+        t0 = time.monotonic()
+        streamed = False
+        try:
+            wuser = wdb.query(models.User).get(user_id)
+            orm = _find_contact_orm(wdb, wuser, cid)
+            if orm is not None:
+                from ..agents import drafting
+                for chunk in drafting.compose_stream(wdb, user_id, orm,
+                                                     reason=trigger, channel=channel):
+                    streamed = True
+                    yield f"event: token\ndata: {json.dumps({'t': chunk})}\n\n"
+            if not streamed:
+                # No real contact (demo slug) or no key: emit the heuristic body
+                # as a single chunk so the UI still gets a draft.
+                book = _load_book(wdb, wuser)
+                contact = _find_contact(book, contact_id=cid, name=nm) or \
+                    {"name": nm or "there", "title": "", "firm": "",
+                     "interaction_history": ""}
+                msg = book_agent.draft_message_cached(
+                    contact, trigger, channel=channel, user_name=name, user_role=role)
+                yield f"event: token\ndata: {json.dumps({'t': msg.get('body') or ''})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'total_s': round(time.monotonic()-t0, 1)})}\n\n"
+            _trace(f"POST /draft/stream user={user_id} to={nm!r} "
+                   f"in {time.monotonic()-t0:.1f}s (streamed={streamed})")
+        except Exception as exc:  # noqa: BLE001
+            yield f"event: error\ndata: {json.dumps({'detail': f'{type(exc).__name__}: {exc}'})}\n\n"
+            _trace(f"POST /draft/stream user={user_id} FAILED: {type(exc).__name__}: {exc}")
+        finally:
+            wdb.close()
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @router.post("/ask")
 def ask(body: AskIn, db: Session = Depends(get_db),
         user: models.User = Depends(current_user)):
