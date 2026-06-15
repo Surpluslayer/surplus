@@ -46,19 +46,27 @@ from __future__ import annotations
 import hmac
 import os
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session as DbSession
 
-from ..auth import DEMO_USER_EMAIL_DOMAIN, create_session, set_session_cookie
+from ..auth import DEMO_USER_EMAIL_DOMAIN, create_session, is_demo_user, set_session_cookie
 from ..db import get_db
-from ..models import User
+from ..demo_seed import build_demo_payload, seed_demo_workspace
+from ..hosts import is_first_party, is_inperson_host, request_browser_host
+from ..models import Event, Session, User
+from ..rate_limit import per_ip_rate_limit
 
 
 router = APIRouter(prefix="/api/demo", tags=["demo"])
+
+# Anonymous user-creation rate limit for the public /demo door : ~6/min per IP.
+# A real visitor opens the walkthrough once; a bot trying to flood the users
+# table with demo rows gets blocked. Mirrors routes/auth.py's anonymous limits.
+_rl_demo_start = per_ip_rate_limit(limit=6, window_s=60, tag="demo_start")
 
 # DEMO_USER_EMAIL_DOMAIN lives in auth.py (single source of truth shared with
 # the /me is_demo check). Emails live in our DB only : nothing is ever sent to
@@ -209,3 +217,98 @@ def demo_enter(
         response.headers[k] = v
     set_session_cookie(response, sess.session_token)
     return response
+
+
+# ─── Public walkthrough door : event.surpluslayer.com/demo ────────────
+#
+# The token-gated /enter above is for hand-shared private links. The /demo
+# walkthrough is the opposite : a PUBLIC, no-key door we want anyone to be able
+# to open from a shared URL. It mints a fresh, isolated, LinkedIn-LESS demo user
+# (so real sends stay 402-blocked), seeds an in-person workspace + book, and
+# returns the script the guided coach-mark tour renders. The visitor converts
+# whenever they want by connecting LinkedIn (the persistent banner), which lands
+# them on the regular app with onboarding armed.
+#
+# Gated to the in-person host (event.surpluslayer.com) or a non-first-party dev
+# host (localhost / *.railway.app / *.fly.dev preview) so the public door never
+# opens on the apex product — exactly like routes/auth.py:inperson_guest.
+
+def _demo_ttl_hours() -> int:
+    """Hours a demo workspace lives before it's eligible for cleanup. 0 disables
+    cleanup. Env-tunable so staging can keep demos around longer for inspection."""
+    try:
+        return max(0, int((os.environ.get("DEMO_TTL_HOURS") or "48").strip()))
+    except ValueError:
+        return 48
+
+
+def _cleanup_stale_demo_users(db: DbSession) -> None:
+    """Best-effort sweep of expired per-visit demo users so the public door
+    can't grow the users table without bound. Deletes the demo user's owned
+    events (cascade drops their prospects/edges) and sessions, then the user.
+
+    Bounded (a small batch per call) and fully wrapped so a cleanup hiccup can
+    never break a fresh visitor's demo start. Only ever touches rows on the
+    isolated demo email domain.
+    """
+    ttl = _demo_ttl_hours()
+    if not ttl:
+        return
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=ttl)
+    try:
+        stale = (
+            db.query(User)
+            .filter(User.email.like(f"%@{DEMO_USER_EMAIL_DOMAIN}"))
+            .filter(User.last_login_at.isnot(None))
+            .filter(User.last_login_at < cutoff)
+            .limit(20)
+            .all()
+        )
+        for u in stale:
+            if not is_demo_user(u):  # defensive : never touch a real row
+                continue
+            for ev in db.query(Event).filter(Event.user_id == u.id).all():
+                db.delete(ev)  # cascade drops prospects/edges/applicants/sponsors
+            db.query(Session).filter(Session.user_id == u.id).delete(
+                synchronize_session=False)
+            db.delete(u)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        print(f"  [demo.cleanup] skipped : {type(exc).__name__}: {exc}")
+
+
+@router.post("/start", dependencies=[Depends(_rl_demo_start)])
+def demo_start(request: Request, db: DbSession = Depends(get_db)) -> JSONResponse:
+    """Open the public walkthrough : mint an isolated demo session + seed data,
+    return the guided-tour script. 403 on the apex product host."""
+    host = request_browser_host(request)
+    # Allow the in-person host (event.*) and any non-first-party dev/preview
+    # host (localhost, *.railway.app, *.fly.dev). Block the apex product so the
+    # public door only exists where the walkthrough is meant to live.
+    if is_first_party(host) and not is_inperson_host(host):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "the demo walkthrough is only available on "
+                               "event.surpluslayer.com"},
+            headers=_NO_STORE,
+        )
+
+    _cleanup_stale_demo_users(db)
+
+    demo_user = _mint_demo_user(db)
+    try:
+        seed_demo_workspace(db, demo_user)
+    except Exception as exc:  # noqa: BLE001
+        # The tour is script-driven (payload below), so a seed hiccup must not
+        # block the walkthrough : log and continue with an empty workspace.
+        db.rollback()
+        print(f"  [demo.start] seed failed : {type(exc).__name__}: {exc}")
+
+    sess = create_session(db, demo_user)
+    resp = JSONResponse(
+        {"ok": True, "user_id": demo_user.id, "demo": build_demo_payload()},
+        headers=_NO_STORE,
+    )
+    set_session_cookie(resp, sess.session_token, host=host)
+    return resp

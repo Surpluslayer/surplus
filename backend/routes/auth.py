@@ -296,7 +296,12 @@ async def linkedin_start(
     # the callback merges the LinkedIn fields into the existing row (preserving
     # paid_at / session) instead of creating a duplicate. Anonymous callers
     # leave it None : the callback upserts by LinkedIn identifiers / email.
-    if active_user is not None:
+    #
+    # Demo users are the exception : a /demo visitor signing in must get a
+    # FRESH real account, never adopt the throwaway demo row (which would drag
+    # the seeded demo workspace into their real account). Leaving user_id None
+    # routes them through the normal dedup/create path.
+    if active_user is not None and not is_demo_user(active_user):
         auth_state.user_id = active_user.id
 
     returning = _resolve_returning_user(request, db)
@@ -378,8 +383,10 @@ async def _mint_connect_link(
         db, (request.cookies.get(SESSION_COOKIE) or "").strip() or None
     )
     # Pre-tag so the callback merges LinkedIn fields into the existing row
-    # instead of orphaning it. See linkedin_start() for the rationale.
-    if active_user is not None:
+    # instead of orphaning it. See linkedin_start() for the rationale. Demo
+    # users are skipped so a /demo → connect flow mints a fresh real account
+    # instead of adopting the throwaway demo row (and its seed data).
+    if active_user is not None and not is_demo_user(active_user):
         auth_state.user_id = active_user.id
 
     returning = _resolve_returning_user(request, db)

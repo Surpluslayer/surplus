@@ -593,6 +593,11 @@ export const api = {
   // flow works on event.surpluslayer.com without signing in (real sends stay
   // blocked until LinkedIn is connected). 403s on non-in-person hosts.
   inpersonGuest: () => request("/api/auth/inperson/guest", { method: "POST" }),
+  // public walkthrough (event.surpluslayer.com/demo) : mint an isolated,
+  // LinkedIn-less demo session + seed an in-person workspace/book, and return
+  // the guided-tour script { event_label, advisor_name, people:[...] }. No
+  // sign-in, no key. 403s on the apex product host.
+  demoStart: () => request("/api/demo/start", { method: "POST" }),
   // billing : start a Stripe Checkout Session and return { url } to redirect to.
   startCheckout: () => request("/api/billing/checkout-session", { method: "POST" }),
   // Triage-only signup : no LinkedIn / Unipile required. Creates a User
