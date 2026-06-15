@@ -24,7 +24,37 @@ function wantsLegacy() {
   } catch { return false; }
 }
 
-if (wantsLegacy()) {
+// The public, no-sign-in walkthrough lives at /demo. It's its own lazy chunk
+// so the default BookApp path never downloads the guided-tour bundle.
+function wantsDemo() {
+  try {
+    const p = window.location.pathname || "";
+    return p === "/demo" || p.startsWith("/demo/");
+  } catch { return false; }
+}
+
+function mountLazy(loader) {
+  loader().then(({ default: App }) => {
+    ReactDOM.createRoot(document.getElementById("root")).render(
+      <React.StrictMode>
+        <ErrorBoundary>
+          <App />
+        </ErrorBoundary>
+      </React.StrictMode>
+    );
+  }).catch(() => {
+    const el = document.getElementById("root");
+    if (el) el.innerHTML =
+      '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:Inter,system-ui,sans-serif">' +
+      '<button onclick="window.location.reload()" style="font-size:15px;padding:10px 22px;border-radius:999px;border:0.5px solid #d6dae1;background:#14171c;color:#fff;cursor:pointer">Reload</button></div>';
+  });
+}
+
+if (wantsDemo()) {
+  // Plain dynamic import so Vite code-splits DemoApp into its own hashed chunk
+  // (loaded only on /demo) and rewrites the path for production.
+  mountLazy(() => import("./DemoApp.jsx"));
+} else if (wantsLegacy()) {
   // @vite-ignore prevents Vite from statically analysing this path and adding
   // InPersonApp to the preload graph — 99% of users are on BookApp and should
   // never download the legacy surface's 186KB chunk.
