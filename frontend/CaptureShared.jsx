@@ -962,11 +962,11 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
               maxWidth: 360, width: "100%", textAlign: "center",
               boxShadow: "0 16px 48px rgba(0,0,0,.28)" }}>
             <p style={{ font: "700 18px Inter, system-ui, sans-serif", margin: "0 0 6px", color: "#0a0c10" }}>
-              Sign in to send for real
+              Connect LinkedIn to send
             </p>
             <p style={{ color: "#5b6472", font: "400 14px/1.45 Inter, system-ui, sans-serif", margin: "0 0 18px" }}>
-              You're exploring a demo — your draft for {p.name || "this contact"} is saved.
-              Connect your LinkedIn to actually send.
+              Your draft for {p.name || "this contact"} is saved. Connect your LinkedIn
+              account to send it for real.
             </p>
             <button onClick={() => { window.location.href = "/api/auth/linkedin/start-redirect"; }}
               style={{ display: "inline-flex", alignItems: "center", justifyContent: "center",
@@ -978,7 +978,7 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
             <button onClick={() => setSigninPrompt(false)}
               style={{ marginTop: 12, border: 0, background: "none", color: "#8a93a0",
                 font: "500 13px Inter, system-ui, sans-serif", cursor: "pointer" }}>
-              Keep exploring
+              Not now
             </button>
           </div>
         </div>
