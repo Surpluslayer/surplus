@@ -157,7 +157,15 @@ function TodayView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
     <div className="bk-scroll">
       <header className="bk-topbar">
         <div>
-          <p className="bk-eyebrow">{_today_long()}</p>
+          <p className="bk-eyebrow">
+            {_today_long()}
+            {/* Deploy-pipeline probe: a deliberately visible, harmless marker so
+                we can confirm a frontend change actually shipped to
+                event.surpluslayer.com. Safe to remove once the deploy is verified. */}
+            <span style={{ marginLeft: 8, opacity: 0.5, fontWeight: 600 }}>
+              · deploy check ✓
+            </span>
+          </p>
           <p className="bk-display">Your book today</p>
         </div>
         <Avatar user={user} feed={feed} onAccount={onAccount} />
