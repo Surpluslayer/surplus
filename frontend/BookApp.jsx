@@ -26,7 +26,7 @@ import { api } from "./lib/api.js";
 import {
   CaptureScreen, ScanResult, SignInBounce, IP_CSS,
   loadActiveEvent, saveActiveEvent, loadRecentLabels, pushRecentLabel,
-} from "./InPersonApp.jsx";
+} from "./CaptureShared.jsx";
 import { StageChip } from "./components/ContactsPage.jsx";
 
 // Health word + colour token by relationship status.
