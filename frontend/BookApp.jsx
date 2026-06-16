@@ -16,9 +16,9 @@
 // Backed by /api/book/* (routes/book.py → agents/book.py) and /api/auth/me.
 // Self-contained (own CSS + design tokens) so it stays isolated from the event
 // flow — same pattern as InPersonApp.
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
-  Sparkles, ArrowUp, Star, LayoutDashboard, Plus, BookText, Loader2, X,
+  Sparkles, ArrowUp, ArrowRight, Star, LayoutDashboard, Plus, BookText, Loader2, X,
   ChevronLeft, ChevronRight, ChevronDown, MapPin, QrCode, Link2, Search, Send,
   Mail, Calendar, Plug, CreditCard, LogOut, CheckCircle2,
 } from "lucide-react";
@@ -75,6 +75,34 @@ export default function BookApp() {
     api.bookToday().then(setFeed).catch((e) => setErr(e.message || String(e)));
   }, []);
 
+  // ── Demo onboarding coach ─────────────────────────────────────────────────
+  // The public /demo session (user.is_demo) gets a guided six-step tour that
+  // pops up over the real Book surface: add a contact, find them, send a
+  // message, ask the agent a question, send a message, then check the
+  // relationship list. We persist a dismissal flag in localStorage so it shows
+  // once per browser rather than on every reload of the seeded demo.
+  const [onbStep, setOnbStep] = useState(0);
+  const [onbOn, setOnbOn] = useState(false);
+  useEffect(() => {
+    if (!user || typeof user !== "object" || !user.is_demo) return;
+    let dismissed = false;
+    try { dismissed = !!localStorage.getItem("surplus_demo_onb"); } catch {}
+    if (dismissed) return;
+    setOnbStep(0);
+    setOnbOn(true);
+  }, [user]);
+  const onbGo = (i) => {
+    const next = Math.min(Math.max(i, 0), BK_ONB_STEPS.length - 1);
+    setOnbStep(next);
+    // Put the screen the step points at in front of the visitor.
+    setRoute(null);
+    setTab(BK_ONB_STEPS[next].tab);
+  };
+  const onbClose = (reason) => {
+    setOnbOn(false);
+    try { localStorage.setItem("surplus_demo_onb", reason || "done"); } catch {}
+  };
+
   // Signed out → the same LinkedIn sign-in bounce as the event surface (this
   // is the shell event hosts serve, so it must gate, not error).
   if (user === undefined) return <SignInBounce />;
@@ -121,11 +149,13 @@ export default function BookApp() {
                   onClick={() => goTab("today")}>
             <LayoutDashboard size={19} /><span>Today</span>
           </button>
-          <button className={"bk-nav-add" + (activeNav === "add" ? " on" : "")}
+          <button data-onb="add"
+                  className={"bk-nav-add" + (activeNav === "add" ? " on" : "")}
                   onClick={() => goTab("add")} aria-label="Add contact">
             <span className="bk-fab"><Plus size={22} /></span><span>Add</span>
           </button>
-          <button className={"bk-nav-item" + (activeNav === "book" ? " on" : "")}
+          <button data-onb="book"
+                  className={"bk-nav-item" + (activeNav === "book" ? " on" : "")}
                   onClick={() => goTab("book")}>
             <BookText size={19} /><span>Book</span>
           </button>
@@ -133,6 +163,8 @@ export default function BookApp() {
       </div>
 
       {draftFor && <DraftSheet draft={draftFor} onClose={() => setDraftFor(null)} />}
+
+      {onbOn && <BookOnboarding step={onbStep} onGo={onbGo} onClose={onbClose} />}
     </div>
   );
 }
@@ -262,7 +294,7 @@ function BookView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
         <Avatar user={user} feed={feed} onAccount={onAccount} />
       </header>
 
-      <div className="bk-ask-wrap">
+      <div className="bk-ask-wrap" data-onb="search">
         <div className="bk-ask">
           <Search size={17} className="bk-ask-spark" />
           <input className="bk-ask-input" placeholder="Search your book…"
@@ -742,7 +774,8 @@ function AskBar({ variant, onOpen, onDraft }) {
   );
 
   return (
-    <div className={variant === "card" ? "bk-assistant" : "bk-ask-wrap"}>
+    <div className={variant === "card" ? "bk-assistant" : "bk-ask-wrap"}
+         data-onb={variant === "bar" ? "ask" : undefined}>
       {variant === "card" ? (
         <>
           <div className="bk-assistant-head"><Sparkles size={16} /><span>Relationship assistant</span></div>
@@ -989,7 +1022,8 @@ function Health({ status, word }) {
 
 function DraftLink({ onClick }) {
   return (
-    <button className="bk-draft" onClick={(e) => { e.stopPropagation(); onClick(); }}>
+    <button data-onb="draft" className="bk-draft"
+            onClick={(e) => { e.stopPropagation(); onClick(); }}>
       Draft <span aria-hidden>→</span>
     </button>
   );
@@ -1057,6 +1091,137 @@ function _rel_time(iso) {
   if (day < 2) return "Yesterday";
   if (day < 7) return d.toLocaleDateString(undefined, { weekday: "long" });
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// ── demo onboarding coach ─────────────────────────────────────────────────────
+//
+// A guided six-step tour that pops up over the real Book surface for /demo
+// visitors. Each step anchors to a live control by [data-onb] selector,
+// highlights it with a pulsing ring, and explains the next thing to do. The
+// card is ambient (the underlying UI stays clickable) and the BookApp shell
+// switches to the right tab as the visitor advances, so the highlighted
+// control is always on screen. Mirrors the in-person OnboardingCoach pattern.
+
+const BK_ONB_STEPS = [
+  {
+    key: "add", tab: "today", anchor: "add", place: "top",
+    title: "Add contacts",
+    body: "Start by capturing someone you met. Tap Add to scan their LinkedIn QR or paste their profile.",
+  },
+  {
+    key: "find", tab: "book", anchor: "search", place: "bottom",
+    title: "Find them",
+    body: "Everyone you capture lands in your book. Search by name, firm, or event to find anyone fast.",
+  },
+  {
+    key: "send", tab: "today", anchor: "draft", place: "bottom",
+    title: "Send a message",
+    body: "Surplus drafts a follow-up in your voice. Tap Draft on anyone who needs outreach to review it.",
+  },
+  {
+    key: "ask", tab: "today", anchor: "ask", place: "bottom",
+    title: "Ask the agent a question",
+    body: "Ask your agent anything — like who to follow up with. It reads your whole book to answer.",
+  },
+  {
+    key: "send2", tab: "today", anchor: "draft", place: "bottom",
+    title: "Send a message",
+    body: "Happy with the draft? Hit Send and Surplus delivers it for you — no copy-paste.",
+  },
+  {
+    key: "list", tab: "book", anchor: "book", place: "top",
+    title: "Check your relationship list",
+    body: "Open Book any time to see every relationship, sorted by who needs attention.",
+    final: true, cta: "Got it",
+  },
+];
+
+const BK_ONB_CARD_W = 300;
+
+function bkOnbCardStyle(rect, place) {
+  const vw = typeof window !== "undefined" ? window.innerWidth : 380;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 720;
+  const w = Math.min(BK_ONB_CARD_W, vw - 24);
+  const base = { position: "fixed", width: w, zIndex: 60 };
+  if (!rect) {
+    // No live anchor yet : float as a toast above the bottom tab bar.
+    return { ...base, left: "50%", bottom: 96, transform: "translateX(-50%)" };
+  }
+  let left = rect.left + rect.width / 2 - w / 2;
+  left = Math.max(10, Math.min(left, vw - w - 10));
+  const NEED = 200;
+  const spaceBelow = vh - rect.bottom;
+  const spaceAbove = rect.top;
+  let above;
+  if (place === "top") above = spaceAbove >= NEED || spaceAbove >= spaceBelow;
+  else above = !(spaceBelow >= NEED || spaceBelow >= spaceAbove);
+  const style = { ...base, left };
+  if (above) style.bottom = vh - rect.top + 12;
+  else style.top = rect.bottom + 12;
+  return style;
+}
+
+function BookOnboarding({ step, onGo, onClose }) {
+  const total = BK_ONB_STEPS.length;
+  const idx = Math.min(Math.max(step | 0, 0), total - 1);
+  const def = BK_ONB_STEPS[idx];
+  const [rect, setRect] = useState(null);
+  const selector = `[data-onb="${def.anchor}"]`;
+
+  // Poll the anchor's rect — the underlying app re-renders as the visitor acts.
+  useEffect(() => {
+    const measure = () => {
+      const el = document.querySelector(selector);
+      if (el) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) { setRect(r); return; }
+      }
+      setRect(null);
+    };
+    measure();
+    const id = setInterval(measure, 250);
+    window.addEventListener("scroll", measure, true);
+    window.addEventListener("resize", measure);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("scroll", measure, true);
+      window.removeEventListener("resize", measure);
+    };
+  }, [selector]);
+
+  const next = () => { if (def.final) onClose("done"); else onGo(idx + 1); };
+  const back = () => { if (idx > 0) onGo(idx - 1); };
+
+  return (
+    <div className="bk-onb" role="dialog" aria-label="Getting started">
+      {rect && (
+        <div className="bk-onb-ring" style={{
+          position: "fixed", top: rect.top - 6, left: rect.left - 6,
+          width: rect.width + 12, height: rect.height + 12,
+        }} />
+      )}
+      <div className={"bk-onb-card" + (rect ? "" : " floating")}
+           style={bkOnbCardStyle(rect, def.place)}>
+        <div className="bk-onb-top">
+          <span className="bk-onb-progress"><Sparkles size={13} /> Step {idx + 1} of {total}</span>
+          <button className="bk-onb-x" onClick={() => onClose("skipped")} aria-label="Skip the tour">
+            <X size={15} />
+          </button>
+        </div>
+        <div className="bk-onb-title">{def.title}</div>
+        <div className="bk-onb-body">{def.body}</div>
+        <div className="bk-onb-actions">
+          <button className="bk-onb-skip" onClick={() => onClose("skipped")}>Skip tour</button>
+          <div className="bk-onb-nav">
+            {idx > 0 && <button className="bk-onb-back" onClick={back}>Back</button>}
+            <button className="bk-onb-next" onClick={next}>
+              {def.final ? def.cta : "Next"} <ArrowRight size={15} />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── styles (ported from surplus-design.html design tokens) ────────────────────
@@ -1333,4 +1498,37 @@ const BOOK_CSS = `
   color:var(--success); white-space:nowrap;}
 .bk-note{font-size:11px; color:var(--faint); margin:0 18px 14px; line-height:1.5;}
 .bk-note--warn{color:var(--warning);}
+
+/* demo onboarding coach : ambient (the underlying UI stays clickable) */
+.bk-onb{position:fixed; inset:0; z-index:58; pointer-events:none;}
+.bk-onb-ring{border:2px solid var(--accent); border-radius:14px; z-index:59;
+  pointer-events:none; box-shadow:0 0 0 3px rgba(47,109,246,.18),
+  0 0 0 9999px rgba(20,23,28,.12); animation:bkonbpulse 1.6s ease-in-out infinite;}
+@keyframes bkonbpulse{0%,100%{box-shadow:0 0 0 3px rgba(47,109,246,.18),
+  0 0 0 9999px rgba(20,23,28,.12);} 50%{box-shadow:0 0 0 6px rgba(47,109,246,.10),
+  0 0 0 9999px rgba(20,23,28,.12);}}
+.bk-onb-card{pointer-events:auto; background:var(--bg); border:.5px solid var(--line-2);
+  border-radius:var(--r-lg); padding:14px 15px 13px; box-shadow:0 12px 34px rgba(20,23,28,.18);
+  font-family:var(--font-ui);}
+.bk-onb-card.floating{box-shadow:0 14px 40px rgba(20,23,28,.25);}
+.bk-onb-top{display:flex; align-items:center; justify-content:space-between;}
+.bk-onb-progress{display:inline-flex; align-items:center; gap:5px; font-size:11px;
+  font-weight:600; color:var(--accent); text-transform:uppercase; letter-spacing:.04em;}
+.bk-onb-x{background:none; border:0; color:var(--muted); cursor:pointer; padding:2px;
+  line-height:0; border-radius:6px;}
+.bk-onb-x:active{background:var(--surface);}
+.bk-onb-title{font-family:var(--font-display); font-size:18px; font-weight:400;
+  color:var(--ink); margin:7px 0 4px;}
+.bk-onb-body{font-size:13px; line-height:1.5; color:var(--muted);}
+.bk-onb-actions{display:flex; align-items:center; justify-content:space-between;
+  margin-top:13px; gap:10px;}
+.bk-onb-skip{background:none; border:0; color:var(--faint); font-size:12px;
+  cursor:pointer; padding:6px 2px; font-family:var(--font-ui);}
+.bk-onb-nav{display:flex; align-items:center; gap:8px;}
+.bk-onb-back{background:none; border:0; color:var(--ink); font-size:13px;
+  font-weight:500; cursor:pointer; padding:8px 6px; font-family:var(--font-ui);}
+.bk-onb-next{display:inline-flex; align-items:center; gap:5px; background:var(--accent);
+  color:#fff; border:0; border-radius:var(--r-md); padding:9px 14px;
+  font-size:13px; font-weight:500; cursor:pointer; font-family:var(--font-ui);}
+.bk-onb-next:active{transform:scale(.98);}
 `;
