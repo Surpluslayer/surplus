@@ -86,15 +86,14 @@ export default function BookApp() {
   // The public /demo session (user.is_demo) gets a guided six-step tour that
   // pops up over the real Book surface: add a contact, find them, send a
   // message, ask the agent a question, send a message, then check the
-  // relationship list. We persist a dismissal flag in localStorage so it shows
-  // once per browser rather than on every reload of the seeded demo.
+  // relationship list. The tour arms on every fresh load of the demo link so
+  // opening /demo always starts the walkthrough — the demo session only exists
+  // on that link, so real signed-in users never see it. Dismiss / skip hides
+  // it for the current visit; reopening the link shows it again.
   const [onbStep, setOnbStep] = useState(0);
   const [onbOn, setOnbOn] = useState(false);
   useEffect(() => {
     if (!user || typeof user !== "object" || !user.is_demo) return;
-    let dismissed = false;
-    try { dismissed = !!localStorage.getItem("surplus_demo_onb"); } catch {}
-    if (dismissed) return;
     setOnbStep(0);
     setOnbOn(true);
   }, [user]);
@@ -105,10 +104,7 @@ export default function BookApp() {
     setRoute(null);
     setTab(BK_ONB_STEPS[next].tab);
   };
-  const onbClose = (reason) => {
-    setOnbOn(false);
-    try { localStorage.setItem("surplus_demo_onb", reason || "done"); } catch {}
-  };
+  const onbClose = () => setOnbOn(false);
 
   // Signed out → the same LinkedIn sign-in bounce as the event surface (this
   // is the shell event hosts serve, so it must gate, not error).
@@ -1196,7 +1192,7 @@ function BookOnboarding({ step, onGo, onClose }) {
     };
   }, [selector]);
 
-  const next = () => { if (def.final) onClose("done"); else onGo(idx + 1); };
+  const next = () => { if (def.final) onClose(); else onGo(idx + 1); };
   const back = () => { if (idx > 0) onGo(idx - 1); };
 
   return (
@@ -1211,7 +1207,7 @@ function BookOnboarding({ step, onGo, onClose }) {
            style={bkOnbCardStyle(rect, def.place)}>
         <div className="bk-onb-top">
           <span className="bk-onb-progress"><Sparkles size={13} /> Step {idx + 1} of {total}</span>
-          <button className="bk-onb-x" onClick={() => onClose("skipped")} aria-label="Skip the tour">
+          <button className="bk-onb-x" onClick={() => onClose()} aria-label="Dismiss the tour">
             <X size={15} />
           </button>
         </div>
