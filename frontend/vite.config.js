@@ -29,6 +29,15 @@ export default defineConfig({
         main: resolve(__dirname, "index.html"),
         inperson: resolve(__dirname, "inperson.html"),
       },
+      output: {
+        // Keep BookApp in its own hashed chunk (BookApp-*.js). The desktop
+        // entry no longer dynamically imports it, so without this it inlines
+        // into the event entry and /api/health can't fingerprint the shipped
+        // book bundle (frontend_book_bundle / frontend_has_redesign go null).
+        manualChunks(id) {
+          if (id.includes("/BookApp.jsx")) return "BookApp";
+        },
+      },
     },
   },
 });

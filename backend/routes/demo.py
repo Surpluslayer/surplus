@@ -294,7 +294,12 @@ def demo_start(request: Request, db: DbSession = Depends(get_db)) -> JSONRespons
             headers=_NO_STORE,
         )
 
-    _cleanup_stale_demo_users(db)
+    # NOTE: stale-demo cleanup is deliberately NOT run here. It does a
+    # leading-wildcard scan of users + ORM cascade-deletes, which on the public
+    # (bot-hit) /demo door serialized behind a single worker + small DB pool and
+    # hung the walkthrough start (every visitor paid to clean up other visitors'
+    # data, blocking on row locks). Cleanup belongs on a cron, not the hot path.
+    # _cleanup_stale_demo_users(db)  # -> move to the hourly admin cron
 
     demo_user = _mint_demo_user(db)
     try:
