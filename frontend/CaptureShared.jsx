@@ -701,6 +701,7 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
   const [vip, setVip] = useState(!!p.vip);                       // icon-only star
   const [busy, setBusy] = useState("");      // "" | "send" | "save" | "personalize" | "nonote"
   const [err, setErr] = useState("");
+  const [signinPrompt, setSigninPrompt] = useState(false);  // demo: gate Send -> sign in
   // The draft on screen was composed BEFORE the fun fact was typed. Track
   // whether the saved fun fact still matches what produced the current draft.
   const [draftFromNote, setDraftFromNote] = useState(p.note || "");
@@ -925,9 +926,10 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
       {/* Connect is the one obvious action. "Save for later" and the bare-invite
           variant are secondary. The first message is drafted later in People. */}
       <div className="ip-actions">
-        <button data-onb="send" className="ip-btn primary lg" onClick={() => send(false)}
-                disabled={!!busy || !canSend}
-                title={canSend ? "" : "Connect LinkedIn to send"}>
+        <button data-onb="send" className="ip-btn primary lg"
+                onClick={() => (canSend ? send(false) : setSigninPrompt(true))}
+                disabled={!!busy}
+                title={canSend ? "" : "Sign in to send"}>
           {busy === "send" ? <Loader2 className="spin" size={18} />
             : <><Send size={18} /> Connect on LinkedIn</>}
         </button>
@@ -936,10 +938,11 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
             {busy === "save" ? <Loader2 className="spin" size={15} />
               : <><Bookmark size={15} /> Save for later</>}
           </button>
-          <button className="ip-btn ghost sm" onClick={() => send(true)}
-                  disabled={!!busy || !canSend}
+          <button className="ip-btn ghost sm"
+                  onClick={() => (canSend ? send(true) : setSigninPrompt(true))}
+                  disabled={!!busy}
                   title={canSend ? "Send a bare invite; the message goes out once accepted"
-                                : "Connect LinkedIn to send"}>
+                                : "Sign in to send"}>
             {busy === "nonote" ? <Loader2 className="spin" size={15} />
               : "Connect, no note"}
           </button>
@@ -949,6 +952,37 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
       <div className="ip-dim ip-center ip-laterhint">
         You can also edit any of this later from <b>Relationship</b>.
       </div>
+      {signinPrompt && (
+        <div onClick={() => setSigninPrompt(false)}
+          style={{ position: "fixed", inset: 0, background: "rgba(10,12,16,.5)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            zIndex: 1000, padding: 22 }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ background: "#fff", borderRadius: 18, padding: "26px 22px",
+              maxWidth: 360, width: "100%", textAlign: "center",
+              boxShadow: "0 16px 48px rgba(0,0,0,.28)" }}>
+            <p style={{ font: "700 18px Inter, system-ui, sans-serif", margin: "0 0 6px", color: "#0a0c10" }}>
+              Sign in to send for real
+            </p>
+            <p style={{ color: "#5b6472", font: "400 14px/1.45 Inter, system-ui, sans-serif", margin: "0 0 18px" }}>
+              You're exploring a demo — your draft for {p.name || "this contact"} is saved.
+              Connect your LinkedIn to actually send.
+            </p>
+            <button onClick={() => { window.location.href = "/api/auth/linkedin/start-redirect"; }}
+              style={{ display: "inline-flex", alignItems: "center", justifyContent: "center",
+                gap: 8, width: "100%", border: 0, borderRadius: 999, padding: "12px 18px",
+                background: "#0a66c2", color: "#fff", font: "600 15px Inter, system-ui, sans-serif",
+                cursor: "pointer" }}>
+              <img src="/linkedin-icon.png" width={18} height={18} alt="" /> Sign in with LinkedIn
+            </button>
+            <button onClick={() => setSigninPrompt(false)}
+              style={{ marginTop: 12, border: 0, background: "none", color: "#8a93a0",
+                font: "500 13px Inter, system-ui, sans-serif", cursor: "pointer" }}>
+              Keep exploring
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

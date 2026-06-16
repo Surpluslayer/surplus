@@ -556,26 +556,48 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
             # Draft the top few, emitting each as it lands. Build DB contexts
             # SERIALLY (session not thread-safe), then fan the pure-LLM calls out.
             inline = max(0, int(os.environ.get("ASK_INLINE_DRAFTS", "6")))
-            targets = []
+            name_, role_ = _advisor_identity(wuser)
+            targets = []        # real ORM contacts -> token-stream via shared composer
+            heuristic = []      # demo-book / no-ORM people -> one-shot agent draft
             for idx, p in enumerate(people[:inline]):
                 bd = by_name.get((p.get("name") or "").strip().lower())
                 orm = orm_by_id.get(str(bd.get("id"))) if bd else None
                 if orm is not None:
                     targets.append((idx, p, drafting.build_context(wdb, user_id, orm)))
-            if targets:
-                # Token-stream every card: each person's draft TYPES OUT (tagged
-                # by index) instead of popping in complete. The threads each emit
-                # `token {index,t}` deltas onto the shared queue, then a `person`
-                # marker; the gate bounds concurrency so this can't burst.
-                def _stream_one(idx, p, ctx):
-                    events.put(("status", {"phase": "drafting", "name": p.get("name")}))
-                    for delta in drafting.stream_from_context(
-                            ctx, p.get("reason") or "following up", "email"):
-                        events.put(("token", {"index": idx, "t": delta}))
-                    events.put(("person", {"index": idx, "contact_id": p.get("contact_id"),
-                                           "name": p.get("name")}))
+                elif bd is not None:
+                    heuristic.append((idx, p, bd))
+
+            # Real contacts type out token-by-token through the shared composer
+            # (voice + real prior thread). Demo-book / no-thread people are drafted
+            # by the book agent (one LLM call) and emitted as a single chunk so
+            # their card still fills in -- otherwise the demo shows reasons with no
+            # drafted message (the "agent isn't drafting" bug).
+            def _stream_one(idx, p, ctx):
+                events.put(("status", {"phase": "drafting", "name": p.get("name")}))
+                for delta in drafting.stream_from_context(
+                        ctx, p.get("reason") or "following up", "email"):
+                    events.put(("token", {"index": idx, "t": delta}))
+                events.put(("person", {"index": idx, "contact_id": p.get("contact_id"),
+                                       "name": p.get("name")}))
+
+            def _heuristic_one(idx, p, bd):
+                events.put(("status", {"phase": "drafting", "name": p.get("name")}))
+                try:
+                    msg = book_agent.draft_message_cached(
+                        bd, p.get("reason") or "following up", channel="email",
+                        user_name=name_, user_role=role_)
+                    body_ = (msg or {}).get("body") or ""
+                    if body_:
+                        events.put(("token", {"index": idx, "t": body_}))
+                except Exception:  # noqa: BLE001
+                    pass
+                events.put(("person", {"index": idx, "contact_id": p.get("contact_id"),
+                                       "name": p.get("name")}))
+
+            if targets or heuristic:
                 with ThreadPoolExecutor(max_workers=6) as ex:
                     futs = [ex.submit(_stream_one, idx, p, ctx) for idx, p, ctx in targets]
+                    futs += [ex.submit(_heuristic_one, idx, p, bd) for idx, p, bd in heuristic]
                     for fut in as_completed(futs):
                         try:
                             fut.result()
