@@ -302,17 +302,27 @@ def demo_start(request: Request, db: DbSession = Depends(get_db)) -> JSONRespons
     # _cleanup_stale_demo_users(db)  # -> move to the hourly admin cron
 
     demo_user = _mint_demo_user(db)
+    seeded_event = None
     try:
-        seed_demo_workspace(db, demo_user)
+        seeded_event = seed_demo_workspace(db, demo_user)
     except Exception as exc:  # noqa: BLE001
         # The tour is script-driven (payload below), so a seed hiccup must not
         # block the walkthrough : log and continue with an empty workspace.
         db.rollback()
         print(f"  [demo.start] seed failed : {type(exc).__name__}: {exc}")
 
+    # Hand back the seeded event so the client can pre-select it as the active
+    # in-person event. Without this the Add screen falls back to a stale/foreign
+    # sessionStorage event and every capture 404s ("Event not found") because
+    # the fresh demo user doesn't own it.
+    event_payload = None
+    if seeded_event is not None:
+        event_payload = {"event_id": seeded_event.id, "label": seeded_event.label}
+
     sess = create_session(db, demo_user)
     resp = JSONResponse(
-        {"ok": True, "user_id": demo_user.id, "demo": build_demo_payload()},
+        {"ok": True, "user_id": demo_user.id, "demo": build_demo_payload(),
+         "event": event_payload},
         headers=_NO_STORE,
     )
     set_session_cookie(resp, sess.session_token, host=host)

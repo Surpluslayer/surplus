@@ -7,6 +7,7 @@ import ReactDOM from "react-dom/client";
 import BookApp from "./BookApp.jsx";
 import { ErrorBoundary, installPreloadRecovery } from "./lib/resilience.jsx";
 import { api } from "./lib/api.js";
+import { saveActiveEvent } from "./CaptureShared.jsx";
 
 // Analytics (PostHog) loads lazily after first paint — event wifi should never
 // wait on a telemetry bundle.
@@ -43,7 +44,16 @@ if (wantsDemo()) {
   // Book. BookApp shows the "exploring with sample data / sign in" banner for
   // demo users. .finally so a start hiccup still renders (Book gates to sign-in
   // if there's no session).
-  api.demoStart().catch(() => {}).finally(mountBook);
+  api.demoStart()
+    .then((r) => {
+      // Pre-select the demo's seeded event as the active in-person event so the
+      // Add flow captures into a valid, OWNED event. Without this the Add screen
+      // falls back to a stale/foreign sessionStorage event and every capture
+      // 404s ("Event not found") for the fresh demo user.
+      if (r && r.event && r.event.event_id) saveActiveEvent(r.event);
+    })
+    .catch(() => {})
+    .finally(mountBook);
 } else {
   mountBook();
 }
