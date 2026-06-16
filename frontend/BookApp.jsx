@@ -29,6 +29,13 @@ import {
 } from "./CaptureShared.jsx";
 import { StageChip } from "./components/ContactsPage.jsx";
 
+// Demo → real conversion: send the visitor into the connect-first LinkedIn
+// flow (same entry the send-gate uses). The callback returns them to the real
+// event.surpluslayer.com app with onboarding armed.
+function signInWithLinkedIn() {
+  window.location.href = "/api/auth/linkedin/start-redirect";
+}
+
 // Health word + colour token by relationship status.
 const HEALTH = {
   active: "active", warm: "warm", cooling: "cooling", dormant: "dormant", new: "new",
@@ -1211,7 +1218,13 @@ function BookOnboarding({ step, onGo, onClose }) {
         <div className="bk-onb-title">{def.title}</div>
         <div className="bk-onb-body">{def.body}</div>
         <div className="bk-onb-actions">
-          <button className="bk-onb-skip" onClick={() => onClose("skipped")}>Skip tour</button>
+          {/* Skipping the tour is a conversion moment, not a dead end: drop the
+              visitor straight into LinkedIn sign-in to use it for real. The
+              corner ✕ remains a plain dismiss for anyone who just wants to keep
+              poking around the demo. */}
+          <button className="bk-onb-skip" onClick={signInWithLinkedIn}>
+            Skip &amp; sign in
+          </button>
           <div className="bk-onb-nav">
             {idx > 0 && <button className="bk-onb-back" onClick={back}>Back</button>}
             <button className="bk-onb-next" onClick={next}>
