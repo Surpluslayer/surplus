@@ -86,16 +86,22 @@ export default function BookApp() {
   // The public /demo session (user.is_demo) gets a guided six-step tour that
   // pops up over the real Book surface: add a contact, find them, send a
   // message, ask the agent a question, send a message, then check the
-  // relationship list. The tour arms on every fresh load of the demo link so
-  // opening /demo always starts the walkthrough — the demo session only exists
-  // on that link, so real signed-in users never see it. Dismiss / skip hides
-  // it for the current visit; reopening the link shows it again.
+  // relationship list.
+  //
+  // The tour is recurring: it re-arms every time the demo page is shown — a
+  // fresh load AND a back/forward (bfcache) restore, e.g. when a visitor
+  // bounces out to LinkedIn sign-in, cancels, and hits back. Dismiss / skip
+  // only hides it for the current view; reopening the demo always brings it
+  // back. The only thing that truly ends it is signing in — once they have a
+  // real account is_demo is false, so the popups never show again.
   const [onbStep, setOnbStep] = useState(0);
   const [onbOn, setOnbOn] = useState(false);
   useEffect(() => {
     if (!user || typeof user !== "object" || !user.is_demo) return;
-    setOnbStep(0);
-    setOnbOn(true);
+    const arm = () => { setOnbStep(0); setOnbOn(true); };
+    arm();
+    window.addEventListener("pageshow", arm);
+    return () => window.removeEventListener("pageshow", arm);
   }, [user]);
   const onbGo = (i) => {
     const next = Math.min(Math.max(i, 0), BK_ONB_STEPS.length - 1);
