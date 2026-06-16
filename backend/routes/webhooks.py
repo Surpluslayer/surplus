@@ -356,3 +356,72 @@ def _queue_pending_reply(
         "classification": decision.classification,
         "draft_chars": len(decision.draft_text),
     }
+
+
+# ── Bright Data delivery : contact updates (job-change + posts) ──────────────
+def _norm_li(url: str) -> str:
+    """Normalize a LinkedIn profile URL to its /in/<slug> for matching."""
+    u = (url or "").strip().lower().rstrip("/")
+    if "/in/" in u:
+        u = "in/" + u.split("/in/", 1)[1].split("?")[0].split("/")[0]
+    return u
+
+
+def _contacts_by_url(db: Session, url: Optional[str]) -> list:
+    """Every Contact (across users) whose linkedin_url matches `url`."""
+    key = _norm_li(url or "")
+    if not key:
+        return []
+    rows = (db.query(models.Contact)
+            .filter(models.Contact.linkedin_url.isnot(None)).all())
+    return [c for c in rows if _norm_li(c.linkedin_url) == key]
+
+
+@router.post("/brightdata", status_code=200)
+async def brightdata_webhook(request: Request, db: Session = Depends(get_db)) -> dict:
+    """Receive a Bright Data scrape delivery and turn it into Updates.
+
+    Profile records -> job-change diff; post records -> milestone cascade. Each is
+    matched to Contact(s) by linkedin_url and emitted as an activity_update (with
+    an auto-drafted follow-up). Always 200 + best-effort so Bright Data never
+    enters a retry storm. Falls through harmlessly if Bright Data isn't wired.
+    """
+    from ..providers import brightdata
+    from ..agents import updates_engine
+
+    secret = brightdata.webhook_secret()
+    if secret:
+        auth = (request.headers.get("authorization")
+                or request.headers.get("Authorization") or "").strip()
+        if auth != f"Bearer {secret}":
+            raise HTTPException(status_code=401, detail="bad webhook secret")
+
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        return {"ok": True, "applied": 0, "note": "unparseable body"}
+
+    kind = (request.query_params.get("notify") or "").strip().lower()
+    if isinstance(payload, list):
+        records = payload
+    elif isinstance(payload, dict):
+        records = payload.get("data") or payload.get("results") or [payload]
+    else:
+        records = []
+
+    applied = 0
+    for rec in records:
+        try:
+            is_posts = kind == "posts" or (isinstance(rec, dict) and rec.get("posts"))
+            if is_posts:
+                norm = brightdata.normalize_posts(rec)
+                for c in _contacts_by_url(db, norm.get("linkedin_url")):
+                    applied += len(updates_engine.apply_posts(db, c, norm.get("posts") or []))
+            else:
+                norm = brightdata.normalize_profile(rec)
+                for c in _contacts_by_url(db, norm.get("linkedin_url")):
+                    applied += len(updates_engine.apply_profile(db, c, norm))
+        except Exception as exc:  # noqa: BLE001 : one bad record never sinks the delivery
+            print(f"  [brightdata] record skipped: {type(exc).__name__}: {exc}", flush=True)
+    db.commit()
+    return {"ok": True, "applied": applied, "kind": kind or "profile"}

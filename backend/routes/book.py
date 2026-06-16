@@ -667,16 +667,20 @@ def _require_admin_token(x_admin_token: Optional[str] = Header(default=None)) ->
 @router.post("/run-updates", status_code=202)
 def run_updates_endpoint(user_id: Optional[int] = None,
                          _: None = Depends(_require_admin_token)):
-    """Scheduled "what's new" sweep: Exa web search per contact -> activity_update
-    rows the Today feed reads. Account-safe (no LinkedIn, no Unipile). Runs in a
-    background thread with its own session so the cron request returns immediately
-    (the sweep is bounded but takes a few minutes over a full book)."""
+    """Scheduled "what's new" sweep -> activity_update rows the Today feed reads.
+
+    Resilient engine: Bright Data (scrapes profile job-changes + milestone posts
+    on its own infra, delivered via /webhooks/brightdata) when configured, else
+    account-safe Exa web search. Tiered by the vip ⭐ flag so paid scraping spend
+    tracks the contacts that matter. Runs in a background thread with its own
+    session so the cron request returns immediately."""
     def _worker():
         from ..db import SessionLocal
-        from ..agents.updates_watch import run_updates
+        from ..agents.updates_engine import run_sweep
         db = SessionLocal()
         try:
-            run_updates(db, user_id=user_id)
+            res = run_sweep(db, user_id=user_id)
+            print(f"[updates] sweep {res}", flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[updates] run failed: {type(exc).__name__}: {exc}", flush=True)
         finally:
