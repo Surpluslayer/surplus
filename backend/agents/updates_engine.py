@@ -73,17 +73,11 @@ def autodraft(db, contact: models.Contact, change: dict) -> None:
     stash it on the interaction's meta so the Updates feed shows a ready draft.
     Best-effort: a draft failure must never drop the update itself."""
     try:
+        import json
         from . import drafting
-        reason = change.get("summary") or change.get("title") or "following up"
-        msg = drafting.compose_followup(
-            db, contact.user_id, contact, reason=reason, channel="email")
-        body = (msg or {}).get("body") or ""
-        if not body:
-            return
-        # Attach to the exact interaction this change emitted (change["ri_id"]),
-        # falling back to the most-recent activity_update for this contact. The
-        # session is autoflush=False, so flush first to make a just-emitted row
-        # queryable (otherwise the lookup misses it and the draft is dropped).
+        # Resolve the interaction this change emitted FIRST (cheap), so we can
+        # skip the LLM entirely if it already has a draft (idempotent re-calls).
+        # Session is autoflush=False -> flush so a just-emitted row is queryable.
         db.flush()
         ri = None
         ri_id = change.get("ri_id")
@@ -95,17 +89,26 @@ def autodraft(db, contact: models.Contact, change: dict) -> None:
                           models.RelationshipInteraction.source_type == "activity_update")
                   .order_by(models.RelationshipInteraction.id.desc())
                   .first())
-        if ri is not None:
-            import json
+        if ri is None:
+            return
+        meta = {}
+        try:
+            meta = json.loads(ri.meta_json or "{}")
+        except Exception:  # noqa: BLE001
             meta = {}
-            try:
-                meta = json.loads(ri.meta_json or "{}")
-            except Exception:  # noqa: BLE001
-                meta = {}
-            meta["draft"] = body[:2000]
-            if msg.get("subject"):
-                meta["draft_subject"] = msg["subject"][:200]
-            ri.meta_json = json.dumps(meta)
+        if (meta.get("draft") or "").strip():
+            return  # already drafted -> don't spend another LLM call
+
+        reason = change.get("summary") or change.get("title") or "following up"
+        msg = drafting.compose_followup(
+            db, contact.user_id, contact, reason=reason, channel="email")
+        body = (msg or {}).get("body") or ""
+        if not body:
+            return
+        meta["draft"] = body[:2000]
+        if msg.get("subject"):
+            meta["draft_subject"] = msg["subject"][:200]
+        ri.meta_json = json.dumps(meta)
     except Exception as exc:  # noqa: BLE001 : drafting is best-effort
         print(f"  [updates.autodraft] contact={contact.id} skipped: "
               f"{type(exc).__name__}: {exc}", flush=True)
@@ -145,7 +148,7 @@ def apply_profile(db, contact: models.Contact, profile: dict) -> list[dict]:
         if new_title:
             contact.headline = new_title[:300]
         changes.append(change)
-        autodraft(db, contact, change)
+        # autodraft fires inside _emit now (covers every watcher).
     contact.watched_at = _now()
     return changes
 
@@ -225,7 +228,7 @@ def apply_posts(db, contact: models.Contact, posts: list[dict]) -> list[dict]:
                        {"url": pid, "headline": (out.get("headline") or "")[:120],
                         "milestone_type": out.get("type"), "source": "brightdata"})
         changes.append(change)
-        autodraft(db, contact, change)
+        # autodraft fires inside _emit now (covers every watcher).
         if pid:
             seen.add(pid)
         break  # one milestone per run is enough for the feed
@@ -275,7 +278,7 @@ def run_sweep(db, *, user_id: int | None = None, limit: int = 40) -> dict:
         try:
             for change in updates_watch.find_updates(db, c):
                 emitted += 1
-                autodraft(db, c, change)
+                # autodraft fires inside _emit now (covers every watcher).
             c.watched_at = _now()
         except Exception as exc:  # noqa: BLE001
             print(f"  [updates] exa contact={c.id} failed: "

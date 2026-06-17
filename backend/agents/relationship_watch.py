@@ -84,7 +84,7 @@ def _emit(db: Session, contact: models.Contact, kind: str,
     # autoflush=False, so without this the row stays pending until the caller's
     # commit and autodraft (which runs in between) can't find it to attach a draft.
     db.flush()
-    return {
+    change = {
         "ri_id": ri.id,
         "contact_id": contact.id,
         "name": contact.name,
@@ -92,6 +92,18 @@ def _emit(db: Session, contact: models.Contact, kind: str,
         "title": ri.title,
         "summary": ri.summary,
     }
+    # Auto-draft a follow-up for EVERY emitted update, no matter which watcher
+    # found it (Bright Data, Exa, or the Unipile CRM refresh) -- so the Updates
+    # feed always has a ready message. Lazy import avoids a circular import;
+    # best-effort so a draft failure never drops the update itself. Idempotent
+    # (autodraft skips a row that already has a draft).
+    try:
+        from .updates_engine import autodraft
+        autodraft(db, contact, change)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [_emit.autodraft] contact={contact.id} skipped: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+    return change
 
 
 def refresh_contact(db: Session, contact: models.Contact, provider) -> list[dict]:
