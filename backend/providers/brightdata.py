@@ -64,13 +64,16 @@ def _trigger(dataset_id: str, urls: list[str], *, kind: str) -> bool:
     Best-effort: any failure returns False so the caller can degrade."""
     if not (dataset_id and urls and _key() and _webhook_url()):
         return False
+    # Route profile- vs posts-deliveries by PATH: `notify` is a boolean (job-done
+    # ping), NOT a tag, so we point each dataset at /webhooks/brightdata/<kind>.
+    # The delivery hits that exact path and the receiver knows which it is.
+    endpoint = _webhook_url().rstrip("/") + "/" + kind
     params = {
         "dataset_id": dataset_id,
-        "endpoint": _webhook_url(),     # Bright Data POSTs results here
+        "endpoint": endpoint,           # Bright Data POSTs results here
         "format": "json",
         "uncompressed_webhook": "true",
-        # tag the delivery so the receiver knows profile-diff vs posts-cascade
-        "notify": kind,
+        "include_errors": "true",
     }
     sec = webhook_secret()
     if sec:

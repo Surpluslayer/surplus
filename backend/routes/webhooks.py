@@ -378,13 +378,19 @@ def _contacts_by_url(db: Session, url: Optional[str]) -> list:
 
 
 @router.post("/brightdata", status_code=200)
-async def brightdata_webhook(request: Request, db: Session = Depends(get_db)) -> dict:
+@router.post("/brightdata/{kind}", status_code=200)
+async def brightdata_webhook(request: Request, db: Session = Depends(get_db),
+                             kind: str = "") -> dict:
     """Receive a Bright Data scrape delivery and turn it into Updates.
 
-    Profile records -> job-change diff; post records -> milestone cascade. Each is
-    matched to Contact(s) by linkedin_url and emitted as an activity_update (with
-    an auto-drafted follow-up). Always 200 + best-effort so Bright Data never
-    enters a retry storm. Falls through harmlessly if Bright Data isn't wired.
+    Routed by PATH: the trigger points the profile dataset at
+    /webhooks/brightdata/profile and the posts dataset at .../posts, so `kind`
+    arrives on the URL (Bright Data's `notify` is just a job-done boolean). The
+    base path (no kind) falls back to inferring profile-vs-posts from the record
+    shape. Profile records -> job-change diff; post records -> milestone cascade.
+    Matched to Contact(s) by linkedin_url, emitted as an activity_update (with an
+    auto-drafted follow-up). Always 200 + best-effort so Bright Data never enters
+    a retry storm.
     """
     from ..providers import brightdata
     from ..agents import updates_engine
@@ -401,7 +407,7 @@ async def brightdata_webhook(request: Request, db: Session = Depends(get_db)) ->
     except Exception:  # noqa: BLE001
         return {"ok": True, "applied": 0, "note": "unparseable body"}
 
-    kind = (request.query_params.get("notify") or "").strip().lower()
+    kind = (kind or request.query_params.get("kind") or "").strip().lower()
     if isinstance(payload, list):
         records = payload
     elif isinstance(payload, dict):
