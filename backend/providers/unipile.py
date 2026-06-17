@@ -643,6 +643,97 @@ class UnipileProvider(LinkedInProvider):
                         return out
         return out
 
+    def _chat_other_attendee(self, chat_id: str) -> dict:
+        """The non-self participant of a chat: {name, provider_id, profile_url}.
+        Returns {} if it can't be resolved (group chat / hidden / error)."""
+        data = self._get(f"/api/v1/chats/{chat_id}/attendees",
+                         params={"account_id": self.account_id})
+        for a in (data.get("items") or []):
+            if not a.get("is_self"):
+                return {"name": a.get("name"), "provider_id": a.get("provider_id"),
+                        "profile_url": a.get("profile_url")}
+        return {}
+
+    def _resolve_public_profile(self, provider_id: str) -> dict:
+        """provider_id (member id) -> {public_identifier, name, headline}. The
+        chat attendee only gives a member-id URL; resolving yields the clean
+        public slug that Bright Data + our matching want. Best-effort."""
+        if not provider_id:
+            return {}
+        d = self._get(f"/api/v1/users/{provider_id}",
+                      params={"account_id": self.account_id})
+        if not d:
+            return {}
+        name = " ".join(x for x in [d.get("first_name"), d.get("last_name")] if x).strip()
+        return {"public_identifier": d.get("public_identifier") or "",
+                "name": name, "headline": d.get("headline") or ""}
+
+    def list_active_conversation_contacts(self, want: int = 15,
+                                          scan_cap: int = 80) -> list[dict]:
+        """The people the account owner is in a GENUINE two-way conversation with.
+
+        Walks recent chats (most-recent-first) and keeps only threads where the
+        owner BOTH replied (outbound) AND received messages (inbound) -- so cold
+        inbound, ads, and unanswered outreach are skipped; only conversations the
+        user actually engaged in seed the Book. Each kept person is resolved to a
+        clean public LinkedIn URL. Returns up to `want`, bounded by `scan_cap`.
+        Best-effort: any error degrades to fewer/no results, never raises."""
+        if not (self.api_key and self.dsn and self.account_id):
+            return []
+        out: list[dict] = []
+        seen: set = set()
+        cursor = None
+        scanned = 0
+        while len(out) < want and scanned < scan_cap:
+            params = {"account_id": self.account_id, "limit": 20}
+            if cursor:
+                params["cursor"] = cursor
+            data = self._get("/api/v1/chats", params)
+            items = data.get("items") or []
+            if not items:
+                break
+            for ch in items:
+                scanned += 1
+                cid = ch.get("id")
+                if not cid:
+                    continue
+                msgs = self.fetch_thread(str(cid))
+                replied = any(m.get("direction") == "outbound" for m in msgs)
+                heard_back = any(m.get("direction") == "inbound" for m in msgs)
+                if not (replied and heard_back):
+                    continue  # not a genuine two-way conversation
+                other = self._chat_other_attendee(str(cid))
+                pid = other.get("provider_id")
+                if not pid or pid in seen:
+                    continue
+                seen.add(pid)
+                resolved = self._resolve_public_profile(pid)
+                slug = resolved.get("public_identifier")
+                url = (f"https://www.linkedin.com/in/{slug}" if slug
+                       else other.get("profile_url") or "")
+                name = other.get("name") or resolved.get("name") or ""
+                if not url:
+                    continue
+                # Skip LinkedIn's own system/notification account (platform
+                # messages, not a real person): name == "LinkedIn" or a numeric
+                # slug like /in/1337.
+                if name.strip().lower() == "linkedin" or (slug and slug.isdigit()):
+                    continue
+                out.append({
+                    "name": name,
+                    "linkedin_url": url,
+                    "linkedin_public_id": slug or "",
+                    "provider_id": pid,
+                    "headline": resolved.get("headline") or "",
+                    "last_ts": ch.get("timestamp") or "",
+                })
+                if len(out) >= want:
+                    break
+            cursor = data.get("cursor")
+            if not cursor:
+                break
+        return out
+
     def _get(self, path: str, params: dict) -> dict:
         """GET helper for read-only enrichment calls. Returns {} on any
         non-200 / network / parse error (callers all degrade gracefully)."""

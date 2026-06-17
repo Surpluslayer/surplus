@@ -74,6 +74,31 @@ def _arm_onboarding_if_first_connect(user: User) -> None:
         user.onboarding_status = "active"
         user.onboarding_step = 0
 
+
+def _autoimport_conversations(user_id: int) -> None:
+    """Background: seed the Book from the user's genuine LinkedIn DM conversations
+    right after they connect, so the spine isn't empty. Idempotent + best-effort
+    (its own session; never blocks or fails the auth response)."""
+    import threading
+
+    def _worker():
+        from ..db import SessionLocal
+        from ..agents.relationships import import_conversation_contacts
+        from ..models import User as _User
+        db = SessionLocal()
+        try:
+            u = db.get(_User, user_id)
+            if u is not None:
+                res = import_conversation_contacts(db, u, want=15)
+                print(f"[autoimport] user={user_id} {res}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[autoimport] user={user_id} failed: {type(exc).__name__}: {exc}",
+                  flush=True)
+        finally:
+            db.close()
+
+    threading.Thread(target=_worker, name=f"autoimport-{user_id}", daemon=True).start()
+
 # Anonymous user-creation rate limit : ~5/min per IP. A real Tech Week
 # demo viewer clicking around does ~1/min ; a bot trying to fill up the
 # users table gets blocked at 6/min. Also applied to triage signup +
@@ -650,6 +675,9 @@ async def linkedin_webhook(payload: dict, db: DbSession = Depends(get_db)) -> JS
     auth_state.status = "webhook_done"
     auth_state.completed_at = now
     db.commit()
+
+    # Seed the Book from their genuine DM conversations (backgrounded, idempotent).
+    _autoimport_conversations(user.id)
 
     # Same orphan-delete as the URL-callback path : after commit, drop the
     # old Unipile account from Unipile's dashboard so they don't bill us

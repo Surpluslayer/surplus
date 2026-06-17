@@ -433,6 +433,9 @@ export const api = {
   starContact: (id, vip) =>
     request(`/api/relationships/contacts/${id}/star`,
             { method: "POST", body: JSON.stringify({ vip }) }),
+  // Seed the Book from the user's genuine LinkedIn DM conversations.
+  importConversations: () =>
+    request("/api/relationships/import-conversations", { method: "POST" }),
 
   // Email channel on a contact (TEST surface; see EmailTestPanel)
   setContactEmail: (id, email) =>

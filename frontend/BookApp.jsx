@@ -273,7 +273,24 @@ function BookView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
   const [filter, setFilter] = useState("all");
   const [expanded, setExpanded] = useState(false);
   const [q, setQ] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importNote, setImportNote] = useState("");
   const roster = feed?.roster || [];
+
+  const runImport = async () => {
+    setImporting(true); setImportNote("");
+    try {
+      const res = await api.importConversations();
+      const n = res?.imported ?? 0;
+      setImportNote(n > 0 ? `Imported ${n} from your LinkedIn chats.`
+                          : "No new conversations to import yet.");
+      if (n > 0) onReload?.();
+    } catch (e) {
+      setImportNote(e?.message || "Couldn't import — try again.");
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const needle = q.trim().toLowerCase();
   const shown = roster.filter((r) => {
@@ -345,7 +362,19 @@ function BookView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
                   : <Health status={r.is_prospect ? "new" : r.status} />}
               </Row>
             ))}
-            {visible.length === 0 && <Empty text="No one matches this filter." />}
+            {visible.length === 0 && roster.length === 0 && (
+              <div className="bk-empty">
+                <p>Your book is empty.</p>
+                <button className="bk-import" onClick={runImport} disabled={importing}>
+                  {importing
+                    ? <><Loader2 className="bk-spin" size={15} /> Importing…</>
+                    : <>Import from LinkedIn chats</>}
+                </button>
+                <p className="bk-hint">Pulls people you've had real conversations with.</p>
+                {importNote && <p className="bk-hint">{importNote}</p>}
+              </div>
+            )}
+            {visible.length === 0 && roster.length > 0 && <Empty text="No one matches this filter." />}
           </div>
           {more > 0 && (
             <p className="bk-more" onClick={() => setExpanded(true)}>Show {more} more</p>
@@ -1358,6 +1387,10 @@ const BOOK_CSS = `
 .bk-draft{font-size:12px; color:var(--accent); cursor:pointer; white-space:nowrap; border:0;
   background:none; font-family:var(--font-ui); padding:0;}
 .bk-empty{padding:18px 14px; text-align:center; color:var(--faint); font-size:13px;}
+.bk-import{margin:10px auto 4px; display:inline-flex; align-items:center; gap:7px;
+  padding:9px 16px; border-radius:10px; border:none; cursor:pointer;
+  background:var(--accent,#2563eb); color:#fff; font-size:13px; font-weight:600;}
+.bk-import:disabled{opacity:.6; cursor:default;}
 
 /* health pip + word */
 .bk-health{display:inline-flex; align-items:center; gap:5px; font-size:11px; white-space:nowrap; flex:none;}

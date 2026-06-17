@@ -382,6 +382,19 @@ class StarIn(BaseModel):
     vip: Optional[bool] = None  # null = toggle; true/false = set explicitly
 
 
+@router.post("/import-conversations", status_code=200)
+def import_conversations(
+    want: int = 15,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Seed the Book from the user's genuine LinkedIn DM conversations (people
+    they actually replied to and had an active back-and-forth with). Idempotent
+    -- re-runs only add new people. Uses the user's OWN connected account."""
+    from ..agents.relationships import import_conversation_contacts
+    return import_conversation_contacts(db, user, want=max(1, min(want, 30)))
+
+
 @router.post("/contacts/{contact_id}/star")
 def set_contact_star(
     contact_id: int,

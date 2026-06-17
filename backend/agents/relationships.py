@@ -517,6 +517,72 @@ def link_contact(db, prospect, owner_user_id: int):
         return None
 
 
+def import_conversation_contacts(db, user, want: int = 15) -> dict:
+    """Seed the Book from the user's genuine LinkedIn DM conversations.
+
+    Pulls the most-recent people the user is in a real two-way conversation with
+    (they replied AND heard back -- not cold inbound/ads), via THEIR OWN connected
+    Unipile account (never the host's, so it's ban-safe and it's their own data).
+    Creates/dedupes Contact rows keyed on the LinkedIn slug. Idempotent: re-runs
+    only add genuinely new people. Returns a small status dict; never raises."""
+    import os
+    from .. import models
+    from ..providers.unipile import UnipileProvider
+    from ..triage.enrichment_cache import identity_keys
+
+    acct = _clean(getattr(user, "unipile_account_id", None))
+    if not acct:
+        return {"imported": 0, "considered": 0, "reason": "no linkedin account"}
+    try:
+        prov = UnipileProvider(
+            dsn=os.environ.get("UNIPILE_DSN"),
+            api_key=os.environ.get("UNIPILE_API_KEY"),
+            account_id=acct,
+            dry_run=True,  # read-only calls ignore dry_run; never sends
+        )
+        people = prov.list_active_conversation_contacts(want=want)
+    except Exception as exc:  # noqa: BLE001
+        return {"imported": 0, "considered": 0, "reason": f"{type(exc).__name__}: {exc}"}
+
+    imported = 0
+    for p in people:
+        try:
+            url = _clean(p.get("linkedin_url"))
+            if not url:
+                continue
+            keys = identity_keys(email="", linkedin_url=url)
+            if not keys:
+                continue
+            primary = keys[0]
+            contact = (db.query(models.Contact)
+                       .filter_by(user_id=user.id, primary_identity_key=primary)
+                       .first())
+            if contact is None:
+                contact = models.Contact(
+                    user_id=user.id,
+                    primary_identity_key=primary,
+                    name=_clean(p.get("name")),
+                    linkedin_url=url,
+                    linkedin_public_id=_clean(p.get("linkedin_public_id")),
+                    headline=_clean(p.get("headline")),
+                )
+                db.add(contact)
+                imported += 1
+            else:
+                # backfill thin fields on an existing contact
+                if not contact.linkedin_url:
+                    contact.linkedin_url = url
+                if not contact.headline and p.get("headline"):
+                    contact.headline = _clean(p.get("headline"))
+                if not contact.linkedin_public_id and p.get("linkedin_public_id"):
+                    contact.linkedin_public_id = _clean(p.get("linkedin_public_id"))
+        except Exception as exc:  # noqa: BLE001 : one bad person never sinks the import
+            print(f"  [import_conversations] skipped one: {type(exc).__name__}: {exc}",
+                  flush=True)
+    db.commit()
+    return {"imported": imported, "considered": len(people)}
+
+
 def add_note(db, prospect, owner_user_id: int, summary: str,
              title: str = "Note", visibility: str = "private"):
     """Record a manual note as a stored RelationshipInteraction, linking the
