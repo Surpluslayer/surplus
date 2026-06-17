@@ -15,8 +15,12 @@ name: run-updates
 # Also requires EXA_API_KEY + ANTHROPIC_API_KEY set on the service.
 
 on:
-  schedule:
-    - cron: "0 13 * * *"   # once a day, 13:00 UTC
+  # The PRIMARY scheduler now lives IN the product (backend/agents/
+  # updates_scheduler.py) -- a claim-guarded in-process thread. This workflow is
+  # kept only as a MANUAL backup lever (Actions tab -> Run workflow). The daily
+  # `schedule:` trigger is intentionally removed: external cron was unreliable
+  # (delayed/dropped runs, missing secrets). If both ever fire, the DB claim
+  # ensures exactly one sweep runs.
   workflow_dispatch: {}     # manual run from the Actions tab
 
 concurrency:

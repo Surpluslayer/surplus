@@ -312,8 +312,17 @@ def status() -> dict:
         bd = brightdata.status()
     except Exception as exc:  # noqa: BLE001
         bd = {"error": str(exc)}
+    try:
+        from . import updates_scheduler
+        sched = {"last_tick": updates_scheduler.last_tick() or None,
+                 "tick_seconds": updates_scheduler._tick_seconds(),
+                 "gap_seconds": updates_scheduler._gap_seconds(),
+                 "enabled": updates_scheduler._enabled()}
+    except Exception as exc:  # noqa: BLE001
+        sched = {"error": str(exc)}
     return {
         "brightdata": bd,
+        "scheduler": sched,
         "last_sweep": _LAST_SWEEP or None,
         "last_delivery": _LAST_DELIVERY or None,
     }
