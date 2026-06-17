@@ -40,9 +40,13 @@ _DRAFT_CONCURRENCY = max(1, int(os.environ.get("DRAFT_CONCURRENCY", "6")))
 
 _FOLLOWUP_SYSTEM = (
     "You write a short follow-up message for an event host reconnecting with "
-    "someone they met. CONTINUE the existing conversation in the prior messages "
-    "below: pick up where it left off and reference what was actually said, then "
-    "add the reason to reach out now. Never a generic cold restart. "
+    "someone they know. If prior messages are provided, CONTINUE that "
+    "conversation: pick up where it left off and reference what was actually "
+    "said, then add the reason to reach out now. If there are NO prior messages "
+    "(the list is empty), write a warm, natural note built around the reason to "
+    "reach out (e.g. congratulate them on the news) -- do NOT refuse, do NOT ask "
+    "for more context, and do NOT mention the absence of prior messages; just "
+    "write the message. "
     "Rules: 2-4 sentences, warm and specific, never salesy. NEVER use em dashes "
     "(—) or en dashes (–); use a comma, a period, or restructure. If a "
     "<style_examples> block is provided, write in that exact voice (greeting, "

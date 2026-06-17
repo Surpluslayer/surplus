@@ -80,7 +80,12 @@ def _emit(db: Session, contact: models.Contact, kind: str,
         visibility="private",
     )
     db.add(ri)
+    # Flush so the row gets an id and is queryable IMMEDIATELY -- the session is
+    # autoflush=False, so without this the row stays pending until the caller's
+    # commit and autodraft (which runs in between) can't find it to attach a draft.
+    db.flush()
     return {
+        "ri_id": ri.id,
         "contact_id": contact.id,
         "name": contact.name,
         "type": kind,

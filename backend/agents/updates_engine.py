@@ -80,12 +80,21 @@ def autodraft(db, contact: models.Contact, change: dict) -> None:
         body = (msg or {}).get("body") or ""
         if not body:
             return
-        # Attach to the most-recent activity_update for this contact.
-        ri = (db.query(models.RelationshipInteraction)
-              .filter(models.RelationshipInteraction.contact_id == contact.id,
-                      models.RelationshipInteraction.source_type == "activity_update")
-              .order_by(models.RelationshipInteraction.id.desc())
-              .first())
+        # Attach to the exact interaction this change emitted (change["ri_id"]),
+        # falling back to the most-recent activity_update for this contact. The
+        # session is autoflush=False, so flush first to make a just-emitted row
+        # queryable (otherwise the lookup misses it and the draft is dropped).
+        db.flush()
+        ri = None
+        ri_id = change.get("ri_id")
+        if ri_id is not None:
+            ri = db.get(models.RelationshipInteraction, ri_id)
+        if ri is None:
+            ri = (db.query(models.RelationshipInteraction)
+                  .filter(models.RelationshipInteraction.contact_id == contact.id,
+                          models.RelationshipInteraction.source_type == "activity_update")
+                  .order_by(models.RelationshipInteraction.id.desc())
+                  .first())
         if ri is not None:
             import json
             meta = {}
