@@ -17,6 +17,35 @@ Two product surfaces share the codebase:
 Host header picks the shell: `event.*` → `inperson.html` → `main-inperson.jsx` →
 **BookApp**; apex → `index.html` → `main.jsx` → **App**.
 
+## 1b. The two sides (read this to know which half a file belongs to)
+
+The codebase is two product lines sharing infra. Every backend file belongs to
+exactly one of these buckets. (Files are NOT yet physically split into
+subpackages — this map is the source of truth for the split.)
+
+### EVENTS side — the desktop event-ROI pipeline (`www`, `App.jsx`)
+Intake → prospect → outreach → match → ROI, plus triage & curation.
+- routes: `events`, `pipeline`, `matching`, `roi`, `triage`, `curation`, `jobs`
+- agents: `prospector`, `scorer`, `outreach`, `matcher`, `matcher_lib`, `sponsor_matcher`, `roi`, `pair_explainer`, `agents/sources/*`
+- packages: `backend/triage/`, `backend/curation/`, `backend/matching/`
+- frontend: `App.jsx`, `TriageApp.jsx`, `SharedIntake.jsx`, `components/MatchingRadarGraph.jsx`
+
+### RELATIONSHIP side — the phone-first "book" / CRM (`event.*`, `BookApp.jsx`)
+Capture people → detect their updates → draft follow-ups in your voice.
+- routes: `book`, `relationships`, `inperson`, `followups`
+- agents: `book`, `relationships`, `relationship_agent`, `relationship_watch`, `updates_engine`, `updates_scheduler`, `updates_watch`, `drafting`, `reply_agent`, `capture_enrich`, `resolver`, `email_sync`, `send_flow`, `sender`, `followup_scheduler`
+- frontend: `BookApp.jsx`, `CaptureShared.jsx`, `main-inperson.jsx`, `components/ContactsButton.jsx`, `components/ContactsPage.jsx`
+
+### SHARED — used by both
+- routes: `auth`, `billing`, `demo`, `webhooks`, `admin`
+- agents/infra: `llm`, `agent_loop`, `rategate`, `voice`, `exa`, `usage`, `failure_log`, `live_enrich`
+- core: `main`, `db`, `models`, `models_monitoring`, `auth`, `schemas`, `config`, `billing_plans`, `pipeline`, `jobs`, `hosts`, `rate_limit`, `jsonx`, `metrics`, `reqlog`, `env_loader`, `demo_seed`
+- providers: `base`, `unipile`, `brightdata`
+- frontend lib/components: `lib/*`, `UpgradePaywall`, `surplusTheme`, `intakeFormConstants`
+
+`main.py` mounts its routers in these three groups (with section headers) so the
+split is visible at the entrypoint.
+
 ## 2. Deploy topology
 
 - **Railway** runs the web service (`railway.json` → `Dockerfile`, multi-stage:

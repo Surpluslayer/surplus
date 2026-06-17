@@ -21,7 +21,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .db import ENGINE, init_db
-from .routes import admin, auth, billing, book, curation, demo, events, followups, inperson, jobs, pipeline, matching, relationships, roi, triage, webhooks
+from .routes import (
+    # shared
+    auth, billing, demo, webhooks, admin,
+    # relationship side (the phone-first "book" / CRM)
+    book, relationships, inperson, followups,
+    # events side (the desktop event-ROI pipeline)
+    events, pipeline, matching, roi, triage, curation, jobs,
+)
 
 
 @asynccontextmanager
@@ -100,22 +107,31 @@ async def no_store_for_api(request: Request, call_next):
         response.headers["Pragma"] = "no-cache"
     return response
 
+# Routers grouped by the two product sides + shared infra. See ARCHITECTURE.md
+# ("Two sides" map). The grouping is organizational only — order doesn't affect
+# routing (each router owns a distinct path prefix).
+
+# ── SHARED (auth, payments, demo entry, inbound webhooks, ops) ───────────────
 app.include_router(auth.router)
-app.include_router(book.router)
+app.include_router(billing.router)
 app.include_router(demo.router)
-app.include_router(events.router)
-app.include_router(pipeline.router)
-app.include_router(jobs.router)
-app.include_router(inperson.router)
-app.include_router(relationships.router)
-app.include_router(followups.router)
-app.include_router(matching.router)
-app.include_router(roi.router)
-app.include_router(triage.router)
-app.include_router(curation.router)
 app.include_router(webhooks.router)
 app.include_router(admin.router)
-app.include_router(billing.router)
+
+# ── RELATIONSHIP side: the phone-first "book" / CRM (event.surpluslayer.com) ──
+app.include_router(book.router)            # Today feed, drafts, ask-agent
+app.include_router(relationships.router)   # contact spine, star/VIP, imports, updates
+app.include_router(inperson.router)        # phone capture (QR / paste / manual)
+app.include_router(followups.router)       # scheduled follow-up queue
+
+# ── EVENTS side: the desktop event-ROI pipeline (www.surpluslayer.com) ───────
+app.include_router(events.router)          # 01 intake
+app.include_router(pipeline.router)        # 02-03 prospecting + outreach
+app.include_router(matching.router)        # 04 symbiotic matching
+app.include_router(roi.router)             # 05 ROI ledger
+app.include_router(triage.router)          # inbound applicant triage
+app.include_router(curation.router)        # event attendee curation
+app.include_router(jobs.router)            # async job dispatch + poll
 
 
 # NB: previously had a verbose 500 exception handler here that leaked
