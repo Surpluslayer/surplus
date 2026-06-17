@@ -30,6 +30,7 @@ import os
 import httpx
 
 _TRIGGER_URL = "https://api.brightdata.com/datasets/v3/trigger"
+_POSTS_LOOKBACK_DAYS = max(1, int(os.environ.get("UPDATES_LOOKBACK_DAYS", "30")))
 
 
 def _key() -> str:
@@ -101,6 +102,17 @@ def _trigger(dataset_id: str, urls: list[str], *, kind: str) -> bool:
         "uncompressed_webhook": "true",
         "include_errors": "true",
     }
+    body = [{"url": u} for u in valid]
+    if kind == "posts":
+        # The posts dataset DISCOVERS a profile's recent posts by profile url
+        # (vs. collecting one known post URL) -- needs these params + a recent
+        # date window so we only pull recent posts (cheaper + relevant).
+        from datetime import datetime, timedelta, timezone
+        params["type"] = "discover_new"
+        params["discover_by"] = "profile_url"
+        since = (datetime.now(timezone.utc)
+                 - timedelta(days=_POSTS_LOOKBACK_DAYS)).strftime("%Y-%m-%dT00:00:00.000Z")
+        body = [{"url": u, "start_date": since} for u in valid]
     sec = webhook_secret()
     if sec:
         params["auth_header"] = f"Bearer {sec}"
@@ -110,7 +122,7 @@ def _trigger(dataset_id: str, urls: list[str], *, kind: str) -> bool:
             params=params,
             headers={"Authorization": f"Bearer {_key()}",
                      "Content-Type": "application/json"},
-            json=[{"url": u} for u in valid],
+            json=body,
             timeout=30,
         )
         ok = r.status_code < 300
