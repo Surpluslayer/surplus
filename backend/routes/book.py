@@ -700,6 +700,17 @@ def updates_status_endpoint(_: None = Depends(_require_admin_token)):
     return status()
 
 
+@router.post("/_updates-test")
+def updates_test_endpoint(url: str, _: None = Depends(_require_admin_token)):
+    """Fire a Bright Data scrape for ONE LinkedIn url (validation). Returns the
+    immediate trigger outcome (status/response); the scraped data arrives async at
+    /webhooks/brightdata — then GET /_updates-status to see last_delivery and
+    validate the field mapping. Cheap: one record on the free credits."""
+    from ..providers import brightdata
+    ok = brightdata.trigger_updates([url])
+    return {"triggered": ok, "last_trigger": brightdata.last_trigger()}
+
+
 @router.get("/_status")
 def book_status(_: None = Depends(_require_admin_token)):
     """At-a-glance health WITHOUT log-diving: request counts, recent errors / slow

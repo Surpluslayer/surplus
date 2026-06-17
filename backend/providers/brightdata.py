@@ -67,18 +67,32 @@ def status() -> dict:
         "posts_dataset_set": bool(_posts_dataset()),
         "webhook_url_set": bool(_webhook_url()),
         "webhook_secret_set": bool(webhook_secret()),
+        "last_trigger": _LAST_TRIGGER or None,
     }
+
+
+_LAST_TRIGGER: dict = {}
+
+
+def last_trigger() -> dict:
+    """Outcome of the last trigger attempt (for the cutover diagnostic)."""
+    return _LAST_TRIGGER
 
 
 def _trigger(dataset_id: str, urls: list[str], *, kind: str) -> bool:
     """Fire one async collection for `urls` against `dataset_id`, asking Bright
-    Data to deliver results to our webhook. Returns True on a 2xx accept.
-    Best-effort: any failure returns False so the caller can degrade."""
-    if not (dataset_id and urls and _key() and _webhook_url()):
+    Data to deliver results to our webhook. Returns True on a 2xx accept and
+    records the outcome (status + response) in _LAST_TRIGGER so we can see WHY a
+    run did or didn't use Bright Data. Best-effort: any failure returns False."""
+    global _LAST_TRIGGER
+    valid = [u for u in (urls or []) if (u or "").strip()]
+    if not (dataset_id and valid and _key() and _webhook_url()):
+        _LAST_TRIGGER = {"kind": kind, "ok": False, "reason": "no urls or missing config",
+                         "url_count": len(valid), "dataset_set": bool(dataset_id),
+                         "key_set": bool(_key()), "webhook_set": bool(_webhook_url())}
         return False
     # Route profile- vs posts-deliveries by PATH: `notify` is a boolean (job-done
     # ping), NOT a tag, so we point each dataset at /webhooks/brightdata/<kind>.
-    # The delivery hits that exact path and the receiver knows which it is.
     endpoint = _webhook_url().rstrip("/") + "/" + kind
     params = {
         "dataset_id": dataset_id,
@@ -96,11 +110,16 @@ def _trigger(dataset_id: str, urls: list[str], *, kind: str) -> bool:
             params=params,
             headers={"Authorization": f"Bearer {_key()}",
                      "Content-Type": "application/json"},
-            json=[{"url": u} for u in urls if (u or "").strip()],
+            json=[{"url": u} for u in valid],
             timeout=30,
         )
-        return r.status_code < 300
-    except Exception:  # noqa: BLE001 : trigger is best-effort
+        ok = r.status_code < 300
+        _LAST_TRIGGER = {"kind": kind, "ok": ok, "status": r.status_code,
+                         "url_count": len(valid), "resp": (r.text or "")[:300]}
+        return ok
+    except Exception as exc:  # noqa: BLE001 : trigger is best-effort
+        _LAST_TRIGGER = {"kind": kind, "ok": False, "url_count": len(valid),
+                         "error": f"{type(exc).__name__}: {exc}"}
         return False
 
 
