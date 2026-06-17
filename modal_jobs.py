@@ -361,6 +361,42 @@ def crm_refresh_sweep() -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
+# 6) UPDATES SWEEP — the tiered "what's new" sweep (job changes + milestone
+#    posts) for the Book contact spine. Primary scheduler. Bright Data scrapes
+#    on its own infra and delivers to the Railway webhook; this function just
+#    selects DUE contacts (vip = daily, others = weekly) and fires the triggers.
+#    Shares the `scheduler_claims` DB row with the in-process thread
+#    (backend/agents/updates_scheduler), so exactly one of them runs each hour —
+#    Modal primary, in-process fallback. No Railway cron, no GitHub Actions.
+# --------------------------------------------------------------------------- #
+@app.function(
+    image=image,
+    secrets=[secret],
+    timeout=60 * 15,
+    schedule=modal.Period(hours=1),
+)
+def updates_sweep() -> dict:
+    """Hourly: claim + run the due-contact updates sweep. The claim guard means a
+    frequent schedule never scrapes anyone beyond their tier; it only lowers the
+    lag between 'became due' and 'checked'. Returns the tick status dict."""
+    from backend.db import init_db
+    from backend.agents import updates_scheduler
+    from backend.providers import brightdata
+
+    # Only take over as primary once Bright Data is configured in THIS (Modal)
+    # env -- otherwise a Modal-run sweep would fall back to Exa, and since Modal
+    # races the in-process thread for the shared claim, behavior would be
+    # nondeterministic. Until the surplus-jobs secret has the BRIGHTDATA_* vars,
+    # defer (don't claim) so Railway's in-process thread stays primary.
+    if not brightdata.configured():
+        msg = "brightdata not configured in modal secret; deferring to in-process"
+        print(f"  [modal.updates_sweep] {msg}")
+        return {"ran": False, "reason": msg}
+    init_db()
+    return updates_scheduler.run_claimed_sweep()
+
+
+# --------------------------------------------------------------------------- #
 # Local entrypoints: `modal run modal_jobs.py::<name>`
 # --------------------------------------------------------------------------- #
 @app.local_entrypoint()

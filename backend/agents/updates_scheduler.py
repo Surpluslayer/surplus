@@ -84,6 +84,15 @@ def _claim(name: str, gap: float) -> bool:
         return (res.rowcount or 0) >= 1
 
 
+def run_claimed_sweep() -> dict:
+    """Public entry: claim + run one sweep. Called by BOTH the in-process loop
+    and the Modal scheduled function (modal_jobs.updates_sweep). They share the
+    one `scheduler_claims` row, so whichever fires first within the gap wins and
+    the other no-ops -- Modal is primary, the in-process thread is the fallback
+    if Modal isn't deployed/reachable. Never double-fires."""
+    return _run_once()
+
+
 def _run_once() -> dict:
     """Claim + run one sweep. Returns a small status dict for diagnostics."""
     global _LAST_TICK
@@ -112,7 +121,7 @@ def _loop() -> None:
     time.sleep(min(60, _tick_seconds()))
     while True:
         try:
-            _run_once()
+            run_claimed_sweep()
         except Exception as exc:  # noqa: BLE001
             print(f"[updates.scheduler] tick error: {type(exc).__name__}: {exc}", flush=True)
         time.sleep(_tick_seconds())
