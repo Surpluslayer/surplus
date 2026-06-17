@@ -257,6 +257,11 @@ def _book_from_spine_contacts(db, user, contacts, inter_index, update_index):
                                 else (occurred or _ago())),
                 "significance": "medium",
                 "outreach_trigger": True,
+                # The pre-written follow-up (only present on IMPORTANT updates --
+                # job changes / milestones). Rides through to the Today feed so the
+                # draft is already there, no on-tap compose.
+                "draft": upd.get("draft"),
+                "draft_subject": upd.get("draft_subject"),
             }
         identity = row.get("identity") or {}
         book.append({

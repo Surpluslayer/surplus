@@ -68,10 +68,20 @@ def due_contacts(db, *, user_id: int | None = None, limit: int = 40) -> list:
 
 
 # --- auto-draft on update --------------------------------------------------
+# Only IMPORTANT updates get a pre-written draft (hard-coded for now; later the
+# user picks). A job change or a major post/announcement is worth a congrats; a
+# minor headline/profile tweak (profile_update) is not. The posts path already
+# LLM-filters new_post down to genuine milestones before it ever emits.
+_DRAFTWORTHY_KINDS = {"job_change", "new_post"}
+
+
 def autodraft(db, contact: models.Contact, change: dict) -> None:
-    """Compose a follow-up in the host's voice for a freshly-detected update and
-    stash it on the interaction's meta so the Updates feed shows a ready draft.
-    Best-effort: a draft failure must never drop the update itself."""
+    """Compose a follow-up in the host's voice for a freshly-detected IMPORTANT
+    update and stash it on the interaction's meta so the Updates feed shows a
+    ready draft. No-op for non-draftworthy kinds. Best-effort: a draft failure
+    must never drop the update itself."""
+    if change.get("type") not in _DRAFTWORTHY_KINDS:
+        return
     try:
         import json
         from . import drafting

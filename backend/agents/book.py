@@ -605,6 +605,8 @@ def build_today(book: list[dict]) -> dict:
     for c, _h, u in assessed:
         if not u:
             continue
+        sig = c.get("raw_signals") or {}
+        draft = sig.get("draft")
         updates.append({
             "name": c.get("name"),
             "vip": bool(c.get("vip")),
@@ -615,8 +617,16 @@ def build_today(book: list[dict]) -> dict:
             "can_draft": bool(u.get("outreach_trigger")),
             "trigger": u.get("headline"),
             "contact_id": c.get("id"),
+            # Pre-written follow-up for IMPORTANT updates (job change / milestone).
+            # Present => the message is already made; the UI shows it inline.
+            "draft": draft,
+            "draft_subject": sig.get("draft_subject"),
+            "has_draft": bool(draft),
         })
-    updates.sort(key=lambda x: x.get("detected_at") or "", reverse=True)
+    # IMPORTANT updates with a ready draft surface FIRST (then newest-first within
+    # each group), so the Book leads with the messages already written for you.
+    updates.sort(key=lambda x: (bool(x.get("has_draft")), x.get("detected_at") or ""),
+                 reverse=True)
 
     needs = []
     for c, h, _u in assessed:

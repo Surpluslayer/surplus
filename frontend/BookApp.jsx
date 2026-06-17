@@ -222,16 +222,25 @@ function TodayView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
           <SectionHead label="Updates" count={updates.length} />
           <div className="bk-group">
             {updates.map((u, i) => (
-              <Row key={`u${i}`} onOpen={u.contact_id ? () => onOpen(u) : null}>
-                <div className="bk-main">
-                  <p className="bk-name">{u.name}{u.vip && <Star size={13} className="bk-star" fill="currentColor" />}</p>
-                  <p className="bk-sub">{u.headline}</p>
-                </div>
-                <div className="bk-aside">
-                  <p className="bk-time">{_rel_time(u.detected_at)}</p>
-                  {u.can_draft && <DraftLink onClick={() => onDraft({ name: u.name, contact_id: u.contact_id, trigger: u.trigger || u.headline })} />}
-                </div>
-              </Row>
+              <div key={`u${i}`} className="bk-upd">
+                <Row onOpen={u.contact_id ? () => onOpen(u) : null}>
+                  <div className="bk-main">
+                    <p className="bk-name">{u.name}{u.vip && <Star size={13} className="bk-star" fill="currentColor" />}
+                      {u.has_draft && <span className="bk-readytag">Draft ready</span>}</p>
+                    <p className="bk-sub">{u.headline}</p>
+                  </div>
+                  <div className="bk-aside">
+                    <p className="bk-time">{_rel_time(u.detected_at)}</p>
+                    {u.can_draft && <DraftLink onClick={() => onDraft({ name: u.name, contact_id: u.contact_id, trigger: u.trigger || u.headline, body: u.draft, subject: u.draft_subject })} />}
+                  </div>
+                </Row>
+                {u.draft && (
+                  <div className="bk-draftbox" onClick={() => onDraft({ name: u.name, contact_id: u.contact_id, trigger: u.trigger || u.headline, body: u.draft, subject: u.draft_subject })}>
+                    {u.draft_subject && <p className="bk-draftsub">{u.draft_subject}</p>}
+                    <p className="bk-drafttext">{u.draft}</p>
+                  </div>
+                )}
+              </div>
             ))}
             {updates.length === 0 && <Empty text="No new updates today." />}
           </div>
@@ -888,7 +897,7 @@ function AskBar({ variant, onOpen, onDraft }) {
 function DraftSheet({ draft, onClose }) {
   const hasInline = !!(draft.body && draft.body.trim());
   const [busy, setBusy] = useState(!hasInline);   // reuse the card's draft if present
-  const [subject, setSubject] = useState("");
+  const [subject, setSubject] = useState(draft.subject || "");
   const [body, setBody] = useState(draft.body || "");
   const [err, setErr] = useState("");
   const [copied, setCopied] = useState(false);
@@ -1387,6 +1396,14 @@ const BOOK_CSS = `
 .bk-draft{font-size:12px; color:var(--accent); cursor:pointer; white-space:nowrap; border:0;
   background:none; font-family:var(--font-ui); padding:0;}
 .bk-empty{padding:18px 14px; text-align:center; color:var(--faint); font-size:13px;}
+.bk-upd{display:flex; flex-direction:column;}
+.bk-readytag{margin-left:8px; font-size:10px; font-weight:700; letter-spacing:.02em;
+  text-transform:uppercase; color:#fff; background:var(--accent,#2563eb);
+  padding:2px 7px; border-radius:999px; vertical-align:middle;}
+.bk-draftbox{margin:-2px 2px 10px; padding:10px 12px; border-radius:10px; cursor:pointer;
+  background:var(--card-soft,rgba(37,99,235,.06)); border:1px solid rgba(37,99,235,.18);}
+.bk-draftsub{font-size:12px; font-weight:600; margin:0 0 3px; color:var(--ink,#111);}
+.bk-drafttext{font-size:13px; line-height:1.45; margin:0; color:var(--muted,#374151); white-space:pre-wrap;}
 .bk-import{margin:10px auto 4px; display:inline-flex; align-items:center; gap:7px;
   padding:9px 16px; border-radius:10px; border:none; cursor:pointer;
   background:var(--accent,#2563eb); color:#fff; font-size:13px; font-weight:600;}

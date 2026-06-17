@@ -803,11 +803,21 @@ def _latest_update_view(updates) -> Optional[dict]:
     if not updates:
         return None
     u = updates[0]
+    draft = draft_subject = None
+    try:
+        import json as _json
+        meta = _json.loads(getattr(u, "meta_json", None) or "{}")
+        draft = _clean(meta.get("draft"))
+        draft_subject = _clean(meta.get("draft_subject"))
+    except Exception:  # noqa: BLE001
+        pass
     return {
         "type": _clean(getattr(u, "interaction_type", None)),   # job_change | profile_update | new_post
         "title": _clean(getattr(u, "title", None)),
         "summary": _clean(getattr(u, "summary", None)),
         "occurred_at": _as_aware(getattr(u, "occurred_at", None)),
+        "draft": draft,                 # pre-written follow-up (important updates only)
+        "draft_subject": draft_subject,
     }
 
 
