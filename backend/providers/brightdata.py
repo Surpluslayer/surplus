@@ -58,6 +58,18 @@ def webhook_secret() -> str:
     return (os.environ.get("BRIGHTDATA_WEBHOOK_SECRET") or "").strip()
 
 
+def status() -> dict:
+    """Which pieces are wired (booleans only — never leak the values)."""
+    return {
+        "configured": configured(),
+        "api_key_set": bool(_key()),
+        "profile_dataset_set": bool(_profile_dataset()),
+        "posts_dataset_set": bool(_posts_dataset()),
+        "webhook_url_set": bool(_webhook_url()),
+        "webhook_secret_set": bool(webhook_secret()),
+    }
+
+
 def _trigger(dataset_id: str, urls: list[str], *, kind: str) -> bool:
     """Fire one async collection for `urls` against `dataset_id`, asking Bright
     Data to deliver results to our webhook. Returns True on a 2xx accept.

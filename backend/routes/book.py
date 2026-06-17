@@ -665,28 +665,39 @@ def _require_admin_token(x_admin_token: Optional[str] = Header(default=None)) ->
 
 
 @router.post("/run-updates", status_code=202)
-def run_updates_endpoint(user_id: Optional[int] = None,
+def run_updates_endpoint(user_id: Optional[int] = None, limit: int = 40,
                          _: None = Depends(_require_admin_token)):
     """Scheduled "what's new" sweep -> activity_update rows the Today feed reads.
 
     Resilient engine: Bright Data (scrapes profile job-changes + milestone posts
     on its own infra, delivered via /webhooks/brightdata) when configured, else
     account-safe Exa web search. Tiered by the vip ⭐ flag so paid scraping spend
-    tracks the contacts that matter. Runs in a background thread with its own
-    session so the cron request returns immediately."""
+    tracks the contacts that matter. `limit` caps contacts per run — pass a small
+    value (e.g. ?limit=2) for a cheap validation batch. Runs in a background
+    thread with its own session so the request returns immediately."""
     def _worker():
         from ..db import SessionLocal
         from ..agents.updates_engine import run_sweep
         db = SessionLocal()
         try:
-            res = run_sweep(db, user_id=user_id)
+            res = run_sweep(db, user_id=user_id, limit=max(1, min(limit, 200)))
             print(f"[updates] sweep {res}", flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[updates] run failed: {type(exc).__name__}: {exc}", flush=True)
         finally:
             db.close()
     threading.Thread(target=_worker, daemon=True).start()
-    return {"status": "started", "scope": user_id if user_id is not None else "all"}
+    return {"status": "started", "scope": user_id if user_id is not None else "all",
+            "limit": max(1, min(limit, 200))}
+
+
+@router.get("/_updates-status")
+def updates_status_endpoint(_: None = Depends(_require_admin_token)):
+    """Cutover diagnostic: is Bright Data configured, what did the last sweep do
+    (exa vs brightdata), and what fields did the last delivery parse. Token-gated,
+    in-memory per replica — hit it right after a run to validate field-mapping."""
+    from ..agents.updates_engine import status
+    return status()
 
 
 @router.get("/_status")

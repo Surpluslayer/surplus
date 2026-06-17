@@ -415,19 +415,36 @@ async def brightdata_webhook(request: Request, db: Session = Depends(get_db),
     else:
         records = []
 
-    applied = 0
+    applied = matched = 0
+    sample_raw_keys = sample_norm = None
     for rec in records:
         try:
             is_posts = kind == "posts" or (isinstance(rec, dict) and rec.get("posts"))
             if is_posts:
                 norm = brightdata.normalize_posts(rec)
-                for c in _contacts_by_url(db, norm.get("linkedin_url")):
+                hits = _contacts_by_url(db, norm.get("linkedin_url"))
+                matched += len(hits)
+                for c in hits:
                     applied += len(updates_engine.apply_posts(db, c, norm.get("posts") or []))
             else:
                 norm = brightdata.normalize_profile(rec)
-                for c in _contacts_by_url(db, norm.get("linkedin_url")):
+                hits = _contacts_by_url(db, norm.get("linkedin_url"))
+                matched += len(hits)
+                for c in hits:
                     applied += len(updates_engine.apply_profile(db, c, norm))
+            # capture the FIRST record's shape for the cutover diagnostic
+            if sample_raw_keys is None and isinstance(rec, dict):
+                sample_raw_keys = list(rec.keys())
+                sample_norm = norm
         except Exception as exc:  # noqa: BLE001 : one bad record never sinks the delivery
             print(f"  [brightdata] record skipped: {type(exc).__name__}: {exc}", flush=True)
     db.commit()
-    return {"ok": True, "applied": applied, "kind": kind or "profile"}
+    # record for /api/book/_updates-status so we can validate field-mapping
+    try:
+        updates_engine.record_delivery(
+            kind or "profile", len(records), matched, applied,
+            sample_raw_keys, sample_norm)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, "received": len(records), "matched": matched,
+            "applied": applied, "kind": kind or "profile"}

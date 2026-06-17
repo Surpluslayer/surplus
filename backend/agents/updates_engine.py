@@ -209,7 +209,7 @@ def run_sweep(db, *, user_id: int | None = None, limit: int = 40) -> dict:
     Bounded + fail-soft. Returns a small status dict."""
     contacts = due_contacts(db, user_id=user_id, limit=limit)
     if not contacts:
-        return {"due": 0, "mode": "none"}
+        return _record_sweep({"due": 0, "mode": "none"})
 
     if _brightdata_enabled():
         from ..providers import brightdata
@@ -225,7 +225,7 @@ def run_sweep(db, *, user_id: int | None = None, limit: int = 40) -> dict:
             for c in contacts:
                 c.watched_at = _now()
             db.commit()
-            return {"due": len(contacts), "mode": "brightdata", "triggered": len(urls)}
+            return _record_sweep({"due": len(contacts), "mode": "brightdata", "triggered": len(urls)})
         # fall through to Exa if the trigger didn't take
 
     # --- Exa fallback (synchronous, account-safe) --------------------------
@@ -240,4 +240,48 @@ def run_sweep(db, *, user_id: int | None = None, limit: int = 40) -> dict:
             print(f"  [updates] exa contact={c.id} failed: "
                   f"{type(exc).__name__}: {exc}", flush=True)
     db.commit()
-    return {"due": len(contacts), "mode": "exa", "emitted": emitted}
+    return _record_sweep({"due": len(contacts), "mode": "exa", "emitted": emitted})
+
+
+# --- diagnostics (in-memory, per-replica; for the cutover/validation) -------
+_LAST_SWEEP: dict = {}
+_LAST_DELIVERY: dict = {}
+
+
+def _stamp() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _record_sweep(result: dict) -> dict:
+    global _LAST_SWEEP
+    _LAST_SWEEP = {"at": _stamp(), **result}
+    return result
+
+
+def record_delivery(kind: str, received: int, matched: int, applied: int,
+                    sample_raw_keys=None, sample_normalized=None) -> None:
+    """Called by the Bright Data webhook so /_updates-status can show the last
+    delivery — counts + parsed sample fields, to validate field mapping."""
+    global _LAST_DELIVERY
+    _LAST_DELIVERY = {
+        "at": _stamp(), "kind": kind, "received": received,
+        "matched_contacts": matched, "applied": applied,
+        "sample_raw_keys": list(sample_raw_keys or [])[:40],
+        "sample_normalized": sample_normalized or {},
+    }
+
+
+def status() -> dict:
+    """Cutover diagnostic: is Bright Data configured, what did the last sweep do
+    (exa vs brightdata), and what did the last delivery parse."""
+    try:
+        from ..providers import brightdata
+        bd = brightdata.status()
+    except Exception as exc:  # noqa: BLE001
+        bd = {"error": str(exc)}
+    return {
+        "brightdata": bd,
+        "last_sweep": _LAST_SWEEP or None,
+        "last_delivery": _LAST_DELIVERY or None,
+    }
