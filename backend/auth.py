@@ -279,8 +279,19 @@ def revoke_session(db: DbSession, token: str) -> None:
 def user_has_paid(user: User) -> bool:
     """True when the user has a successful Stripe Checkout on file. The
     paid tier unlocks real LinkedIn sends; free tier can browse, prospect,
-    match, and preview composed messages."""
-    return getattr(user, "paid_at", None) is not None
+    match, and preview composed messages.
+
+    Two ways to be paid:
+      1. Legacy one-time unlock: `paid_at` stamped by a mode=payment checkout.
+      2. Active recurring subscription: `subscription_status` is active/trialing
+         (the checkout the payment link actually sells). _apply_subscription does
+         NOT touch paid_at, so the gate must check the subscription too -- without
+         this, a paying subscriber stays locked behind `payment_required`.
+    """
+    if getattr(user, "paid_at", None) is not None:
+        return True
+    status = (getattr(user, "subscription_status", None) or "").strip().lower()
+    return status in ("active", "trialing")
 
 
 def user_has_linkedin_connected(user: User) -> bool:
