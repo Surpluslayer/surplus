@@ -530,28 +530,36 @@ export function CaptureScreen({ event, onResult, isDemo = false }) {
 // "captures" -- no real camera (so no shaky hands / real permission dialog).
 // Fires onUrl with a placeholder; the backend returns a polished demo persona.
 function DemoScanStage({ onUrl, busy }) {
-  const [phase, setPhase] = useState("scan");  // scan -> locked
+  const [phase, setPhase] = useState("aim");  // aim -> scan -> locked
   const firedRef = useRef(false);
   useEffect(() => {
-    const t1 = setTimeout(() => setPhase("locked"), 1850);
+    // Hold on an empty viewfinder first (you're "aiming"), THEN the QR slides up.
+    const AIM = 1400;
+    const t0 = setTimeout(() => setPhase("scan"), AIM);
+    const t1 = setTimeout(() => setPhase("locked"), AIM + 1850);
     const t2 = setTimeout(() => {
       if (!firedRef.current) { firedRef.current = true; onUrl("https://www.linkedin.com/in/demo"); }
-    }, 2400);
-    return () => { clearTimeout(t1); clearTimeout(t2); };
+    }, AIM + 2400);
+    return () => { [t0, t1, t2].forEach(clearTimeout); };
   }, [onUrl]);
+  const aim = phase === "aim";
   const locked = phase === "locked";
   return (
     <div className="ip-cam ip-democam">
-      <div className="ip-demoshot-wrap">
-        <img className="ip-demoshot" src="/demo-linkedin-qr.webp" alt=""
-             onError={(e) => { e.currentTarget.style.display = "none"; }} />
-      </div>
+      {!aim && (
+        <div className="ip-demoshot-wrap">
+          <img className="ip-demoshot" src="/demo-linkedin-qr.webp" alt=""
+               onError={(e) => { e.currentTarget.style.display = "none"; }} />
+        </div>
+      )}
       <div className={"ip-reticle ip-demoreticle" + (locked ? " ip-demoreticle--lock" : "")} />
-      {!locked && <div className="ip-scanline" />}
+      {phase === "scan" && <div className="ip-scanline" />}
       <div className="ip-camstatus">
         {busy || locked
           ? <><Check size={14} /> Got it, saving…</>
-          : <><Loader2 className="spin" size={14} /> Scanning QR…</>}
+          : aim
+            ? "Point at their LinkedIn QR"
+            : <><Loader2 className="spin" size={14} /> Scanning QR…</>}
       </div>
     </div>
   );
