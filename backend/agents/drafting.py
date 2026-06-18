@@ -23,19 +23,40 @@ import json
 import os
 from typing import Optional
 
-from . import relationships
+from . import relationships, voice
 from .book import _btrace, _llm_json, stream_text  # shared Claude helpers + trace
 from .relationship_agent import (
-    _host_voice_examples,
     _strip_dashes,
     _thread_from_timeline,
-    _voice_block,
 )
 
 # Foreground per-person draft fan-out width for compose_batch. Bounded so a
 # multi-person /ask can't open a flood of Anthropic connections at once (same
 # pool-saturation lesson as the book background gate). Tunable live.
 _DRAFT_CONCURRENCY = max(1, int(os.environ.get("DRAFT_CONCURRENCY", "6")))
+
+
+_SPECIFICITY = (
+    "Hone in on THIS person. Name the concrete detail that makes the message "
+    "obviously written for them, not a template: their role, their company, or "
+    "the specific reason to reach out now. Never a generic line that would fit "
+    "anyone (no \"hope you're doing well\", no \"just checking in\"). If you have "
+    "no concrete detail beyond their name, reference the reason to reach out "
+    "directly rather than padding with filler. "
+)
+_BREVITY = (
+    "Keep it SHORT: 2-3 sentences, ideally under 45 words. Sound like a real "
+    "person firing off a quick note, not a written-out email. No corporate "
+    "warm-up, no restating their whole bio back to them. "
+)
+_VOICE_RULE = (
+    "If a <host_voice_profile> and/or <style_examples> block is provided, write "
+    "in that exact voice (greeting, sign-off, sentence length, punctuation, "
+    "emoji habits), matching the voice not the content. If a Register line is "
+    "given, meet the contact's formality while keeping the host's voice. "
+    "NEVER use em dashes (—) or en dashes (–); use a comma, a period, or "
+    "restructure. "
+)
 
 
 _FOLLOWUP_SYSTEM = (
@@ -47,11 +68,8 @@ _FOLLOWUP_SYSTEM = (
     "reach out (e.g. congratulate them on the news) -- do NOT refuse, do NOT ask "
     "for more context, and do NOT mention the absence of prior messages; just "
     "write the message. "
-    "Rules: 2-4 sentences, warm and specific, never salesy. NEVER use em dashes "
-    "(—) or en dashes (–); use a comma, a period, or restructure. If a "
-    "<style_examples> block is provided, write in that exact voice (greeting, "
-    "sign-off, sentence length, punctuation, emoji habits), matching the voice "
-    "not the content. If channel is email, also return a 3-5 word subject. "
+    + _BREVITY + _SPECIFICITY + _VOICE_RULE +
+    "If channel is email, also return a 3-5 word subject. "
     "Return ONLY JSON: {\"subject\":\"<email only, else null>\","
     "\"body\":\"<the message>\"}"
 )
@@ -111,6 +129,22 @@ def _email_thread_prior(db, user_id: int, contact) -> list[dict]:
         return []
 
 
+def _voice_block_for(db, user_id: int, channel: str) -> str:
+    """The full model-ready voice context for this host: the distilled
+    <host_voice_profile> rules PLUS the ground-truth <style_examples>, scoped to
+    the channel being drafted. This is the same packaged voice the relationship
+    agent uses -- richer than raw examples alone, which is what made earlier
+    drafts read generic. DetachedInstance/lookup-safe (returns "")."""
+    from .. import models
+    try:
+        user = db.get(models.User, user_id)
+    except Exception:  # noqa: BLE001 - keep the run alive on any lookup failure
+        user = None
+    vch = "email" if channel == "email" else "linkedin"
+    return voice.build_voice_context(
+        user, channel=vch, message_type="warm_followup")["block"]
+
+
 def build_context(db, user_id: int, contact, voice_block: Optional[str] = None,
                   *, channel: str = "email") -> dict:
     """Gather everything the composer needs for `contact` via the DB (the host's
@@ -134,21 +168,63 @@ def build_context(db, user_id: int, contact, voice_block: Optional[str] = None,
             prior = sorted(prior + email_prior,
                            key=lambda m: str(m.get("when") or ""))
     if voice_block is None:
-        voice_block = _voice_block(_host_voice_examples(db, user_id))
-    return {"name": name, "prior": prior, "voice_block": voice_block}
+        voice_block = _voice_block_for(db, user_id, channel)
+
+    # Detect how THIS contact writes (formal/casual/neutral) from their own
+    # messages, so the draft meets their register while keeping the host's voice.
+    register = voice.detect_register(
+        [m.get("text") or "" for m in prior if m.get("who") == "them"])
+
+    def _real(v):
+        s = (v or "").strip()
+        return "" if s.lower() == "unknown" else s
+    return {
+        "name": name,
+        # Person-specific facts so the draft can hone in on THIS contact even
+        # when there's no prior thread (the common case -- DM history isn't in
+        # the spine). Without these the model only has a name + reason and
+        # generalizes.
+        "company": _real(getattr(contact, "company", None)),
+        "role": (_real(getattr(contact, "title", None))
+                 or _real(getattr(contact, "headline", None))),
+        "prior": prior,
+        "register": register,
+        "voice_block": voice_block,
+    }
+
+
+def _user_prompt(ctx: dict, reason: str, channel: str) -> str:
+    """The shared user message for both the JSON and streamed composers. Leads
+    with who this person is so the draft references concrete, person-specific
+    detail (role/company/news) instead of a generic line."""
+    name = ctx.get("name") or "there"
+    role, company = ctx.get("role"), ctx.get("company")
+    if role and company:
+        who = f"{name}, {role} at {company}"
+    elif role:
+        who = f"{name}, {role}"
+    elif company:
+        who = f"{name} at {company}"
+    else:
+        who = name
+    lines = [
+        f"Who you're writing to: {who}.",
+        "Prior conversation (oldest first; [] means no prior messages):",
+        json.dumps(ctx.get("prior") or [], default=str),
+        f"Reason to reach out now: {reason}",
+        f"Channel: {channel}",
+    ]
+    reg = voice.register_guidance(ctx.get("register"))
+    if reg:
+        lines.append(f"Register: {reg}")
+    return "\n".join(lines) + "\n"
 
 
 def compose_from_context(ctx: dict, reason: str, channel: str = "email") -> Optional[dict]:
     """The pure-LLM half: compose from a context dict (no DB), so it's safe to
     fan out across threads. Returns {"subject", "body"} or None on failure."""
     system = _FOLLOWUP_SYSTEM + (ctx.get("voice_block") or "")
-    user = (
-        f"Follow up with {ctx.get('name') or 'there'}.\n"
-        f"Prior conversation (oldest first; [] means no prior messages):\n"
-        f"{json.dumps(ctx.get('prior') or [], default=str)}\n"
-        f"Reason to reach out now: {reason}\n"
-        f"Channel: {channel}\n"
-    )
+    user = _user_prompt(ctx, reason, channel)
     out = _llm_json(system, user, max_tokens=500)
     if not out or not (out.get("body") or "").strip():
         return None
@@ -160,13 +236,13 @@ def compose_from_context(ctx: dict, reason: str, channel: str = "email") -> Opti
 
 _FOLLOWUP_STREAM_SYSTEM = (
     "You write a short follow-up message for an event host reconnecting with "
-    "someone they met. CONTINUE the existing conversation in the prior messages "
-    "below: pick up where it left off and reference what was actually said, then "
-    "add the reason to reach out now. Never a generic cold restart. "
-    "Rules: 2-4 sentences, warm and specific, never salesy. NEVER use em dashes "
-    "(—) or en dashes (–); use a comma, a period, or restructure. If a "
-    "<style_examples> block is provided, write in that exact voice (greeting, "
-    "sign-off, sentence length, punctuation, emoji habits). "
+    "someone they met. If prior messages are provided, CONTINUE that "
+    "conversation: pick up where it left off and reference what was actually "
+    "said, then add the reason to reach out now. If there are NO prior messages "
+    "(the list is empty), write a warm, natural note built around the reason to "
+    "reach out; do NOT refuse, do NOT ask for more context, and do NOT mention "
+    "the absence of prior messages. "
+    + _BREVITY + _SPECIFICITY + _VOICE_RULE +
     "Write ONLY the message body as plain text: no subject line, no JSON, no "
     "surrounding quotes, no preamble or labels. Just the message to send."
 )
@@ -177,13 +253,7 @@ def stream_from_context(ctx: dict, reason: str, channel: str = "email"):
     context dict (no DB), so the agent can build all contexts serially then fan
     out token streams across threads. Mirrors compose_from_context, streamed."""
     system = _FOLLOWUP_STREAM_SYSTEM + (ctx.get("voice_block") or "")
-    user = (
-        f"Follow up with {ctx.get('name') or 'there'}.\n"
-        f"Prior conversation (oldest first; [] means no prior messages):\n"
-        f"{json.dumps(ctx.get('prior') or [], default=str)}\n"
-        f"Reason to reach out now: {reason}\n"
-        f"Channel: {channel}\n"
-    )
+    user = _user_prompt(ctx, reason, channel)
     yield from stream_text(system, user, max_tokens=500)
 
 
@@ -215,9 +285,16 @@ def compose_batch(db, user_id: int, jobs: list[dict],
     inline (voice + their real thread + dash scrub) without one-at-a-time waits."""
     if not jobs:
         return []
-    # Voice is per-host, identical across contacts: load once, reuse.
-    voice_block = _voice_block(_host_voice_examples(db, user_id))
-    ctxs = [build_context(db, user_id, j["contact"], voice_block,
+    # Voice is per-host, identical across contacts: load once per channel, reuse.
+    _vcache: dict[str, str] = {}
+
+    def _vb(channel: str) -> str:
+        if channel not in _vcache:
+            _vcache[channel] = _voice_block_for(db, user_id, channel)
+        return _vcache[channel]
+
+    ctxs = [build_context(db, user_id, j["contact"],
+                          _vb(j.get("channel") or "email"),
                           channel=(j.get("channel") or "email")) for j in jobs]
     results: list[Optional[dict]] = [None] * len(jobs)
 

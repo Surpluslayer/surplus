@@ -108,7 +108,7 @@ extraction/matching), `exa.py` (Exa search), `jsonx` use.
 - `updates_engine.py` — **the updates orchestrator**: `run_sweep` (Bright Data primary → Exa fallback), `due_contacts` (vip=daily/others=weekly tiering), `apply_profile`/`apply_posts` (diff + baseline-first), `autodraft` (drafts only `_DRAFTWORTHY_KINDS`).
 - `updates_scheduler.py` — in-process daemon that claims+runs the sweep hourly (shared `scheduler_claims` row dedups with Modal).
 - `updates_watch.py` — Exa fallback search. `relationship_watch.py` — Unipile CRM poller; `_emit()` writes every `activity_update` **and fires autodraft** (single choke point).
-- `drafting.py` — the one voice-matched follow-up composer (`compose_followup`/`compose_batch`/stream), used by autodraft, book, and the agent.
+- `drafting.py` — the one voice-matched follow-up composer (`compose_followup`/`compose_batch`/stream), used by autodraft, book, and the agent. Each draft is built from three layers so it hones in on the exact person instead of generalizing: (1) the host's **packaged voice** via `voice.build_voice_context` — the distilled `<host_voice_profile>` rules + ground-truth `<style_examples>`, channel-scoped; (2) **person facts** (name/role/company) + the real prior thread, led with in the prompt; (3) the **contact's register** (`voice.detect_register`) so the draft meets their formality while keeping the host's voice. Prompts enforce brevity (2-3 sentences) + specificity (no generic filler).
 - `relationship_agent.py` — propose-only multi-turn CRM agent (the /ask bar).
 - `book.py` — BookApp "today" engine: health scoring + update detection + `build_today` feed (drafts surfaced first).
 
