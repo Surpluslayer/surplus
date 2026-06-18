@@ -779,7 +779,9 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
   const [draftEdited, setDraftEdited] = useState(false);
   // Capture stays minimal for mobile : the optional extras (note, private memo,
   // first message, contact type, next step) all hide behind a disclosure.
-  const [showMore, setShowMore] = useState(false);
+  // Demo: expand by default so the personalized First message is visible and
+  // visibly updates as the host types "what you talked about" (for filming).
+  const [showMore, setShowMore] = useState(isDemo);
   // The classify / attach-link onboarding coachmarks anchor to controls that
   // live behind the "Add more" disclosure, so auto-expand it while the tour is
   // pointing at them (otherwise the popover would have nothing to anchor to).
