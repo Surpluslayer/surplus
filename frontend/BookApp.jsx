@@ -127,7 +127,7 @@ export default function BookApp() {
   let screen;
   if (route?.name === "detail") {
     screen = <RelationshipScreen row={route.row} onBack={() => goTab("book")}
-                                 onDraftDone={() => {}} />;
+                                 onDraftDone={() => {}} isDemo={!!user?.is_demo} />;
   } else if (route?.name === "account") {
     screen = <AccountScreen user={user} onBack={() => goTab("today")}
                             onConnections={() => setRoute({ name: "connections" })} />;
@@ -152,6 +152,12 @@ export default function BookApp() {
     <div className="bk-root">
       <style>{BOOK_CSS}</style>
       <div className="bk-frame">
+        {user?.is_demo && (
+          <div className="bk-demobar">
+            <span><b>Demo</b> · sample data. Sign in to use it for real, or skip the tour.</span>
+            <button className="bk-demobar-cta" onClick={signInWithLinkedIn}>Sign in</button>
+          </div>
+        )}
         {screen}
         <nav className="bk-nav">
           <button className={"bk-nav-item" + (activeNav === "today" ? " on" : "")}
@@ -171,7 +177,8 @@ export default function BookApp() {
         </nav>
       </div>
 
-      {draftFor && <DraftSheet draft={draftFor} onClose={() => setDraftFor(null)} />}
+      {draftFor && <DraftSheet draft={draftFor} onClose={() => setDraftFor(null)}
+                               isDemo={!!user?.is_demo} />}
 
       {onbOn && <BookOnboarding step={onbStep} onGo={onbGo} onClose={onbClose} />}
     </div>
@@ -388,7 +395,7 @@ function BookView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
 
 // ── Relationship detail ───────────────────────────────────────────────────────
 
-function RelationshipScreen({ row, onBack }) {
+function RelationshipScreen({ row, onBack, isDemo = false }) {
   const id = row?.contact_id;
   const [d, setD] = useState(null);
   const [err, setErr] = useState("");
@@ -455,7 +462,7 @@ function RelationshipScreen({ row, onBack }) {
             <p className="bk-panel-p">{d.why}</p>
           </div>
 
-          <DraftPanel detail={d} />
+          <DraftPanel detail={d} isDemo={isDemo} />
 
           <p className="bk-sec-label bk-sec-label--tl">Timeline</p>
           <div className="bk-tl">
@@ -476,7 +483,7 @@ function RelationshipScreen({ row, onBack }) {
   );
 }
 
-function DraftPanel({ detail }) {
+function DraftPanel({ detail, isDemo = false }) {
   const [busy, setBusy] = useState(true);
   const [body, setBody] = useState("");
   const [err, setErr] = useState("");
@@ -553,6 +560,11 @@ function DraftPanel({ detail }) {
               <button className="bk-btn bk-btn--primary" disabled={!!working} onClick={sendNow}>
                 <Send size={13} style={{ marginRight: 5, verticalAlign: -1 }} />
                 {working === "send" ? "Sending…" : "Send"}
+              </button>
+            ) : isDemo ? (
+              <button className="bk-btn bk-btn--primary" onClick={signInWithLinkedIn}>
+                <Send size={13} style={{ marginRight: 5, verticalAlign: -1 }} />
+                Sign in to send
               </button>
             ) : (
               <button className="bk-btn bk-btn--primary" onClick={copy}>
@@ -886,7 +898,7 @@ function AskBar({ variant, onOpen, onDraft }) {
 
 // ── Draft sheet (Draft → tap) ──────────────────────────────────────────────────
 
-function DraftSheet({ draft, onClose }) {
+function DraftSheet({ draft, onClose, isDemo = false }) {
   const hasInline = !!(draft.body && draft.body.trim());
   const [busy, setBusy] = useState(!hasInline);   // reuse the card's draft if present
   const [subject, setSubject] = useState(draft.subject || "");
@@ -1031,6 +1043,11 @@ function DraftSheet({ draft, onClose }) {
                         disabled={!!working} onClick={sendNow}>
                   <Send size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
                   {working === "send" ? "Sending…" : "Send now"}
+                </button>
+              ) : isDemo ? (
+                <button className="bk-btn bk-btn--primary bk-btn--block" onClick={signInWithLinkedIn}>
+                  <Send size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
+                  Sign in to send
                 </button>
               ) : (
                 <button className="bk-btn bk-btn--block" onClick={copy}>
@@ -1306,6 +1323,13 @@ const BOOK_CSS = `
 .bk-root *{box-sizing:border-box;}
 .bk-frame{width:100%; max-width:430px; min-height:100dvh; background:var(--bg);
   display:flex; flex-direction:column; position:relative;}
+.bk-demobar{display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:8px 14px; background:var(--accent,#2563eb); color:#fff;
+  font-size:12.5px; line-height:1.3; position:sticky; top:0; z-index:50;}
+.bk-demobar b{font-weight:700;}
+.bk-demobar-cta{flex:none; border:none; cursor:pointer; background:#fff;
+  color:var(--accent,#2563eb); font-size:12px; font-weight:700; border-radius:999px;
+  padding:5px 12px;}
 .bk-spin{animation:bkspin 1s linear infinite;}
 @keyframes bkspin{to{transform:rotate(360deg);}}
 
