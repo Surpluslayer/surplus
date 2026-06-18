@@ -252,10 +252,15 @@ def build_context(db, user_id: int, contact, voice_block: Optional[str] = None,
     }
 
 
-def _user_prompt(ctx: dict, reason: str, channel: str) -> str:
+def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "") -> str:
     """The shared user message for both the JSON and streamed composers. Leads
     with who this person is so the draft references concrete, person-specific
-    detail (role/company/news) instead of a generic line."""
+    detail (role/company/news) instead of a generic line.
+
+    `directive` is the host's own free-form instruction for THIS outreach (what
+    they typed in the ask bar, e.g. 'mention the webinar Thursday'). It applies
+    to everyone selected, while `reason` + the per-person facts keep each draft
+    differentiated -- so the batch honors one intent without going generic."""
     name = ctx.get("name") or "there"
     role, company = ctx.get("role"), ctx.get("company")
     if role and company:
@@ -293,17 +298,27 @@ def _user_prompt(ctx: dict, reason: str, channel: str) -> str:
         f"Reason to reach out now: {reason}",
         f"Channel: {channel}",
     ]
+    directive = (directive or "").strip()
+    if directive:
+        lines.append(
+            f"The host's instruction for this outreach (applies to everyone "
+            f"they're writing to right now): {directive}. Honor it, but adapt it "
+            f"to THIS person using the facts above -- do not paste the same line "
+            f"to everyone.")
     reg = voice.register_guidance(ctx.get("register"))
     if reg:
         lines.append(f"Register: {reg}")
     return "\n".join(lines) + "\n"
 
 
-def compose_from_context(ctx: dict, reason: str, channel: str = "email") -> Optional[dict]:
+def compose_from_context(ctx: dict, reason: str, channel: str = "email",
+                         directive: str = "") -> Optional[dict]:
     """The pure-LLM half: compose from a context dict (no DB), so it's safe to
-    fan out across threads. Returns {"subject", "body"} or None on failure."""
+    fan out across threads. Returns {"subject", "body"} or None on failure.
+    `directive` is the host's free-form ask-bar instruction (shared across the
+    batch); per-person facts keep each draft differentiated."""
     system = _FOLLOWUP_SYSTEM + (ctx.get("voice_block") or "")
-    user = _user_prompt(ctx, reason, channel)
+    user = _user_prompt(ctx, reason, channel, directive)
     out = _llm_json(system, user, max_tokens=500)
     if not out or not (out.get("body") or "").strip():
         return None
@@ -327,12 +342,14 @@ _FOLLOWUP_STREAM_SYSTEM = (
 )
 
 
-def stream_from_context(ctx: dict, reason: str, channel: str = "email"):
+def stream_from_context(ctx: dict, reason: str, channel: str = "email",
+                        directive: str = ""):
     """The pure-LLM half of streamed drafting: yield body tokens from a prebuilt
     context dict (no DB), so the agent can build all contexts serially then fan
-    out token streams across threads. Mirrors compose_from_context, streamed."""
+    out token streams across threads. Mirrors compose_from_context, streamed.
+    `directive` is the host's free-form ask-bar instruction (shared)."""
     system = _FOLLOWUP_STREAM_SYSTEM + (ctx.get("voice_block") or "")
-    user = _user_prompt(ctx, reason, channel)
+    user = _user_prompt(ctx, reason, channel, directive)
     yield from stream_text(system, user, max_tokens=500)
 
 
@@ -356,12 +373,18 @@ def compose_followup(db, user_id: int, contact, *, reason: str,
 
 
 def compose_batch(db, user_id: int, jobs: list[dict],
-                  *, concurrency: int = _DRAFT_CONCURRENCY) -> list[Optional[dict]]:
+                  *, concurrency: int = _DRAFT_CONCURRENCY,
+                  directive: str = "") -> list[Optional[dict]]:
     """Draft a follow-up for each job, returned in input order. Each job is
     {"contact": <Contact ORM>, "reason": str, "channel"?: str}. DB context is
     built SERIALLY here (session not thread-safe), then the LLM calls fan out
     under a bounded thread pool. Used by /ask to draft every selected person
-    inline (voice + their real thread + dash scrub) without one-at-a-time waits."""
+    inline (voice + their real thread + dash scrub) without one-at-a-time waits.
+
+    `directive` is the host's ask-bar instruction, shared across every job so the
+    whole batch honors one intent (e.g. 'mention the webinar Thursday'); each
+    draft still differs by its own reason + per-person facts. A job may override
+    with its own "directive" key."""
     if not jobs:
         return []
     # Voice is per-host, identical across contacts: load once per channel, reuse.
@@ -380,7 +403,8 @@ def compose_batch(db, user_id: int, jobs: list[dict],
     def _one(i: int) -> None:
         results[i] = compose_from_context(
             ctxs[i], jobs[i].get("reason") or "following up",
-            jobs[i].get("channel") or "email")
+            jobs[i].get("channel") or "email",
+            jobs[i].get("directive") or directive)
 
     import time as _t
     t0 = _t.monotonic()

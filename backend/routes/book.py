@@ -505,7 +505,7 @@ def ask(body: AskIn, db: Session = Depends(get_db),
     _t = time.monotonic()
     if jobs:
         from ..agents import drafting
-        drafts = drafting.compose_batch(db, user.id, jobs)
+        drafts = drafting.compose_batch(db, user.id, jobs, directive=q)
         for j, i in enumerate(idxs):
             d = drafts[j]
             if d and (d.get("body") or "").strip():
@@ -586,7 +586,8 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
             def _stream_one(idx, p, ctx):
                 events.put(("status", {"phase": "drafting", "name": p.get("name")}))
                 for delta in drafting.stream_from_context(
-                        ctx, p.get("reason") or "following up", "email"):
+                        ctx, p.get("reason") or "following up", "email",
+                        directive=q):
                     events.put(("token", {"index": idx, "t": delta}))
                 events.put(("person", {"index": idx, "contact_id": p.get("contact_id"),
                                        "name": p.get("name")}))
@@ -594,8 +595,12 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
             def _heuristic_one(idx, p, bd):
                 events.put(("status", {"phase": "drafting", "name": p.get("name")}))
                 try:
+                    reason_ = p.get("reason") or "following up"
+                    # Fold the host's ask-bar instruction into the trigger so the
+                    # demo / no-thread path honors it too (and caches per-trigger).
+                    trig_ = f"{reason_}. Host's instruction: {q}" if q else reason_
                     msg = book_agent.draft_message_cached(
-                        bd, p.get("reason") or "following up", channel="email",
+                        bd, trig_, channel="email",
                         user_name=name_, user_role=role_)
                     body_ = (msg or {}).get("body") or ""
                     if body_:
