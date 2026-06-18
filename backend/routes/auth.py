@@ -96,6 +96,19 @@ def _autoimport_conversations(user_id: int) -> None:
                   flush=True)
         finally:
             db.close()
+        # Learn the host's voice from their own sent messages, in its own session
+        # (the import above may have committed/closed work on `db`). Same ban-safe
+        # own-account read surface; idempotent; never blocks or fails the connect.
+        vdb = SessionLocal()
+        try:
+            from ..agents.live_enrich import sync_host_voice_on_connect
+            vres = sync_host_voice_on_connect(vdb, user_id)
+            print(f"[voicesync] user={user_id} {vres}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[voicesync] user={user_id} failed: {type(exc).__name__}: {exc}",
+                  flush=True)
+        finally:
+            vdb.close()
 
     threading.Thread(target=_worker, name=f"autoimport-{user_id}", daemon=True).start()
 

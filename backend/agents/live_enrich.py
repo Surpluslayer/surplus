@@ -91,6 +91,63 @@ def sync_host_voice(user, provider) -> None:
     user.voice_synced_at = _utcnow()
 
 
+def _cache_voice_profile(user) -> None:
+    """Distil + cache the host's voice_profile from their current voice_examples
+    so the hot draft path skips the (cheap, deterministic) recompute. Stored as
+    {fingerprint, profile} keyed on the examples, so it self-invalidates when the
+    examples change (resolve_voice_profile_for_user checks the fingerprint)."""
+    from . import voice
+    examples = voice.resolve_voice_examples_for_user(user)
+    profile = voice.build_host_voice_profile(examples)
+    if profile:
+        user.voice_profile = json.dumps(
+            {"fingerprint": voice.fingerprint_examples(examples),
+             "profile": profile})
+
+
+def sync_host_voice_on_connect(db, user_id: int) -> dict:
+    """Connect-time voice sync: right after a host links LinkedIn, learn their
+    voice from their OWN sent messages so drafts sound like them from day one.
+
+    Reads the host's own account (same ban-safe surface as the conversation
+    import that runs in the same worker) on a dry_run provider -- reads ignore
+    dry_run, so no send can happen. Idempotent via voice_synced_at; never raises;
+    returns a small status dict. Caches the distilled voice_profile too."""
+    import os
+
+    from .. import models
+    from ..providers.unipile import UnipileProvider
+    user = db.get(models.User, user_id)
+    if user is None:
+        return {"synced": False, "reason": "no user"}
+    if getattr(user, "voice_synced_at", None) is not None:
+        return {"synced": False, "reason": "already synced"}
+    acct = (getattr(user, "unipile_account_id", None) or "").strip()
+    if not acct:
+        return {"synced": False, "reason": "no linkedin account"}
+    try:
+        prov = UnipileProvider(
+            dsn=os.environ.get("UNIPILE_DSN"),
+            api_key=os.environ.get("UNIPILE_API_KEY"),
+            account_id=acct,
+            dry_run=True,  # reads ignore dry_run; this NEVER sends
+        )
+        sync_host_voice(user, prov)
+        _cache_voice_profile(user)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 : voice sync must never break connect
+        db.rollback()
+        return {"synced": False, "reason": f"{type(exc).__name__}: {exc}"}
+    n = len(voice_examples_count(user))
+    return {"synced": True, "examples": n}
+
+
+def voice_examples_count(user) -> list:
+    """The host's resolved voice examples (for a count in the sync status)."""
+    from . import voice
+    return voice.resolve_voice_examples_for_user(user)
+
+
 # Connected Unipile accounts that must NEVER be used to read LinkedIn, no
 # matter how the global switch is set. These belong to real people whose
 # accounts we will not risk to LinkedIn's anti-automation defenses.

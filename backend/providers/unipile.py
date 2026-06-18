@@ -621,12 +621,16 @@ class UnipileProvider(LinkedInProvider):
         voice. Walks the most recent chats and collects messages we sent.
 
         Bounded + best-effort : capped chat scan, errors degrade to []."""
-        if self._dry_run:
-            return [
-                "[dry-run] Hey {name}, loved your post on inference infra. "
-                "Building something similar, worth a quick chat?",
-            ]
+        # Reads ignore dry_run (same contract as the other read paths): a real
+        # account reads its REAL outbox even on a dry_run provider (voice sync
+        # runs on the ban-safe dry_run provider). Only fall back to the canned
+        # sample when there are NO credentials at all (true offline / tests).
         if not (self.api_key and self.dsn and self.account_id):
+            if self._dry_run:
+                return [
+                    "[dry-run] Hey {name}, loved your post on inference infra. "
+                    "Building something similar, worth a quick chat?",
+                ]
             return []
         chats = self._get("/api/v1/chats",
                          params={"account_id": self.account_id, "limit": 15})
