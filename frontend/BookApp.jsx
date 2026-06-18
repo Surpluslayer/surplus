@@ -853,7 +853,7 @@ function AskBar({ variant, onOpen, onDraft }) {
       )}
 
       {!res && !busy && (
-        <div className="bk-chips" style={variant === "card" ? { marginTop: 10 } : undefined}>
+        <div className="bk-chips" style={{ marginTop: 10 }}>
           {CHIPS.map((c) => (
             <button key={c} className="bk-chip" onClick={() => ask(c)}>{c}</button>
           ))}
