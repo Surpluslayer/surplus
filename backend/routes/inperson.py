@@ -281,7 +281,8 @@ def _demo_capture(db: Session, ev, user: models.User, body: "ScanIn") -> dict:
     p.status = "pending"
     p.source = (body.source or "scan").strip() or "scan"
     p.captured_at = datetime.now(timezone.utc)
-    p.note = s["note"]
+    note = (body.note or "").strip()
+    p.note = note or s["note"]
     if body.vip is not None:
         p.vip = bool(body.vip)
     db.commit()
@@ -289,11 +290,26 @@ def _demo_capture(db: Session, ev, user: models.User, body: "ScanIn") -> dict:
     relationships.link_contact(db, p, user.id)
     # The post-scan update is about someone else, not the just-captured host.
     _demo_emit_update(db, user)
+    # First scan (no note) -> instant static draft. When the host types "what you
+    # talked about", compose a REAL draft from that note so the demo's
+    # personalization actually works (the whole point of that field).
+    draft_note = "Met at the event, exchanged details."
+    draft_message = s["draft"]
+    if note:
+        try:
+            rel_ctx = relationships.relationship_context(
+                p, relationships.fetch_interactions(db, p))
+            d = compose(p, ev, relationship_ctx=rel_ctx)
+            if d and (getattr(d, "message", "") or "").strip():
+                draft_message = d.message
+                draft_note = getattr(d, "note", None) or draft_note
+        except Exception:  # noqa: BLE001 : fall back to the static draft
+            pass
     return {
         "prospect": _capture_row(p),
         "resolve_failed": False,
-        "draft_note": "Met at the event, exchanged details.",
-        "draft_message": s["draft"],
+        "draft_note": draft_note,
+        "draft_message": draft_message,
     }
 
 

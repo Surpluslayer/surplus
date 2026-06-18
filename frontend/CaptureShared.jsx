@@ -530,9 +530,14 @@ export function CaptureScreen({ event, onResult, isDemo = false }) {
 // "captures" -- no real camera (so no shaky hands / real permission dialog).
 // Fires onUrl with a placeholder; the backend returns a polished demo persona.
 function DemoScanStage({ onUrl, busy }) {
-  const [phase, setPhase] = useState("aim");  // aim -> scan -> locked
+  const [phase, setPhase] = useState("permission");  // permission -> aim -> scan -> locked
   const firedRef = useRef(false);
-  useEffect(() => {
+  const timersRef = useRef([]);
+  useEffect(() => () => timersRef.current.forEach(clearTimeout), []);
+
+  const allow = () => {
+    if (phase !== "permission") return;
+    setPhase("aim");
     // Hold on an empty viewfinder first (you're "aiming"), THEN the QR slides up.
     const AIM = 1400;
     const t0 = setTimeout(() => setPhase("scan"), AIM);
@@ -540,26 +545,42 @@ function DemoScanStage({ onUrl, busy }) {
     const t2 = setTimeout(() => {
       if (!firedRef.current) { firedRef.current = true; onUrl("https://www.linkedin.com/in/demo"); }
     }, AIM + 2400);
-    return () => { [t0, t1, t2].forEach(clearTimeout); };
-  }, [onUrl]);
+    timersRef.current = [t0, t1, t2];
+  };
+
+  const perm = phase === "permission";
   const aim = phase === "aim";
   const locked = phase === "locked";
   return (
     <div className="ip-cam ip-democam">
-      {!aim && (
+      {!perm && !aim && (
         <div className="ip-demoshot-wrap">
           <img className="ip-demoshot" src="/demo-linkedin-qr.webp" alt=""
                onError={(e) => { e.currentTarget.style.display = "none"; }} />
         </div>
       )}
-      <div className={"ip-reticle ip-demoreticle" + (locked ? " ip-demoreticle--lock" : "")} />
+      {!perm && (
+        <div className={"ip-reticle ip-demoreticle" + (locked ? " ip-demoreticle--lock" : "")} />
+      )}
       {phase === "scan" && <div className="ip-scanline" />}
+      {perm && (
+        <div className="ip-permwrap">
+          <div className="ip-permcard">
+            <div className="ip-permicon"><Camera size={22} /></div>
+            <div className="ip-permtitle">“surplus” Would Like to Access the Camera</div>
+            <div className="ip-permmsg">To scan a LinkedIn QR and add people you meet.</div>
+            <div className="ip-permbtns">
+              <button className="ip-permbtn" onClick={allow}>Don’t Allow</button>
+              <button className="ip-permbtn ip-permbtn--go" onClick={allow}>Allow</button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="ip-camstatus">
-        {busy || locked
-          ? <><Check size={14} /> Got it, saving…</>
-          : aim
-            ? "Point at their LinkedIn QR"
-            : <><Loader2 className="spin" size={14} /> Scanning QR…</>}
+        {perm ? "Tap Allow to scan their QR"
+          : busy || locked ? <><Check size={14} /> Got it, saving…</>
+            : aim ? "Point at their LinkedIn QR"
+              : <><Loader2 className="spin" size={14} /> Scanning QR…</>}
       </div>
     </div>
   );
@@ -1736,6 +1757,24 @@ button.ip-microw-hint { cursor:pointer; }
 .ip-demoreticle { border-color:rgba(40,55,80,.32); box-shadow:none;
   transition:border-color .3s ease, box-shadow .3s ease; }
 .ip-demoreticle--lock { border-color:#2fd27a; box-shadow:0 0 22px rgba(47,210,122,.55); }
+/* faux iOS camera-permission alert (the "enable camera" pop-up for the demo) */
+.ip-permwrap { position:absolute; inset:0; display:flex; align-items:center;
+  justify-content:center; background:rgba(0,0,0,.45); backdrop-filter:blur(2px); }
+.ip-permcard { width:74%; max-width:280px; background:rgba(248,248,248,.98);
+  border-radius:16px; padding:18px 16px 0; text-align:center; overflow:hidden;
+  box-shadow:0 18px 50px rgba(0,0,0,.4); animation:ippermin .25s ease both; }
+@keyframes ippermin { from{ opacity:0; transform:scale(.92);} to{ opacity:1; transform:scale(1);} }
+.ip-permicon { width:46px; height:46px; margin:2px auto 10px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center; color:#fff;
+  background:linear-gradient(160deg,#3b82f6,#2f6df6); }
+.ip-permtitle { font-size:15px; font-weight:700; color:#111; line-height:1.3; }
+.ip-permmsg { font-size:12.5px; color:#555; margin:6px 0 14px; line-height:1.35; }
+.ip-permbtns { display:flex; margin:0 -16px; border-top:.5px solid rgba(0,0,0,.14); }
+.ip-permbtn { flex:1; padding:13px 6px; font-size:15px; color:#2f6df6;
+  background:none; border:none; font-family:var(--ip-font-ui); cursor:pointer; }
+.ip-permbtn:first-child { border-right:.5px solid rgba(0,0,0,.14); }
+.ip-permbtn--go { font-weight:700; }
+.ip-permbtn:active { background:rgba(0,0,0,.05); }
 
 /* candidates */
 .ip-cands { display:flex; flex-direction:column; gap:8px; margin-top:6px; }
