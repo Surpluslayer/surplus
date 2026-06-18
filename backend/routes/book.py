@@ -366,6 +366,14 @@ def today(db: Session = Depends(get_db),
     feed = book_agent.build_today(book)
     name, role = _advisor_identity(user)
     feed["advisor_name"] = name
+    # Demo: don't show the draft pre-made on the update cards -- the video taps
+    # "Draft" and watches the agent write it live (the draft still streams in via
+    # /draft/stream). Real users keep their ready-to-send inline drafts.
+    from ..auth import is_demo_user
+    if is_demo_user(user):
+        for u in feed.get("updates", []):
+            u.pop("draft", None)
+            u["has_draft"] = False
     # Warm drafts in the background for the people this feed is about to tell
     # the user to contact, so the draft panel is usually instant on tap.
     by_id = {c.get("id"): c for c in book}
@@ -461,15 +469,24 @@ def draft_stream(body: DraftIn, db: Session = Depends(get_db),
                     streamed = True
                     yield f"event: token\ndata: {json.dumps({'t': chunk})}\n\n"
             if not streamed:
-                # No real contact (demo slug) or no key: emit the heuristic body
-                # as a single chunk so the UI still gets a draft.
+                from ..auth import is_demo_user
                 book = _load_book(wdb, wuser)
                 contact = _find_contact(book, contact_id=cid, name=nm) or \
                     {"name": nm or "there", "title": "", "firm": "",
                      "interaction_history": ""}
-                msg = book_agent.draft_message_cached(
-                    contact, trigger, channel=channel, user_name=name, user_role=role)
-                yield f"event: token\ndata: {json.dumps({'t': msg.get('body') or ''})}\n\n"
+                demo_draft = (contact.get("raw_signals") or {}).get("draft")
+                if demo_draft and is_demo_user(wuser):
+                    # Demo: stream the pre-written draft word-by-word so it 'types'
+                    # out live (the agent-drafting moment for the video).
+                    import time as _t
+                    for i, w in enumerate(demo_draft.split(" ")):
+                        yield f"event: token\ndata: {json.dumps({'t': (w if i == 0 else ' ' + w)})}\n\n"
+                        _t.sleep(0.045)
+                else:
+                    # No real contact / no key: emit the heuristic body as one chunk.
+                    msg = book_agent.draft_message_cached(
+                        contact, trigger, channel=channel, user_name=name, user_role=role)
+                    yield f"event: token\ndata: {json.dumps({'t': msg.get('body') or ''})}\n\n"
             yield f"event: done\ndata: {json.dumps({'total_s': round(time.monotonic()-t0, 1)})}\n\n"
             _trace(f"POST /draft/stream user={user_id} to={nm!r} "
                    f"in {time.monotonic()-t0:.1f}s (streamed={streamed})")
