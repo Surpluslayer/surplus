@@ -563,6 +563,11 @@ class User(Base):
     # Connection health : flipped to "disconnected" if Unipile webhook fires
     # CREDENTIALS / DISCONNECTED. Re-auth flips it back to "active".
     linkedin_status: Mapped[str] = mapped_column(String(20), default="active")
+    # True for throwaway /demo-link users (one minted per visit). Set at mint so
+    # every real query can filter them out and the hourly cron can purge stale
+    # ones. Kept in the users table (the demo runs on the real auth/book stack),
+    # but cleanly separated by this flag rather than the email-domain convention.
+    is_demo: Mapped[bool] = mapped_column(default=False, index=True)
 
     # ─── Email channel (Unipile GOOGLE / MICROSOFT account) ─────────────
     # A SECOND Unipile account on the same workspace, pointing at the user's

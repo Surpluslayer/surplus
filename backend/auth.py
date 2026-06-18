@@ -36,7 +36,10 @@ DEMO_USER_EMAIL_DOMAIN = "demo.surpluslayer.com"
 
 
 def is_demo_user(user) -> bool:
-    """True for any demo-link user (legacy shared row or per-visitor mint)."""
+    """True for any demo-link user. Prefers the explicit is_demo flag; falls back
+    to the demo email convention for legacy rows minted before the flag existed."""
+    if getattr(user, "is_demo", False):
+        return True
     email = (getattr(user, "email", "") or "").lower()
     return email == DEMO_USER_EMAIL or email.endswith(f"@{DEMO_USER_EMAIL_DOMAIN}")
 

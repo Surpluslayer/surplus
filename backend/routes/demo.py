@@ -57,7 +57,7 @@ from ..auth import DEMO_USER_EMAIL_DOMAIN, create_session, is_demo_user, set_ses
 from ..db import get_db
 from ..demo_seed import build_demo_payload, seed_demo_workspace
 from ..hosts import is_first_party, is_inperson_host, request_browser_host
-from ..models import Event, Session, User
+from ..models import Contact, Event, RelationshipInteraction, Session, User
 from ..rate_limit import per_ip_rate_limit
 
 
@@ -130,6 +130,7 @@ def _mint_demo_user(db: DbSession, *, email: Optional[str] = None) -> User:
         name="Surplus Demo",
         email=addr,
         headline="Demo account : full workflow, LinkedIn sending disabled",
+        is_demo=True,  # explicit flag so demo rows stay out of real queries/counts
         # NULL on purpose : this is what gates real sends behind the paywall.
         unipile_account_id=None,
         linkedin_status="disconnected",
@@ -242,7 +243,7 @@ def _demo_ttl_hours() -> int:
         return 48
 
 
-def _cleanup_stale_demo_users(db: DbSession) -> None:
+def _cleanup_stale_demo_users(db: DbSession, *, limit: int = 50) -> int:
     """Best-effort sweep of expired per-visit demo users so the public door
     can't grow the users table without bound. Deletes the demo user's owned
     events (cascade drops their prospects/edges) and sessions, then the user.
@@ -251,31 +252,43 @@ def _cleanup_stale_demo_users(db: DbSession) -> None:
     never break a fresh visitor's demo start. Only ever touches rows on the
     isolated demo email domain.
     """
+    from sqlalchemy import or_
     ttl = _demo_ttl_hours()
     if not ttl:
-        return
+        return 0
     cutoff = datetime.now(timezone.utc) - timedelta(hours=ttl)
-    try:
-        stale = (
-            db.query(User)
-            .filter(User.email.like(f"%@{DEMO_USER_EMAIL_DOMAIN}"))
-            .filter(User.last_login_at.isnot(None))
-            .filter(User.last_login_at < cutoff)
-            .limit(20)
-            .all()
-        )
-        for u in stale:
-            if not is_demo_user(u):  # defensive : never touch a real row
-                continue
+    stale = (
+        db.query(User)
+        .filter(or_(User.is_demo.is_(True),
+                    User.email.like(f"%@{DEMO_USER_EMAIL_DOMAIN}")))
+        .filter(User.last_login_at.isnot(None))
+        .filter(User.last_login_at < cutoff)
+        .limit(limit)
+        .all()
+    )
+    deleted = 0
+    # Per-user transaction so one bad row (an unexpected FK) skips, not blocks.
+    for u in stale:
+        if not is_demo_user(u):  # defensive : never touch a real row
+            continue
+        try:
+            # The demo user's own interactions (covers their demo contacts too).
+            db.query(RelationshipInteraction).filter(
+                RelationshipInteraction.actor_user_id == u.id).delete(
+                synchronize_session=False)
             for ev in db.query(Event).filter(Event.user_id == u.id).all():
                 db.delete(ev)  # cascade drops prospects/edges/applicants/sponsors
+            db.query(Contact).filter(Contact.user_id == u.id).delete(
+                synchronize_session=False)
             db.query(Session).filter(Session.user_id == u.id).delete(
                 synchronize_session=False)
             db.delete(u)
-        db.commit()
-    except Exception as exc:  # noqa: BLE001
-        db.rollback()
-        print(f"  [demo.cleanup] skipped : {type(exc).__name__}: {exc}")
+            db.commit()
+            deleted += 1
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            print(f"  [demo.cleanup] user={u.id} skipped : {type(exc).__name__}: {exc}")
+    return deleted
 
 
 @router.post("/start", dependencies=[Depends(_rl_demo_start)])

@@ -12,7 +12,10 @@ Two product surfaces share the codebase:
   prospecting → outreach → matching → ROI. (`App.jsx`)
 - **Phone-first relationship CRM** (`event.surpluslayer.com`) — "your book":
   capture people you meet, auto-detect their updates, draft follow-ups in your
-  voice. (`BookApp.jsx`) `/demo` drops into a seeded version of this.
+  voice. (`BookApp.jsx`) `/demo` drops into a seeded version of this. Each `/demo`
+  visit mints a throwaway `User` with `is_demo=True` (on the real auth/book stack,
+  but flagged so it's kept out of real queries/counts); the hourly scheduler
+  purges stale demo users (`routes/demo._cleanup_stale_demo_users`, full cascade).
 
 Host header picks the shell: `event.*` → `inperson.html` → `main-inperson.jsx` →
 **BookApp**; apex → `index.html` → `main.jsx` → **App**.

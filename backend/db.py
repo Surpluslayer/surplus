@@ -144,6 +144,7 @@ def init_db() -> None:
         _migrate_contact_vip,
         _migrate_contact_profile_baselined,
         _migrate_contact_preferred_channel,
+        _migrate_user_is_demo,
     ]
     for migration in migrations:
         try:
@@ -629,6 +630,26 @@ def _migrate_contact_vip() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE contacts ADD COLUMN vip BOOLEAN DEFAULT FALSE"))
+
+
+def _migrate_user_is_demo() -> None:
+    """Add users.is_demo (bool, default false) + backfill existing demo rows
+    (the per-visit demo email domain) so they're flagged, not just email-matched."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "is_demo" not in cols:
+        with ENGINE.begin() as conn:
+            conn.execute(text("ALTER TABLE users ADD COLUMN is_demo BOOLEAN DEFAULT FALSE"))
+    # Backfill: flag legacy demo rows by the demo email convention.
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            "UPDATE users SET is_demo = TRUE "
+            "WHERE is_demo IS NOT TRUE AND "
+            "(email LIKE '%@demo.surpluslayer.com' OR email LIKE 'demo-%' "
+            "OR name = 'Surplus Demo')"))
 
 
 def _migrate_contact_preferred_channel() -> None:

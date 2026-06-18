@@ -51,6 +51,11 @@ def _limit() -> int:
     return max(1, min(int(os.environ.get("UPDATES_SWEEP_LIMIT", "200")), 1000))
 
 
+def _demo_purge_gap_seconds() -> int:
+    # How often to purge stale demo users (default hourly).
+    return max(300, int(os.environ.get("DEMO_PURGE_GAP_SECONDS", "3600")))
+
+
 def last_tick() -> dict:
     return _LAST_TICK
 
@@ -98,6 +103,22 @@ def _run_once() -> dict:
     global _LAST_TICK
     from datetime import datetime, timezone
     stamp = datetime.now(timezone.utc).isoformat()
+    # Purge stale demo users on their own claim, independent of the sweep claim
+    # (so it still runs when the sweep is claimed elsewhere or finds nothing due).
+    if _claim("demo_purge", _demo_purge_gap_seconds()):
+        try:
+            from ..db import SessionLocal
+            from ..routes.demo import _cleanup_stale_demo_users
+            pdb = SessionLocal()
+            try:
+                n = _cleanup_stale_demo_users(pdb, limit=200)
+                if n:
+                    print(f"[updates.scheduler] purged {n} stale demo users", flush=True)
+            finally:
+                pdb.close()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[updates.scheduler] demo purge failed: {type(exc).__name__}: {exc}",
+                  flush=True)
     if not _claim("updates_sweep", _gap_seconds()):
         _LAST_TICK = {"at": stamp, "ran": False, "reason": "not due / claimed elsewhere"}
         return _LAST_TICK
