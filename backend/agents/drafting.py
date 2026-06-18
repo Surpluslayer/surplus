@@ -38,10 +38,13 @@ _DRAFT_CONCURRENCY = max(1, int(os.environ.get("DRAFT_CONCURRENCY", "6")))
 
 _SPECIFICITY = (
     "Hone in on THIS person. Name the concrete detail that makes the message "
-    "obviously written for them, not a template: their role, their company, or "
-    "the specific reason to reach out now. Never a generic line that would fit "
-    "anyone (no \"hope you're doing well\", no \"just checking in\"). If you have "
-    "no concrete detail beyond their name, reference the reason to reach out "
+    "obviously written for them, not a template: where you met them, your noted "
+    "next step, their role/company, or the specific reason to reach out now. "
+    "Never a generic line that would fit anyone (no \"hope you're doing well\", "
+    "no \"just checking in\"). Use ONLY the facts given to you (the relationship "
+    "grounding, the prior conversation, and the reason); never invent a meeting, "
+    "a shared project, a mutual contact, or an update that is not stated. If you "
+    "have no concrete detail beyond their name, reference the reason to reach out "
     "directly rather than padding with filler. "
 )
 _BREVITY = (
@@ -145,12 +148,65 @@ def _voice_block_for(db, user_id: int, channel: str) -> str:
         user, channel=vch, message_type="warm_followup")["block"]
 
 
+def _months_ago(dt) -> str:
+    """A coarse human relative-time label ('last week' / '~3 months ago') for a
+    first-met datetime, or '' when missing/unparseable. Kept fuzzy on purpose:
+    the draft says 'great catching up after a few months', never a false-precise
+    date the host can't vouch for."""
+    try:
+        from datetime import datetime, timezone
+        aware = relationships._as_aware(dt)
+        if aware is None:
+            return ""
+        days = (datetime.now(timezone.utc) - aware).days
+    except Exception:  # noqa: BLE001
+        return ""
+    if days < 0:
+        return ""
+    if days <= 10:
+        return "recently"
+    if days <= 45:
+        return "a few weeks ago"
+    months = max(1, round(days / 30))
+    if months < 12:
+        return f"~{months} months ago"
+    years = round(days / 365)
+    return "about a year ago" if years <= 1 else f"~{years} years ago"
+
+
+def _relationship_facts(db, contact) -> dict:
+    """The grounding the composer needs to hone in on THIS relationship when the
+    message thread is thin or absent (the common case): where/when the host met
+    them, how long it's been, the relationship stage, and the host's own noted
+    next step (the open loop). Pulled from the durable contact_summary rollup so
+    a draft can say 'great meeting you at <event>' / 'as promised, <next step>'
+    instead of a generic reconnect line. Best-effort: any read failure -> {}."""
+    try:
+        s = relationships.contact_summary(db, contact)
+    except Exception:  # noqa: BLE001 : a summary read failure must not break drafting
+        return {}
+
+    def _clean(v):
+        x = (str(v).strip() if v is not None else "")
+        return "" if x.lower() in ("", "unknown", "none") else x
+
+    return {
+        "met_at": _clean(s.get("met_at")),               # event where they met
+        "first_met_at": s.get("first_met_at"),           # datetime (oldest touch)
+        "last_touch_at": s.get("last_touch_at"),
+        "n_events": s.get("n_events") or 0,
+        "stage": _clean(s.get("relationship_stage")),
+        "next_step": _clean(s.get("next_step")),          # host's own open loop
+    }
+
+
 def build_context(db, user_id: int, contact, voice_block: Optional[str] = None,
                   *, channel: str = "email") -> dict:
     """Gather everything the composer needs for `contact` via the DB (the host's
-    voice + this person's real prior-message thread). Runs on the request thread;
-    `voice_block` can be passed in pre-rendered to avoid re-loading it per person
-    in a batch (it's the same for every contact of one host).
+    voice + this person's real prior-message thread + the relationship grounding).
+    Runs on the request thread; `voice_block` can be passed in pre-rendered to
+    avoid re-loading it per person in a batch (it's the same for every contact of
+    one host).
 
     For the EMAIL channel we also pull the real email-thread bodies so the draft
     continues the actual email conversation, not just a 'N messages' rollup."""
@@ -189,6 +245,9 @@ def build_context(db, user_id: int, contact, voice_block: Optional[str] = None,
                  or _real(getattr(contact, "headline", None))),
         "prior": prior,
         "register": register,
+        # Relationship grounding (where/when met, open next step) so the draft is
+        # specific to THIS relationship even with no message thread.
+        "facts": _relationship_facts(db, contact),
         "voice_block": voice_block,
     }
 
@@ -207,8 +266,28 @@ def _user_prompt(ctx: dict, reason: str, channel: str) -> str:
         who = f"{name} at {company}"
     else:
         who = name
-    lines = [
-        f"Who you're writing to: {who}.",
+    lines = [f"Who you're writing to: {who}."]
+
+    # Relationship grounding: where/when they met + the host's open loop. These
+    # let the draft be specific (\"great meeting you at <event>\", \"as promised,
+    # <next step>\") even when the message thread is empty.
+    facts = ctx.get("facts") or {}
+    grounding: list[str] = []
+    if facts.get("met_at"):
+        ago = _months_ago(facts.get("first_met_at"))
+        grounding.append(f"you met them at {facts['met_at']}"
+                         + (f" ({ago})" if ago else ""))
+    elif facts.get("n_events"):
+        grounding.append(f"you've crossed paths at {facts['n_events']} event(s)")
+    if facts.get("next_step"):
+        grounding.append(f"your own noted next step with them: {facts['next_step']}")
+    if facts.get("stage"):
+        grounding.append(f"relationship stage: {facts['stage']}")
+    if grounding:
+        lines.append("What you know about this relationship: "
+                     + "; ".join(grounding) + ".")
+
+    lines += [
         "Prior conversation (oldest first; [] means no prior messages):",
         json.dumps(ctx.get("prior") or [], default=str),
         f"Reason to reach out now: {reason}",
