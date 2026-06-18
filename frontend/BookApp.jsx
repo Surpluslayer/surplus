@@ -776,9 +776,9 @@ function AddScreen({ user, onAccount, onAdded }) {
 // ── Ask bar / assistant card (agent) ──────────────────────────────────────────
 
 // Match the relationship-agent chat's suggested "bubbles" (event-host framing).
-const CHIPS = ["Who should I follow up with?",
-               "Who recently changed roles?",
-               "Draft pings for anyone going cold"];
+const CHIPS = ["Reach out to my sales prospects",
+               "Schedule calls with leads",
+               "Follow up with people from the event"];
 
 function AskBar({ variant, onOpen, onDraft }) {
   const [q, setQ] = useState("");
