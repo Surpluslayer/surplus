@@ -136,7 +136,7 @@ extraction/matching), `exa.py` (Exa search), `jsonx` use.
 
 1. **Scheduler** (Modal hourly primary, in-process fallback; claim-deduped) calls `run_sweep`.
 2. `due_contacts` picks who's due (⭐ vip daily / others weekly, via `watched_at`).
-3. Bright Data scrapes each contact's public profile/posts on its own infra → delivers to `/webhooks/brightdata`.
+3. Bright Data scrapes each contact's public profile/posts on its own infra → delivers to `/webhooks/brightdata`. Posts use `only_authored_posts=true` (their own posts only, not the activity feed) — keeps the signal clean and slashes credit burn (a non-poster = 0 records).
 4. `apply_profile`/`apply_posts` diff vs baseline (first scrape = silent baseline) → `_emit` an `activity_update`.
 5. `_emit` auto-drafts a follow-up **for important kinds only** (`job_change`, milestone `new_post`) in the host's voice.
 6. `/api/book/today` surfaces draft-bearing updates **first**, with the ready message inline.

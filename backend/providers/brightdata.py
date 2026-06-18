@@ -112,7 +112,14 @@ def _trigger(dataset_id: str, urls: list[str], *, kind: str) -> bool:
         # when a date window is set -> "Total posts: N, with dates: 0 ... dead_page"
         # (their own guidance: leave the dates empty). We get recent posts back
         # and dedup/recency-filter on our side via seen_post_ids in apply_posts.
-        body = [{"url": u} for u in valid]
+        #
+        # only_authored_posts=true: return ONLY the contact's OWN posts, not their
+        # whole activity feed (reshares/likes of others). Without it, discover-by-
+        # profile pulls ~hundreds of feed records per person -- noisy AND a big
+        # Bright Data credit sink. With it: a contact who doesn't post = 0 records
+        # (no spend); a contact who posts a milestone = just those posts. This is
+        # the right signal (their news) and makes the author-side filter redundant.
+        body = [{"url": u, "only_authored_posts": True} for u in valid]
     sec = webhook_secret()
     if sec:
         params["auth_header"] = f"Bearer {sec}"
