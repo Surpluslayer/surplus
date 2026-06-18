@@ -309,12 +309,18 @@ def _load_book(db: Session, user: models.User) -> list[dict]:
     (a real account with an empty spine gets an empty book, not fake clients)."""
     t0 = time.monotonic()
     book = _book_from_spine(db, user)
-    if book:
+    from ..auth import is_demo_user
+    if is_demo_user(user):
+        # In the demo, a real capture must ADD to the seeded roster, not replace
+        # it: just-scanned people show first, the 14 demo contacts stay. (Without
+        # this, the first scan makes the spine non-empty and the demo book vanishes.)
+        book = book + _demo_book()
+        src = "demo+spine"
+    elif book:
         src = "spine"
     else:
-        from ..auth import is_demo_user
-        book = _demo_book() if is_demo_user(user) else []
-        src = "demo" if book else "empty"
+        book = []
+        src = "empty"
     _trace(f"load_book user={user.id} -> {len(book)} contacts ({src}) "
            f"in {time.monotonic()-t0:.2f}s")
     return book
