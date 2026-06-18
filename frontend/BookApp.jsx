@@ -180,6 +180,15 @@ export default function BookApp() {
 
 // ── Today ────────────────────────────────────────────────────────────────────
 
+// The surplus "S" mark — the agent's face in the ask bar / assistant card.
+// Renders the brand logo so the agent reads as Surplus, not a generic spark.
+function SurplusMark({ size = 17, className }) {
+  return (
+    <img src="/surplus-logo.png" alt="" width={size} height={size}
+         className={"bk-mark" + (className ? " " + className : "")} />
+  );
+}
+
 // The JL/DW avatar — the entry to Account, present in every screen's topbar.
 function Avatar({ user, feed, onAccount }) {
   return (
@@ -832,12 +841,12 @@ function AskBar({ variant, onOpen, onDraft }) {
          data-onb={variant === "bar" ? "ask" : undefined}>
       {variant === "card" ? (
         <>
-          <div className="bk-assistant-head"><Sparkles size={16} /><span>Relationship assistant</span></div>
+          <div className="bk-assistant-head"><SurplusMark size={16} /><span>Relationship assistant</span></div>
           <div className="bk-field">{input}{go}</div>
         </>
       ) : (
         <div className="bk-ask">
-          <Sparkles size={17} className="bk-ask-spark" />
+          <SurplusMark size={18} className="bk-ask-spark" />
           {input}
           {go}
         </div>
@@ -1160,32 +1169,32 @@ const BK_ONB_STEPS = [
   {
     key: "add", tab: "today", anchor: "add", place: "top",
     title: "Add contacts",
-    body: "Start by capturing someone you met. Tap Add to scan their LinkedIn QR or paste their profile.",
+    body: "Tap Add to scan a LinkedIn QR or paste a profile.",
   },
   {
     key: "find", tab: "book", anchor: "search", place: "bottom",
     title: "Find them",
-    body: "Everyone you capture lands in your book. Search by name, firm, or event to find anyone fast.",
+    body: "Search by name, firm, or event.",
   },
   {
     key: "send", tab: "today", anchor: "draft", place: "bottom",
-    title: "Send a message",
-    body: "Surplus drafts a follow-up in your voice. Tap Draft on anyone who needs outreach to review it.",
+    title: "Draft a follow-up",
+    body: "Tap Draft to review a message in your voice.",
   },
   {
     key: "ask", tab: "today", anchor: "ask", place: "bottom",
-    title: "Ask the agent a question",
-    body: "Ask your agent anything — like who to follow up with. It reads your whole book to answer.",
+    title: "Ask the agent",
+    body: "It reads your whole book to answer.",
   },
   {
     key: "send2", tab: "today", anchor: "draft", place: "bottom",
-    title: "Send a message",
-    body: "Happy with the draft? Hit Send and Surplus delivers it for you — no copy-paste.",
+    title: "Send it",
+    body: "Hit Send — no copy-paste.",
   },
   {
     key: "list", tab: "book", anchor: "book", place: "top",
-    title: "Check your relationship list",
-    body: "Open Book any time to see every relationship, sorted by who needs attention.",
+    title: "Your relationship list",
+    body: "Open Book to see everyone, sorted by who needs attention.",
     final: true, cta: "Got it",
   },
 ];
@@ -1257,7 +1266,7 @@ function BookOnboarding({ step, onGo, onClose }) {
       <div className={"bk-onb-card" + (rect ? "" : " floating")}
            style={bkOnbCardStyle(rect, def.place)}>
         <div className="bk-onb-top">
-          <span className="bk-onb-progress"><Sparkles size={13} /> Step {idx + 1} of {total}</span>
+          <span className="bk-onb-progress">Step {idx + 1} of {total}</span>
           <button className="bk-onb-x" onClick={() => onClose()} aria-label="Dismiss the tour">
             <X size={15} />
           </button>
@@ -1328,6 +1337,7 @@ const BOOK_CSS = `
 .bk-ask{display:flex; align-items:center; gap:10px; background:var(--surface);
   border:.5px solid var(--line); border-radius:999px; padding:9px 11px 9px 15px;}
 .bk-ask-spark{color:var(--accent); flex:none;}
+.bk-mark{flex:none; object-fit:contain; display:block;}
 .bk-ask-input{flex:1; border:0; background:none; outline:none; font-size:13px;
   color:var(--ink); font-family:var(--font-ui); min-width:0;}
 .bk-ask-input::placeholder{color:var(--faint);}
