@@ -73,9 +73,11 @@ def _demo_book() -> list[dict]:
                             "detected_at": _ago(hours=2),
                             "significance": "high", "outreach_trigger": True,
                             "draft": "Hey James, saw the news about the liquidity "
-                            "event, congratulations, that's a huge milestone. Would "
-                            "genuinely love to reconnect and make sure everything's "
-                            "positioned the way you want. Free for a coffee this week?"},
+                            "event, congratulations, that's a huge milestone. Given "
+                            "how we set things up after the logistics sale, I'd love "
+                            "to reconnect and make sure the proceeds are positioned "
+                            "for what's next. Also, how's your daughter settling in "
+                            "since graduation? Free for a coffee this week?"},
         },
         {
             "id": "priya-nadel", "name": "Priya Nadel", "vip": False,
@@ -90,8 +92,9 @@ def _demo_book() -> list[dict]:
                             "significance": "medium", "outreach_trigger": True,
                             "draft": "Hey Priya, saw that you were promoted to MD at "
                             "Lumen Growth, congratulations, so well deserved. Would "
-                            "love to reconnect and celebrate properly. Are you around "
-                            "for a quick catch-up sometime soon?"},
+                            "love to reconnect and celebrate, and it's probably a good "
+                            "moment to revisit the family trust as things scale up for "
+                            "you. Are you free for a quick catch-up soon?"},
         },
         {
             "id": "david-osei", "name": "David Osei", "vip": True,
@@ -106,8 +109,10 @@ def _demo_book() -> list[dict]:
                             "significance": "high", "outreach_trigger": True,
                             "draft": "Hey David, saw that you raised a new fund, "
                             "that's fantastic, huge congrats. Would love to reconnect "
-                            "and hear how it all came together. Free to grab time in "
-                            "the next week or two?"},
+                            "and hear how it came together, and with the new carry in "
+                            "the mix it might be a good time to look at the kids' "
+                            "college planning again. Free to grab time in the next "
+                            "week or two?"},
         },
         # ── people overdue for a touch (the "Needs outreach" list) ──
         {"id": "thomas-reyes", "name": "Thomas Reyes", "vip": False,
@@ -170,7 +175,7 @@ def _demo_book() -> list[dict]:
          "title": "Principal", "firm": "Hawthorn Wealth", "tier": "core",
          "days_since": 0, "cadence_days": 45, "review_due": False,
          "met_at": "NYC Tech Week", "is_prospect": True,
-         "interaction_history": "Just met — exchanged badges at the afterparty."},
+         "interaction_history": "Just met, exchanged badges at the afterparty."},
     ]
 
 

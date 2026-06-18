@@ -42,9 +42,9 @@ DEMO_PEOPLE: list[dict] = [
         "seeks": "design partners for an internal tooling idea",
         "note": "Swapped war stories about scaling payments infra; she's "
                 "noodling on an internal-tools side project.",
-        "draft": "Maya — great meeting you at the Founders mixer. Loved your "
+        "draft": "Maya, great meeting you at the Founders mixer. Loved your "
                  "take on scaling payments infra at Ramp; the internal-tools "
-                 "idea stuck with me. Would love to keep comparing notes — open "
+                 "idea stuck with me. Would love to keep comparing notes, open "
                  "to connecting here?",
         "linkedin_url": "https://www.linkedin.com/in/demo-maya-chen",
         "update": {
@@ -66,9 +66,9 @@ DEMO_PEOPLE: list[dict] = [
         "seeks": "technical founders in dev tools / infra",
         "note": "He's actively writing seed checks into dev-tools founders and "
                 "asked to see anything early in infra.",
-        "draft": "Deon — really enjoyed our chat about where seed-stage infra "
+        "draft": "Deon, really enjoyed our chat about where seed-stage infra "
                  "is heading. You mentioned wanting to meet technical dev-tools "
-                 "founders early — I know a couple worth an intro. Connect and "
+                 "founders early, I know a couple worth an intro. Connect and "
                  "I'll send them your way?",
         "linkedin_url": "https://www.linkedin.com/in/demo-deon-okafor",
         "update": None,
@@ -85,7 +85,7 @@ DEMO_PEOPLE: list[dict] = [
         "seeks": "early users for a side project on team rituals",
         "note": "Talked through onboarding-flow design; she offered to crit our "
                 "first-run experience.",
-        "draft": "Priya — thanks for the thoughtful crit of our onboarding flow "
+        "draft": "Priya, thanks for the thoughtful crit of our onboarding flow "
                  "at the mixer. I'd genuinely love a closer look when you have a "
                  "spare 20 min. Connecting here so it's easy to pick this back up.",
         "linkedin_url": "https://www.linkedin.com/in/demo-priya-nair",

@@ -735,6 +735,7 @@ function AddScreen({ user, onAccount, onAdded }) {
                       onDone={() => { setResult(null); onAdded && onAdded(); }}
                       onCancel={() => setResult(null)}
                       canSend={!!user?.unipile_account_id}
+                      isDemo={!!user?.is_demo}
                       savedLink={(user && user.saved_send_link) || ""} />
         ) : (
           <>

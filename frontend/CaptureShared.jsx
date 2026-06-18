@@ -688,7 +688,7 @@ function TypeSearch({ onConfirm, busy }) {
 
 // ── scan result : draft + send / save ────────────────────────────────────────
 
-export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink = "", onbStepKey = null }) {
+export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink = "", onbStepKey = null, isDemo = false }) {
   const p = result.prospect || {};
   const [draftNote, setDraftNote] = useState(result.draft_note || "");
   const [draftMsg, setDraftMsg] = useState(result.draft_message || "");
@@ -702,6 +702,7 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
   const [busy, setBusy] = useState("");      // "" | "send" | "save" | "personalize" | "nonote"
   const [err, setErr] = useState("");
   const [signinPrompt, setSigninPrompt] = useState(false);  // demo: gate Send -> sign in
+  const [demoSent, setDemoSent] = useState(false);          // demo: simulated connect success
   // The draft on screen was composed BEFORE the fun fact was typed. Track
   // whether the saved fun fact still matches what produced the current draft.
   const [draftFromNote, setDraftFromNote] = useState(p.note || "");
@@ -806,6 +807,15 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
       }
       setErr(e.message || "Send failed"); setBusy("");
     }
+  };
+
+  // Demo: the captured person isn't a real LinkedIn recipient, so simulate a
+  // genuine connection-request send for filming (Connecting… -> Sent ✓) without
+  // hitting the network or bouncing to sign-in.
+  const sendDemo = () => {
+    if (busy) return;
+    setErr(""); setBusy("send");
+    setTimeout(() => { setBusy(""); setDemoSent(true); }, 1000);
   };
 
   return (
@@ -925,11 +935,22 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
 
       {/* Connect is the one obvious action. "Save for later" and the bare-invite
           variant are secondary. The first message is drafted later in People. */}
-      <div className="ip-actions">
+      {demoSent ? (
+        <div className="ip-actions">
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
+                        gap: 8, padding: "12px 14px", marginBottom: 10, borderRadius: 12,
+                        background: "rgba(34,197,94,.10)", color: "#15803d",
+                        font: "600 14px Inter, system-ui, sans-serif" }}>
+            <Check size={18} /> Connection request sent to {p.name || "them"}
+          </div>
+          <button className="ip-btn primary lg" onClick={onDone}>Done</button>
+        </div>
+      ) : (
+        <div className="ip-actions">
         <button data-onb="send" className="ip-btn primary lg"
-                onClick={() => (canSend ? send(false) : setSigninPrompt(true))}
+                onClick={() => (canSend ? send(false) : (isDemo ? sendDemo() : setSigninPrompt(true)))}
                 disabled={!!busy}
-                title={canSend ? "" : "Sign in to send"}>
+                title={canSend || isDemo ? "" : "Sign in to send"}>
           {busy === "send" ? <Loader2 className="spin" size={18} />
             : <><Send size={18} /> Connect on LinkedIn</>}
         </button>
@@ -939,7 +960,7 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
               : <><Bookmark size={15} /> Save for later</>}
           </button>
           <button className="ip-btn ghost sm"
-                  onClick={() => (canSend ? send(true) : setSigninPrompt(true))}
+                  onClick={() => (canSend ? send(true) : (isDemo ? sendDemo() : setSigninPrompt(true)))}
                   disabled={!!busy}
                   title={canSend ? "Send a bare invite; the message goes out once accepted"
                                 : "Sign in to send"}>
@@ -947,8 +968,9 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
               : "Connect, no note"}
           </button>
         </div>
-      </div>
-      {!canSend && <div className="ip-dim ip-center">Connect LinkedIn to send now.</div>}
+        </div>
+      )}
+      {!canSend && !isDemo && <div className="ip-dim ip-center">Connect LinkedIn to send now.</div>}
       <div className="ip-dim ip-center ip-laterhint">
         You can also edit any of this later from <b>Relationship</b>.
       </div>
