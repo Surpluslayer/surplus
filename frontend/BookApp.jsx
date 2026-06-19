@@ -155,7 +155,7 @@ export default function BookApp() {
         {user?.is_demo && (
           <div className="bk-demobar">
             <span><b>Demo</b> · sample data. Sign in to use it for real, or skip the tour.</span>
-            <button className="bk-demobar-cta" onClick={signInWithLinkedIn}>Sign in</button>
+            <button className="bk-demobar-cta" data-onb="signin" onClick={signInWithLinkedIn}>Sign in</button>
           </div>
         )}
         {screen}
@@ -1203,7 +1203,13 @@ const BK_ONB_STEPS = [
     key: "list", tab: "book", anchor: "book", place: "top",
     title: "Your relationship list",
     body: "Open Book to see everyone, sorted by who needs attention.",
-    final: true, cta: "Got it",
+  },
+  {
+    key: "signin", tab: "today", anchor: "signin", place: "bottom",
+    title: "Make it yours",
+    body: "Sign in with your LinkedIn up top to turn this into your real book, "
+        + "with your own contacts, your voice, and your follow-ups.",
+    final: true, cta: "Sign in with LinkedIn", convert: true,
   },
 ];
 
@@ -1260,7 +1266,10 @@ function BookOnboarding({ step, onGo, onClose }) {
     };
   }, [selector]);
 
-  const next = () => { if (def.final) onClose(); else onGo(idx + 1); };
+  const next = () => {
+    if (def.convert) { signInWithLinkedIn(); return; }  // final step = convert
+    if (def.final) onClose(); else onGo(idx + 1);
+  };
   const back = () => { if (idx > 0) onGo(idx - 1); };
 
   return (
