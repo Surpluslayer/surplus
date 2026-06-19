@@ -493,7 +493,9 @@ function DraftPanel({ detail, isDemo = false }) {
   const [sendAt, setSendAt] = useState("");
 
   // Real Send/Schedule need a numeric contact id; demo-book slugs get Copy.
-  const canSend = !!detail.contact_id && /^\d+$/.test(String(detail.contact_id));
+  // Demo users can never really send -> always show the "Sign in to send"
+  // conversion CTA at the moment of intent (no 402-then-redirect detour).
+  const canSend = !isDemo && !!detail.contact_id && /^\d+$/.test(String(detail.contact_id));
 
   const fetchDraft = useCallback(() => {
     setBusy(true); setErr(""); setDone("");
@@ -911,8 +913,9 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
   const [sendAt, setSendAt] = useState("");
 
   // Send / Schedule are keyed on a real numeric contact id; demo-book slugs
-  // can't send, so we only offer Copy for those.
-  const canSend = !!draft.contact_id && /^\d+$/.test(String(draft.contact_id));
+  // can't send, so we only offer Copy for those. Demo users never really send
+  // -> always the "Sign in to send" conversion CTA (no 402-then-redirect).
+  const canSend = !isDemo && !!draft.contact_id && /^\d+$/.test(String(draft.contact_id));
 
   const generate = useCallback(() => {
     // Token-level streaming: the message types out live (like Claude) instead of
