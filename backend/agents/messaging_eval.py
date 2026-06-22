@@ -51,11 +51,21 @@ _FORMAL_VOICE = [
 ]
 
 
+_VB_CACHE: dict = {}
+
+
 def _vb(samples: list[str]) -> str:
     if not samples:
         return ""
-    return (voice.render_voice_profile_block(voice.build_host_voice_profile(samples))
-            + voice.build_style_examples_block(samples))
+    # V1: the richer TwinVoice profile (surface + LLM-distilled tone/structure/
+    # lexical traits + guardrails) followed by the ground-truth examples. The
+    # profile build is an LLM call; cache per sample-set so a multi-run eval
+    # doesn't re-distill it every run (mirrors the prod sync-time cache).
+    key = tuple(samples)
+    if key not in _VB_CACHE:
+        _VB_CACHE[key] = (voice.render_voice_profile_block(voice.build_host_voice_profile(samples))
+                          + voice.build_style_examples_block(samples))
+    return _VB_CACHE[key]
 
 
 _CASES = [
@@ -208,61 +218,115 @@ def _eval_case(case: dict) -> dict:
             "draft": draft, "gates": gates, "scores": scores}
 
 
-def run_eval(runs: int = 1, verbose: bool = True) -> dict:
-    """Run every case `runs` times; return per-case results + an aggregate. More
-    runs averages out the LLM's run-to-run variance for a steadier signal."""
-    results = []
+def _mean(xs: list) -> Optional[float]:
+    xs = [x for x in xs if isinstance(x, (int, float))]
+    return round(sum(xs) / len(xs), 2) if xs else None
+
+
+def run_eval(runs: int = 1, verbose: bool = True, dump: Optional[str] = None) -> dict:
+    """Run every case `runs` times; return PER-CASE means + an aggregate. More
+    runs averages out the LLM's run-to-run variance for a steadier signal.
+    `dump` writes a JSON the pairwise comparator can read."""
+    per_case = []
     for case in _CASES:
         case_runs = [_eval_case(case) for _ in range(max(1, runs))]
-        results.append(case_runs[-1] | {"runs": case_runs})
+        means = {k: _mean([rr["scores"].get(k) for rr in case_runs]) for k in _SCORE_KEYS}
+        gate_fail = {g: sum(1 for rr in case_runs if not rr["gates"].get(g))
+                     for g in ("no_em_dash", "concise", "not_generic")}
+        per_case.append({"id": case["id"], "means": means, "gate_fail": gate_fail,
+                         "drafts": [rr["draft"] for rr in case_runs],
+                         "sample_move": case_runs[-1]["natural_move"],
+                         "sample_draft": case_runs[-1]["draft"]})
 
-    # aggregate: gate pass-rates + mean judge scores
-    n = len(results)
-    gate_pass = {g: 0 for g in ("no_em_dash", "concise", "not_generic")}
-    score_sum = {k: 0.0 for k in _SCORE_KEYS}
-    score_cnt = {k: 0 for k in _SCORE_KEYS}
-    for r in results:
-        for rr in r["runs"]:
-            for g in gate_pass:
-                gate_pass[g] += 1 if rr["gates"].get(g) else 0
-            for k in _SCORE_KEYS:
-                v = (rr.get("scores") or {}).get(k)
-                if isinstance(v, (int, float)):
-                    score_sum[k] += v
-                    score_cnt[k] += 1
-    total_runs = n * max(1, runs)
-    agg = {
-        "cases": n, "runs_each": max(1, runs),
-        "gate_pass_rate": {g: round(gate_pass[g] / total_runs, 2) for g in gate_pass},
-        "avg_scores": {k: (round(score_sum[k] / score_cnt[k], 2) if score_cnt[k] else None)
-                       for k in _SCORE_KEYS},
-    }
+    agg = {"cases": len(per_case), "runs_each": max(1, runs),
+           "avg_scores": {k: _mean([c["means"][k] for c in per_case]) for k in _SCORE_KEYS},
+           "gate_fails": {g: sum(c["gate_fail"][g] for c in per_case)
+                          for g in ("no_em_dash", "concise", "not_generic")}}
+    out = {"aggregate": agg, "per_case": per_case}
+    if dump:
+        with open(dump, "w") as f:
+            json.dump(out, f, indent=2)
     if verbose:
-        _print_report(results, agg)
-    return {"aggregate": agg, "results": results}
+        _print_report(per_case, agg)
+    return out
 
 
-def _print_report(results: list[dict], agg: dict) -> None:
-    print("\n=== MESSAGING EVAL ===")
-    for r in results:
-        s = r.get("scores") or {}
-        g = r["gates"]
-        flags = []
-        if not g["no_em_dash"]:
-            flags.append("EM-DASH")
-        if not g["concise"]:
-            flags.append(f"LONG({g['word_count']}w)")
-        if not g["not_generic"]:
-            flags.append("GENERIC")
-        sc = " ".join(f"{k[:4]}={s.get(k)}" for k in _SCORE_KEYS)
-        print(f"\n[{r['id']}] {sc} {'  ⚠ ' + ','.join(flags) if flags else ''}")
-        print(f"   move: {r['natural_move'][:60]}")
-        print(f"   {r['draft']}")
-        if s.get("critique"):
-            print(f"   judge: {s['critique']}")
+def _print_report(per_case: list[dict], agg: dict) -> None:
+    print("\n=== MESSAGING EVAL (per-case means) ===")
+    print(f"{'case':22} {'voice':6}{'spec':6}{'intent':7}{'natu':6} flags")
+    for c in per_case:
+        m = c["means"]
+        flags = ",".join(f"{g}×{n}" for g, n in c["gate_fail"].items() if n) or "-"
+        print(f"{c['id']:22} {str(m['voice_match']):6}{str(m['specificity']):6}"
+              f"{str(m['correct_intent']):7}{str(m['natural']):6} {flags}")
+        print(f"  → {c['sample_draft']}")
     print("\n--- AGGREGATE ---")
-    print("  gate pass-rate:", agg["gate_pass_rate"])
     print("  avg judge scores:", agg["avg_scores"])
+    print("  gate fails (lower=better):", agg["gate_fails"])
+
+
+# ── pairwise old-vs-new (the ceiling-free signal) ────────────────────────────
+_PAIR_SYSTEM = (
+    "Two outreach drafts, A and B, were written for the SAME situation. Pick the "
+    "better one overall, weighing: sounds like the host's own voice, references "
+    "the real GIVEN facts (no invented familiarity), does the right thing for the "
+    "situation, and reads natural/warm. A small real edge counts; only say tie if "
+    "genuinely indistinguishable. Return ONLY JSON: "
+    "{\"winner\":\"A\"|\"B\"|\"tie\",\"why\":\"<=15 words\"}"
+)
+
+
+def _case_ctx_text(case: dict) -> str:
+    vs = case.get("voice") or []
+    return (("Host voice samples: " + " | ".join(vs) + "\n" if vs else "")
+            + f"Person: {case['name']}, {case['role']} at {case['company']}.\n"
+            + f"Facts: {json.dumps(case.get('facts') or {})}\n"
+            + f"Prior thread: {json.dumps(case.get('prior') or [])}\n"
+            + f"Expected move: {case['expect']}\n")
+
+
+def pairwise_compare(baseline_path: str, candidate_path: str, verbose: bool = True) -> dict:
+    """Head-to-head: for each case+run, judge baseline vs candidate (A/B order
+    randomized per pair to kill position bias). Reports candidate win-rate per
+    case + overall. Ceiling-free, so it shows improvement the 1-5 means hide."""
+    with open(baseline_path) as f:
+        base = {c["id"]: c["drafts"] for c in json.load(f)["per_case"]}
+    with open(candidate_path) as f:
+        cand = {c["id"]: c["drafts"] for c in json.load(f)["per_case"]}
+    by_id = {c["id"]: c for c in _CASES}
+    rows, tot = [], {"cand": 0, "base": 0, "tie": 0}
+    for cid in base:
+        if cid not in cand:
+            continue
+        w = {"cand": 0, "base": 0, "tie": 0}
+        pairs = list(zip(base[cid], cand[cid]))
+        for i, (b, c) in enumerate(pairs):
+            if not (b.strip() and c.strip()):
+                continue
+            cand_is_A = (i % 2 == 0)  # alternate position to cancel bias
+            a_txt, b_txt = (c, b) if cand_is_A else (b, c)
+            user = _case_ctx_text(by_id[cid]) + f"\nDRAFT A:\n{a_txt}\n\nDRAFT B:\n{b_txt}\n"
+            out = _llm_json(_PAIR_SYSTEM, user, max_tokens=120) or {}
+            win = str(out.get("winner", "tie")).upper()
+            if win == "TIE" or win not in ("A", "B"):
+                w["tie"] += 1
+            elif (win == "A") == cand_is_A:
+                w["cand"] += 1
+            else:
+                w["base"] += 1
+        for k in tot:
+            tot[k] += w[k]
+        rows.append({"id": cid, **w})
+    res = {"per_case": rows, "overall": tot}
+    if verbose:
+        print("\n=== PAIRWISE: candidate (new) vs baseline (old) ===")
+        print(f"{'case':22} new  old  tie")
+        for r in rows:
+            print(f"{r['id']:22} {r['cand']:<4} {r['base']:<4} {r['tie']}")
+        n = sum(tot.values()) or 1
+        print(f"\n  OVERALL: new wins {tot['cand']}/{n} "
+              f"({100*tot['cand']//n}%), old {tot['base']}/{n}, tie {tot['tie']}/{n}")
+    return res
 
 
 if __name__ == "__main__":
@@ -271,4 +335,11 @@ if __name__ == "__main__":
     env_loader.load_env()
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", type=int, default=1)
-    run_eval(runs=ap.parse_args().runs)
+    ap.add_argument("--dump", type=str, default=None, help="write results JSON")
+    ap.add_argument("--pairwise", nargs=2, metavar=("BASELINE", "CANDIDATE"),
+                    help="compare two dumped result JSONs head-to-head")
+    args = ap.parse_args()
+    if args.pairwise:
+        pairwise_compare(args.pairwise[0], args.pairwise[1])
+    else:
+        run_eval(runs=args.runs, dump=args.dump)

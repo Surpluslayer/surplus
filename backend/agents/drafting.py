@@ -203,6 +203,16 @@ def _relationship_facts(db, contact) -> dict:
     # update". The detail is the activity_update summary (already in the DB).
     head = _clean(upd.get("title"))
     detail = _clean(upd.get("summary"))
+
+    # LOW-confidence color: what they do (their About / enriched works_on). Read
+    # gracefully (contact.about may not exist yet -> None); filter the "general"
+    # enrichment placeholder. Rendered as optional, never asserted.
+    def _real_about(v):
+        x = _clean(v)
+        return "" if x.lower() in ("general", "general networking", "networking") else x
+    ident = s.get("identity") or {}
+    about = (_real_about(getattr(contact, "about", None))
+             or _real_about(ident.get("works_on")) or _real_about(ident.get("bio")))
     return {
         "met_at": _clean(s.get("met_at")),               # event where they met
         "first_met_at": s.get("first_met_at"),           # datetime (oldest touch)
@@ -212,6 +222,7 @@ def _relationship_facts(db, contact) -> dict:
         "next_step": _clean(s.get("next_step")),          # host's own open loop
         "latest_update": head or detail,                  # the headline
         "latest_update_detail": detail,                   # the real content
+        "about": about[:240],                              # what they do (low-conf)
         "relationship_types": types,                       # sales / investor / hiring / ...
     }
 
@@ -289,60 +300,107 @@ def _natural_action(ctx: dict) -> str:
     return ""
 
 
-def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "") -> str:
-    """The shared user message for both the JSON and streamed composers. Leads
-    with who this person is so the draft references concrete, person-specific
-    detail (role/company/news) instead of a generic line.
+# ─────────────────────────────────────────────────────────────────────────────
+# The draft pipeline: GATHER (build_context, above) -> RESOLVE -> SELECT ->
+# RENDER. Each stage is small + testable; the eval and every surface run the
+# SAME pipeline. See ARCHITECTURE.md "the draft pipeline".
+# ─────────────────────────────────────────────────────────────────────────────
 
-    `directive` is the host's own free-form instruction for THIS outreach (what
-    they typed in the ask bar, e.g. 'mention the webinar Thursday'). It applies
-    to everyone selected, while `reason` + the per-person facts keep each draft
-    differentiated -- so the batch honors one intent without going generic."""
+# ── RESOLVE: voice strategy ──────────────────────────────────────────────────
+# Three signals compete over "how should this sound": the host's voice profile,
+# the contact's register, and the established thread dynamic. We resolve to ONE
+# instruction by precedence -- thread dynamic > formal register > host profile --
+# so the model never gets contradictory voice cues. (Mindset/grounding always
+# outranks voice; that lives in the system prompt.)
+_THREAD_MIRROR = (
+    "\n(This is an ongoing conversation with this specific person. Continue the "
+    "rapport and tone the two of you have ALREADY established in the prior "
+    "messages, including any running topic, and subtly mirror how THEY write "
+    "(message length, energy, formality, emoji) to build rapport, while keeping "
+    "your own identity. This established dynamic takes priority over the voice "
+    "profile.)")
+_FORMAL_OVERRIDE = (
+    "\n(This contact writes formally, so do NOT use casual tics: no slang, no "
+    "emoji, no double exclamations. Write a warm but PROFESSIONAL note, a fuller "
+    "greeting ('Hi <name>,' or 'Dear <name>,'), complete measured sentences. Keep "
+    "the warmth, match the formality.)")
+
+
+def _resolve_voice(ctx: dict) -> str:
+    """The single voice instruction to append to the system prompt, resolved by
+    precedence: thread dynamic (they have written) > formal register > host voice
+    profile. Returns the model-ready voice block."""
+    prior = ctx.get("prior") or []
+    vb = ctx.get("voice_block") or ""
+    if any(m.get("who") == "them" for m in prior):
+        return vb + _THREAD_MIRROR                 # host identity + mirror the convo
+    if ctx.get("register") == "formal":
+        return _FORMAL_OVERRIDE                     # drop casual, be professional
+    reg = voice.register_guidance(ctx.get("register"))   # casual/neutral nudge
+    return vb + (f"\n(Register: {reg})" if reg else "")
+
+
+# ── SELECT: grounding facts, ordered by relevance + gated by confidence ───────
+# HIGH-confidence facts (verified: their update, your open loop, where you met)
+# may be asserted in the draft. LOW-confidence color (what they do) is offered
+# as optional, so anti-fabrication is structural, not a prompt plea. Facts are
+# ordered strongest-first so the freshest signal leads.
+
+def _select_grounding(ctx: dict) -> tuple[list[str], list[str]]:
+    """Return (asserted, optional) grounding lines for THIS draft."""
+    facts = ctx.get("facts") or {}
+    asserted: list[str] = []
+    if facts.get("latest_update"):
+        detail = facts.get("latest_update_detail")
+        extra = (f". What they actually said: \"{detail[:240]}\""
+                 if detail and detail.strip() != facts["latest_update"].strip() else "")
+        asserted.append(f"their most recent update: {facts['latest_update']}{extra}")
+    if facts.get("next_step"):
+        asserted.append(f"your own noted next step with them: {facts['next_step']}")
+    if facts.get("met_at"):
+        ago = _months_ago(facts.get("first_met_at"))
+        asserted.append(f"you met them at {facts['met_at']}" + (f" ({ago})" if ago else ""))
+    elif facts.get("n_events"):
+        asserted.append(f"you've crossed paths at {facts['n_events']} event(s)")
+    if facts.get("relationship_types"):
+        asserted.append("how you know them: " + ", ".join(facts["relationship_types"][:3]))
+    if facts.get("stage"):
+        asserted.append(f"relationship stage: {facts['stage']}")
+    optional: list[str] = []
+    if facts.get("about"):
+        optional.append(f"what they work on: {facts['about']}")
+    return asserted, optional
+
+
+# ── RENDER: assemble the user prompt from the resolved situation ──────────────
+
+def _who(ctx: dict) -> str:
     name = ctx.get("name") or "there"
     role, company = ctx.get("role"), ctx.get("company")
     if role and company:
-        who = f"{name}, {role} at {company}"
-    elif role:
-        who = f"{name}, {role}"
-    elif company:
-        who = f"{name} at {company}"
-    else:
-        who = name
-    lines = [f"Who you're writing to: {who}."]
+        return f"{name}, {role} at {company}"
+    if role:
+        return f"{name}, {role}"
+    if company:
+        return f"{name} at {company}"
+    return name
 
-    # Relationship grounding: where/when they met + the host's open loop. These
-    # let the draft be specific (\"great meeting you at <event>\", \"as promised,
-    # <next step>\") even when the message thread is empty.
-    facts = ctx.get("facts") or {}
-    grounding: list[str] = []
-    if facts.get("met_at"):
-        ago = _months_ago(facts.get("first_met_at"))
-        grounding.append(f"you met them at {facts['met_at']}"
-                         + (f" ({ago})" if ago else ""))
-    elif facts.get("n_events"):
-        grounding.append(f"you've crossed paths at {facts['n_events']} event(s)")
-    if facts.get("next_step"):
-        grounding.append(f"your own noted next step with them: {facts['next_step']}")
-    if facts.get("latest_update"):
-        detail = facts.get("latest_update_detail")
-        # Include the real content (post text / role detail) so the draft can
-        # reference what they ACTUALLY said/did, not just the headline.
-        extra = (f". What they actually said: \"{detail[:240]}\""
-                 if detail and detail.strip() != facts["latest_update"].strip() else "")
-        grounding.append(f"their most recent update: {facts['latest_update']}{extra}")
-    if facts.get("relationship_types"):
-        grounding.append("how you know them: "
-                         + ", ".join(facts["relationship_types"][:3]))
-    if facts.get("stage"):
-        grounding.append(f"relationship stage: {facts['stage']}")
-    if grounding:
-        lines.append("What you know about this relationship: "
-                     + "; ".join(grounding) + ".")
 
+def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "") -> str:
+    """RENDER: assemble the user message from the gathered+resolved context.
+    `directive` is the host's free-form ask-bar instruction, shared across a
+    batch; per-person facts keep each draft differentiated."""
+    lines = [f"Who you're writing to: {_who(ctx)}."]
+    asserted, optional = _select_grounding(ctx)
+    if asserted:
+        lines.append("What you know (verified facts you may reference): "
+                     + "; ".join(asserted) + ".")
+    if optional:
+        lines.append("Optional color (use ONLY if it fits naturally, never force "
+                     "it or overstate familiarity): " + "; ".join(optional) + ".")
     na = _natural_action(ctx)
     if na:
         lines.append(f"The natural move here: {na}.")
-
     lines += [
         "Prior conversation (oldest first; [] means no prior messages):",
         json.dumps(ctx.get("prior") or [], default=str),
@@ -356,9 +414,6 @@ def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "") -> s
             f"they're writing to right now): {directive}. Honor it, but adapt it "
             f"to THIS person using the facts above -- do not paste the same line "
             f"to everyone.")
-    reg = voice.register_guidance(ctx.get("register"))
-    if reg:
-        lines.append(f"Register: {reg}")
     return "\n".join(lines) + "\n"
 
 
@@ -368,7 +423,7 @@ def compose_from_context(ctx: dict, reason: str, channel: str = "email",
     fan out across threads. Returns {"subject", "body"} or None on failure.
     `directive` is the host's free-form ask-bar instruction (shared across the
     batch); per-person facts keep each draft differentiated."""
-    system = _FOLLOWUP_SYSTEM + (ctx.get("voice_block") or "")
+    system = _FOLLOWUP_SYSTEM + _resolve_voice(ctx)
     user = _user_prompt(ctx, reason, channel, directive)
     out = _llm_json(system, user, max_tokens=500)
     if not out or not (out.get("body") or "").strip():
@@ -399,7 +454,7 @@ def stream_from_context(ctx: dict, reason: str, channel: str = "email",
     context dict (no DB), so the agent can build all contexts serially then fan
     out token streams across threads. Mirrors compose_from_context, streamed.
     `directive` is the host's free-form ask-bar instruction (shared)."""
-    system = _FOLLOWUP_STREAM_SYSTEM + (ctx.get("voice_block") or "")
+    system = _FOLLOWUP_STREAM_SYSTEM + _resolve_voice(ctx)
     user = _user_prompt(ctx, reason, channel, directive)
     yield from stream_text(system, user, max_tokens=500)
 
