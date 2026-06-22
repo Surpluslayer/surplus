@@ -72,11 +72,9 @@ _VOICE_RULE = (
     "restructure. "
 )
 _SELFCHECK = (
-    "Before finalizing, silently check the draft: (a) does it serve the goal? "
-    "(b) only stated facts, nothing invented or overstated? (c) is the ask "
-    "proportional to the relationship? (d) does it sound like the host's own "
-    "examples, not generic? (e) is it concise? Fix any miss, then output only the "
-    "final message. "
+    "Final pass: make sure it serves the goal, invents nothing, sounds like the "
+    "host's own examples (not generic), and is concise. Then output only the "
+    "message. "
 )
 
 
@@ -287,6 +285,7 @@ def _natural_action(ctx: dict) -> str:
     facts = ctx.get("facts") or {}
     prior = ctx.get("prior") or []
     them_last = bool(prior) and (prior[-1].get("who") == "them")
+    their_last = (prior[-1].get("text") or "").lower() if them_last else ""
     if facts.get("next_step"):
         return (f"deliver on / pick up your own noted next step: "
                 f"{facts['next_step']}")
@@ -294,9 +293,25 @@ def _natural_action(ctx: dict) -> str:
         return (f"react warmly to their recent update ({facts['latest_update']}); "
                 f"lead with that, congratulate, no hard ask")
     if them_last:
-        return "they spoke last -- reply to their most recent message"
+        # If they floated meeting/talking, the right move is to say yes AND offer a
+        # concrete slot -- bouncing 'what works for you?' back is the weak move.
+        where = f" (you met at {facts['met_at']})" if facts.get("met_at") else ""
+        if any(w in their_last for w in (
+                "find time", "chat", "call", "meet", "grab time", "catch up",
+                "when works", "calendar", "schedule", "coffee", "hop on", "sync")):
+            return (f"they spoke last and floated meeting up -- say yes, name the "
+                    f"specific shared context{where} so it isn't generic, and PROPOSE "
+                    f"a concrete window (e.g. 'how about Tue or Thu afternoon?'); do "
+                    f"not just bounce the scheduling back to them")
+        return (f"they spoke last -- reply directly to what they said{where} and move "
+                f"it forward with a concrete next step")
     if facts.get("stage") in ("stale", "dormant", "cooling"):
-        return "re-engage warmly after time has passed, only with a natural angle"
+        hook = facts.get("met_at")
+        anchor = (f"lead with the specific shared moment (you met at {hook})" if hook
+                  else "lead with a specific shared detail")
+        return (anchor + "; acknowledge the gap lightly and make ONE concrete "
+                "low-pressure offer. Name the real detail, never a generic 'lets "
+                "reconnect soon'")
     return ""
 
 
