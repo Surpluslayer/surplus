@@ -261,6 +261,27 @@ def build_context(db, user_id: int, contact, voice_block: Optional[str] = None,
     }
 
 
+def _natural_action(ctx: dict) -> str:
+    """The single most natural move for THIS message, synthesized from the signals
+    already in context, so the draft takes the right SHAPE (not just a warm
+    blob): deliver on a promised next step, react to their news, reply to their
+    last message, or re-engage after time. Deterministic, no LLM, no new data."""
+    facts = ctx.get("facts") or {}
+    prior = ctx.get("prior") or []
+    them_last = bool(prior) and (prior[-1].get("who") == "them")
+    if facts.get("next_step"):
+        return (f"deliver on / pick up your own noted next step: "
+                f"{facts['next_step']}")
+    if facts.get("latest_update"):
+        return (f"react warmly to their recent update ({facts['latest_update']}); "
+                f"lead with that, congratulate, no hard ask")
+    if them_last:
+        return "they spoke last -- reply to their most recent message"
+    if facts.get("stage") in ("stale", "dormant", "cooling"):
+        return "re-engage warmly after time has passed, only with a natural angle"
+    return ""
+
+
 def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "") -> str:
     """The shared user message for both the JSON and streamed composers. Leads
     with who this person is so the draft references concrete, person-specific
@@ -305,6 +326,10 @@ def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "") -> s
     if grounding:
         lines.append("What you know about this relationship: "
                      + "; ".join(grounding) + ".")
+
+    na = _natural_action(ctx)
+    if na:
+        lines.append(f"The natural move here: {na}.")
 
     lines += [
         "Prior conversation (oldest first; [] means no prior messages):",
