@@ -328,14 +328,18 @@ _FORMAL_OVERRIDE = (
 
 def _resolve_voice(ctx: dict) -> str:
     """The single voice instruction to append to the system prompt, resolved by
-    precedence: thread dynamic (they have written) > formal register > host voice
-    profile. Returns the model-ready voice block."""
+    precedence: FORMAL register > thread dynamic > host voice profile.
+
+    Formal is a HARD constraint (no emoji/slang) and must outrank the thread
+    mirror: a formal contact has to get a professional draft even mid-conversation
+    (else the casual host voice leaks in -- the eval caught a casual 'Hey Dr.
+    Vance! 🙌'). The thread mirror is for non-formal threads."""
     prior = ctx.get("prior") or []
     vb = ctx.get("voice_block") or ""
-    if any(m.get("who") == "them" for m in prior):
-        return vb + _THREAD_MIRROR                 # host identity + mirror the convo
     if ctx.get("register") == "formal":
         return _FORMAL_OVERRIDE                     # drop casual, be professional
+    if any(m.get("who") == "them" for m in prior):
+        return vb + _THREAD_MIRROR                 # host identity + mirror the convo
     reg = voice.register_guidance(ctx.get("register"))   # casual/neutral nudge
     return vb + (f"\n(Register: {reg})" if reg else "")
 
