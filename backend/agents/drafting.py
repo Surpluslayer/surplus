@@ -190,6 +190,13 @@ def _relationship_facts(db, contact) -> dict:
         x = (str(v).strip() if v is not None else "")
         return "" if x.lower() in ("", "unknown", "none") else x
 
+    # Their most recent detected activity (job change, new post, milestone) -- the
+    # single strongest "hone in" signal: lets the draft reference what they're
+    # ACTUALLY up to ("congrats on the new role", "saw your post on X") instead of
+    # a generic line. Already in the DB via the updates engine -- no new scraping.
+    upd = s.get("latest_update") or {}
+    types = [t for t in (s.get("contact_types") or []) if t and str(t).strip()]
+
     return {
         "met_at": _clean(s.get("met_at")),               # event where they met
         "first_met_at": s.get("first_met_at"),           # datetime (oldest touch)
@@ -197,6 +204,8 @@ def _relationship_facts(db, contact) -> dict:
         "n_events": s.get("n_events") or 0,
         "stage": _clean(s.get("relationship_stage")),
         "next_step": _clean(s.get("next_step")),          # host's own open loop
+        "latest_update": _clean(upd.get("title")) or _clean(upd.get("summary")),
+        "relationship_types": types,                       # sales / investor / hiring / ...
     }
 
 
@@ -286,6 +295,11 @@ def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "") -> s
         grounding.append(f"you've crossed paths at {facts['n_events']} event(s)")
     if facts.get("next_step"):
         grounding.append(f"your own noted next step with them: {facts['next_step']}")
+    if facts.get("latest_update"):
+        grounding.append(f"their most recent update: {facts['latest_update']}")
+    if facts.get("relationship_types"):
+        grounding.append("how you know them: "
+                         + ", ".join(facts["relationship_types"][:3]))
     if facts.get("stage"):
         grounding.append(f"relationship stage: {facts['stage']}")
     if grounding:
