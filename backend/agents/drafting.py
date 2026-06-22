@@ -203,6 +203,18 @@ def _relationship_facts(db, contact) -> dict:
     # update". The detail is the activity_update summary (already in the DB).
     head = _clean(upd.get("title"))
     detail = _clean(upd.get("summary"))
+
+    # Who they ARE / what they do, from the enriched identity (their About / what
+    # they work on / recent activity) -- lets a draft reference their actual work
+    # ("love what you're building with X") instead of just a job title. Already in
+    # the DB (enrichment); compact + truncated so it stays a short follow-up.
+    ident = s.get("identity") or {}
+
+    def _real_about(v):
+        x = _clean(v)
+        # "general" / "general networking" are enrichment placeholders, not signal.
+        return "" if x.lower() in ("general", "general networking", "networking") else x
+    about = _real_about(ident.get("works_on")) or _real_about(ident.get("bio"))
     return {
         "met_at": _clean(s.get("met_at")),               # event where they met
         "first_met_at": s.get("first_met_at"),           # datetime (oldest touch)
@@ -212,6 +224,7 @@ def _relationship_facts(db, contact) -> dict:
         "next_step": _clean(s.get("next_step")),          # host's own open loop
         "latest_update": head or detail,                  # the headline
         "latest_update_detail": detail,                   # the real content
+        "about": about[:240],                              # what they do (optional)
         "relationship_types": types,                       # sales / investor / hiring / ...
     }
 
@@ -338,6 +351,11 @@ def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "") -> s
     if grounding:
         lines.append("What you know about this relationship: "
                      + "; ".join(grounding) + ".")
+    if facts.get("about"):
+        # Optional color: what they do. Use only if it makes the note warmer and
+        # more specific; never force it, and never overstate familiarity with it.
+        lines.append(f"For context, what they work on: {facts['about']} "
+                     f"(use only if it fits naturally).")
 
     na = _natural_action(ctx)
     if na:
