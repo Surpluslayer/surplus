@@ -197,6 +197,12 @@ def _relationship_facts(db, contact) -> dict:
     upd = s.get("latest_update") or {}
     types = [t for t in (s.get("contact_types") or []) if t and str(t).strip()]
 
+    # The headline ("New post" / "Started a role") AND the real content behind it
+    # (the actual post text / the role detail), so the draft can reference real
+    # substance -- "loved your post on inference infra" -- not just "saw your
+    # update". The detail is the activity_update summary (already in the DB).
+    head = _clean(upd.get("title"))
+    detail = _clean(upd.get("summary"))
     return {
         "met_at": _clean(s.get("met_at")),               # event where they met
         "first_met_at": s.get("first_met_at"),           # datetime (oldest touch)
@@ -204,7 +210,8 @@ def _relationship_facts(db, contact) -> dict:
         "n_events": s.get("n_events") or 0,
         "stage": _clean(s.get("relationship_stage")),
         "next_step": _clean(s.get("next_step")),          # host's own open loop
-        "latest_update": _clean(upd.get("title")) or _clean(upd.get("summary")),
+        "latest_update": head or detail,                  # the headline
+        "latest_update_detail": detail,                   # the real content
         "relationship_types": types,                       # sales / investor / hiring / ...
     }
 
@@ -317,7 +324,12 @@ def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "") -> s
     if facts.get("next_step"):
         grounding.append(f"your own noted next step with them: {facts['next_step']}")
     if facts.get("latest_update"):
-        grounding.append(f"their most recent update: {facts['latest_update']}")
+        detail = facts.get("latest_update_detail")
+        # Include the real content (post text / role detail) so the draft can
+        # reference what they ACTUALLY said/did, not just the headline.
+        extra = (f". What they actually said: \"{detail[:240]}\""
+                 if detail and detail.strip() != facts["latest_update"].strip() else "")
+        grounding.append(f"their most recent update: {facts['latest_update']}{extra}")
     if facts.get("relationship_types"):
         grounding.append("how you know them: "
                          + ", ".join(facts["relationship_types"][:3]))
