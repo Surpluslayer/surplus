@@ -279,8 +279,10 @@ def _natural_action(ctx: dict) -> str:
         return (f"deliver on / pick up your own noted next step: "
                 f"{facts['next_step']}")
     if facts.get("latest_update"):
+        where = (f", and keep the quick 'great meeting you at {facts['met_at']}' "
+                 f"touch so it stays grounded" if facts.get("met_at") else "")
         return (f"react warmly to their recent update ({facts['latest_update']}); "
-                f"lead with that, congratulate, no hard ask")
+                f"lead with that, congratulate{where}, no hard ask")
     if them_last:
         # If they floated meeting/talking, the right move is to say yes AND offer a
         # concrete slot -- bouncing 'what works for you?' back is the weak move.
