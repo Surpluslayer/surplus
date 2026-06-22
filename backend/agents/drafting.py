@@ -371,17 +371,6 @@ def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "") -> s
         f"Reason to reach out now: {reason}",
         f"Channel: {channel}",
     ]
-    # Per-person conversational match: when THIS person has actually written, the
-    # established dynamic of the thread should lead -- continue it and mirror how
-    # they communicate, so it sounds like the same two people, not a fresh note.
-    if any(m.get("who") == "them" for m in (ctx.get("prior") or [])):
-        lines.append(
-            "This is an ongoing conversation with this specific person. Continue "
-            "the rapport and tone the two of you have ALREADY established above "
-            "(including any running topic), and subtly mirror how THEY write "
-            "(their message length, energy, formality, emoji use) to build "
-            "rapport, while keeping your own identity. This established dynamic "
-            "takes priority over the generic voice profile.")
     directive = (directive or "").strip()
     if directive:
         lines.append(
