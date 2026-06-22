@@ -707,6 +707,61 @@ def run_updates_endpoint(user_id: Optional[int] = None, limit: int = 40,
             "limit": max(1, min(limit, 200))}
 
 
+@router.get("/_draft-preview")
+def draft_preview_endpoint(user_id: int, limit: int = 6,
+                           db: Session = Depends(get_db),
+                           _: None = Depends(_require_admin_token)):
+    """Messaging-quality inspector: for `user_id`, run the real composer over their
+    top `limit` contacts and return, per contact, the draft + WHY it was written
+    that way (the deterministic 'natural move' + the facts/voice/register the
+    composer saw). Read-only (compose only, never sends). Bounded (limit<=20) and
+    on-demand, so no recurring load. The fast way to answer 'is the agent honing
+    in / sounding like them?' across a real book, and to spot who has no voice yet.
+
+        curl -s -H "X-Admin-Token: $ADMIN_TOKEN" \\
+             "https://event.surpluslayer.com/api/book/_draft-preview?user_id=171&limit=6" | jq
+    """
+    import concurrent.futures
+    from ..agents import drafting
+    user = db.get(models.User, user_id)
+    if user is None:
+        raise HTTPException(404, "user not found")
+    n = max(1, min(limit, 20))
+    contacts = rel_agent.list_contacts(db, user_id)[:n]
+    voice_block = drafting._voice_block_for(db, user_id, "linkedin")
+    # DB reads serial (session not thread-safe); the LLM composes fan out.
+    ctxs = [drafting.build_context(db, user_id, c, voice_block, channel="linkedin")
+            for c in contacts]
+
+    def _row(i: int) -> dict:
+        ctx = ctxs[i]
+        facts = ctx.get("facts") or {}
+        reason = (facts.get("latest_update") or facts.get("next_step")
+                  or "reconnecting")
+        d = drafting.compose_from_context(ctx, reason, "linkedin")
+        return {
+            "name": ctx.get("name"),
+            "natural_move": drafting._natural_action(ctx) or "(reconnect / general)",
+            "reason_used": reason,
+            "has_voice": bool((ctx.get("voice_block") or "").strip()),
+            "register": ctx.get("register"),
+            "facts": {k: facts.get(k) for k in
+                      ("met_at", "next_step", "latest_update", "stage",
+                       "relationship_types")},
+            "has_prior_thread": bool(ctx.get("prior")),
+            "draft": (d or {}).get("body"),
+        }
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, n)) as ex:
+        rows = list(ex.map(_row, range(len(ctxs))))
+    return {
+        "user_id": user_id,
+        "voice_examples_loaded": bool((voice_block or "").strip()),
+        "count": len(rows),
+        "drafts": rows,
+    }
+
+
 @router.get("/_updates-status")
 def updates_status_endpoint(_: None = Depends(_require_admin_token)):
     """Cutover diagnostic: is Bright Data configured, what did the last sweep do
