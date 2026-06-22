@@ -36,45 +36,34 @@ from .relationship_agent import (
 _DRAFT_CONCURRENCY = max(1, int(os.environ.get("DRAFT_CONCURRENCY", "6")))
 
 
-# TwinVoice-structured composer prompt, in priority order:
-#  1. MINDSET COHERENCE (_GROUNDING) — preserve intent + facts; invent/overstate
-#     nothing; keep the ask proportional. This comes FIRST: accuracy beats style.
-#  2. LINGUISTIC EXPRESSION (_VOICE_RULE) — sound like the host (profile +
-#     examples): tone, phrasing, structure, message shape.
-#  3. SELF-CHECK (_SELFCHECK) — one internal review pass, baked into the same
-#     call (no extra request), so the final output is the refined one.
-_GROUNDING = (
-    "MINDSET (do this first, it outranks style): preserve the GOAL of the message "
-    "and the host's intent. Use ONLY the facts, relationship grounding, and prior "
-    "messages given. Invent nothing -- no meetings, commitments, traction, mutual "
-    "contacts, or familiarity that isn't stated. Do not overstate interest, "
-    "traction, familiarity, or how firm a next step is; keep the ask proportional "
-    "to the real relationship stage. With no concrete detail, build the note "
-    "around the stated reason rather than padding with filler. "
-)
+# Narrow V1: the original prompt (which already enforces facts-only / no
+# fabrication, the TwinVoice mindset substance) + the rich voice profile (carried
+# by build_voice_context) + the targeted situational rules injected per-case by
+# _natural_action. The earlier broad MINDSET/SELF-CHECK restructure was reverted:
+# it did not improve eval outcomes and risked blanding the drafts.
 _SPECIFICITY = (
-    "Hone in on THIS person: name the concrete GIVEN detail that makes it "
-    "obviously for them (their recent update, where you met, your noted next "
-    "step, role/company). Never a generic line that fits anyone (no \"hope you're "
-    "doing well\", no \"just checking in\"). "
+    "Hone in on THIS person. Name the concrete detail that makes the message "
+    "obviously written for them, not a template: where you met them, your noted "
+    "next step, their role/company, or the specific reason to reach out now. "
+    "Never a generic line that would fit anyone (no \"hope you're doing well\", "
+    "no \"just checking in\"). Use ONLY the facts given to you (the relationship "
+    "grounding, the prior conversation, and the reason); never invent a meeting, "
+    "a shared project, a mutual contact, or an update that is not stated. If you "
+    "have no concrete detail beyond their name, reference the reason to reach out "
+    "directly rather than padding with filler. "
 )
 _BREVITY = (
-    "Keep it SHORT: 2-3 sentences, ideally under 45 words, like a real person "
-    "firing off a quick note. No corporate warm-up, no restating their bio. "
+    "Keep it SHORT: 2-3 sentences, ideally under 45 words. Sound like a real "
+    "person firing off a quick note, not a written-out email. No corporate "
+    "warm-up, no restating their whole bio back to them. "
 )
 _VOICE_RULE = (
-    "VOICE: if a <host_voice_profile> and/or <style_examples> block is provided, "
-    "match that EXACT voice -- tone, recurring phrasing, sentence structure, "
-    "message shape, greeting, sign-off, punctuation, emoji habits -- the voice "
-    "not the content. If a Register line is given, meet the contact's formality "
-    "while keeping the host's identity. Warm, direct, never salesy or templated. "
+    "If a <host_voice_profile> and/or <style_examples> block is provided, write "
+    "in that exact voice (greeting, sign-off, sentence length, punctuation, "
+    "emoji habits), matching the voice not the content. If a Register line is "
+    "given, meet the contact's formality while keeping the host's voice. "
     "NEVER use em dashes (—) or en dashes (–); use a comma, a period, or "
     "restructure. "
-)
-_SELFCHECK = (
-    "Final pass: make sure it serves the goal, invents nothing, sounds like the "
-    "host's own examples (not generic), and is concise. Then output only the "
-    "message. "
 )
 
 
@@ -87,7 +76,7 @@ _FOLLOWUP_SYSTEM = (
     "reach out (e.g. congratulate them on the news) -- do NOT refuse, do NOT ask "
     "for more context, and do NOT mention the absence of prior messages; just "
     "write the message. "
-    + _GROUNDING + _SPECIFICITY + _BREVITY + _VOICE_RULE + _SELFCHECK +
+    + _BREVITY + _SPECIFICITY + _VOICE_RULE +
     "If channel is email, also return a 3-5 word subject. "
     "Return ONLY JSON: {\"subject\":\"<email only, else null>\","
     "\"body\":\"<the message>\"}"
@@ -408,7 +397,7 @@ _FOLLOWUP_STREAM_SYSTEM = (
     "(the list is empty), write a warm, natural note built around the reason to "
     "reach out; do NOT refuse, do NOT ask for more context, and do NOT mention "
     "the absence of prior messages. "
-    + _GROUNDING + _SPECIFICITY + _BREVITY + _VOICE_RULE + _SELFCHECK +
+    + _BREVITY + _SPECIFICITY + _VOICE_RULE +
     "Write ONLY the message body as plain text: no subject line, no JSON, no "
     "surrounding quotes, no preamble or labels. Just the message to send."
 )
