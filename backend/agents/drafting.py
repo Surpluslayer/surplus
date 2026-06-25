@@ -21,6 +21,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import os
+from dataclasses import dataclass
 from typing import Optional
 
 from . import relationships, voice
@@ -300,6 +301,53 @@ def _natural_action(ctx: dict) -> str:
     return ""
 
 
+# ── Intent: what THIS message must accomplish ────────────────────────────────
+# The explicit, hybrid form of "the move": a taxonomy `kind` (drives structure,
+# eval cases, and per-kind guardrails) + a free-form `objective` (the specifics
+# the agent or host supplies), plus optional hard constraints. Intent is purely
+# ADDITIVE: when a caller passes none, the engine falls back to `_natural_action`
+# and behaves exactly as before. Passing an intent is how the SAME engine writes
+# any message (congratulate / intro / ask / ...), not just a follow-up. The agent
+# will eventually DECIDE an intent and hand it here (see docs/draft-pipeline.md).
+INTENT_KINDS = ("congratulate", "reengage", "intro", "ask", "schedule",
+                "thank", "open", "reply", "followup")
+
+_INTENT_GUIDE = {
+    "congratulate": "congratulate them warmly; lead with the news, no ask",
+    "reengage": "re-engage warmly after time has passed; low pressure, a natural angle",
+    "intro": "offer a warm introduction; explain the why in one line and ask permission first",
+    "ask": "make a specific, low-friction ask; be direct and easy to say yes to",
+    "schedule": "propose a concrete time to meet or talk",
+    "thank": "thank them specifically and sincerely; no ask",
+    "open": "open a new conversation warmly; make clear why you're reaching out",
+    "reply": "reply to their last message and move it forward",
+    "followup": "follow up naturally on the relationship",
+}
+
+
+@dataclass(frozen=True)
+class Intent:
+    """What a single message is for. `kind` is one of INTENT_KINDS (falls back to
+    'followup' if unknown); `objective` is the free-form per-message goal."""
+    kind: str = "followup"
+    objective: str = ""
+    must: str = ""     # a hard inclusion ("mention the webinar Thursday")
+    avoid: str = ""    # a hard exclusion ("don't pitch anything")
+
+
+def _render_intent(intent: Intent) -> str:
+    """Turn an Intent into the one goal line the RENDER stage states. The kind
+    gives the SHAPE (from _INTENT_GUIDE), the objective gives the specifics."""
+    parts = [_INTENT_GUIDE.get(intent.kind, intent.kind or "follow up naturally")]
+    if (intent.objective or "").strip():
+        parts.append(f"specifically: {intent.objective.strip()}")
+    if (intent.must or "").strip():
+        parts.append(f"must include: {intent.must.strip()}")
+    if (intent.avoid or "").strip():
+        parts.append(f"do not: {intent.avoid.strip()}")
+    return "; ".join(parts)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # The draft pipeline: GATHER (build_context, above) -> RESOLVE -> SELECT ->
 # RENDER. Each stage is small + testable; the eval and every surface run the
@@ -390,10 +438,13 @@ def _who(ctx: dict) -> str:
     return name
 
 
-def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "") -> str:
+def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "",
+                 intent: Optional[Intent] = None) -> str:
     """RENDER: assemble the user message from the gathered+resolved context.
     `directive` is the host's free-form ask-bar instruction, shared across a
-    batch; per-person facts keep each draft differentiated."""
+    batch; per-person facts keep each draft differentiated. `intent` is the
+    explicit goal for THIS message; when None the move is derived from
+    `_natural_action` exactly as before (behavior-neutral default)."""
     lines = [f"Who you're writing to: {_who(ctx)}."]
     asserted, optional = _select_grounding(ctx)
     if asserted:
@@ -402,9 +453,12 @@ def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "") -> s
     if optional:
         lines.append("Optional color (use ONLY if it fits naturally, never force "
                      "it or overstate familiarity): " + "; ".join(optional) + ".")
-    na = _natural_action(ctx)
-    if na:
-        lines.append(f"The natural move here: {na}.")
+    if intent is not None:
+        lines.append(f"Your goal for this message: {_render_intent(intent)}.")
+    else:
+        na = _natural_action(ctx)
+        if na:
+            lines.append(f"The natural move here: {na}.")
     lines += [
         "Prior conversation (oldest first; [] means no prior messages):",
         json.dumps(ctx.get("prior") or [], default=str),
@@ -422,13 +476,15 @@ def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "") -> s
 
 
 def compose_from_context(ctx: dict, reason: str, channel: str = "email",
-                         directive: str = "") -> Optional[dict]:
+                         directive: str = "",
+                         intent: Optional[Intent] = None) -> Optional[dict]:
     """The pure-LLM half: compose from a context dict (no DB), so it's safe to
     fan out across threads. Returns {"subject", "body"} or None on failure.
     `directive` is the host's free-form ask-bar instruction (shared across the
-    batch); per-person facts keep each draft differentiated."""
+    batch); per-person facts keep each draft differentiated. `intent` is the
+    optional explicit goal for THIS message (additive; None = today's behavior)."""
     system = _FOLLOWUP_SYSTEM + _resolve_voice(ctx)
-    user = _user_prompt(ctx, reason, channel, directive)
+    user = _user_prompt(ctx, reason, channel, directive, intent=intent)
     out = _llm_json(system, user, max_tokens=500)
     if not out or not (out.get("body") or "").strip():
         return None
@@ -453,33 +509,37 @@ _FOLLOWUP_STREAM_SYSTEM = (
 
 
 def stream_from_context(ctx: dict, reason: str, channel: str = "email",
-                        directive: str = ""):
+                        directive: str = "", intent: Optional[Intent] = None):
     """The pure-LLM half of streamed drafting: yield body tokens from a prebuilt
     context dict (no DB), so the agent can build all contexts serially then fan
     out token streams across threads. Mirrors compose_from_context, streamed.
-    `directive` is the host's free-form ask-bar instruction (shared)."""
+    `directive` is the host's free-form ask-bar instruction (shared); `intent`
+    is the optional explicit goal (additive; None = today's behavior)."""
     system = _FOLLOWUP_STREAM_SYSTEM + _resolve_voice(ctx)
-    user = _user_prompt(ctx, reason, channel, directive)
+    user = _user_prompt(ctx, reason, channel, directive, intent=intent)
     yield from stream_text(system, user, max_tokens=500)
 
 
 def compose_stream(db, user_id: int, contact, *, reason: str,
-                   channel: str = "email"):
+                   channel: str = "email", intent: Optional[Intent] = None):
     """Yield the follow-up body token-by-token (live 'typing'). Same voice + real
     prior-thread context as compose_followup, but streamed as plain text (no JSON
     wrapper, so deltas render directly). For the streamed /draft tap. Yields
     nothing when no key is set -- the caller falls back to compose_followup."""
     yield from stream_from_context(build_context(db, user_id, contact),
-                                   reason, channel)
+                                   reason, channel, intent=intent)
 
 
 def compose_followup(db, user_id: int, contact, *, reason: str,
-                     channel: str = "email") -> Optional[dict]:
+                     channel: str = "email",
+                     intent: Optional[Intent] = None) -> Optional[dict]:
     """One voice-matched, thread-aware follow-up to `contact` (a Contact ORM row).
     Returns {"subject", "body"} or None on failure (caller falls back). Loads the
-    thread + voice, then composes -- the single-draft contract used by /draft."""
+    thread + voice, then composes -- the single-draft contract used by /draft.
+    `intent` is the optional explicit goal (additive; None = today's behavior)."""
     return compose_from_context(
-        build_context(db, user_id, contact, channel=channel), reason, channel)
+        build_context(db, user_id, contact, channel=channel), reason, channel,
+        intent=intent)
 
 
 def compose_batch(db, user_id: int, jobs: list[dict],
@@ -514,7 +574,8 @@ def compose_batch(db, user_id: int, jobs: list[dict],
         results[i] = compose_from_context(
             ctxs[i], jobs[i].get("reason") or "following up",
             jobs[i].get("channel") or "email",
-            jobs[i].get("directive") or directive)
+            jobs[i].get("directive") or directive,
+            intent=jobs[i].get("intent"))
 
     import time as _t
     t0 = _t.monotonic()

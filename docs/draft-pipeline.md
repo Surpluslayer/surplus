@@ -92,6 +92,29 @@ them to a single instruction with an explicit order:
 Mindset and grounding (the facts, the intent, "don't fabricate") always outrank
 voice — they live in the system prompt and the SELECT stage, not here.
 
+### Intent: what the message is *for* (the de-pinning seam)
+
+RESOLVE also decides the message's **goal**. This is an optional `Intent` the
+caller passes — a hybrid object:
+
+```
+Intent { kind: one of INTENT_KINDS,   # taxonomy: structure + eval + per-kind guardrails
+         objective: free-form goal,    # the per-message specifics
+         must / avoid: hard constraints }
+```
+
+`_render_intent` turns it into the single goal line the RENDER stage states. When
+**no** intent is passed (every caller today), the goal falls back to
+`_natural_action`, so behavior is byte-identical — intent is purely **additive**.
+Passing one is how the same engine writes a congratulate / intro / ask / thank /
+schedule message, not just a follow-up.
+
+This is the seam for collapsing the two drafters: the relationship agent (chat)
+currently drafts inline in its own prompt. The target is for the agent to *decide*
+an `Intent` and hand it to this engine via its `draft_message` tool, so there is
+ONE writer and the agent's prompt sheds all the voice/grounding/guardrail rules.
+That rewire (Part 2) is held until the eval covers the agent loop.
+
 ## Where each past "win" slots in
 
 The pipeline isn't a rewrite of behavior; it's the same wins, placed coherently:
@@ -102,7 +125,8 @@ The pipeline isn't a rewrite of behavior; it's the same wins, placed coherently:
 | Per-person conversational mirroring   | ②     | the thread branch of `_resolve_voice`             |
 | Formal-register adaptation            | ②     | the formal branch (now outranks thread)           |
 | Contact About / "what they work on"   | ①→③ | gathered (graceful), offered as **optional** color |
-| Situational move                      | ②     | `_natural_action`                                  |
+| Situational move                      | ②     | `_natural_action` (default when no `Intent`)       |
+| Explicit message goal                 | ②     | optional `Intent` (kind + objective), additive     |
 | Ask-bar directive (batch intent)      | ④     | shared `directive`, per-person facts differentiate |
 
 ## How we know it's not a regression
