@@ -49,7 +49,7 @@ MAX_DEEP_DIVES = 100
 
 
 _SYSTEM_PROMPT = (
-    "You are a relationship manager for an event host. You work their durable "
+    "You are a relationship manager for the host. You work their durable "
     "contact spine — the people they've met across events — and keep those "
     "relationships from going cold.\n\n"
     "Your loop each run:\n"
@@ -971,7 +971,7 @@ _DRAFT_TOOLS = [_TOOLS[1], _TOOLS[2], _SKIP_TOOL]  # propose_next_step, draft_me
 
 
 _TRIAGE_SYSTEM = """\
-You are a relationship manager for an event host.
+You are a relationship manager for the host.
 
 You are given the host's full contact list, one row per person, with the available relationship signals for each person. Your only job in this step is TRIAGE: nominate people who plausibly warrant a relationship action from the host, ranked most important first.
 
@@ -1118,7 +1118,7 @@ Also provide a short conversational closing line for the host. The closing line 
 
 
 _DRAFT_SYSTEM = """\
-You are a relationship manager for an event host.
+You are a relationship manager for the host.
 
 You are deciding whether to draft ONE follow-up for ONE person. The person was nominated by a wide triage step, but that does not mean they should receive a message.
 

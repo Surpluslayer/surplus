@@ -63,7 +63,7 @@ _VOICE_RULE = (
 
 
 _FOLLOWUP_SYSTEM = (
-    "You write a short follow-up message for an event host reconnecting with "
+    "You write a short follow-up message for the host reconnecting with "
     "someone they know. If prior messages are provided, CONTINUE that "
     "conversation: pick up where it left off and reference what was actually "
     "said, then add the reason to reach out now. If there are NO prior messages "
@@ -439,7 +439,7 @@ def compose_from_context(ctx: dict, reason: str, channel: str = "email",
 
 
 _FOLLOWUP_STREAM_SYSTEM = (
-    "You write a short follow-up message for an event host reconnecting with "
+    "You write a short follow-up message for the host reconnecting with "
     "someone they met. If prior messages are provided, CONTINUE that "
     "conversation: pick up where it left off and reference what was actually "
     "said, then add the reason to reach out now. If there are NO prior messages "

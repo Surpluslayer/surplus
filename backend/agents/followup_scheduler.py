@@ -44,7 +44,7 @@ _MODEL = os.environ.get("FOLLOWUP_COMPOSE_MODEL", "claude-haiku-4-5-20251001")
 _TIMEOUT_S = float(os.environ.get("FOLLOWUP_COMPOSE_TIMEOUT", "30"))
 _MAX_TOKENS = 500
 
-_SYSTEM = """You are writing a single follow-up LinkedIn DM on behalf of an event host.
+_SYSTEM = """You are writing a single follow-up LinkedIn DM on behalf of the host.
 
 CONTEXT
 The host already sent this person a first message inviting them to an event, and the recipient has NOT replied. This is the one gentle nudge. It must be lighter than the first message: a brief check-in, never a re-pitch from scratch.
