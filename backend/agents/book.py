@@ -169,8 +169,8 @@ def _llm_json(system: str, user: str, *, max_tokens: int = 700,
 # ─── 1. Relationship health + outreach scoring ───────────────────────────────
 
 _HEALTH_SYSTEM = (
-    "You score the health of a professional relationship for a wealth advisor / "
-    "lawyer whose income depends on long-term client trust. Classify health and "
+    "You score the health of a professional relationship for someone who relies "
+    "on long-term professional relationships. Classify health and "
     "whether they need outreach. A relationship is overdue when days_since "
     "exceeds the expected cadence, weighted by tier (key clients tolerate less "
     "silence). A review coming due or overdue always warrants outreach. Return "
@@ -396,8 +396,7 @@ def _draft_key(contact: dict, trigger: str, channel: str) -> str:
 
 
 def draft_message_cached(contact: dict, trigger: str, *, channel: str = "email",
-                         user_name: str = "your advisor",
-                         user_role: str = "wealth advisor",
+                         user_name: str = "the host",
                          background: bool = False) -> dict:
     """draft_message with a TTL cache: a re-open of the same person + trigger
     returns instantly instead of re-paying the model call."""
@@ -411,8 +410,7 @@ def draft_message_cached(contact: dict, trigger: str, *, channel: str = "email",
             return hit[1]
     t0 = time.monotonic()
     msg = draft_message(contact, trigger, channel=channel,
-                        user_name=user_name, user_role=user_role,
-                        background=background)
+                        user_name=user_name, background=background)
     _btrace(f"draft FRESH to={contact.get('name')!r} channel={channel} "
             f"in {time.monotonic()-t0:.2f}s")
     with _draft_lock:
@@ -421,8 +419,7 @@ def draft_message_cached(contact: dict, trigger: str, *, channel: str = "email",
 
 
 def predraft(contacts_with_triggers: list[tuple[dict, str]],
-             *, user_name: str = "your advisor",
-             user_role: str = "wealth advisor") -> None:
+             *, user_name: str = "the host") -> None:
     """Warm the draft cache in the background for (contact, trigger) pairs the
     Today feed is about to surface. Fire-and-forget; never blocks a request."""
     if not _anthropic_available():
@@ -442,7 +439,7 @@ def predraft(contacts_with_triggers: list[tuple[dict, str]],
             # the pool and slow the foreground request that triggered it.
             with _BOOK_BG_SEM:
                 draft_message_cached(c, trig, user_name=user_name,
-                                     user_role=user_role, background=True)
+                                     background=True)
         finally:
             with _draft_lock:
                 _draft_inflight.discard(key)
@@ -453,11 +450,11 @@ def predraft(contacts_with_triggers: list[tuple[dict, str]],
 
 # ─── 3. Draft a message ──────────────────────────────────────────────────────
 
-def _draft_system(user_name: str, user_role: str) -> str:
+def _draft_system(user_name: str) -> str:
     return (
-        f"Write a short outreach message in {user_name}'s voice. {user_name} is a "
-        f"{user_role}; tone is warm, specific, and never salesy — the kind of note "
-        "a trusted advisor sends, not a pitch. Rules: 2-4 sentences. No "
+        f"Write a short outreach message in {user_name}'s voice. Tone is warm, "
+        "specific, and never salesy, the kind of note a real person sends to "
+        "someone they know, not a pitch. Rules: 2-4 sentences. No "
         "subject-line cliches, no 'I hope this finds you well.' Reference one "
         "concrete, true detail from the history if available. For a "
         "congratulation: lead with the news, no ask. For re-engagement: gentle, "
@@ -468,8 +465,7 @@ def _draft_system(user_name: str, user_role: str) -> str:
 
 
 def draft_message(contact: dict, trigger: str, *, channel: str = "email",
-                  user_name: str = "your advisor",
-                  user_role: str = "wealth advisor",
+                  user_name: str = "the host",
                   background: bool = False) -> dict:
     """The note behind a 'Draft' tap. Returns {subject, body}."""
     user = (
@@ -478,7 +474,7 @@ def draft_message(contact: dict, trigger: str, *, channel: str = "email",
         f"Shared history to draw on: {contact.get('interaction_history')}\n"
         f"Channel: {channel}\n"
     )
-    out = _llm_json(_draft_system(user_name, user_role), user, max_tokens=500,
+    out = _llm_json(_draft_system(user_name), user, max_tokens=500,
                     background=background)
     if out and out.get("body"):
         if channel != "email":

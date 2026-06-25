@@ -309,9 +309,8 @@ def _load_book(db: Session, user: models.User) -> list[dict]:
     return book
 
 
-def _advisor_identity(user: models.User) -> tuple[str, str]:
-    name = (getattr(user, "name", None) or "").strip() or "your advisor"
-    return name, "wealth advisor"
+def _host_name(user: models.User) -> str:
+    return (getattr(user, "name", None) or "").strip() or "the host"
 
 
 def _find_contact(book: list[dict], *, contact_id: Optional[str],
@@ -347,7 +346,7 @@ def today(db: Session = Depends(get_db),
     t0 = time.monotonic()
     book = _load_book(db, user)
     feed = book_agent.build_today(book)
-    name, role = _advisor_identity(user)
+    name = _host_name(user)
     feed["advisor_name"] = name
     # Warm drafts in the background for the people this feed is about to tell
     # the user to contact, so the draft panel is usually instant on tap.
@@ -355,7 +354,7 @@ def today(db: Session = Depends(get_db),
     pairs = [(by_id[r["contact_id"]], r.get("trigger") or "catching up")
              for r in feed["needs_outreach"] + feed["updates"]
              if r.get("contact_id") in by_id and (r.get("can_draft") is not False)]
-    book_agent.predraft(pairs, user_name=name, user_role=role)
+    book_agent.predraft(pairs, user_name=name)
     _trace(f"GET /today user={user.id}: {len(feed['updates'])} updates, "
            f"{len(feed['needs_outreach'])} needs-outreach, predraft {len(pairs)} "
            f"in {time.monotonic()-t0:.2f}s")
@@ -384,7 +383,7 @@ def draft(body: DraftIn, db: Session = Depends(get_db),
         # the trigger alone), so synthesize a minimal contact rather than 404.
         contact = {"name": body.name or "there", "title": "", "firm": "",
                    "interaction_history": ""}
-    name, role = _advisor_identity(user)
+    name = _host_name(user)
     t0 = time.monotonic()
     # Consolidated path: when this maps to a real Contact, draft through the ONE
     # shared composer (voice + real prior-message thread + no em dashes). Falls
@@ -400,7 +399,7 @@ def draft(body: DraftIn, db: Session = Depends(get_db),
         engine = "heuristic"
         msg = book_agent.draft_message_cached(
             contact, body.trigger, channel=body.channel,
-            user_name=name, user_role=role)
+            user_name=name)
     _trace(f"POST /draft user={user.id} to={contact.get('name')!r} "
            f"channel={body.channel} trigger={body.trigger!r} engine={engine} "
            f"in {time.monotonic()-t0:.2f}s")
@@ -420,7 +419,7 @@ def draft_stream(body: DraftIn, db: Session = Depends(get_db),
     user_id = user.id
     cid, nm = body.contact_id, body.name
     trigger, channel = body.trigger, body.channel
-    name, role = _advisor_identity(user)
+    name = _host_name(user)
 
     def gen():
         yield ": open\n\n"  # flush headers immediately
@@ -445,7 +444,7 @@ def draft_stream(body: DraftIn, db: Session = Depends(get_db),
                     {"name": nm or "there", "title": "", "firm": "",
                      "interaction_history": ""}
                 msg = book_agent.draft_message_cached(
-                    contact, trigger, channel=channel, user_name=name, user_role=role)
+                    contact, trigger, channel=channel, user_name=name)
                 yield f"event: token\ndata: {json.dumps({'t': msg.get('body') or ''})}\n\n"
             yield f"event: done\ndata: {json.dumps({'total_s': round(time.monotonic()-t0, 1)})}\n\n"
             _trace(f"POST /draft/stream user={user_id} to={nm!r} "
@@ -567,7 +566,7 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
             # Draft the top few, emitting each as it lands. Build DB contexts
             # SERIALLY (session not thread-safe), then fan the pure-LLM calls out.
             inline = max(0, int(os.environ.get("ASK_INLINE_DRAFTS", "6")))
-            name_, role_ = _advisor_identity(wuser)
+            name_ = _host_name(wuser)
             targets = []        # real ORM contacts -> token-stream via shared composer
             heuristic = []      # demo-book / no-ORM people -> one-shot agent draft
             for idx, p in enumerate(people[:inline]):
@@ -601,7 +600,7 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
                     trig_ = f"{reason_}. Host's instruction: {q}" if q else reason_
                     msg = book_agent.draft_message_cached(
                         bd, trig_, channel="email",
-                        user_name=name_, user_role=role_)
+                        user_name=name_)
                     body_ = (msg or {}).get("body") or ""
                     if body_:
                         events.put(("token", {"index": idx, "t": body_}))
