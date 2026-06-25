@@ -30,6 +30,7 @@ from backend.db import Base
 from backend.agents import relationships as rel
 from backend.agents import agent_loop
 from backend.agents import relationship_agent as ragent
+from backend.agents import voice
 
 
 # ── in-memory db + builders (mirrors test_relationships_contacts) ─────────
@@ -508,7 +509,7 @@ def test_brief_reads_contact_register_from_their_messages_only():
                              "week? Kind regards, Dr. Patel", days_ago=2)])
     b = ragent._context_brief({"reason": "replied", "angle": ""}, formal)
     assert b["contact_register"] == "formal"
-    assert "no emoji" in b["register_guidance"]
+    assert "no emoji" in b["register_guidance"].lower()
 
     casual = _ctx(
         summary={"name": "Maya", "last_touch_at": None},
@@ -611,13 +612,15 @@ def test_draft_message_sanitizes_em_dash(db):
 
 def test_host_voice_examples_resolves_from_user_row(db):
     """The agent sources the host's voice from the SAME User.voice_examples the
-    initial-message composer uses, parsed as a JSON list and capped at 8."""
+    initial-message composer uses, parsed as a JSON list and capped at 8. (The
+    agent's old `_host_voice_examples` wrapper was removed; it now resolves voice
+    through the shared layer directly.)"""
     u = _user(db)
     u.voice_examples = json.dumps(
         ["yo! great running into you", "lol yeah let's def grab a coffee"]
         + [f"msg {i}" for i in range(10)])
     db.commit()
-    ex = ragent._host_voice_examples(db, u.id)
+    ex = voice.resolve_voice_examples_for_user(u)
     assert ex[0] == "yo! great running into you"
     assert len(ex) == 8                       # capped
 
@@ -627,12 +630,12 @@ def test_host_voice_examples_bad_json_is_empty(db):
     u = _user(db)
     u.voice_examples = "{not valid json"
     db.commit()
-    assert ragent._host_voice_examples(db, u.id) == []
+    assert voice.resolve_voice_examples_for_user(u) == []
 
 
 def test_voice_block_empty_when_no_examples():
-    assert ragent._voice_block([]) == ""
-    block = ragent._voice_block(["hey!! good seeing you"])
+    assert voice.build_style_examples_block([]) == ""
+    block = voice.build_style_examples_block(["hey!! good seeing you"])
     assert "<style_examples>" in block
     assert "hey!! good seeing you" in block
 

@@ -349,7 +349,7 @@ def test_detect_register_neutral_when_no_strong_signal():
 
 def test_register_guidance_maps_each_label_and_none():
     assert voice.register_guidance(None) is None
-    assert "no emoji" in voice.register_guidance("formal")
+    assert "no emoji" in voice.register_guidance("formal").lower()
     assert "casual voice fits" in voice.register_guidance("casual")
     assert "neutral register" in voice.register_guidance("neutral")
 

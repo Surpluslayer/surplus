@@ -166,7 +166,7 @@ def test_compose_user_message_meets_a_formal_recipient_register(fake_event):
     msg = outreach._compose_user_message(formal, fake_event, host_bio=None,
                                          framing="a dinner")
     assert "WRITING REGISTER" in msg
-    assert "no emoji" in msg
+    assert "no emoji" in msg.lower()
 
 
 def test_compose_user_message_keeps_a_casual_recipient_loose(fake_event):
