@@ -747,6 +747,17 @@ def draft_preview_endpoint(user_id: int, limit: int = 6,
             "facts": {k: facts.get(k) for k in
                       ("met_at", "next_step", "latest_update", "stage",
                        "relationship_types")},
+            # Knowledge-store facts that reached this draft, each tagged with its
+            # source + age + mode -- so we can SEE what context a draft got and
+            # from where (the legibility wire).
+            "store_facts": [
+                {"key": p["key"], "value": p["value"], "source": p["source"],
+                 "mode": p["mode"],
+                 "observed_at": (p["observed_at"].isoformat()
+                                 if hasattr(p.get("observed_at"), "isoformat")
+                                 else p.get("observed_at"))}
+                for p in (ctx.get("store_provenance") or [])
+            ],
             "has_prior_thread": bool(ctx.get("prior")),
             "draft": (d or {}).get("body"),
         }

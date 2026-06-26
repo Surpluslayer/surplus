@@ -144,6 +144,9 @@ def apply_profile(db, contact: models.Contact, profile: dict) -> list[dict]:
             contact.company = new_company
         if new_title:
             contact.headline = new_title[:300]
+        # Seed the fact store with current state from the first scrape (silent,
+        # like the baseline) so the knowledge store reflects who they are now.
+        _store_profile_facts(db, contact, new_company, new_title)
         contact.profile_baselined_at = _now()
         contact.watched_at = _now()
         return changes
@@ -158,10 +161,30 @@ def apply_profile(db, contact: models.Contact, profile: dict) -> list[dict]:
         contact.company = new_company
         if new_title:
             contact.headline = new_title[:300]
+        # The job change is an EVENT (above) AND a state change: upsert the new
+        # current-state facts so the reader gets structured company/title without
+        # parsing the event log. (Append the event, upsert the fact.)
+        _store_profile_facts(db, contact, new_company, new_title)
         changes.append(change)
         # autodraft fires inside _emit now (covers every watcher).
     contact.watched_at = _now()
     return changes
+
+
+def _store_profile_facts(db, contact, company: str, title: str) -> None:
+    """Upsert the contact's current company/title into the fact store (mode A:
+    the knowledge store). Best-effort + commit=False : the caller's sweep owns
+    the transaction, and a fact-write must never break the update path."""
+    try:
+        from .contact_memory import upsert_fact
+        if company:
+            upsert_fact(db, contact.user_id, contact.id, "company", company,
+                        source="linkedin", confidence="high", commit=False)
+        if title:
+            upsert_fact(db, contact.user_id, contact.id, "title", title,
+                        source="linkedin", confidence="high", commit=False)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [updates] fact upsert skipped: {type(exc).__name__}: {exc}")
 
 
 # --- posts cascade (raise / launch / milestone) ----------------------------

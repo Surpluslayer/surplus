@@ -58,6 +58,49 @@ def upsert_fact(
     return row
 
 
+# Keys already represented elsewhere in the draft context (company/title ride the
+# who-line "Name, Title at Company"), so surfacing them again from the store would
+# double up. The store still HOLDS them (for provenance + future readers); we just
+# don't re-ground them.
+_SHOWN_ELSEWHERE = {"company", "title", "role", "headline"}
+# How a fact key reads as a grounding clause. Unknown keys fall back to "key: value".
+_KEY_PHRASES = {
+    "based_in": "based in {v}",
+    "hometown": "from {v}",
+    "school": "went to {v}",
+    "interest": "into {v}",
+    "works_on": "works on {v}",
+    "birthday": "birthday is {v}",
+}
+
+
+def draft_grounding(db, contact_id: int) -> tuple[list[str], list[dict]]:
+    """High-confidence store facts as (grounding_lines, provenance) for a draft.
+
+    `grounding_lines` are ready-to-inject clauses the composer appends to its
+    asserted grounding (the data layer, not the prompt). `provenance` tags each
+    surfaced fact with source + observed_at + mode="graph" so the assembled
+    context is LEGIBLE -- we can always see what came from the knowledge store.
+    Skips keys already shown elsewhere (company/title). Best-effort: any read
+    failure returns empty, never breaks a draft."""
+    try:
+        rows = get_facts(db, contact_id, high_confidence_only=True)
+    except Exception:  # noqa: BLE001 - context read must never break drafting
+        return [], []
+    lines: list[str] = []
+    prov: list[dict] = []
+    for r in rows:
+        v = (r.value or "").strip()
+        if not v or r.key in _SHOWN_ELSEWHERE:
+            continue
+        phrase = _KEY_PHRASES.get(r.key, "{k}: {v}").format(
+            k=r.key.replace("_", " "), v=v)
+        lines.append(phrase)
+        prov.append({"key": r.key, "value": v, "source": r.source,
+                     "observed_at": r.observed_at, "mode": "graph"})
+    return lines, prov
+
+
 def get_facts(
     db,
     contact_id: int,

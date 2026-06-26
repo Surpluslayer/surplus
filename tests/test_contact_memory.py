@@ -63,6 +63,43 @@ def test_high_confidence_filter(db):
     assert [r.key for r in high] == ["birthday"]
 
 
+def test_draft_grounding_surfaces_facts_and_tags_provenance(db):
+    """High-confidence store facts become grounding clauses + provenance; keys
+    already on the who-line (company/title) are skipped to avoid double-up."""
+    u, c = _contact(db)
+    cm.upsert_fact(db, u.id, c.id, "based_in", "San Francisco", source="linkedin")
+    cm.upsert_fact(db, u.id, c.id, "interest", "climbing", dedup_key="climbing")
+    cm.upsert_fact(db, u.id, c.id, "company", "TechCorp", source="linkedin")   # skipped
+    cm.upsert_fact(db, u.id, c.id, "works_on", "low", confidence="low")        # gated out
+    lines, prov = cm.draft_grounding(db, c.id)
+    assert "based in San Francisco" in lines
+    assert "into climbing" in lines
+    assert all("TechCorp" not in ln for ln in lines)     # company not re-grounded
+    assert all("low" != p["value"] for p in prov)        # low-confidence excluded
+    # provenance tags source + mode for legibility
+    assert {p["mode"] for p in prov} == {"graph"}
+    assert {p["source"] for p in prov} == {"linkedin", "manual"}
+
+
+def test_updates_engine_change_upserts_state_facts(db):
+    """A LinkedIn job change emits the event AND upserts current-state facts, so
+    the reader gets structured company/title from the store."""
+    from backend.agents.relationship import updates_engine
+    u, c = _contact(db)
+    c.profile_baselined_at = None
+    db.commit()
+    # First scrape = baseline (silent) -> seeds the store from current state.
+    updates_engine.apply_profile(db, c, {"company": "OldCo", "title": "Engineer"})
+    db.commit()
+    assert cm.get_facts(db, c.id, key="company")[0].value == "OldCo"
+    # A later move upserts the new state in place.
+    updates_engine.apply_profile(db, c, {"company": "TechCorp", "title": "VP Eng"})
+    db.commit()
+    company = cm.get_facts(db, c.id, key="company")
+    assert len(company) == 1 and company[0].value == "TechCorp"   # upserted, not stacked
+    assert company[0].source == "linkedin"
+
+
 def test_due_date_hook_is_stored(db):
     """The time-trigger hook is just a stored column for now (no engine yet)."""
     from datetime import datetime, timezone
