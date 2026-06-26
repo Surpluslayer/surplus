@@ -464,7 +464,7 @@ def test_webhook_auto_dm_fires_on_accept(db, user, monkeypatch):
 
 def test_route_and_send_warm_path_uses_send_message(db, user, monkeypatch):
     from backend.providers.unipile import UnipileProvider
-    from backend.agents.send_flow import route_and_send
+    from backend.agents.relationship.send_flow import route_and_send
     from backend.routes.inperson import scan_capture, ScanIn
     # Force a warm relation.
     monkeypatch.setattr(UnipileProvider, "is_relation", lambda self, url: True)

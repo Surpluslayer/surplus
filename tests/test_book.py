@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from backend.agents import book as b
+from backend.agents.relationship import book as b
 from backend.routes.book import _demo_book
 
 

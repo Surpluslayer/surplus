@@ -22,9 +22,9 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from .. import models
-from ..providers.base import ProviderResult
-from .outreach import Message, compose
+from ... import models
+from ...providers.base import ProviderResult
+from ..outreach import Message, compose
 
 # ── Double-send guards ───────────────────────────────────────────────────────
 # An "unconfirmed" send (request dispatched, response lost) MAY be live on

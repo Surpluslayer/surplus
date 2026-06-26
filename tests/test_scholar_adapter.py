@@ -13,7 +13,7 @@ import pytest
 
 from backend.agents.sources import ScholarAdapter, ALL_ADAPTERS
 from backend.agents.sources.scholar import MIN_CITATIONS
-from backend.agents.prospector import prospect
+from backend.agents.events.prospector import prospect
 
 
 @pytest.fixture(autouse=True)

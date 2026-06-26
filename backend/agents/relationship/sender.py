@@ -12,8 +12,8 @@ dry_run / provider_lead_id for their own response shapes.
 from __future__ import annotations
 from datetime import datetime, timezone
 
-from .. import models
-from ..providers import LinkedInProvider, get_provider_for_prospect
+from ... import models
+from ...providers import LinkedInProvider, get_provider_for_prospect
 
 
 def send_and_log(
@@ -83,8 +83,8 @@ def send_followup_email(db, prospect, text: str):
     (reply_to + Re: subject keeps Gmail threading). Returns a ProviderResult-
     shaped object; writes the truthful OutreachLog row (channel=email)."""
     from datetime import datetime, timezone
-    from .. import models
-    from ..providers import get_provider
+    from ... import models
+    from ...providers import get_provider
 
     owner = getattr(getattr(prospect, "event", None), "user", None)
     contact = (db.get(models.Contact, prospect.contact_id)

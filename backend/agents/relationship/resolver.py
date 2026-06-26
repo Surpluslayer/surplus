@@ -41,7 +41,7 @@ import re
 from typing import Optional
 from urllib.parse import urlsplit
 
-from . import exa
+from .. import exa
 
 
 # LinkedIn public profile path is /in/<handle>. The handle is the vanity slug :

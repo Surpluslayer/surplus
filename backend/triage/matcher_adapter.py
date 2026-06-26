@@ -19,8 +19,8 @@ route-side branching one if-check long.
 from __future__ import annotations
 from types import SimpleNamespace
 
-from ..agents.matcher import build_edges, form_groups
-from ..agents.roi import settle
+from ..agents.events.matcher import build_edges, form_groups
+from ..agents.events.roi import settle
 
 
 # Gap #1 / smoke #7: archetype → side. Builds / Hires / Operates is the

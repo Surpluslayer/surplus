@@ -30,7 +30,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from .. import models
+from ... import models
 
 # Human labels for the timeline item title (summary carries the specifics).
 _TITLES = {

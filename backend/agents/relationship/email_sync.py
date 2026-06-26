@@ -33,7 +33,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from .. import models
+from ... import models
 
 # Senders that are machines, not relationships. Matched as a PREFIX of the
 # local part (so "noreply+tag@x" is caught) after lowercasing.
@@ -150,7 +150,7 @@ def sync_email_contacts(
     """Sync the user's mailbox into their Contact spine. Returns stats; never
     raises (the connect flow auto-kicks this best-effort)."""
     from .relationships import _clean  # same cleaners as the LinkedIn spine
-    from ..triage.enrichment_cache import identity_keys
+    from ...triage.enrichment_cache import identity_keys
 
     stats = {"scanned": 0, "people": 0, "contacts_created": 0,
              "contacts_updated": 0, "skipped_junk": 0, "error": None}

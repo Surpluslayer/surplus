@@ -39,7 +39,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from backend.agents import voice
-from backend.agents import relationship_agent as ragent
+from backend.agents.relationship import relationship_agent as ragent
 
 
 # ── Variants ──────────────────────────────────────────────────────────────────

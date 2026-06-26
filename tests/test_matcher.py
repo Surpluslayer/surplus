@@ -1,7 +1,7 @@
 """Tests for agents/matcher.py : edge typing + side-balanced group formation."""
 from types import SimpleNamespace
 
-from backend.agents.matcher import build_edges, form_groups
+from backend.agents.events.matcher import build_edges, form_groups
 
 
 def _p(pid, side, works_on="observability", score=85):

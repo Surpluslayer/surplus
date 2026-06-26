@@ -24,7 +24,9 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-from . import relationships, voice
+from . import relationships
+
+from .. import voice
 from .book import _btrace, _llm_json, stream_text  # shared Claude helpers + trace
 from .relationship_agent import (
     _strip_dashes,
@@ -95,7 +97,7 @@ def _email_thread_prior(db, user_id: int, contact) -> list[dict]:
     else finds the newest thread with the contact's address. Best-effort: any
     missing piece (no mailbox, no address, Unipile error) returns []."""
     import os
-    from .. import models
+    from ... import models
     from . import email_sync
     try:
         user = db.get(models.User, user_id)
@@ -139,7 +141,7 @@ def _voice_block_for(db, user_id: int, channel: str) -> str:
     the channel being drafted. This is the same packaged voice the relationship
     agent uses -- richer than raw examples alone, which is what made earlier
     drafts read generic. DetachedInstance/lookup-safe (returns "")."""
-    from .. import models
+    from ... import models
     try:
         user = db.get(models.User, user_id)
     except Exception:  # noqa: BLE001 - keep the run alive on any lookup failure

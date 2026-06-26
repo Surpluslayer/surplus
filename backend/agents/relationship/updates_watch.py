@@ -22,8 +22,8 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from .. import models
-from . import exa
+from ... import models
+from .. import exa
 from .book import _llm_json          # shared Claude->JSON helper (+ tracing)
 from .relationship_watch import _emit  # writes the activity_update row
 

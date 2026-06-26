@@ -30,7 +30,7 @@ import json
 import re
 from typing import Optional
 
-from . import voice
+from .. import voice
 from .book import _llm_json
 from .drafting import _natural_action, compose_from_context
 
@@ -331,7 +331,7 @@ def pairwise_compare(baseline_path: str, candidate_path: str, verbose: bool = Tr
 
 if __name__ == "__main__":
     import argparse
-    from .. import env_loader
+    from ... import env_loader
     env_loader.load_env()
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", type=int, default=1)

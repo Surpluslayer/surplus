@@ -27,9 +27,9 @@ from sqlalchemy.orm import sessionmaker
 
 from backend import models
 from backend.db import Base
-from backend.agents import relationships as rel
+from backend.agents.relationship import relationships as rel
 from backend.agents import agent_loop
-from backend.agents import relationship_agent as ragent
+from backend.agents.relationship import relationship_agent as ragent
 from backend.agents import voice
 
 

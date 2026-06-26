@@ -15,8 +15,8 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.models import Base
 from backend import models
-from backend.agents import relationships as rel
-from backend.agents import relationship_agent as ragent
+from backend.agents.relationship import relationships as rel
+from backend.agents.relationship import relationship_agent as ragent
 
 from scripts import draft_smoke
 

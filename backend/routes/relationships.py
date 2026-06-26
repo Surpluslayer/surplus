@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from .. import billing_plans as bp
 from .. import models
-from ..agents import relationships
+from ..agents.relationship import relationships
 from ..auth import current_user
 from ..db import SessionLocal, get_db
 
@@ -186,7 +186,7 @@ def sync_email(
     import os
     if not getattr(user, "unipile_email_account_id", None):
         raise HTTPException(409, "no email account connected")
-    from ..agents.email_sync import sync_email_contacts
+    from ..agents.relationship.email_sync import sync_email_contacts
     dsn = (os.environ.get("UNIPILE_DSN", "") or "").strip().rstrip("/")
     if dsn and not dsn.startswith(("http://", "https://")):
         dsn = f"https://{dsn}"
@@ -239,7 +239,7 @@ def send_contact_email(
             raise HTTPException(
                 409, "connect your email in Integrations before sending")
 
-    from ..agents.send_flow import _assert_no_recent_send
+    from ..agents.relationship.send_flow import _assert_no_recent_send
     if not provider.dry_run:
         _assert_no_recent_send(db, prospect, channel="email")
 
@@ -254,7 +254,7 @@ def send_contact_email(
     reply_to = None
     if contact.email_thread_id and not provider.dry_run:
         try:
-            from ..agents.email_sync import thread_messages
+            from ..agents.relationship.email_sync import thread_messages
             dsn, api_key = _unipile_cfg()
             msgs = thread_messages(
                 dsn=dsn, api_key=api_key, account_id=email_account_id,
@@ -271,7 +271,7 @@ def send_contact_email(
             print(f"  [email.send] thread lookup failed, sending fresh: "
                   f"{type(exc).__name__}: {exc}")
 
-    from ..agents.email_sync import format_email_html
+    from ..agents.relationship.email_sync import format_email_html
     to_first = ((contact.name or prospect.name or "").split() or [""])[0]
     host_first = ((user.name or "").split() or [""])[0]
     res = provider.send_email(
@@ -337,7 +337,7 @@ def list_contact_email_threads(
         raise HTTPException(409, "no email address on file for this contact")
     acct = _email_channel_ready(user)
     dsn, api_key = _unipile_cfg()
-    from ..agents.email_sync import list_threads_for_address
+    from ..agents.relationship.email_sync import list_threads_for_address
     threads = list_threads_for_address(
         dsn=dsn, api_key=api_key, account_id=acct,
         address=contact.email.strip().lower(),
@@ -391,7 +391,7 @@ def import_conversations(
     """Seed the Book from the user's genuine LinkedIn DM conversations (people
     they actually replied to and had an active back-and-forth with). Idempotent
     -- re-runs only add new people. Uses the user's OWN connected account."""
-    from ..agents.relationships import import_conversation_contacts
+    from ..agents.relationship.relationships import import_conversation_contacts
     return import_conversation_contacts(db, user, want=max(1, min(want, 30)))
 
 
@@ -437,7 +437,7 @@ def set_contact_star(
 
         def _kick(cid: int):
             from ..db import SessionLocal
-            from ..agents.updates_engine import scrape_contact
+            from ..agents.relationship.updates_engine import scrape_contact
             sdb = SessionLocal()
             try:
                 c = sdb.get(models.Contact, cid)
@@ -487,7 +487,7 @@ def read_contact_email_thread(
         raise HTTPException(409, "no email thread linked for this contact")
     acct = _email_channel_ready(user)
     dsn, api_key = _unipile_cfg()
-    from ..agents.email_sync import thread_messages
+    from ..agents.relationship.email_sync import thread_messages
     msgs = thread_messages(
         dsn=dsn, api_key=api_key, account_id=acct,
         thread_id=contact.email_thread_id,
@@ -633,7 +633,7 @@ def relationship_chat(
     is sent here — the host approves a draft separately via the followup route,
     which is where the auto-send toggle is honored. Owner-scoped."""
     _enforce_relationship_quota(db, user)
-    from ..agents.relationship_agent import (
+    from ..agents.relationship.relationship_agent import (
         run_relationship_agent_concurrent as _run)
     res = _run(db, user.id, instruction=(body.message or "").strip())
     _record_relationship_usage(db, user, res)
@@ -703,7 +703,7 @@ def relationship_chat_stream(
     # surface as an SSE `error` frame after the connection is already open.
     _enforce_relationship_quota(db, user)
 
-    from ..agents.relationship_agent import (
+    from ..agents.relationship.relationship_agent import (
         run_relationship_agent_concurrent as _run)
 
     user_id = user.id
@@ -717,7 +717,7 @@ def relationship_chat_stream(
     stop = threading.Event()
 
     def _worker():
-        from ..agents.followup_scheduler import suggest_send_time
+        from ..agents.relationship.followup_scheduler import suggest_send_time
         db = SessionLocal()
         # One sensible default fire time for this batch; the card prefills its
         # picker with it and the host overrides freely.
@@ -820,7 +820,7 @@ def send_contact_followup(
                 "prospect_id": prospect.id, "message": text}
 
     # Toggle on: send through the same path the follow-up cron uses.
-    from ..agents.sender import send_and_log
+    from ..agents.relationship.sender import send_and_log
     from ..providers import get_provider
     try:
         res = send_and_log(
@@ -869,7 +869,7 @@ def schedule_contact_followup(
     queued for a manual send-now. We surface `auto_send_enabled` so the card can
     say 'will send automatically' vs 'queued for your confirmation'. An immediate
     'send now' is an explicit host action and always sends. Owner-scoped."""
-    from ..agents.followup_scheduler import pending_followup
+    from ..agents.relationship.followup_scheduler import pending_followup
 
     contact = _owned_contact(db, contact_id, user)
     text = (body.message or "").strip()
@@ -887,7 +887,7 @@ def schedule_contact_followup(
     want_email = (getattr(body, "channel", "") or "linkedin") == "email"
     if send_at is None or send_at <= now:
         if want_email:
-            from ..agents.sender import send_followup_email
+            from ..agents.relationship.sender import send_followup_email
             try:
                 res = send_followup_email(db, prospect, text)
             except ValueError as exc:
@@ -898,7 +898,7 @@ def schedule_contact_followup(
             return {"status": "sent", "contact_id": contact_id,
                     "prospect_id": prospect.id, "channel": "email",
                     "dry_run": res.dry_run}
-        from ..agents.sender import send_and_log
+        from ..agents.relationship.sender import send_and_log
         from ..providers import get_provider
         try:
             res = send_and_log(db, prospect, text, sent_state="follow_up_sent",

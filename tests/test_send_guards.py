@@ -24,7 +24,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend import models
 from backend.db import Base
-from backend.agents import send_flow
+from backend.agents.relationship import send_flow
 from backend.providers.base import AmbiguousSendError
 from backend.providers.unipile import UnipileProvider
 

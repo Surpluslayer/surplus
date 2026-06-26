@@ -18,7 +18,7 @@ attributes : tests pass a SimpleNamespace).
 """
 from __future__ import annotations
 
-from .. import config
+from ... import config
 
 _SENIORITY_RANK = {
     # Student sits just below New grad : someone still in school, often

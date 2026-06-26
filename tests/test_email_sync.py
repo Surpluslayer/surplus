@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend import models
 from backend.db import Base
-from backend.agents import email_sync as es
+from backend.agents.relationship import email_sync as es
 
 
 @pytest.fixture

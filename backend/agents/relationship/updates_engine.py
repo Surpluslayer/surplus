@@ -24,7 +24,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta
 
-from .. import models
+from ... import models
 from . import updates_watch
 from .relationship_watch import _emit, _changed, _now
 
@@ -252,7 +252,7 @@ def apply_posts(db, contact: models.Contact, posts: list[dict]) -> list[dict]:
 # --- the sweep (degradation lives here) ------------------------------------
 def _brightdata_enabled() -> bool:
     try:
-        from ..providers import brightdata
+        from ...providers import brightdata
         return brightdata.configured()
     except Exception:  # noqa: BLE001
         return False
@@ -264,7 +264,7 @@ def scrape_contact(db, contact) -> dict:
     Bright Data primary, Exa fallback; bounded to this one contact; fail-soft."""
     url = (getattr(contact, "linkedin_url", "") or "").strip()
     if _brightdata_enabled() and url:
-        from ..providers import brightdata
+        from ...providers import brightdata
         try:
             if brightdata.trigger_updates([url]):
                 contact.watched_at = _now()
@@ -291,7 +291,7 @@ def run_sweep(db, *, user_id: int | None = None, limit: int = 40) -> dict:
         return _record_sweep({"due": 0, "mode": "none"})
 
     if _brightdata_enabled():
-        from ..providers import brightdata
+        from ...providers import brightdata
         urls = [c.linkedin_url for c in contacts if (c.linkedin_url or "").strip()]
         triggered = False
         try:
@@ -355,7 +355,7 @@ def status() -> dict:
     """Cutover diagnostic: is Bright Data configured, what did the last sweep do
     (exa vs brightdata), and what did the last delivery parse."""
     try:
-        from ..providers import brightdata
+        from ...providers import brightdata
         bd = brightdata.status()
     except Exception as exc:  # noqa: BLE001
         bd = {"error": str(exc)}

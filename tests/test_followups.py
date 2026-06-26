@@ -26,7 +26,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend import models
-from backend.agents.followup_scheduler import (
+from backend.agents.relationship.followup_scheduler import (
     _last_sent_message,
     _user_message,
     cancel_pending_followups,

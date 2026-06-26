@@ -383,7 +383,7 @@ def updates_sweep() -> dict:
     frequent schedule never scrapes anyone beyond their tier; it only lowers the
     lag between 'became due' and 'checked'. Returns the tick status dict."""
     from backend.db import init_db
-    from backend.agents import updates_scheduler
+    from backend.agents.relationship import updates_scheduler
     from backend.providers import brightdata
 
     # Only take over as primary once Bright Data is configured in THIS (Modal)

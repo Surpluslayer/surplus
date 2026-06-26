@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .. import models
+from ... import models
 from .matcher import _adjacent, _AFFINITY
 
 

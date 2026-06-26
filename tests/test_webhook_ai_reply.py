@@ -23,7 +23,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend import models
-from backend.agents.reply_agent import ReplyDecision
+from backend.agents.relationship.reply_agent import ReplyDecision
 from backend.db import Base
 from backend.providers import get_provider, reset_provider_cache
 from backend.providers.base import CanonicalEvent

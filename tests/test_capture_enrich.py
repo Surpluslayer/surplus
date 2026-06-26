@@ -15,7 +15,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend import models
-from backend.agents import capture_enrich
+from backend.agents.relationship import capture_enrich
 from backend.db import Base
 from backend.providers import reset_provider_cache
 

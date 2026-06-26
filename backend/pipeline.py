@@ -24,8 +24,8 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from . import models, config
-from .agents.prospector import prospect
-from .agents.scorer import score_prospect, floating_threshold
+from .agents.events.prospector import prospect
+from .agents.events.scorer import score_prospect, floating_threshold
 from .agents.outreach import compose, run_outreach
 from .providers import get_provider, ProviderResult
 

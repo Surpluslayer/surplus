@@ -22,8 +22,8 @@ import json
 import os
 import time
 
-from . import llm
-from .sources import ALL_ADAPTERS, SourceAdapter
+from .. import llm
+from ..sources import ALL_ADAPTERS, SourceAdapter
 
 
 # ── ICP-keyed response cache ────────────────────────────────────────────────
@@ -114,7 +114,7 @@ async def _judge_all(candidates: list[dict], icp: dict) -> list[dict]:
     self-filters, the judge is a second pass). Failure surfaced via
     failure_log so the SPA can show the operator what happened.
     """
-    from . import failure_log
+    from .. import failure_log
     timeout = _judge_timeout()
     try:
         verdicts = await asyncio.wait_for(
@@ -179,7 +179,7 @@ async def prospect(
     adapters = adapters or ALL_ADAPTERS
     timeout = _adapter_timeout()
 
-    from . import failure_log
+    from .. import failure_log
 
     async def _bounded(adapter: SourceAdapter) -> list[dict]:
         # Each adapter gets its own wall-clock cap so one stuck call (often

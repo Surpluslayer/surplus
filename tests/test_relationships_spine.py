@@ -15,7 +15,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend import models
 from backend.db import Base
-from backend.agents import relationships as rel
+from backend.agents.relationship import relationships as rel
 from backend.routes import relationships as rel_route
 
 

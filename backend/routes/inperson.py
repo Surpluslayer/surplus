@@ -23,9 +23,9 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..agents import capture_enrich, relationships, resolver
+from ..agents.relationship import capture_enrich, relationships, resolver
 from ..agents.outreach import compose
-from ..agents.send_flow import route_and_send
+from ..agents.relationship.send_flow import route_and_send
 from ..auth import (
     current_user,
     get_owned_event,

@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
     # a daemon thread that periodically runs the tiered "what's new" sweep. It's
     # claim-guarded so multiple workers/replicas don't double-fire.
     try:
-        from .agents import updates_scheduler
+        from .agents.relationship import updates_scheduler
         updates_scheduler.start()
     except Exception as exc:  # noqa: BLE001
         print(f"  [startup] updates_scheduler.start failed: {exc}")

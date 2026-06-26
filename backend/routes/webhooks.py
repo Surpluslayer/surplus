@@ -21,12 +21,12 @@ from datetime import datetime, timezone
 
 from .. import models
 from ..db import get_db
-from ..agents import relationships
+from ..agents.relationship import relationships
 from ..agents.outreach import compose
-from ..agents.reply_agent import (
+from ..agents.relationship.reply_agent import (
     ReplyDecision, ThreadMessage, decide_reply, should_auto_send,
 )
-from ..agents.sender import send_and_log
+from ..agents.relationship.sender import send_and_log
 from ..providers import (
     get_provider,
     get_provider_for_prospect,
@@ -146,7 +146,7 @@ def _trigger_auto_dm(
     if not res.dry_run and res.state == "message_sent":
         # Auto-stage the follow-up the instant the post-accept DM lands, so the
         # host has a reviewable scheduled nudge without lifting a finger.
-        from ..agents.followup_scheduler import stage_followup
+        from ..agents.relationship.followup_scheduler import stage_followup
         stage_followup(db, prospect, commit=True)
     return {"state": res.state, "dry_run": res.dry_run, "error": res.error}
 
@@ -224,7 +224,7 @@ async def _handle(request: Request, db: Session, provider: LinkedInProvider) -> 
     if applied and prospect is not None and canonical.state == "message_replied":
         # They engaged : kill any pending scheduled follow-up so we never send
         # a "circling back" to someone who already replied.
-        from ..agents.followup_scheduler import cancel_pending_followups
+        from ..agents.relationship.followup_scheduler import cancel_pending_followups
         cancel_pending_followups(db, prospect.id, reason="replied")
         ai_reply = _handle_ai_reply(db, provider, prospect, canonical)
 
@@ -393,7 +393,7 @@ async def brightdata_webhook(request: Request, db: Session = Depends(get_db),
     a retry storm.
     """
     from ..providers import brightdata
-    from ..agents import updates_engine
+    from ..agents.relationship import updates_engine
 
     secret = brightdata.webhook_secret()
     if secret:

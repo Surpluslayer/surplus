@@ -13,7 +13,7 @@ Builders, founder-heavy room, hackathon with 4 specialists per team).
 from __future__ import annotations
 from types import SimpleNamespace
 
-from backend.agents.matcher import build_edges, form_groups
+from backend.agents.events.matcher import build_edges, form_groups
 from backend import config
 
 

@@ -26,10 +26,10 @@ import asyncio
 import os
 from typing import Any, Optional
 
-from ..matching.enrich import enrich_batch
-from ..matching.matrix import compute_matrix
-from ..matching.rubric import synthesize_rubric
-from ..matching.schema import EnrichedPerson, Person
+from ...matching.enrich import enrich_batch
+from ...matching.matrix import compute_matrix
+from ...matching.rubric import synthesize_rubric
+from ...matching.schema import EnrichedPerson, Person
 
 
 def library_available() -> bool:

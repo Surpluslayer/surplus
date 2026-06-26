@@ -1,7 +1,7 @@
 """Tests for agents/roi.py : tier mapping, ledger pricing, net ROI math."""
 from types import SimpleNamespace
 
-from backend.agents.roi import tier_of, settle, linkedin_outreach_stats
+from backend.agents.events.roi import tier_of, settle, linkedin_outreach_stats
 
 
 def _p(pid, score, side="Builds"):

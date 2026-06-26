@@ -10,7 +10,7 @@ import os
 import pytest
 from types import SimpleNamespace
 
-from backend.agents import prospector
+from backend.agents.events import prospector
 from backend.agents.exa import _build_query
 
 

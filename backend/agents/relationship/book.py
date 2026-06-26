@@ -50,7 +50,7 @@ def _record_llm(label: str, ms: float, ok: bool, detail: str = "") -> None:
     """Feed the in-process metrics store (monitor via /api/book/_status). Never
     let a metrics hiccup affect an LLM call."""
     try:
-        from .. import metrics
+        from ... import metrics
         metrics.record_llm(label, ms, ok, detail)
     except Exception:  # noqa: BLE001
         pass
@@ -66,7 +66,7 @@ def stream_text(system: str, user: str, *, max_tokens: int = 500,
     path). Never raises -- a mid-stream failure just ends the generator."""
     if not _anthropic_available():
         return
-    from . import llm, rategate
+    from .. import llm, rategate
     label = " ".join(system.split()[:4])[:32]
     t0 = time.monotonic()
     try:
@@ -128,7 +128,7 @@ def _llm_json(system: str, user: str, *, max_tokens: int = 700,
     every caller can fall back to its deterministic path. Never raises."""
     if not _anthropic_available():
         return None
-    from . import rategate
+    from .. import rategate
     # A short label from the system prompt's first words, so the trace can tell
     # health/update/ask/draft calls apart without threading a label param.
     label = " ".join(system.split()[:4])[:32]

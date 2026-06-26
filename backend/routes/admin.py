@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
 
 from .. import models
-from ..agents.sender import send_and_log
+from ..agents.relationship.sender import send_and_log
 from ..auth import _as_aware_utc
 from ..db import get_db
 from ..providers import (
@@ -191,7 +191,7 @@ def run_followups(
 
         try:
             if (getattr(row, "channel", "") or "linkedin") == "email":
-                from ..agents.sender import send_followup_email
+                from ..agents.relationship.sender import send_followup_email
                 res = send_followup_email(db, prospect, text)
             else:
                 res = send_and_log(

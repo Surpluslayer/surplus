@@ -74,7 +74,7 @@ def _claim(name: str, gap: float) -> bool:
     alike, exactly one concurrent caller's UPDATE matches the stale-row predicate,
     so only one worker/replica wins each interval. Returns True if WE won."""
     from sqlalchemy import text
-    from ..db import ENGINE
+    from ...db import ENGINE
     now = time.time()
     with ENGINE.begin() as conn:
         _ensure_claim_table(conn)
@@ -107,8 +107,8 @@ def _run_once() -> dict:
     # (so it still runs when the sweep is claimed elsewhere or finds nothing due).
     if _claim("demo_purge", _demo_purge_gap_seconds()):
         try:
-            from ..db import SessionLocal
-            from ..routes.demo import _cleanup_stale_demo_users
+            from ...db import SessionLocal
+            from ...routes.demo import _cleanup_stale_demo_users
             pdb = SessionLocal()
             try:
                 n = _cleanup_stale_demo_users(pdb, limit=200)
@@ -122,7 +122,7 @@ def _run_once() -> dict:
     if not _claim("updates_sweep", _gap_seconds()):
         _LAST_TICK = {"at": stamp, "ran": False, "reason": "not due / claimed elsewhere"}
         return _LAST_TICK
-    from ..db import SessionLocal
+    from ...db import SessionLocal
     from .updates_engine import run_sweep
     db = SessionLocal()
     try:

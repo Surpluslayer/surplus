@@ -13,8 +13,8 @@ import asyncio
 from . import models, config
 from .db import reset_db, SessionLocal
 from .pipeline import run_pipeline
-from .agents.matcher import build_edges, form_groups
-from .agents.roi import settle
+from .agents.events.matcher import build_edges, form_groups
+from .agents.events.roi import settle
 
 # headcount kept modest so the floating threshold actually floats against the
 # 20-person mock pool : see README. Production swaps in real, deep-pool adapters.

@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..auth import current_user, get_owned_event
 from ..db import get_db
-from ..agents.matcher import build_edges, form_groups
-from ..agents.sponsor_matcher import score_event_sponsors
+from ..agents.events.matcher import build_edges, form_groups
+from ..agents.events.sponsor_matcher import score_event_sponsors
 # Gap #1+#2+#3a: inbound applicants are bridged through this adapter so
 # matcher.py / roi.py see attendee-shaped objects without schema changes.
 from ..triage.matcher_adapter import is_inbound_event, run_inbound_match
@@ -269,7 +269,7 @@ def _sponsor_to_enriched_person(sponsor: models.Sponsor):
     path. buyer_profile fields become domains / conviction_themes / role
     so _profile_lines renders something meaningful."""
     from ..matching.schema import EnrichedPerson
-    from ..agents.sponsor_matcher import parse_buyer_profile
+    from ..agents.events.sponsor_matcher import parse_buyer_profile
     buyer = parse_buyer_profile(sponsor.buyer_profile)
     bio_parts: list[str] = [f"Sponsor : {sponsor.name}."]
     if sponsor.tier:
@@ -344,7 +344,7 @@ def explain_pair_endpoint(
     """
     import asyncio
     import json as _json
-    from ..agents import matcher_lib, pair_explainer
+    from ..agents.events import matcher_lib, pair_explainer
 
     ev = get_owned_event(event_id, user, db)
 

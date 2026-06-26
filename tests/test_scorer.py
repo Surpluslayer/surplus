@@ -1,7 +1,7 @@
 """Tests for agents/scorer.py : fit scoring + the floating threshold."""
 from types import SimpleNamespace
 
-from backend.agents.scorer import score_prospect, floating_threshold
+from backend.agents.events.scorer import score_prospect, floating_threshold
 from backend import config
 
 

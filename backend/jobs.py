@@ -243,7 +243,7 @@ def execute_crm_refresh(user_id: int, *, limit: int | None = None) -> dict:
     from .db import SessionLocal
     from . import models
     from .providers import get_preview_provider
-    from .agents.relationship_watch import refresh_user_crm
+    from .agents.relationship.relationship_watch import refresh_user_crm
 
     db = SessionLocal()
     try:

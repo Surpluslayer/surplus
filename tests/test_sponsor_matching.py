@@ -14,8 +14,8 @@ from sqlalchemy.orm import sessionmaker
 
 from backend import models, schemas
 from backend.db import Base
-from backend.agents import roi as roi_agent
-from backend.agents.sponsor_matcher import (
+from backend.agents.events import roi as roi_agent
+from backend.agents.events.sponsor_matcher import (
     parse_buyer_profile,
     score_event_sponsors,
     score_sponsor_vs_prospect,

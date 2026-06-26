@@ -24,7 +24,7 @@ this is a defensible placeholder.
 from __future__ import annotations
 from itertools import combinations
 
-from .. import config
+from ... import config
 
 # domains that count as "adjacent" for affinity edges
 _AFFINITY = {

@@ -15,7 +15,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend import models
-from backend.agents.reply_agent import (
+from backend.agents.relationship.reply_agent import (
     AUTO_SEND_CLASSES,
     ReplyDecision,
     ThreadMessage,

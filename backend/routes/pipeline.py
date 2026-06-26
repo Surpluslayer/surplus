@@ -27,7 +27,7 @@ from ..auth import (
 from ..db import get_db
 from ..pipeline import run_prospect, run_outreach_stage, run_pipeline
 from ..agents.outreach import compose
-from ..agents.prospector import prospect as run_discovery
+from ..agents.events.prospector import prospect as run_discovery
 from ..agents import llm
 from ..providers import get_provider_for_user, get_preview_provider
 
@@ -342,7 +342,7 @@ def outreach_preview(
 
 # Re-exported from the shared send helper : kept importable here because
 # /check-connections (below) and the historical call sites reference it.
-from ..agents.send_flow import _refresh_connection_status, route_and_send
+from ..agents.relationship.send_flow import _refresh_connection_status, route_and_send
 
 
 @router.post("/{event_id}/prospects/{prospect_id}/invite")
@@ -460,7 +460,7 @@ def send_direct_message(
     if not provider.dry_run and res.state == "message_sent":
         p.status = "contacted"
         # Stage a Gmail-style scheduled follow-up the host can review/reschedule.
-        from ..agents.followup_scheduler import stage_followup
+        from ..agents.relationship.followup_scheduler import stage_followup
         stage_followup(db, p, commit=False)
     db.commit()
 

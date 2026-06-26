@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from backend.agents import relationships as rel
+from backend.agents.relationship import relationships as rel
 
 
 def _dt(days_ago=0):

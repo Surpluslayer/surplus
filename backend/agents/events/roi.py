@@ -17,7 +17,7 @@ the rest of the pipeline run end to end.
 """
 from __future__ import annotations
 
-from .. import config
+from ... import config
 
 
 def tier_of(score: int) -> str:

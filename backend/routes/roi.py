@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..auth import current_user, get_owned_event
 from ..db import get_db
-from ..agents.roi import settle
+from ..agents.events.roi import settle
 # Gap #1+#2+#3a: inbound applicants bridged into the ROI shape via the
 # adapter, no schema or roi.py edits.
 from ..triage.matcher_adapter import is_inbound_event, run_inbound_roi

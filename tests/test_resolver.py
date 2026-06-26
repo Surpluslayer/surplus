@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.agents import resolver
+from backend.agents.relationship import resolver
 
 
 CANON = "https://www.linkedin.com/in/maya-rodriguez"

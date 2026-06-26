@@ -26,8 +26,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..agents import book as book_agent
-from ..agents import relationships as rel_agent
+from ..agents.relationship import book as book_agent
+from ..agents.relationship import relationships as rel_agent
 from ..auth import current_user
 from ..db import get_db
 
@@ -392,7 +392,7 @@ def draft(body: DraftIn, db: Session = Depends(get_db),
     engine = "shared"
     contact_orm = _find_contact_orm(db, user, body.contact_id)
     if contact_orm is not None:
-        from ..agents import drafting
+        from ..agents.relationship import drafting
         msg = drafting.compose_followup(
             db, user.id, contact_orm, reason=body.trigger, channel=body.channel)
     if msg is None:
@@ -431,7 +431,7 @@ def draft_stream(body: DraftIn, db: Session = Depends(get_db),
             wuser = wdb.query(models.User).get(user_id)
             orm = _find_contact_orm(wdb, wuser, cid)
             if orm is not None:
-                from ..agents import drafting
+                from ..agents.relationship import drafting
                 for chunk in drafting.compose_stream(wdb, user_id, orm,
                                                      reason=trigger, channel=channel):
                     streamed = True
@@ -503,7 +503,7 @@ def ask(body: AskIn, db: Session = Depends(get_db),
     jobs, idxs = jobs[:inline], idxs[:inline]
     _t = time.monotonic()
     if jobs:
-        from ..agents import drafting
+        from ..agents.relationship import drafting
         drafts = drafting.compose_batch(db, user.id, jobs, directive=q)
         for j, i in enumerate(idxs):
             d = drafts[j]
@@ -545,7 +545,7 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
 
     def work():
         from ..db import SessionLocal
-        from ..agents import drafting
+        from ..agents.relationship import drafting
         from concurrent.futures import ThreadPoolExecutor, as_completed
         wdb = SessionLocal()
         t0 = time.monotonic()
@@ -692,7 +692,7 @@ def run_updates_endpoint(user_id: Optional[int] = None, limit: int = 40,
     thread with its own session so the request returns immediately."""
     def _worker():
         from ..db import SessionLocal
-        from ..agents.updates_engine import run_sweep
+        from ..agents.relationship.updates_engine import run_sweep
         db = SessionLocal()
         try:
             res = run_sweep(db, user_id=user_id, limit=max(1, min(limit, 200)))
@@ -721,7 +721,7 @@ def draft_preview_endpoint(user_id: int, limit: int = 6,
              "https://event.surpluslayer.com/api/book/_draft-preview?user_id=171&limit=6" | jq
     """
     import concurrent.futures
-    from ..agents import drafting
+    from ..agents.relationship import drafting
     user = db.get(models.User, user_id)
     if user is None:
         raise HTTPException(404, "user not found")
@@ -766,7 +766,7 @@ def updates_status_endpoint(_: None = Depends(_require_admin_token)):
     """Cutover diagnostic: is Bright Data configured, what did the last sweep do
     (exa vs brightdata), and what fields did the last delivery parse. Token-gated,
     in-memory per replica — hit it right after a run to validate field-mapping."""
-    from ..agents.updates_engine import status
+    from ..agents.relationship.updates_engine import status
     return status()
 
 

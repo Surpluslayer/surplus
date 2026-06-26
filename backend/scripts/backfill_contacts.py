@@ -32,7 +32,7 @@ import argparse
 
 from ..db import SessionLocal, init_db
 from .. import models
-from ..agents import relationships
+from ..agents.relationship import relationships
 
 
 def _prospects_for_user(db, user_id: int):

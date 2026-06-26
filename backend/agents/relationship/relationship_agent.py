@@ -36,9 +36,9 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from . import relationships
-from . import voice
-from .agent_loop import DEFAULT_MODEL, _block_type, run_agent
-from ..providers.base import strip_em_dashes
+from .. import voice
+from ..agent_loop import DEFAULT_MODEL, _block_type, run_agent
+from ...providers.base import strip_em_dashes
 
 # How many contacts the agent may pull full history for in one run. A soft
 # guard on cost/latency : the survey tool returns everyone, but deep-diving
@@ -55,7 +55,7 @@ def _voice_context_block(db, user_id: int) -> str:
     the distilled <host_voice_profile> rules followed by the ground-truth
     <style_examples>. Used by both draft paths so each Sonnet draft gets the
     packaged voice, not just raw examples. DetachedInstance/lookup-safe."""
-    from .. import models
+    from ... import models
     try:
         user = db.get(models.User, user_id)
     except Exception:  # noqa: BLE001 - keep the run alive on any lookup failure
@@ -598,7 +598,7 @@ def _agent_client():
     global _AGENT_CLIENT
     if _AGENT_CLIENT is None:
         from anthropic import Anthropic
-        from .llm import _api_key
+        from ..llm import _api_key
         _AGENT_CLIENT = Anthropic(api_key=_api_key(), max_retries=2)
     return _AGENT_CLIENT
 
@@ -1059,9 +1059,9 @@ def run_relationship_agent_concurrent(
         if thread_id:
             try:
                 import os
-                from ..db import SessionLocal as _SL  # noqa: F401 (db given)
+                from ...db import SessionLocal as _SL  # noqa: F401 (db given)
                 from .email_sync import thread_messages
-                from .. import models as _m
+                from ... import models as _m
                 host = db.get(_m.User, user_id)
                 acct = getattr(host, "unipile_email_account_id", None)
                 dsn = (os.environ.get("UNIPILE_DSN", "") or "").strip().rstrip("/")

@@ -455,7 +455,7 @@ def fetch_interactions(db, prospect) -> list:
     tied to the prospect directly, plus those tied to its linked Contact (so a
     note logged against the durable person shows on every per-event timeline).
     Returns [] on any error — a broken read must never sink a timeline."""
-    from .. import models
+    from ... import models
     try:
         clauses = [models.RelationshipInteraction.prospect_id == prospect.id]
         contact_id = getattr(prospect, "contact_id", None)
@@ -476,8 +476,8 @@ def link_contact(db, prospect, owner_user_id: int):
     slug / email) is derivable — no fuzzy/name dedup. Returns the Contact, or
     None when there's no stable identity to key on (the Prospect simply stays
     contact-less, which every flow supports). Never raises."""
-    from .. import models
-    from ..triage.enrichment_cache import identity_keys
+    from ... import models
+    from ...triage.enrichment_cache import identity_keys
     try:
         if getattr(prospect, "contact_id", None) is not None:
             return db.get(models.Contact, prospect.contact_id)
@@ -526,9 +526,9 @@ def import_conversation_contacts(db, user, want: int = 15) -> dict:
     Creates/dedupes Contact rows keyed on the LinkedIn slug. Idempotent: re-runs
     only add genuinely new people. Returns a small status dict; never raises."""
     import os
-    from .. import models
-    from ..providers.unipile import UnipileProvider
-    from ..triage.enrichment_cache import identity_keys
+    from ... import models
+    from ...providers.unipile import UnipileProvider
+    from ...triage.enrichment_cache import identity_keys
 
     acct = _clean(getattr(user, "unipile_account_id", None))
     if not acct:
@@ -587,7 +587,7 @@ def add_note(db, prospect, owner_user_id: int, summary: str,
              title: str = "Note", visibility: str = "private"):
     """Record a manual note as a stored RelationshipInteraction, linking the
     Contact spine opportunistically. Returns the created row."""
-    from .. import models
+    from ... import models
     contact = link_contact(db, prospect, owner_user_id)
     vis = visibility if visibility in {"private", "team"} else "private"
     ri = models.RelationshipInteraction(
@@ -650,7 +650,7 @@ def list_contacts(db, user_id: int) -> list:
     relationship_summary) touches every one of these per prospect, so without
     this the page fires ~5 queries PER prospect (N+1) and a user with dozens of
     contacts waits tens of seconds. selectinload keeps it to ~5 queries total."""
-    from .. import models
+    from ... import models
     from sqlalchemy.orm import selectinload
     try:
         return (db.query(models.Contact)
@@ -675,7 +675,7 @@ def fetch_contact_interactions(db, contact) -> list:
     linked per-event Prospect rows (prospect_id). We union both and de-dup by
     interaction id, so a contact-scoped note shows up once — not once per linked
     Prospect. Returns [] on any error."""
-    from .. import models
+    from ... import models
     from sqlalchemy import or_
     try:
         prospect_ids = [p.id for p in (getattr(contact, "prospects", None) or [])]
@@ -711,7 +711,7 @@ def prefetch_interactions_by_prospect(db, contacts) -> dict:
     Returns {prospect_id: [RelationshipInteraction, ...]}. Pass the result into
     contact_summary/contact_events as `interactions_by_prospect`. [] on error so
     a broken read still degrades to an empty timeline, never a 500."""
-    from .. import models
+    from ... import models
     from sqlalchemy import or_
     prospects = [p for c in contacts
                  for p in (getattr(c, "prospects", None) or [])]
@@ -763,7 +763,7 @@ def fetch_activity_updates(db, contact) -> list:
     'what's new about them' the relationship-watch poller emits (job changes,
     profile edits, new posts). Keyed on contact_id (the poller never sets a
     prospect_id). Returns [] on any error so a broken read never sinks the card."""
-    from .. import models
+    from ... import models
     try:
         return (db.query(models.RelationshipInteraction)
                   .filter(models.RelationshipInteraction.contact_id == contact.id)
@@ -778,7 +778,7 @@ def prefetch_activity_updates_by_contact(db, contacts) -> dict:
     """Batch fetch_activity_updates for a whole contacts list in ONE query, so
     the CRM list view surfaces each contact's freshest update without an N+1.
     Returns {contact_id: [activity_update rows, newest first]}."""
-    from .. import models
+    from ... import models
     contact_ids = [c.id for c in contacts if getattr(c, "id", None) is not None]
     if not contact_ids:
         return {}
