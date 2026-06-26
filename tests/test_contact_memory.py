@@ -100,6 +100,35 @@ def test_updates_engine_change_upserts_state_facts(db):
     assert company[0].source == "linkedin"
 
 
+def test_channel_preference_picks_most_recent_inbound(db, monkeypatch):
+    """The behavioral writer learns which channel a contact responds on from
+    their inbound messages: the most recent one wins. Stored as a META fact."""
+    from backend.agents.relationship import behavioral
+    u, c = _contact(db)
+    thread = [
+        {"when": "2026-06-01", "who": "them", "channel": "linkedin", "text": "hi"},
+        {"when": "2026-06-10", "who": "them", "channel": "whatsapp", "text": "yo"},
+        {"when": "2026-06-20", "who": "host", "channel": "email", "text": "hey"},
+    ]
+    monkeypatch.setattr(behavioral, "contact_timeline", lambda db, c: [])
+    monkeypatch.setattr(behavioral, "_thread_from_timeline", lambda tl: thread)
+    ch = behavioral.derive_channel_preference(db, c, commit=True)
+    assert ch == "whatsapp"       # most recent INBOUND (host's email doesn't count)
+    assert cm.get_facts(db, c.id, key="channel_preference")[0].value == "whatsapp"
+
+
+def test_channel_preference_is_meta_not_grounded(db):
+    """META facts (how/where to reach them) are stored + readable but never
+    surfaced into draft grounding -- you act on them, you don't mention them."""
+    u, c = _contact(db)
+    cm.upsert_fact(db, u.id, c.id, "channel_preference", "whatsapp", source="behavior")
+    cm.upsert_fact(db, u.id, c.id, "based_in", "NYC", source="linkedin")
+    lines, prov = cm.draft_grounding(db, c.id)
+    assert "based in NYC" in lines                       # attribute IS grounded
+    assert all("whatsapp" not in ln for ln in lines)     # META is NOT grounded
+    assert "channel_preference" not in {p["key"] for p in prov}
+
+
 def test_due_date_hook_is_stored(db):
     """The time-trigger hook is just a stored column for now (no engine yet)."""
     from datetime import datetime, timezone

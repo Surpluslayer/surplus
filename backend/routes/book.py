@@ -731,6 +731,10 @@ def draft_preview_endpoint(user_id: int, limit: int = 6,
     # DB reads serial (session not thread-safe); the LLM composes fan out.
     ctxs = [drafting.build_context(db, user_id, c, voice_block, channel="linkedin")
             for c in contacts]
+    # ALL store facts per contact (incl. META like channel_preference, which the
+    # draft grounding excludes) -- gathered serially here, read in the fan-out.
+    from ..agents.relationship import contact_memory as _cm
+    store_all = [_cm.get_facts(db, c.id) for c in contacts]
 
     def _row(i: int) -> dict:
         ctx = ctxs[i]
@@ -747,16 +751,17 @@ def draft_preview_endpoint(user_id: int, limit: int = 6,
             "facts": {k: facts.get(k) for k in
                       ("met_at", "next_step", "latest_update", "stage",
                        "relationship_types")},
-            # Knowledge-store facts that reached this draft, each tagged with its
-            # source + age + mode -- so we can SEE what context a draft got and
-            # from where (the legibility wire).
+            # EVERY knowledge-store fact for this contact, tagged with source +
+            # age + mode -- so we can SEE what's stored and what reached the draft.
+            # `grounded` = surfaced into the draft; META facts (channel_preference)
+            # are stored + visible but not grounded.
             "store_facts": [
-                {"key": p["key"], "value": p["value"], "source": p["source"],
-                 "mode": p["mode"],
-                 "observed_at": (p["observed_at"].isoformat()
-                                 if hasattr(p.get("observed_at"), "isoformat")
-                                 else p.get("observed_at"))}
-                for p in (ctx.get("store_provenance") or [])
+                {"key": f.key, "value": f.value, "source": f.source,
+                 "confidence": f.confidence,
+                 "grounded": f.key in {p["key"] for p in (ctx.get("store_provenance") or [])},
+                 "observed_at": (f.observed_at.isoformat()
+                                 if hasattr(f.observed_at, "isoformat") else None)}
+                for f in store_all[i]
             ],
             "has_prior_thread": bool(ctx.get("prior")),
             "draft": (d or {}).get("body"),

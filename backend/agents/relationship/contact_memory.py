@@ -63,6 +63,9 @@ def upsert_fact(
 # double up. The store still HOLDS them (for provenance + future readers); we just
 # don't re-ground them.
 _SHOWN_ELSEWHERE = {"company", "title", "role", "headline"}
+# META facts inform HOW / WHERE to reach someone (channel preference, register),
+# not WHAT to say -- so they're stored + readable but never grounded into a draft.
+_META_KEYS = {"channel_preference", "register", "avg_response_latency"}
 # How a fact key reads as a grounding clause. Unknown keys fall back to "key: value".
 _KEY_PHRASES = {
     "based_in": "based in {v}",
@@ -91,7 +94,7 @@ def draft_grounding(db, contact_id: int) -> tuple[list[str], list[dict]]:
     prov: list[dict] = []
     for r in rows:
         v = (r.value or "").strip()
-        if not v or r.key in _SHOWN_ELSEWHERE:
+        if not v or r.key in _SHOWN_ELSEWHERE or r.key in _META_KEYS:
             continue
         phrase = _KEY_PHRASES.get(r.key, "{k}: {v}").format(
             k=r.key.replace("_", " "), v=v)

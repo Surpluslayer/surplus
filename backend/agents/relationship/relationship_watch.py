@@ -178,6 +178,13 @@ def refresh_contact(db: Session, contact: models.Contact, provider) -> list[dict
     contact.seen_post_ids = json.dumps(sorted(seen))
     contact.watched_at = _now()
     contact.watch_error = None
+    # Distill a behavioral signal off the stored timeline (which channel they
+    # respond on) into the fact store. Best-effort, off the draft path.
+    try:
+        from .behavioral import derive_channel_preference
+        derive_channel_preference(db, contact, commit=False)
+    except Exception:  # noqa: BLE001 - derived signal must never break the poll
+        pass
     db.commit()
     return changes
 
