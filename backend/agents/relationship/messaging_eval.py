@@ -32,7 +32,7 @@ from typing import Optional
 
 from .. import voice
 from .book import _llm_json
-from .drafting import _natural_action, compose_from_context
+from .drafting import _natural_action, compose_from_context, Intent
 
 # ── the scenario set ─────────────────────────────────────────────────────────
 # Each case is a self-contained context (synthetic, so the eval is reproducible
@@ -131,6 +131,43 @@ _CASES = [
         "prior": [], "reason": "just met them tonight",
         "expect": "reference the meeting; warm, no thread to continue",
     },
+    # ── REPLY-path cases : the safety net for collapsing reply_agent's drafter
+    # onto the composer. Each is an INBOUND message the composer must REPLY to
+    # (intent=reply). reply_agent keeps the CLASSIFICATION; these prove the
+    # composer can do the DRAFTING half it currently duplicates.
+    {
+        "id": "reply_clarifying",
+        "voice": _CASUAL_VOICE,
+        "name": "Aisha Khan", "role": "Founder", "company": "Loop",
+        "facts": {"met_at": "SaaStr"},
+        "prior": [{"when": "2026-06-25", "who": "them", "channel": "linkedin",
+                   "text": "Sounds great! Quick q, is the dinner Tuesday or Wednesday?"}],
+        "reason": "reply", "intent": {"kind": "reply",
+                                      "objective": "answer their logistics question directly"},
+        "expect": "answer the question directly (which day), warm + brief, no deflection",
+    },
+    {
+        "id": "reply_scheduling",
+        "voice": _CASUAL_VOICE,
+        "name": "Marco Diaz", "role": "Partner", "company": "Initialized",
+        "facts": {"next_step": "set up a call"},
+        "prior": [{"when": "2026-06-25", "who": "them", "channel": "linkedin",
+                   "text": "Yeah let's chat. Does Thursday afternoon work for you?"}],
+        "reason": "reply", "intent": {"kind": "reply",
+                                      "objective": "confirm/propose a concrete time"},
+        "expect": "engage the scheduling: confirm Thursday or propose a concrete slot",
+    },
+    {
+        "id": "reply_declining_gracious",
+        "voice": _CASUAL_VOICE,
+        "name": "Lena Park", "role": "VP Eng", "company": "Stripe",
+        "facts": {"met_at": "an SF dinner"},
+        "prior": [{"when": "2026-06-25", "who": "them", "channel": "linkedin",
+                   "text": "Appreciate it but I'm slammed this quarter, gotta pass for now."}],
+        "reason": "reply", "intent": {"kind": "reply",
+                                      "objective": "respond graciously, leave the door open, zero pressure"},
+        "expect": "gracious, no push, leave the door open for later; do NOT re-pitch",
+    },
 ]
 
 
@@ -210,7 +247,13 @@ def _eval_case(case: dict) -> dict:
         "voice_block": _vb(case.get("voice") or []),
     }
     move = _natural_action(ctx)
-    out = compose_from_context(ctx, case.get("reason") or "following up", "linkedin")
+    # Optional explicit Intent (e.g. the consolidation's reply path): {kind,
+    # objective}. Absent -> the composer falls back to _natural_action (the
+    # current behavior for every existing case).
+    ci = case.get("intent")
+    intent = Intent(kind=ci.get("kind", ""), objective=ci.get("objective", "")) if ci else None
+    out = compose_from_context(ctx, case.get("reason") or "following up",
+                               "linkedin", intent=intent)
     draft = (out or {}).get("body") or ""
     gates = _gates(draft)
     scores = _judge(case, draft) if draft else {}
