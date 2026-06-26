@@ -613,23 +613,6 @@ def relationship_updates(
     return {"count": len(items), "updates": items}
 
 
-@router.post("/agent/run")
-def run_relationship_agent(
-    db: Session = Depends(get_db),
-    user: models.User = Depends(current_user),
-):
-    """Run the propose-only relationship agent over the caller's own contact
-    spine. The agent loops — surveys contacts, reads histories, and stages
-    next-step / draft-message proposals — but NEVER sends or writes: it
-    returns suggestions for the host to approve. Owner-scoped (it only ever
-    sees this user's contacts)."""
-    _enforce_relationship_quota(db, user)
-    from ..agents.relationship_agent import run_relationship_agent as _run
-    res = _run(db, user.id)
-    _record_relationship_usage(db, user, res)
-    return res.as_dict()
-
-
 class ChatIn(BaseModel):
     """One turn from the host's follow-up chat. `message` is the host's ask
     ('who should I follow up with?', 'draft a ping to anyone at Stripe')."""

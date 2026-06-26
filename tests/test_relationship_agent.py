@@ -177,129 +177,35 @@ def test_loop_unknown_tool_is_reported_not_fatal():
 
 # ── relationship agent (propose-only) ─────────────────────────────────────
 
-def test_agent_empty_spine_short_circuits(db):
-    """No contacts -> no LLM call at all, friendly summary."""
-    u = _user(db)
-    res = ragent.run_relationship_agent(db, u.id, client=ScriptedClient([]))
-    assert res.stop_reason == "empty"
-    assert res.contacts_seen == 0
-    assert res.proposals == []
-
-
-def test_agent_stages_proposals_never_sends(db):
-    """The agent surveys, reads a contact, and stages a next-step + a draft.
-    Critical safety assertion: NO OutreachLog row is written (nothing sent)
-    and proposals are returned for human approval."""
-    u = _user(db)
-    ev = _event(db, u)
-    # A stale contact: captured 40 days ago, never touched since.
-    old = datetime.now(timezone.utc) - timedelta(days=40)
-    p = _prospect(db, ev, captured_at=old)
-    c = rel.link_contact(db, p, u.id)
-
-    # Roster is inline in the prompt, so the agent goes straight to get_contact.
-    script = [
-        ("tool_use", [_tool_use("get_contact", "t2", contact_id=c.id)]),
-        ("tool_use", [
-            _tool_use("propose_next_step", "t3", contact_id=c.id,
-                      next_step="Send a warm re-intro referencing the Seed Dinner.",
-                      rationale="40 days cold, strong first meeting."),
-            _tool_use("draft_message", "t4", contact_id=c.id,
-                      message="Hey Maya — great chatting at the Seed Dinner. "
-                              "Would love to reconnect.",
-                      rationale="Grounded in the shared Seed Dinner event."),
-        ]),
-        ("end_turn", [_text("Found 1 stale contact (Maya) and proposed a re-intro.")]),
-    ]
-    res = ragent.run_relationship_agent(db, u.id, client=ScriptedClient(script))
-
-    assert res.error is None
-    assert res.contacts_seen == 1
-    assert len(res.proposals) == 2
-    kinds = {pr.kind for pr in res.proposals}
-    assert kinds == {"next_step", "draft_message"}
-    # Both proposals resolved the real contact name (not invented).
-    assert all(pr.contact_name == "Maya Rodriguez" for pr in res.proposals)
-    # The staged draft references the real shared event, not a hallucination.
-    drafts = [pr for pr in res.proposals if pr.kind == "draft_message"]
-    assert "Seed Dinner" in drafts[0].text
-    assert "Maya" in res.summary
-    # SAFETY: nothing was sent.
-    assert db.query(models.OutreachLog).count() == 0
-
-
-def test_on_proposal_fires_for_each_staged_proposal(db):
-    """The streaming chat route relies on on_proposal firing the instant each
-    proposal is staged (so cards reveal one-by-one). Verify it's called once
-    per staged proposal, in order, with the resolved Proposal."""
-    u = _user(db)
-    ev = _event(db, u)
-    p = _prospect(db, ev, captured_at=datetime.now(timezone.utc) - timedelta(days=40))
-    c = rel.link_contact(db, p, u.id)
-
-    script = [
-        ("tool_use", [_tool_use("get_contact", "t2", contact_id=c.id)]),
-        ("tool_use", [
-            _tool_use("propose_next_step", "t3", contact_id=c.id,
-                      next_step="Re-intro.", rationale="cold"),
-            _tool_use("draft_message", "t4", contact_id=c.id,
-                      message="Hey Maya, great chatting.", rationale="grounded"),
-        ]),
-        ("end_turn", [_text("done")]),
-    ]
-    seen = []
-    res = ragent.run_relationship_agent(
-        db, u.id, client=ScriptedClient(script), on_proposal=lambda pr: seen.append(pr))
-
-    # Fired once per staged proposal, in staging order, with real names.
-    assert [pr.kind for pr in seen] == ["next_step", "draft_message"]
-    assert seen == res.proposals
-    assert all(pr.contact_name == "Maya Rodriguez" for pr in seen)
-
-
 def test_agent_proposal_for_unknown_contact_is_rejected(db):
-    """If the model proposes against a contact_id that isn't the host's, the
-    tool refuses (owner-scoping) and no proposal is staged."""
+    """Owner-scoping (concurrent): if triage names a contact_id that isn't the
+    host's, the run never drafts or stages a proposal for that invented id. We
+    name a real contact alongside an invented one and assert only the real one
+    is staged; nothing is sent."""
     u = _user(db)
     ev = _event(db, u)
-    p = _prospect(db, ev)
-    rel.link_contact(db, p, u.id)
+    a = _stale_contact(db, u, ev, name="Maya Rodriguez", ident="maya")
 
-    script = [
-        ("tool_use", [_tool_use("propose_next_step", "t2", contact_id=99999,
-                                next_step="x")]),
-        ("end_turn", [_text("done")]),
-    ]
-    res = ragent.run_relationship_agent(db, u.id, client=ScriptedClient(script))
-    # Owner-scoping: the invented contact_id never resolved, so nothing staged.
-    assert res.proposals == []
+    triage = [_tool_use("select_followups", "tg",
+                        selections=[{"contact_id": a.id, "reason": "40d cold",
+                                     "angle": "Seed Dinner"},
+                                    {"contact_id": 99999, "reason": "invented",
+                                     "angle": "not owned"}],
+                        closing="Drafted Maya.")]
+    drafts = {a.id: [_tool_use("draft_message", "da", contact_id=a.id,
+                              message="Hey Maya, great chatting.",
+                              rationale="40d cold")]}
+    client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
+
+    res = ragent.run_relationship_agent_concurrent(db, u.id, client=client)
     assert res.error is None
-
-
-def test_agent_get_contact_returns_real_history(db):
-    """The get_contact tool exposes the deterministic spine, so the agent
-    reasons over real events/timeline (not hallucinated)."""
-    u = _user(db)
-    ev = _event(db, u, label="Founders Mixer")
-    p = _prospect(db, ev)
-    c = rel.link_contact(db, p, u.id)
-
-    captured = {}
-
-    class Capturing(ScriptedClient):
-        def create(self, **kwargs):
-            return super().create(**kwargs)
-
-    # Drive one get_contact and capture the tool result via the run record.
-    script = [
-        ("tool_use", [_tool_use("get_contact", "t1", contact_id=c.id)]),
-        ("end_turn", [_text("ok")]),
-    ]
-    res = ragent.run_relationship_agent(db, u.id, client=Capturing(script))
-    assert res.error is None
-    # The agent ran one get_contact; its result carried the real event title.
-    # (We assert indirectly: the run completed and saw the one contact.)
-    assert res.contacts_seen == 1
+    # The invented, non-owned id was never staged (owner-scoping rejects it).
+    assert 99999 not in {pr.contact_id for pr in res.proposals}
+    # And it was filtered BEFORE the draft fan-out, not just absent from the mock:
+    # exactly one draft call went out (the real contact), none for 99999.
+    assert len(client.draft_calls()) == 1
+    # SAFETY: nothing sent.
+    assert db.query(models.OutreachLog).count() == 0
 
 
 def test_thread_from_timeline_excludes_private_note():
@@ -592,22 +498,26 @@ def test_strip_dashes_removes_em_and_en_dashes():
 
 
 def test_draft_message_sanitizes_em_dash(db):
-    """End-to-end: even if the model emits an em dash, the staged proposal is
-    clean. Proves the guard sits on the tool impl, not just the prompt."""
+    """End-to-end (concurrent): even if the model emits em/en dashes in the
+    drafted message AND its rationale, the staged proposal is clean. Proves the
+    guard sits on the tool impl, not just the prompt."""
     u = _user(db)
     ev = _event(db, u)
-    p = _prospect(db, ev)
-    c = rel.link_contact(db, p, u.id)
-    script = [
-        ("tool_use", [_tool_use("draft_message", "t1", contact_id=c.id,
-                                message="Hey Maya — bumping this — still keen?",
-                                rationale="Continues the thread — light nudge.")]),
-        ("end_turn", [_text("done")]),
-    ]
-    res = ragent.run_relationship_agent(db, u.id, client=ScriptedClient(script))
-    draft = next(pr for pr in res.proposals if pr.kind == "draft_message")
-    assert "—" not in draft.text and "–" not in draft.text
-    assert "—" not in draft.rationale
+    c = _stale_contact(db, u, ev, name="Maya Rodriguez", ident="maya")
+
+    triage = [_tool_use("select_followups", "tg",
+                        selections=[{"contact_id": c.id, "reason": "40d cold",
+                                     "angle": "reconnect"}],
+                        closing="Drafted Maya.")]
+    drafts = {c.id: [_tool_use("draft_message", "da", contact_id=c.id,
+                              message="Hey Maya — bumping this — still keen?",
+                              rationale="Continues the thread — light nudge.")]}
+    client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
+
+    res = ragent.run_relationship_agent_concurrent(db, u.id, client=client)
+    pr = next(p for p in res.proposals if p.kind == "draft_message")
+    assert "—" not in pr.text and "–" not in pr.text
+    assert "—" not in pr.rationale
 
 
 def test_host_voice_examples_resolves_from_user_row(db):
@@ -641,20 +551,31 @@ def test_voice_block_empty_when_no_examples():
 
 
 def test_agent_injects_host_voice_into_system_prompt(db):
-    """End-to-end: when the host has voice_examples, the style block reaches the
-    model's system prompt — so follow-ups are written in the host's voice."""
+    """End-to-end (concurrent): when the host has voice_examples, the style block
+    reaches the DRAFT call's system prompt — so follow-ups are written in the
+    host's voice."""
     u = _user(db)
     u.voice_examples = json.dumps(["yo!! so good to finally meet you haha"])
     db.commit()
     ev = _event(db, u)
-    p = _prospect(db, ev)
-    rel.link_contact(db, p, u.id)
+    c = _stale_contact(db, u, ev, name="Maya Rodriguez", ident="maya")
 
-    client = ScriptedClient([
-        ("end_turn", [_text("done")]),
-    ])
-    ragent.run_relationship_agent(db, u.id, client=client)
-    sent_system = client.calls[0]["system"][0]["text"]
+    triage = [_tool_use("select_followups", "tg",
+                        selections=[{"contact_id": c.id, "reason": "40d cold",
+                                     "angle": "reconnect"}],
+                        closing="Drafted Maya.")]
+    drafts = {c.id: [_tool_use("draft_message", "da", contact_id=c.id,
+                              message="Hey Maya, reconnecting.", rationale="cold")]}
+    client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
+
+    ragent.run_relationship_agent_concurrent(db, u.id, client=client)
+    # The draft call's system can be a string or a list of blocks; flatten it.
+    sys = client.draft_calls()[0]["system"]
+    if isinstance(sys, list):
+        sent_system = "\n".join(
+            b.get("text", "") for b in sys if isinstance(b, dict))
+    else:
+        sent_system = sys
     assert "<style_examples>" in sent_system
     assert "yo!! so good to finally meet you haha" in sent_system
 
@@ -698,6 +619,32 @@ def _list_contacts_payload(client) -> list[dict]:
     return []
 
 
+def _triage_roster_payload(client) -> list[dict]:
+    """Recover the contact roster the CONCURRENT triage call saw from its prompt.
+
+    The concurrent agent injects the same _roster() rows inline into the triage
+    prompt (marker: 'one row per person:\\n\\n[...]'), so we parse the JSON list
+    back out of the recorded triage call. Same dict shape _roster() produced."""
+    marker = "one row per person:\n\n"
+    for call in client.triage_calls():
+        for m in call.get("messages", []):
+            text = _message_text(m)
+            i = text.find(marker)
+            if i == -1:
+                continue
+            after = text[i + len(marker):]
+            j = after.find("[")
+            if j == -1:
+                continue
+            try:
+                rows, _ = json.JSONDecoder().raw_decode(after[j:])
+            except ValueError:
+                continue
+            if isinstance(rows, list) and rows and "contact_id" in rows[0]:
+                return rows
+    return []
+
+
 def test_who_marked_follow_up_is_surfaced(db):
     """The capture-phase `contact_type='follow_up'` marker — the host's explicit
     'circle back to them' intent set when they met — must reach the agent's
@@ -711,14 +658,15 @@ def test_who_marked_follow_up_is_surfaced(db):
     db.commit()
     c = rel.link_contact(db, p, u.id)
 
-    # The roster is injected into the kickoff prompt, so the model needs no
-    # survey turn — it can finish immediately and the roster is still recoverable.
-    client = ScriptedClient([
-        ("end_turn", [_text("done")]),
-    ])
-    res = ragent.run_relationship_agent(db, u.id, client=client)
+    # The roster is injected into the concurrent TRIAGE prompt. Empty selection
+    # => one triage call, no drafts; the roster is still recoverable from it.
+    client = ConcurrentScriptedClient(
+        triage=[_tool_use("select_followups", "tg", selections=[],
+                          closing="none")],
+        drafts={})
+    res = ragent.run_relationship_agent_concurrent(db, u.id, client=client)
     assert res.error is None
-    rows = _list_contacts_payload(client)
+    rows = _triage_roster_payload(client)
     row = next(r for r in rows if r["contact_id"] == c.id)
     assert row["marked_follow_up"] is True
     assert "follow_up" in row["contact_types"]
@@ -737,10 +685,13 @@ def test_roster_row_carries_host_promise_open_loop(db):
     _outreach(db, p, "message_sent", days_ago=3,
               body="Loved the chat earlier. I'll send you the deck next week")
 
-    client = ScriptedClient([("end_turn", [_text("done")])])
-    res = ragent.run_relationship_agent(db, u.id, client=client)
+    client = ConcurrentScriptedClient(
+        triage=[_tool_use("select_followups", "tg", selections=[],
+                          closing="none")],
+        drafts={})
+    res = ragent.run_relationship_agent_concurrent(db, u.id, client=client)
     assert res.error is None
-    rows = _list_contacts_payload(client)
+    rows = _triage_roster_payload(client)
     row = next(r for r in rows if r["contact_id"] == c.id)
     assert row["host_open_promise"] is True
     assert row["open_loop_detected"] is True
@@ -761,12 +712,13 @@ def test_who_non_follow_up_tag_is_not_marked(db):
     db.commit()
     c = rel.link_contact(db, p, u.id)
 
-    client = ScriptedClient([
-        ("end_turn", [_text("done")]),
-    ])
-    res = ragent.run_relationship_agent(db, u.id, client=client)
+    client = ConcurrentScriptedClient(
+        triage=[_tool_use("select_followups", "tg", selections=[],
+                          closing="none")],
+        drafts={})
+    res = ragent.run_relationship_agent_concurrent(db, u.id, client=client)
     assert res.error is None
-    rows = _list_contacts_payload(client)
+    rows = _triage_roster_payload(client)
     row = next(r for r in rows if r["contact_id"] == c.id)
     assert row["marked_follow_up"] is False
     assert row["contact_types"] == ["sales"]
@@ -791,31 +743,6 @@ def test_who_replied_then_cold_is_never_stale_KNOWN_GAP(db):
 
 
 # ── latency structure: roster injection + thread caching ──────────────────────
-
-def test_roster_injected_inline_and_no_list_contacts_tool(db):
-    """The survey is handed to the model inline (one fewer sequential LLM call
-    before the first card) instead of via a `list_contacts` tool round-trip. So:
-      - the roster is recoverable from the kickoff prompt, AND
-      - `list_contacts` is no longer offered as a tool at all."""
-    u = _user(db)
-    ev = _event(db, u)
-    p = _prospect(db, ev,
-                  captured_at=datetime.now(timezone.utc) - timedelta(days=20))
-    c = rel.link_contact(db, p, u.id)
-
-    client = ScriptedClient([("end_turn", [_text("done")])])
-    res = ragent.run_relationship_agent(db, u.id, client=client)
-    assert res.error is None
-
-    # Roster reached the model inline, with the real contact in it.
-    rows = _list_contacts_payload(client)
-    assert any(r["contact_id"] == c.id for r in rows)
-
-    # list_contacts is not a tool the model can call anymore.
-    tool_names = {t["name"] for t in client.calls[0]["tools"]}
-    assert "list_contacts" not in tool_names
-    assert "get_contact" in tool_names
-
 
 def test_mark_thread_cache_moves_single_breakpoint_to_tail():
     """Incremental prompt caching: exactly one cache breakpoint sits at the end

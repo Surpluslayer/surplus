@@ -61,8 +61,13 @@ def _fake_result(*, drafts=0, next_steps=0, contacts_seen=0):
 def _stub_agent(monkeypatch, result):
     def fake_run(db, user_id, **kw):
         return result
-    monkeypatch.setattr(ragent, "run_relationship_agent", fake_run)
     monkeypatch.setattr(ragent, "run_relationship_agent_concurrent", fake_run)
+
+
+def _run_chat(db, user):
+    return rel_route.relationship_chat(
+        body=rel_route.ChatIn(message="who should I follow up with?"),
+        db=db, user=user)
 
 
 # ── hard block at the limit ──────────────────────────────────────────────────
@@ -71,7 +76,7 @@ def test_over_draft_limit_returns_402(db, monkeypatch):
     _stub_agent(monkeypatch, _fake_result(drafts=1, contacts_seen=1))
     user = _user(db, drafts_used_this_period=5)  # free limit == 5
     with pytest.raises(HTTPException) as ei:
-        rel_route.run_relationship_agent(db=db, user=user)
+        _run_chat(db, user)
     assert ei.value.status_code == 402
     assert ei.value.detail["error"] == "LIMIT_REACHED"
     assert ei.value.detail["redirectTo"] == "/billing"
@@ -96,7 +101,7 @@ def test_demo_user_bypasses_limit(db, monkeypatch):
     user = _user(db, email="visitor@demo.surpluslayer.com",
                  drafts_used_this_period=9999,
                  contacts_scanned_this_period=9999)
-    out = rel_route.run_relationship_agent(db=db, user=user)  # no raise
+    out = _run_chat(db, user)  # no raise
     assert out["summary"] == "ok"
 
 
@@ -106,7 +111,7 @@ def test_usage_recorded_per_card_and_per_contact(db, monkeypatch):
     # 2 drafts + 1 next_step => only the 2 DRAFT cards count; 7 contacts scanned.
     _stub_agent(monkeypatch, _fake_result(drafts=2, next_steps=1, contacts_seen=7))
     user = _user(db, drafts_used_this_period=0, contacts_scanned_this_period=0)
-    rel_route.run_relationship_agent(db=db, user=user)
+    _run_chat(db, user)
     db.refresh(user)
     assert user.drafts_used_this_period == 2
     assert user.contacts_scanned_this_period == 7
@@ -115,13 +120,13 @@ def test_usage_recorded_per_card_and_per_contact(db, monkeypatch):
 def test_usage_accumulates_across_runs_then_blocks(db, monkeypatch):
     _stub_agent(monkeypatch, _fake_result(drafts=3, contacts_seen=2))
     user = _user(db, drafts_used_this_period=0)
-    rel_route.run_relationship_agent(db=db, user=user)   # -> 3 drafts
-    rel_route.run_relationship_agent(db=db, user=user)   # -> 6 drafts (>=5)
+    _run_chat(db, user)   # -> 3 drafts
+    _run_chat(db, user)   # -> 6 drafts (>=5)
     db.refresh(user)
     assert user.drafts_used_this_period == 6
     # now over the free draft cap -> next call blocks
     with pytest.raises(HTTPException) as ei:
-        rel_route.run_relationship_agent(db=db, user=user)
+        _run_chat(db, user)
     assert ei.value.detail["error"] == "LIMIT_REACHED"
 
 
@@ -133,7 +138,7 @@ def test_elapsed_period_resets_then_allows(db, monkeypatch):
     user = _user(db, drafts_used_this_period=5,            # was over the cap
                  billing_period_start=now - timedelta(days=40),
                  billing_period_end=now - timedelta(days=10))  # window elapsed
-    out = rel_route.run_relationship_agent(db=db, user=user)  # roll resets to 0
+    out = _run_chat(db, user)  # roll resets to 0
     db.refresh(user)
     assert out["summary"] == "ok"
     assert user.drafts_used_this_period == 1  # reset to 0, then +1 for this run
