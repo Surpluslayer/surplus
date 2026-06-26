@@ -269,7 +269,8 @@ def build_context(db, user_id: int, contact, voice_block: Optional[str] = None,
     # appends; `store_provenance` tags each with source+age+mode so the assembled
     # context stays legible. Empty until writers populate the store -> additive.
     from .contact_memory import draft_grounding
-    store_grounding, store_provenance = draft_grounding(db, getattr(contact, "id", None))
+    store_asserted, store_optional, store_provenance = draft_grounding(
+        db, getattr(contact, "id", None))
     return {
         "name": name,
         # Person-specific facts so the draft can hone in on THIS contact even
@@ -284,7 +285,8 @@ def build_context(db, user_id: int, contact, voice_block: Optional[str] = None,
         # Relationship grounding (where/when met, open next step) so the draft is
         # specific to THIS relationship even with no message thread.
         "facts": _relationship_facts(db, contact),
-        "store_grounding": store_grounding,        # mode-A facts -> SELECT stage
+        "store_grounding": store_asserted,         # high-conf mode-A facts -> asserted
+        "store_optional": store_optional,          # low-conf mode-A facts -> optional
         "store_provenance": store_provenance,      # what/where/when (legibility)
         "voice_block": voice_block,
     }
@@ -428,11 +430,14 @@ def _select_grounding(ctx: dict) -> tuple[list[str], list[str]]:
         asserted.append("how you know them: " + ", ".join(facts["relationship_types"][:3]))
     if facts.get("stage"):
         asserted.append(f"relationship stage: {facts['stage']}")
-    # Knowledge-store facts (mode A), pre-phrased + already high-confidence-gated
-    # and de-duped against the who-line in contact_memory.draft_grounding.
+    # Knowledge-store facts (mode A), pre-phrased + confidence-split + de-duped
+    # against the who-line in contact_memory.draft_grounding: high -> asserted,
+    # low -> optional color.
     asserted += ctx.get("store_grounding") or []
     optional: list[str] = []
-    if facts.get("about"):
+    optional += ctx.get("store_optional") or []
+    if facts.get("about") and not (ctx.get("store_optional")):
+        # legacy works_on/bio About only when the store has no real About fact
         optional.append(f"what they work on: {facts['about']}")
     return asserted, optional
 

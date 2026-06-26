@@ -134,6 +134,11 @@ def apply_profile(db, contact: models.Contact, profile: dict) -> list[dict]:
                    or "").strip()
     new_title = (profile.get("title") or profile.get("position")
                  or profile.get("headline") or "").strip()
+    # About is low-confidence color, not a state we diff -- capture it on EVERY
+    # scrape (idempotent upsert), independent of the company/title baseline logic.
+    new_about = (profile.get("about") or "").strip()
+    if new_about:
+        _store_about(db, contact, new_about)
     changes: list[dict] = []
     # Baseline-first: the first scrape adopts the current profile as the baseline
     # SILENTLY -- everyone starts at their "base level", so the initial snapshot is
@@ -185,6 +190,17 @@ def _store_profile_facts(db, contact, company: str, title: str) -> None:
                         source="linkedin", confidence="high", commit=False)
     except Exception as exc:  # noqa: BLE001
         print(f"  [updates] fact upsert skipped: {type(exc).__name__}: {exc}")
+
+
+def _store_about(db, contact, about: str) -> None:
+    """Upsert the contact's LinkedIn About as LOW-confidence color -- optional
+    grounding the draft may use, never asserted. Best-effort, commit=False."""
+    try:
+        from .contact_memory import upsert_fact
+        upsert_fact(db, contact.user_id, contact.id, "about", about[:2000],
+                    source="linkedin", confidence="low", commit=False)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [updates] about upsert skipped: {type(exc).__name__}: {exc}")
 
 
 # --- posts cascade (raise / launch / milestone) ----------------------------

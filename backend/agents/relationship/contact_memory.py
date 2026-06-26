@@ -73,35 +73,39 @@ _KEY_PHRASES = {
     "school": "went to {v}",
     "interest": "into {v}",
     "works_on": "works on {v}",
+    "about": "what they work on: {v}",
     "birthday": "birthday is {v}",
 }
 
 
-def draft_grounding(db, contact_id: int) -> tuple[list[str], list[dict]]:
-    """High-confidence store facts as (grounding_lines, provenance) for a draft.
+def draft_grounding(db, contact_id: int) -> tuple[list[str], list[str], list[dict]]:
+    """Store facts ready for a draft as (asserted, optional, provenance).
 
-    `grounding_lines` are ready-to-inject clauses the composer appends to its
-    asserted grounding (the data layer, not the prompt). `provenance` tags each
-    surfaced fact with source + observed_at + mode="graph" so the assembled
-    context is LEGIBLE -- we can always see what came from the knowledge store.
-    Skips keys already shown elsewhere (company/title). Best-effort: any read
-    failure returns empty, never breaks a draft."""
+    Confidence-gated like the rest of the SELECT stage: HIGH-confidence attribute
+    facts -> `asserted` (the draft may state them); LOW-confidence -> `optional`
+    (color it may use, never required -> anti-fabrication stays structural). META
+    facts (channel_preference/register) and keys already shown elsewhere
+    (company/title) are excluded from both. `provenance` tags every surfaced fact
+    with source + observed_at + mode="graph" for legibility. Best-effort: any read
+    failure returns empties, never breaks a draft."""
     try:
-        rows = get_facts(db, contact_id, high_confidence_only=True)
+        rows = get_facts(db, contact_id)
     except Exception:  # noqa: BLE001 - context read must never break drafting
-        return [], []
-    lines: list[str] = []
+        return [], [], []
+    asserted: list[str] = []
+    optional: list[str] = []
     prov: list[dict] = []
     for r in rows:
         v = (r.value or "").strip()
         if not v or r.key in _SHOWN_ELSEWHERE or r.key in _META_KEYS:
             continue
         phrase = _KEY_PHRASES.get(r.key, "{k}: {v}").format(
-            k=r.key.replace("_", " "), v=v)
-        lines.append(phrase)
+            k=r.key.replace("_", " "), v=v[:240])
+        (asserted if r.confidence == "high" else optional).append(phrase)
         prov.append({"key": r.key, "value": v, "source": r.source,
+                     "confidence": r.confidence,
                      "observed_at": r.observed_at, "mode": "graph"})
-    return lines, prov
+    return asserted, optional, prov
 
 
 def get_facts(

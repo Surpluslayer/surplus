@@ -70,13 +70,13 @@ def test_draft_grounding_surfaces_facts_and_tags_provenance(db):
     cm.upsert_fact(db, u.id, c.id, "based_in", "San Francisco", source="linkedin")
     cm.upsert_fact(db, u.id, c.id, "interest", "climbing", dedup_key="climbing")
     cm.upsert_fact(db, u.id, c.id, "company", "TechCorp", source="linkedin")   # skipped
-    cm.upsert_fact(db, u.id, c.id, "works_on", "low", confidence="low")        # gated out
-    lines, prov = cm.draft_grounding(db, c.id)
-    assert "based in San Francisco" in lines
-    assert "into climbing" in lines
-    assert all("TechCorp" not in ln for ln in lines)     # company not re-grounded
-    assert all("low" != p["value"] for p in prov)        # low-confidence excluded
-    # provenance tags source + mode for legibility
+    cm.upsert_fact(db, u.id, c.id, "about", "builds infra", confidence="low")  # -> optional
+    asserted, optional, prov = cm.draft_grounding(db, c.id)
+    assert "based in San Francisco" in asserted           # high-conf -> asserted
+    assert "into climbing" in asserted
+    assert all("TechCorp" not in ln for ln in asserted)   # company not re-grounded
+    assert "what they work on: builds infra" in optional  # low-conf -> optional
+    # provenance tags source + confidence + mode for legibility
     assert {p["mode"] for p in prov} == {"graph"}
     assert {p["source"] for p in prov} == {"linkedin", "manual"}
 
@@ -98,6 +98,26 @@ def test_updates_engine_change_upserts_state_facts(db):
     company = cm.get_facts(db, c.id, key="company")
     assert len(company) == 1 and company[0].value == "TechCorp"   # upserted, not stacked
     assert company[0].source == "linkedin"
+
+
+def test_updates_engine_captures_about_as_low_confidence(db):
+    """The LinkedIn About is captured on every scrape as a LOW-confidence fact
+    (optional color), no migration needed -- it just lives in the fact store."""
+    from backend.agents.relationship import updates_engine
+    u, c = _contact(db)
+    c.profile_baselined_at = None
+    db.commit()
+    updates_engine.apply_profile(db, c, {
+        "company": "TechCorp", "title": "VP Eng",
+        "about": "builds inference infrastructure"})
+    db.commit()
+    about = cm.get_facts(db, c.id, key="about")
+    assert about and about[0].value == "builds inference infrastructure"
+    assert about[0].confidence == "low" and about[0].source == "linkedin"
+    # low-confidence -> flows to OPTIONAL grounding, never asserted
+    asserted, optional, _ = cm.draft_grounding(db, c.id)
+    assert any("inference infrastructure" in o for o in optional)
+    assert all("inference infrastructure" not in a for a in asserted)
 
 
 def test_channel_preference_picks_most_recent_inbound(db, monkeypatch):
@@ -123,9 +143,9 @@ def test_channel_preference_is_meta_not_grounded(db):
     u, c = _contact(db)
     cm.upsert_fact(db, u.id, c.id, "channel_preference", "whatsapp", source="behavior")
     cm.upsert_fact(db, u.id, c.id, "based_in", "NYC", source="linkedin")
-    lines, prov = cm.draft_grounding(db, c.id)
-    assert "based in NYC" in lines                       # attribute IS grounded
-    assert all("whatsapp" not in ln for ln in lines)     # META is NOT grounded
+    asserted, optional, prov = cm.draft_grounding(db, c.id)
+    assert "based in NYC" in asserted                          # attribute IS grounded
+    assert all("whatsapp" not in ln for ln in asserted + optional)  # META is NOT grounded
     assert "channel_preference" not in {p["key"] for p in prov}
 
 
