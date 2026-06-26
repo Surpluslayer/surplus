@@ -177,12 +177,17 @@ def test_discover_via_exa_category_per_source(monkeypatch):
     fake_client.__enter__.return_value = fake_client
     fake_client.__exit__.return_value = None
 
-    expected = {"linkedin": "linkedin profile", "github": "github", "x": "tweet"}
+    expected = {"linkedin": "linkedin profile", "github": "github"}
     for source, category in expected.items():
         with patch("httpx.Client", return_value=fake_client):
             exa.discover_via_exa(source, {"role": "engineer"})
         body = fake_client.post.call_args.kwargs["json"]
         assert body["category"] == category, f"source={source}"
+    # x: Exa DEPRECATED the "tweet" category (it now 400s), so the x source
+    # intentionally sends NO category -- neural match + includeDomains=x.com.
+    with patch("httpx.Client", return_value=fake_client):
+        exa.discover_via_exa("x", {"role": "engineer"})
+    assert "category" not in fake_client.post.call_args.kwargs["json"]
 
 
 def test_discover_via_exa_returns_empty_on_http_error(monkeypatch):

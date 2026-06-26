@@ -9,9 +9,21 @@ signal onto a record that *also* surfaced from a stronger source.
 from __future__ import annotations
 import asyncio
 
+import pytest
+
 from backend.agents.sources import ScholarAdapter, ALL_ADAPTERS
 from backend.agents.sources.scholar import MIN_CITATIONS
 from backend.agents.prospector import prospect
+
+
+@pytest.fixture(autouse=True)
+def _force_mock_mode(monkeypatch):
+    """These tests exercise the deterministic MOCK prospect pool (see the module
+    + test docstrings). Unset the discovery keys so llm_available() is False and
+    the prospector uses the mock pool instead of live Exa/LLM -- otherwise a
+    keyed env runs real discovery and maya-rodriguez may not surface."""
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
 
 def test_scholar_in_default_registry():
