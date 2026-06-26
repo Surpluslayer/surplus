@@ -288,11 +288,6 @@ export const api = {
   // every event you've shared with them). Owner-scoped server-side.
   listContacts: () => request("/api/relationships/contacts"),
   getContact: (contactId) => request(`/api/relationships/contacts/${contactId}`),
-  // Propose-only relationship agent : loops over the caller's contact spine
-  // and returns staged next-step / draft-message suggestions (no sends, no
-  // writes). Owner-scoped server-side.
-  runRelationshipAgent: () =>
-    request("/api/relationships/agent/run", { method: "POST" }),
   // Follow-up chat : send the host's ask to the same propose-only agent and get
   // back { summary, proposals[], auto_send_enabled }. No sends here.
   relationshipChat: (message) =>
