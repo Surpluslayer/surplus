@@ -134,7 +134,7 @@ def _llm_json(system: str, user: str, *, max_tokens: int = 700,
     label = " ".join(system.split()[:4])[:32]
     t0 = time.monotonic()
     try:
-        from . import llm  # reuse the configured client + model constants
+        from .. import llm  # reuse the configured client + model constants
         # One gate in front of every relationship-layer call: caps total in-flight
         # Claude calls and lets foreground jump ahead of background, so a fan-out
         # can't burst past the key's limit and stall a user.
