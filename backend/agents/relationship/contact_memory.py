@@ -125,3 +125,55 @@ def get_facts(
     if high_confidence_only:
         rows = [r for r in rows if r.confidence == "high"]
     return rows
+
+
+def delete_fact(db, contact_id: int, key: str, dedup_key: str = "",
+                *, commit: bool = True) -> bool:
+    """Remove a fact (a correction, a cross-key clear, or a one-off trigger that's
+    been consumed). Returns True if a row was deleted. History is never lost --
+    the event that created the fact still lives in the timeline."""
+    from ... import models
+    row = (db.query(models.ContactFact)
+             .filter_by(contact_id=contact_id, key=key, dedup_key=dedup_key)
+             .one_or_none())
+    if row is None:
+        return False
+    db.delete(row)
+    if commit:
+        db.commit()
+    return True
+
+
+def due_facts(db, *, now, user_id: Optional[int] = None, within_days: int = 0) -> list:
+    """The dated facts whose time-trigger has come due: `due_date` <= now (+
+    `within_days` lookahead), and not already fired for THIS occurrence. Recurring
+    facts store their NEXT occurrence in `due_date`, so the same query serves both
+    -- the per-occurrence guard is `last_fired_at`."""
+    from datetime import timedelta
+    from ... import models
+    horizon = now + timedelta(days=within_days)
+    q = db.query(models.ContactFact).filter(
+        models.ContactFact.due_date.isnot(None),
+        models.ContactFact.due_date <= horizon)
+    if user_id is not None:
+        q = q.filter(models.ContactFact.user_id == user_id)
+    return [r for r in q.all()
+            if r.last_fired_at is None or r.last_fired_at < r.due_date]
+
+
+def mark_fired(db, fact, now, *, commit: bool = True) -> str:
+    """Consume a fired trigger. Recurring (birthday) -> stamp `last_fired_at` and
+    advance `due_date` to the next occurrence (so it never re-fires this year and
+    fires again next). One-off (a flight) -> DELETE it (the moment is past). Returns
+    'advanced' or 'deleted'."""
+    from datetime import timedelta
+    if fact.recurring:
+        fact.last_fired_at = now
+        fact.due_date = fact.due_date + timedelta(days=365)
+        if commit:
+            db.commit()
+        return "advanced"
+    db.delete(fact)
+    if commit:
+        db.commit()
+    return "deleted"

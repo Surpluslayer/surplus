@@ -139,3 +139,49 @@ def test_due_date_hook_is_stored(db):
     row = cm.get_facts(db, c.id, key="upcoming_travel")[0]
     assert row.due_date is not None
     assert row.recurring is False
+
+
+# ── Flow-1 trigger engine + fact lifecycle ────────────────────────────────────
+
+def test_delete_fact_removes_it(db):
+    u, c = _contact(db)
+    cm.upsert_fact(db, u.id, c.id, "based_in", "NYC")
+    assert cm.delete_fact(db, c.id, "based_in") is True
+    assert cm.get_facts(db, c.id, key="based_in") == []
+    assert cm.delete_fact(db, c.id, "based_in") is False   # already gone
+
+
+def test_due_facts_finds_only_what_is_due(db):
+    from datetime import datetime, timezone, timedelta
+    u, c = _contact(db)
+    now = datetime(2026, 6, 26, tzinfo=timezone.utc)
+    cm.upsert_fact(db, u.id, c.id, "birthday", "today", due_date=now, recurring=True)
+    cm.upsert_fact(db, u.id, c.id, "flight", "later",
+                   due_date=now + timedelta(days=10), dedup_key="f1")
+    cm.upsert_fact(db, u.id, c.id, "based_in", "NYC")     # not dated -> never due
+    due = cm.due_facts(db, now=now, user_id=u.id)
+    assert {f.key for f in due} == {"birthday"}
+    # lookahead catches the upcoming flight
+    assert {f.key for f in cm.due_facts(db, now=now, within_days=14)} == {"birthday", "flight"}
+
+
+def test_scan_and_fire_recurring_advances_oneoff_deletes(db):
+    from datetime import datetime, timezone
+    from backend.agents.relationship import triggers
+    u, c = _contact(db)
+    now = datetime(2026, 6, 26, tzinfo=timezone.utc)
+    cm.upsert_fact(db, u.id, c.id, "birthday", "🎂", due_date=now, recurring=True)
+    cm.upsert_fact(db, u.id, c.id, "flight", "SFO", due_date=now, dedup_key="f1")
+
+    seen = []
+    fired = triggers.scan_and_fire(db, user_id=u.id, now=now,
+                                   on_due=lambda f, ct: seen.append((f.key, ct.id)))
+    # both fired, callback got each with the real contact
+    assert {k for k, _ in seen} == {"birthday", "flight"}
+    assert {f["disposition"] for f in fired} == {"advanced", "deleted"}
+    # one-off flight is gone; recurring birthday remains but advanced ~1yr ahead
+    assert cm.get_facts(db, c.id, key="flight") == []
+    bday = cm.get_facts(db, c.id, key="birthday")[0]
+    assert bday.due_date.year == now.year + 1
+    # and it does NOT re-fire on the same day
+    assert cm.due_facts(db, now=now, user_id=u.id) == []
