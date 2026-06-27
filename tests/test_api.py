@@ -309,8 +309,9 @@ def _force_prospect_status(pid: int, status: str) -> None:
         db.close()
 
 
-def test_webhook_new_relation_triggers_auto_dm(client):
+def test_webhook_new_relation_triggers_auto_dm(client, monkeypatch):
     """The big one: new_relation webhook -> we auto-fire send_message."""
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")   # automation opt-in
     eid = _create_event_and_prospect(client)
     client.post(f"/events/{eid}/outreach")
     pid, li_id = _outreached_prospect(eid)

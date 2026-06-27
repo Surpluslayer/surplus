@@ -26,7 +26,7 @@ from ..agents.outreach import compose
 from ..agents.relationship.reply_agent import (
     ReplyDecision, ThreadMessage, decide_reply, should_auto_send,
 )
-from ..agents.relationship.sender import send_and_log
+from ..agents.relationship.sender import automated_send_enabled, send_and_log
 from ..providers import (
     get_provider,
     get_provider_for_prospect,
@@ -132,7 +132,9 @@ def _trigger_auto_dm(
 ) -> Optional[dict]:
     """For providers where the platform owns the sequence (Unipile), fire
     the post-accept DM ourselves : from the OWNING USER'S LinkedIn."""
-    if not provider.auto_dm_after_accept:
+    # Channel-aware automation gate AND the provider's own gate -- both must be on.
+    # The post-accept auto-DM rides LinkedIn.
+    if not provider.auto_dm_after_accept or not automated_send_enabled("linkedin"):
         return None
 
     event = prospect.event
@@ -304,7 +306,9 @@ def _handle_ai_reply(
         1 for o in prospect.outreach if o.state == "auto_reply_sent"
     )
 
-    if should_auto_send(decision, prior_auto):
+    # AI auto-reply rides the inbound thread's transport (Unipile messaging =
+    # LinkedIn today; WhatsApp/email set their own channel as they land).
+    if should_auto_send(decision, prior_auto) and automated_send_enabled("linkedin"):
         print(f"  [ai_reply] gate PASS → auto-sending")
         return _auto_send_reply(db, provider, prospect, decision)
     print(f"  [ai_reply] gate BLOCK → queueing (class={decision.classification} "

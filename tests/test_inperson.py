@@ -445,6 +445,7 @@ def test_webhook_auto_dm_fires_on_accept(db, user, monkeypatch):
     dry-run provider it queues (no real send) : returns dry_run=True /
     dry_run_queued, so no live message leaves the host's LinkedIn in the test."""
     monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")   # automation opt-in
     from backend.providers.unipile import UnipileProvider
     from backend.routes.webhooks import _trigger_auto_dm
 
@@ -460,6 +461,61 @@ def test_webhook_auto_dm_fires_on_accept(db, user, monkeypatch):
     res = _trigger_auto_dm(db, provider, p)
     assert res is not None and res["dry_run"] is True
     assert res["state"] in ("dry_run_queued", "message_sent")
+
+
+def test_master_flag_default_off_opt_in():
+    """The master automation flag is OFF by default for everyone (automated
+    sending is opt-in); only the truthy env spellings turn it on."""
+    import os
+    from backend.agents.relationship.sender import automated_sends_enabled
+    os.environ.pop("SURPLUS_AUTOMATED_SENDS", None)
+    assert automated_sends_enabled() is False           # default OFF for everyone
+    for off in ("false", "0", "no", "off", ""):
+        os.environ["SURPLUS_AUTOMATED_SENDS"] = off
+        assert automated_sends_enabled() is False
+    for on in ("true", "1", "yes", "on", "TRUE"):
+        os.environ["SURPLUS_AUTOMATED_SENDS"] = on
+        assert automated_sends_enabled() is True
+    os.environ.pop("SURPLUS_AUTOMATED_SENDS", None)
+
+
+def test_channel_allowlist_routes_auto_fire(monkeypatch):
+    """Auto-fire is keyed to the CHANNEL: master on + an allowlist narrows which
+    transports fire; the rest draft-for-review. Allowlist unset = all channels."""
+    from backend.agents.relationship.sender import automated_send_enabled
+    # master off -> nothing fires regardless of channel
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "false")
+    assert automated_send_enabled("whatsapp") is False
+    # master on, allowlist unset -> every channel fires
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")
+    monkeypatch.delenv("SURPLUS_AUTOMATED_SEND_CHANNELS", raising=False)
+    assert automated_send_enabled("linkedin") is True
+    assert automated_send_enabled("whatsapp") is True
+    # master on, allowlist = whatsapp -> only WhatsApp fires; LinkedIn drafts
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SEND_CHANNELS", "whatsapp, email")
+    assert automated_send_enabled("whatsapp") is True
+    assert automated_send_enabled("email") is True
+    assert automated_send_enabled("linkedin") is False
+
+
+def test_master_flag_off_blocks_auto_dm(db, user, monkeypatch):
+    """MASTER kill switch: with SURPLUS_AUTOMATED_SENDS=false the post-accept
+    auto-DM does NOT fire, even though the provider's own gate is on."""
+    monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "false")
+    from backend.providers.unipile import UnipileProvider
+    from backend.routes.webhooks import _trigger_auto_dm
+    ip_event = db.get(models.Event, _make_event(db, user)["event_id"])
+    p = models.Prospect(
+        event_id=ip_event.id, identity="maya-w", name="Maya Rodriguez",
+        role="Staff Engineer", company="Acme",
+        linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+        linkedin_provider_id="dry_li_maya", note="x")
+    db.add(p); db.commit()
+    provider = UnipileProvider(dry_run=True, account_id="operator_acct")
+    assert provider.auto_dm_after_accept is True         # provider gate is ON
+    assert _trigger_auto_dm(db, provider, p) is None     # but master flag OFF -> no send
+    assert [o for o in p.outreach if o.state == "message_sent"] == []
 
 
 def test_route_and_send_warm_path_uses_send_message(db, user, monkeypatch):
@@ -585,6 +641,7 @@ def _seed_scanned(db, user, handle="maya-rodriguez", name="Maya Rodriguez"):
 
 def test_new_relation_matches_scan_prospect_fires_inperson_auto_dm(db, user, monkeypatch):
     monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")   # deterministic template
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")  # automation opt-in
     from backend.providers.unipile import UnipileProvider
     from backend.routes.webhooks import _apply_canonical_event, _trigger_auto_dm
 

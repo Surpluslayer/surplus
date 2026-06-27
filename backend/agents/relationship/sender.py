@@ -10,10 +10,57 @@ Returns the provider's ProviderResult so callers can pull error / state /
 dry_run / provider_lead_id for their own response shapes.
 """
 from __future__ import annotations
+import os
 from datetime import datetime, timezone
 
 from ... import models
 from ...providers import LinkedInProvider, get_provider_for_prospect
+
+
+def _automation_master_on() -> bool:
+    """Env `SURPLUS_AUTOMATED_SENDS`, default FALSE (off for everyone)."""
+    return (os.environ.get("SURPLUS_AUTOMATED_SENDS", "false").strip().lower()
+            in ("true", "1", "yes", "on"))
+
+
+def _automated_channels() -> "set[str] | None":
+    """The CHANNEL allowlist for auto-fire, from `SURPLUS_AUTOMATED_SEND_CHANNELS`
+    (comma list, e.g. "whatsapp,email"). None == unset == all channels auto-fire
+    when the master switch is on; a set narrows auto-fire to just those transports
+    (others draft-for-review)."""
+    raw = (os.environ.get("SURPLUS_AUTOMATED_SEND_CHANNELS") or "").strip()
+    if not raw:
+        return None
+    return {c.strip().lower() for c in raw.split(",") if c.strip()}
+
+
+def automated_sends_enabled() -> bool:
+    """MASTER feature flag (channel-agnostic): may the agent DRAFT AND SEND on its
+    own at all, with no human per message?
+
+    OFF by default for EVERYONE -- automated messaging is opt-in, never on silently.
+    Env `SURPLUS_AUTOMATED_SENDS`, default FALSE. This is the global kill switch;
+    per-channel routing lives in `automated_send_enabled(channel)`."""
+    return _automation_master_on()
+
+
+def automated_send_enabled(channel: str = "") -> bool:
+    """Should an automated message on THIS channel actually fire?
+
+    Auto-fire is keyed to the TRANSPORT the message arrived/goes on (linkedin /
+    email / whatsapp): the master switch must be on AND this channel must be in the
+    auto-fire allowlist; channels not allowed STAGE a draft for review instead.
+    Allowlist unset -> all channels auto-fire when master is on. Gates every
+    fully-automated path (post-accept auto-DM, follow-up cron, AI auto-reply) and
+    is layered ABOVE the per-target gates (`auto_dm_after_accept`,
+    `auto_followups_enabled`) -- an automated send needs BOTH. MANUAL UI sends
+    (send-now, approve-a-draft) never pass through here, so they always work."""
+    if not _automation_master_on():
+        return False
+    allow = _automated_channels()
+    if allow is None:
+        return True
+    return (channel or "").strip().lower() in allow
 
 
 def send_and_log(

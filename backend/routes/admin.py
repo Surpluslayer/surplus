@@ -124,16 +124,19 @@ def _replied_since_staging(prospect: models.Prospect) -> bool:
     return any(o.state in ("message_replied", "replied") for o in prospect.outreach)
 
 
-def _auto_send_enabled(prospect: models.Prospect) -> bool:
-    """Whether the prospect's owning host has auto-send turned on.
+def _auto_send_enabled(prospect: models.Prospect, channel: str = "linkedin") -> bool:
+    """Whether the cron should auto-send this prospect's follow-up on `channel`.
 
-    The follow-up is always drafted + staged; this flag is the only thing that
-    decides if the cron sends it. Off -> the row waits in the queue for a manual
-    send-now (routes/followups). On -> the cron dispatches it at send_at.
+    The follow-up is always drafted + staged; this decides if the cron sends it.
+    Off -> the row waits in the queue for a manual send-now (routes/followups).
+    On -> the cron dispatches it at send_at.
     """
     event = getattr(prospect, "event", None)
     owner = getattr(event, "user", None) if event is not None else None
-    return bool(getattr(owner, "auto_followups_enabled", False))
+    # Per-host toggle AND the channel-aware automation gate -- both required.
+    from ..agents.relationship.sender import automated_send_enabled
+    return (bool(getattr(owner, "auto_followups_enabled", False))
+            and automated_send_enabled(channel))
 
 
 @router.post("/run-followups", status_code=200)
@@ -177,7 +180,7 @@ def run_followups(
         # dispatches it when the host turned auto-send ON. Off -> leave it
         # `scheduled` so it waits for a manual send-now. Don't cancel : the
         # host may flip the toggle on, or send it themselves, later.
-        if not _auto_send_enabled(prospect):
+        if not _auto_send_enabled(prospect, (getattr(row, "channel", "") or "linkedin")):
             held.append({"followup_id": row.id, "prospect_id": prospect.id})
             continue
 

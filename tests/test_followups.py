@@ -254,7 +254,8 @@ def test_cancel_pending_followups_marks_cancelled(db):
 
 # ── dispatch (run_followups) ─────────────────────────────────────────────
 
-def test_run_followups_sends_due_row(db):
+def test_run_followups_sends_due_row(db, monkeypatch):
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")   # automation opt-in
     _u, _ev, p = _seed(db)
     row = _stage_due(db, p)
     result = run_followups(db=db, _=None)
