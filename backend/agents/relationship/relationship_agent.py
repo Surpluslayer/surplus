@@ -36,6 +36,13 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from . import relationships
+from .contact_context import (
+    as_agent_context,
+    as_composer_context,
+    gather_contact_context,
+    thread_from_timeline,
+)
+from .thread_reconcile import reconcile_next_step
 from .. import voice
 from ..agent_loop import DEFAULT_MODEL, _block_type, run_agent
 from ...providers.base import strip_em_dashes
@@ -150,12 +157,10 @@ _TOOLS = [
     {
         "name": "draft_message",
         "description": (
-            "Decide that a follow-up IS warranted for this person and hand off "
-            "the ANGLE (the hook to hit) to the shared composer, which writes the "
-            "actual message by continuing the real thread in `prior_messages`. "
             "You choose whether to draft and the angle; you do NOT write the "
-            "message text. Staged for the host to review and send — this does NOT "
-            "send anything."
+            "message text. Call this when a follow-up is warranted. Pass the "
+            "hook/angle for the shared composer, which writes the actual message "
+            "in the host's voice from prior_messages."
         ),
         "input_schema": {
             "type": "object",
@@ -163,12 +168,10 @@ _TOOLS = [
                 "contact_id": {"type": "integer"},
                 "angle": {"type": "string",
                           "description": "The hook/angle for the follow-up, one "
-                          "phrase. The actual message text is written by the "
-                          "shared composer from this angle plus the thread."},
+                          "short phrase for the shared composer."},
                 "rationale": {"type": "string",
                               "description": "ONE short, friendly sentence on why "
-                              "this person / why now, grounded in history. Reads "
-                              "as a chat aside to the host, not a report."},
+                              "this person / why now, grounded in history."},
             },
             "required": ["contact_id", "angle"],
         },
@@ -215,40 +218,14 @@ class RelationshipAgentResult:
 
 # Timeline source_types that carry actual host<->contact conversation (the
 # thread a follow-up should continue), in contrast to derived/system rows
-# (conversion, next_step, profile updates).
+# (conversion, next_step, profile updates). Implemented in contact_context;
+# kept here as an alias so existing imports keep working.
 _MESSAGE_SOURCE_TYPES = {"in_person_capture", "manual_note", "linkedin_outreach",
                          "email"}
 
 
 def _thread_from_timeline(timeline: list[dict]) -> list[dict]:
-    """Distil the message/note thread out of a contact's full timeline so the
-    agent can ground a follow-up in what was actually said. Keeps only the
-    conversational rows (capture note, sent/received DMs, manual notes, email),
-    each as {when, who, channel, text}, oldest-first. The first item is the
-    'initial message' the host wants every follow-up to build on."""
-    thread: list[dict] = []
-    for it in timeline or []:
-        if it.get("source_type") not in _MESSAGE_SOURCE_TYPES:
-            continue
-        # Operator-only items (the private_note, stored as a private manual_note)
-        # must never reach the draft context — mirror relationship_context()'s
-        # private filter so a private memo can't shape an outbound draft.
-        if (it.get("metadata") or {}).get("private"):
-            continue
-        text = (it.get("summary") or "").strip()
-        if not text:
-            continue
-        direction = it.get("direction") or "none"
-        who = ("host" if direction == "outbound"
-               else "them" if direction == "inbound"
-               else "context")
-        thread.append({
-            "when": it.get("occurred_at"),
-            "who": who,                       # host | them | context
-            "channel": it.get("channel") or it.get("source_type"),
-            "text": text[:600],
-        })
-    return thread
+    return thread_from_timeline(timeline)
 
 
 def _days_since(dt: Any) -> Optional[int]:
@@ -413,7 +390,8 @@ def _context_brief(sel: dict, ctx: dict) -> dict:
         no prior thread)
     """
     summary = ctx.get("summary") or {}
-    thread = ctx.get("prior_messages") or []
+    thread = (ctx.get("prior_messages_full")
+              or ctx.get("prior_messages") or [])
     events = ctx.get("events") or []
     sig = _thread_signals(thread)
 
@@ -425,7 +403,8 @@ def _context_brief(sel: dict, ctx: dict) -> dict:
     name = (summary.get("name") or "").strip()
     company = (summary.get("company") or "").strip()
     stage = summary.get("relationship_stage")
-    next_step = (summary.get("next_step") or "").strip()
+    # Capture next_step is stale once outbound messages already carried it out.
+    next_step = (reconcile_next_step(summary.get("next_step"), thread) or "").strip()
     days = _days_since(summary.get("last_touch_at"))
     is_stale = bool(stage == "stale")
     age = sig["last_message_age_days"]
@@ -927,17 +906,13 @@ Important distinctions:
 
 Before you draft, weigh the context_brief's drafting_risks: if it flags TOO SOON or THEIR COURT and prior_messages does not show a new reason to reach out, prefer skip_contact.
 
-You do NOT write the message text. A shared composer writes the actual message, in the host's voice, grounded in prior_messages. Your job is only to DECIDE that a follow-up is warranted and to choose the ANGLE: the one-phrase hook the composer should hit (e.g. "deliver the deck I promised", "answer their pricing question", "reconnect after the Seed Dinner"). Pass that as `angle` on draft_message. Do not draft sentences, do not worry about length, voice, punctuation, or phrasing — the composer owns all of that.
+If you draft:
+- Call draft_message with the angle (hook) only. A shared composer writes the actual message text in the host's voice from prior_messages; do not write the message yourself.
+- The angle must be grounded in prior_messages and the provided context.
 
-When you choose an angle:
-- Ground it in prior_messages and the provided context; never invent updates, warmth, intent, or personal facts.
-- Point at the genuine open reason to reach out (their reply, the open loop, the next_step, the promise, the natural reconnect angle).
+An undelivered promise is never a skip. If the host promised to send or do something (reason 4 above) and prior_messages does not show it was delivered, you MUST act. Prefer draft_message with an angle that delivers or accompanies the promised thing. Only fall back to propose_next_step when no message could carry the promise forward. Never skip an open promise.
 
-An undelivered promise is never a skip. If the host promised to send or do something (reason 4 above) and prior_messages does not show it was delivered, you MUST act. Prefer draft_message with an angle that delivers or accompanies the promised thing (the host attaches the actual file or link when they send it), so you do NOT need the deliverable itself to choose the angle. Only fall back to propose_next_step when no message could carry the promise forward. Never skip an open promise — that lets the host's commitment fall through, which is a failure, not a safe hold.
-
-If the best next action is not a message but a relationship action, call propose_next_step.
-If a message is warranted, call draft_message.
-If no message is warranted right now, call skip_contact.
+You do NOT write the message text. A shared composer writes the actual message, in the host's voice, grounded in prior_messages. Your job is only to DECIDE that a follow-up is warranted and to choose the ANGLE. Pass that as `angle` on draft_message.
 
 When unsure, prefer skip_contact unless there is a concrete reason in the thread to message — but an open host promise IS such a concrete reason, so act on it rather than skip."""
 
@@ -986,10 +961,6 @@ def run_relationship_agent_concurrent(
     draft call, so a closed SSE client stops burning Claude tokens at the
     next call boundary instead of finishing the whole fan-out.
     """
-    # The shared follow-up writer. Lazy import to avoid a circular import
-    # (drafting imports helpers from this module at its top level). Injectable so
-    # offline tests can stub it — compose_from_context uses a real Anthropic
-    # client, not the scripted decision-client passed as `client`.
     from . import drafting
     composer = composer or drafting.compose_from_context
 
@@ -1032,8 +1003,9 @@ def run_relationship_agent_concurrent(
             # questions) so triage can see content-level open loops without
             # reading full threads. Cheap heuristics; Phase-2 is the precision
             # filter. See _thread_signals for the recall/precision rationale.
-            signals = _thread_signals(_thread_from_timeline(
-                relationships.contact_timeline(db, c)))
+            prior = _thread_from_timeline(relationships.contact_timeline(db, c))
+            signals = _thread_signals(prior)
+            open_step = reconcile_next_step(s.get("next_step"), prior) or ""
             rows.append({
                 "contact_id": c.id,
                 "name": s.get("name") or "Unknown",
@@ -1042,8 +1014,8 @@ def run_relationship_agent_concurrent(
                 "n_events": s.get("n_events"),
                 "is_stale": bool(s.get("relationship_stage") == "stale"),
                 "days_since_last_touch": _days_since(s.get("last_touch_at")),
-                "has_next_step": bool((s.get("next_step") or "").strip()),
-                "next_step": s.get("next_step") or "",
+                "has_next_step": bool(open_step.strip()),
+                "next_step": open_step,
                 "contact_types": contact_types,
                 "marked_follow_up": "follow_up" in contact_types,
                 **signals,
@@ -1051,49 +1023,9 @@ def run_relationship_agent_concurrent(
         return rows
 
     def _context(c) -> dict:
-        timeline = relationships.contact_timeline(db, c)
-        prior = _thread_from_timeline(timeline)
-        # Email channel : when the host CONFIRMED a mailbox thread for this
-        # contact, pull it live and weave it into prior_messages (same
-        # {when, who, channel, text} shape) so drafts continue the ACTUAL
-        # email conversation, not just the LinkedIn one. Best-effort + only
-        # for linked contacts, so the common path costs nothing.
-        thread_id = getattr(c, "email_thread_id", None)
-        if thread_id:
-            try:
-                import os
-                from ...db import SessionLocal as _SL  # noqa: F401 (db given)
-                from .email_sync import thread_messages
-                from ... import models as _m
-                host = db.get(_m.User, user_id)
-                acct = getattr(host, "unipile_email_account_id", None)
-                dsn = (os.environ.get("UNIPILE_DSN", "") or "").strip().rstrip("/")
-                if dsn and not dsn.startswith(("http://", "https://")):
-                    dsn = f"https://{dsn}"
-                key = (os.environ.get("UNIPILE_API_KEY", "") or "").strip()
-                if acct and dsn and key:
-                    mails = thread_messages(
-                        dsn=dsn, api_key=key, account_id=acct,
-                        thread_id=thread_id, with_bodies=True,
-                        own_address=getattr(host, "email_account_address", "") or "")
-                    for m in mails[-10:]:
-                        prior.append({
-                            "when": m.get("date"),
-                            "who": "host" if m.get("direction") == "out" else "them",
-                            "channel": "email",
-                            "text": (f"[{m.get('subject') or ''}] "
-                                     f"{(m.get('body') or '')[:600]}").strip(),
-                        })
-                    prior.sort(key=lambda x: str(x.get("when") or ""))
-            except Exception as exc:  # noqa: BLE001 : email context is a bonus
-                print(f"  [agent.email] thread pull failed for contact "
-                      f"{getattr(c, 'id', '?')}: {type(exc).__name__}: {exc}")
-        return {
-            "summary": relationships.contact_summary(db, c),
-            "events": relationships.contact_events(db, c),
-            "timeline": timeline[-12:],
-            "prior_messages": prior,
-        }
+        gathered = gather_contact_context(
+            db, user_id, c, channel="linkedin", merge_email=True)
+        return as_agent_context(gathered)
 
     def _name_of(contact_id: int) -> str:
         c = by_id.get(int(contact_id))
@@ -1209,14 +1141,14 @@ def run_relationship_agent_concurrent(
     jobs: list[dict] = []
     for sel in clean:
         c = by_id[sel["contact_id"]]
-        # compose_ctx is built HERE, on the serial job-building thread, because
-        # build_context does DB reads (SQLAlchemy session is not thread-safe).
-        # The composer (compose_from_context) is pure over this ctx, so it is
-        # safe to call inside _draft_one under the fan-out.
-        jobs.append({"sel": sel, "ctx": _context(c),
-                     "name": _name_of(sel["contact_id"]),
-                     "compose_ctx": drafting.build_context(
-                         db, user_id, c, channel="linkedin")})
+        gathered = gather_contact_context(
+            db, user_id, c, channel="linkedin", merge_email=True)
+        jobs.append({
+            "sel": sel,
+            "ctx": as_agent_context(gathered),
+            "compose_ctx": as_composer_context(gathered),
+            "name": _name_of(sel["contact_id"]),
+        })
 
     # Nominees a drafter declined via skip_contact (with the per-person reason),
     # so the closing summary reflects what was ACTUALLY staged, not what triage
@@ -1318,16 +1250,20 @@ def run_relationship_agent_concurrent(
                     text=_strip_dashes(inp["next_step"]),
                     rationale=_strip_dashes(inp.get("rationale") or "")))
             elif tname == "draft_message":
-                # The agent DECIDED to draft and gave an angle; the shared
-                # composer WRITES the message text (voice + grounding + dash
-                # scrub all live there — don't _strip_dashes the body). Empty
-                # body -> stage nothing.
+                from . import drafting
+                angle = (inp.get("angle") or sel.get("angle") or "").strip()
+                compose_ctx = job.get("compose_ctx") or {}
+                reason, intent = drafting.compose_inputs(
+                    compose_ctx,
+                    directive=steer,
+                    angle=angle,
+                    sel=sel,
+                    natural_action=(brief.get("natural_action") or "").strip(),
+                )
                 msg = composer(
-                    job["compose_ctx"], sel.get("reason") or "following up",
-                    "linkedin",
-                    intent=drafting.Intent(kind="followup",
-                                           objective=(inp.get("angle")
-                                                      or sel.get("angle") or "")))
+                    compose_ctx, reason, "linkedin",
+                    directive=steer, intent=intent,
+                )
                 body = (msg or {}).get("body") or ""
                 if body:
                     _stage(Proposal(

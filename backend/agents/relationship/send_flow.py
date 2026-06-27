@@ -189,6 +189,12 @@ def route_and_send(
             prospect.status = "contacted"
         path_taken = "cold"
 
+    if not provider.dry_run and not res.error:
+        from .thread_reconcile import clear_prospect_next_step_if_fulfilled
+        clear_prospect_next_step_if_fulfilled(prospect, final_message)
+        if final_note.strip() and final_note.strip() != final_message.strip():
+            clear_prospect_next_step_if_fulfilled(prospect, final_note)
+
     db.add(models.OutreachLog(
         prospect_id=prospect.id,
         channel="linkedin",

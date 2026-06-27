@@ -31,7 +31,9 @@ from .book import _btrace, _llm_json, stream_text  # shared Claude helpers + tra
 from .relationship_agent import (
     _strip_dashes,
     _thread_from_timeline,
+    _thread_signals,
 )
+from .thread_reconcile import apply_to_facts
 
 # Foreground per-person draft fan-out width for compose_batch. Bounded so a
 # multi-person /ask can't open a flood of Anthropic connections at once (same
@@ -240,56 +242,14 @@ def build_context(db, user_id: int, contact, voice_block: Optional[str] = None,
 
     For the EMAIL channel we also pull the real email-thread bodies so the draft
     continues the actual email conversation, not just a 'N messages' rollup."""
-    name = (getattr(contact, "name", None) or "there").strip() or "there"
-    try:
-        prior = _thread_from_timeline(relationships.contact_timeline(db, contact))
-    except Exception:  # noqa: BLE001 : a timeline read failure must not break drafting
-        prior = []
-    if channel == "email":
-        email_prior = _email_thread_prior(db, user_id, contact)
-        if email_prior:
-            # Merge cross-channel history, oldest-first; email bodies are the
-            # substance for an email follow-up. Dedup is unnecessary (the
-            # timeline only carries an email ROLLUP, not these message bodies).
-            prior = sorted(prior + email_prior,
-                           key=lambda m: str(m.get("when") or ""))
-    if voice_block is None:
-        voice_block = _voice_block_for(db, user_id, channel)
-
-    # Detect how THIS contact writes (formal/casual/neutral) from their own
-    # messages, so the draft meets their register while keeping the host's voice.
-    register = voice.detect_register(
-        [m.get("text") or "" for m in prior if m.get("who") == "them"])
-
-    def _real(v):
-        s = (v or "").strip()
-        return "" if s.lower() == "unknown" else s
-    # Knowledge-store facts (mode A): high-confidence facts any source upserted
-    # about this person. `store_grounding` are ready clauses the SELECT stage
-    # appends; `store_provenance` tags each with source+age+mode so the assembled
-    # context stays legible. Empty until writers populate the store -> additive.
-    from .contact_memory import draft_grounding
-    store_asserted, store_optional, store_provenance = draft_grounding(
-        db, getattr(contact, "id", None))
-    return {
-        "name": name,
-        # Person-specific facts so the draft can hone in on THIS contact even
-        # when there's no prior thread (the common case -- DM history isn't in
-        # the spine). Without these the model only has a name + reason and
-        # generalizes.
-        "company": _real(getattr(contact, "company", None)),
-        "role": (_real(getattr(contact, "title", None))
-                 or _real(getattr(contact, "headline", None))),
-        "prior": prior,
-        "register": register,
-        # Relationship grounding (where/when met, open next step) so the draft is
-        # specific to THIS relationship even with no message thread.
-        "facts": _relationship_facts(db, contact),
-        "store_grounding": store_asserted,         # high-conf mode-A facts -> asserted
-        "store_optional": store_optional,          # low-conf mode-A facts -> optional
-        "store_provenance": store_provenance,      # what/where/when (legibility)
-        "voice_block": voice_block,
-    }
+    from .contact_context import as_composer_context, gather_contact_context
+    gathered = gather_contact_context(
+        db, user_id, contact,
+        channel=channel,
+        voice_block=voice_block,
+        merge_email=True,
+    )
+    return as_composer_context(gathered)
 
 
 def _natural_action(ctx: dict) -> str:
@@ -298,15 +258,38 @@ def _natural_action(ctx: dict) -> str:
     blob): deliver on a promised next step, react to their news, reply to their
     last message, or re-engage after time. Deterministic, no LLM, no new data."""
     facts = ctx.get("facts") or {}
-    prior = ctx.get("prior") or []
+    prior = ctx.get("prior_full") or ctx.get("prior") or []
+    sig = _thread_signals(prior)
     them_last = bool(prior) and (prior[-1].get("who") == "them")
     if facts.get("next_step"):
         return (f"deliver on / pick up your own noted next step: "
                 f"{facts['next_step']}")
+    if sig.get("contact_open_question"):
+        ev = (sig.get("open_loop_evidence") or "").strip()
+        return ("answer the question they asked"
+                + (f": {ev}" if ev else ""))
+    if sig.get("open_loop_type") == "schedule" or (
+            sig.get("host_open_promise") and sig.get("open_loop_type") == "schedule"):
+        ev = (sig.get("open_loop_evidence") or "").strip()
+        return ("propose concrete times to meet or talk, matching how the thread "
+                "framed it"
+                + (f" ({ev})" if ev else ""))
+    if sig.get("host_open_promise"):
+        kind = sig.get("open_loop_type") or "what was promised"
+        ev = (sig.get("open_loop_evidence") or "").strip()
+        return (f"deliver on the host's open promise ({kind})"
+                + (f": {ev}" if ev else ""))
     if facts.get("latest_update"):
         return (f"react warmly to their recent update ({facts['latest_update']}); "
                 f"lead with that, congratulate, no hard ask")
     if them_last:
+        last = (prior[-1].get("text") or "")
+        low = last.lower()
+        if any(h in low for h in (
+                "coffee", "grab lunch", "find time", "schedule", "meet up",
+                "jump on a call", "quick call", "sync", "call this week")):
+            return ("they invited a meet-up in their last message — propose "
+                    "concrete times or a place, matching how they framed it")
         return "they spoke last -- reply to their most recent message"
     if facts.get("stage") in ("stale", "dormant", "cooling"):
         return "re-engage warmly after time has passed, only with a natural angle"
@@ -358,6 +341,177 @@ def _render_intent(intent: Intent) -> str:
     if (intent.avoid or "").strip():
         parts.append(f"do not: {intent.avoid.strip()}")
     return "; ".join(parts)
+
+
+def _first_nonempty(*parts: str) -> str:
+    for p in parts:
+        s = (p or "").strip()
+        if s:
+            return s
+    return ""
+
+
+# Loose phrase hooks for infer_intent — thread + angle beat directive when they
+# conflict (call vs coffee is per-person; host batch intent is the fallback).
+_SCHEDULE_HINTS = (
+    "book a call", "schedule", "grab coffee", "grab lunch", "find time",
+    "set up time", "catch up", "sync up", "calendar", "meet up", "meet for",
+    "jump on a call", "quick call", "phone call", "video call", "zoom",
+    "coffee chat", "get on a call", "hop on a call", "15 min", "20 min",
+    "30 min",
+)
+_INTRO_HINTS = ("intro", "introduce", "connect you", "connect them", "introduction")
+_ASK_HINTS = (
+    "send the", "send over", "send through", "share the", "pricing", "deck",
+    "proposal", "quote", "one-pager", "case study",
+)
+_CONGRAT_HINTS = (
+    "congrat", "promoted", "promotion", "raised", "funding", "new role",
+    "new job", "milestone", "launch",
+)
+
+
+def _mentions_any(text: str, phrases: tuple[str, ...]) -> bool:
+    low = (text or "").lower()
+    return any(p in low for p in phrases)
+
+
+def _person_move(
+    ctx: dict,
+    *,
+    natural_action: str = "",
+    angle: str = "",
+    sel_reason: str = "",
+) -> str:
+    """Per-person substance from the spine (thread, facts, Phase-2 angle) — what
+    THIS contact specifically warrants, independent of the host's batch chat."""
+    facts = ctx.get("facts") or {}
+    prior = ctx.get("prior_full") or ctx.get("prior") or []
+    sig = _thread_signals(prior)
+    na = (natural_action or "").strip() or _natural_action(ctx)
+    last_them = _first_nonempty(
+        *(m.get("text") for m in reversed(prior) if m.get("who") == "them"))
+    return _first_nonempty(
+        facts.get("next_step"),
+        sig.get("open_loop_evidence"),
+        angle,
+        na,
+        facts.get("latest_update"),
+        last_them,
+        sel_reason,
+    )
+
+
+def _merge_host_and_person(person: str, host: str) -> str:
+    """Combine host batch intent (chatbox / ask-bar) with per-person spine
+    substance. Both apply: the host sets the campaign; the thread/facts set
+    what this message is actually about for THIS contact."""
+    person = (person or "").strip()
+    host = (host or "").strip()
+    if person and host:
+        return (f"For this person: {person}. "
+                f"Host's batch intent (adapt to this thread, never paste "
+                f"verbatim): {host}")
+    return person or host
+
+
+def compose_reason(
+    ctx: dict,
+    sel: Optional[dict] = None,
+    angle: str = "",
+    *,
+    directive: str = "",
+    natural_action: str = "",
+) -> str:
+    """Per-person reach-out line for the composer — merges spine substance AND
+    the host's batch instruction when both are present."""
+    sel = sel or {}
+    person = _person_move(
+        ctx,
+        natural_action=natural_action,
+        angle=angle,
+        sel_reason=(sel.get("reason") or "").strip(),
+    )
+    return _merge_host_and_person(person, directive) or "following up"
+
+
+def infer_intent(
+    ctx: dict,
+    *,
+    angle: str = "",
+    directive: str = "",
+    sel_reason: str = "",
+    natural_action: str = "",
+) -> Intent:
+    """Map host batch intent + per-person spine to an Intent. Thread/facts pick
+    the shape (schedule/reply/…); objective merges BOTH host directive and
+    person-specific move so a network-wide 'follow up' still honing per thread."""
+    facts = ctx.get("facts") or {}
+    prior = ctx.get("prior_full") or ctx.get("prior") or []
+    sig = _thread_signals(prior)
+    thread_text = " ".join(m.get("text") or "" for m in prior)
+    combined = " ".join([
+        directive, angle, sel_reason, natural_action,
+        facts.get("next_step") or "", facts.get("latest_update") or "",
+        thread_text, sig.get("open_loop_evidence") or "",
+    ])
+
+    kind = "followup"
+    if sig.get("contact_open_question") or (
+            prior and prior[-1].get("who") == "them"
+            and "?" in (prior[-1].get("text") or "")):
+        kind = "reply"
+    elif sig.get("open_loop_type") == "schedule" or _mentions_any(
+            " ".join([angle, thread_text, facts.get("next_step") or ""]),
+            _SCHEDULE_HINTS):
+        kind = "schedule"
+    elif _mentions_any(combined, _INTRO_HINTS) or sig.get("open_loop_type") == "intro":
+        kind = "intro"
+    elif facts.get("latest_update") and (
+            _mentions_any(combined, _CONGRAT_HINTS)
+            or not _mentions_any(combined, _SCHEDULE_HINTS + _ASK_HINTS)):
+        kind = "congratulate"
+    elif _mentions_any(
+            " ".join([angle, facts.get("next_step") or "", directive]),
+            _ASK_HINTS) or sig.get("open_loop_type") in ("send_resource",):
+        kind = "ask"
+    elif _mentions_any(directive, _SCHEDULE_HINTS) and not thread_text.strip():
+        kind = "schedule"
+    elif facts.get("stage") in ("stale", "dormant", "cooling"):
+        kind = "reengage"
+    elif _mentions_any(directive, _SCHEDULE_HINTS):
+        kind = "schedule"
+
+    if kind not in INTENT_KINDS:
+        kind = "followup"
+
+    person = _person_move(
+        ctx, natural_action=natural_action, angle=angle, sel_reason=sel_reason)
+    objective = _merge_host_and_person(person, directive)
+    if not objective and kind == "reply":
+        objective = "answer their most recent message directly"
+    return Intent(kind=kind, objective=objective)
+
+
+def compose_inputs(
+    ctx: dict,
+    *,
+    directive: str = "",
+    angle: str = "",
+    sel: Optional[dict] = None,
+    natural_action: str = "",
+) -> tuple[str, Intent]:
+    """Single entry for the relationship agent: reason line + Intent, both fed
+    from host batch intent AND per-person spine context."""
+    sel = sel or {}
+    reason = compose_reason(
+        ctx, sel, angle, directive=directive, natural_action=natural_action)
+    intent = infer_intent(
+        ctx, angle=angle, directive=directive,
+        sel_reason=(sel.get("reason") or "").strip(),
+        natural_action=natural_action,
+    )
+    return reason, intent
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -477,6 +631,9 @@ def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "",
         na = _natural_action(ctx)
         if na:
             lines.append(f"The natural move here: {na}.")
+    summary = (ctx.get("thread_summary") or "").strip()
+    if summary:
+        lines.append(summary + ".")
     lines += [
         "Prior conversation (oldest first; [] means no prior messages):",
         json.dumps(ctx.get("prior") or [], default=str),
@@ -486,10 +643,10 @@ def _user_prompt(ctx: dict, reason: str, channel: str, directive: str = "",
     directive = (directive or "").strip()
     if directive:
         lines.append(
-            f"The host's instruction for this outreach (applies to everyone "
-            f"they're writing to right now): {directive}. Honor it, but adapt it "
-            f"to THIS person using the facts above -- do not paste the same line "
-            f"to everyone.")
+            f"The host's batch instruction for this run: {directive}. "
+            f"It applies together with the per-person goal above — honor BOTH, "
+            f"adapted to this thread; never paste the same line to everyone or "
+            f"ignore what they actually said.")
     return "\n".join(lines) + "\n"
 
 

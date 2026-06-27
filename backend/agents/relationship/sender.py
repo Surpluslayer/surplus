@@ -100,6 +100,9 @@ def send_and_log(
         log_state = "unconfirmed"
     else:
         log_state = "failed"
+    if not res.error:
+        from .thread_reconcile import clear_prospect_next_step_if_fulfilled
+        clear_prospect_next_step_if_fulfilled(prospect, text)
     db.add(models.OutreachLog(
         prospect_id=prospect.id,
         channel="linkedin",
@@ -177,6 +180,9 @@ def send_followup_email(db, prospect, text: str):
         to_name=(getattr(prospect, "name", "") or ""),
         subject=subject, body=format_email_html(text, to_first, host_first),
         prospect_id=prospect.id, reply_to=reply_to)
+    if not res.error:
+        from .thread_reconcile import clear_prospect_next_step_if_fulfilled
+        clear_prospect_next_step_if_fulfilled(prospect, text)
     db.add(models.OutreachLog(
         prospect_id=prospect.id, channel="email", state=res.state,
         body=f"[{subject}] {text}"[:8000], ts=datetime.now(timezone.utc),

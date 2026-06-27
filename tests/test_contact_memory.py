@@ -240,3 +240,40 @@ def test_scan_and_fire_recurring_advances_oneoff_deletes(db):
     assert bday.due_date.year == now.year + 1
     # and it does NOT re-fire on the same day
     assert cm.due_facts(db, now=now, user_id=u.id) == []
+
+
+def test_due_facts_drops_ancient_oneoff_but_keeps_recurring(db):
+    """A one-off whose moment long passed is stale (not actionable); a recurring
+    fact never goes stale. stale_after_days=0 disables the floor."""
+    from datetime import datetime, timezone, timedelta
+    u, c = _contact(db)
+    now = datetime(2026, 6, 27, tzinfo=timezone.utc)
+    cm.upsert_fact(db, u.id, c.id, "flight", "old",
+                   due_date=now - timedelta(days=60), dedup_key="old")
+    cm.upsert_fact(db, u.id, c.id, "flight", "recent",
+                   due_date=now - timedelta(days=5), dedup_key="recent")
+    cm.upsert_fact(db, u.id, c.id, "birthday", "bd",
+                   due_date=now - timedelta(days=60), recurring=True)
+    vals = {f.value for f in cm.due_facts(db, now=now, user_id=u.id)}
+    assert vals == {"recent", "bd"}                       # ancient one-off dropped
+    # floor off -> the ancient one comes back
+    assert "old" in {f.value for f in
+                     cm.due_facts(db, now=now, user_id=u.id, stale_after_days=0)}
+
+
+def test_expire_stale_gcs_ancient_oneoff_only(db):
+    """expire_stale deletes only ancient, never-fired one-offs; recent + recurring
+    facts survive."""
+    from datetime import datetime, timezone, timedelta
+    u, c = _contact(db)
+    now = datetime(2026, 6, 27, tzinfo=timezone.utc)
+    cm.upsert_fact(db, u.id, c.id, "flight", "old",
+                   due_date=now - timedelta(days=60), dedup_key="old")
+    cm.upsert_fact(db, u.id, c.id, "flight", "recent",
+                   due_date=now - timedelta(days=5), dedup_key="recent")
+    cm.upsert_fact(db, u.id, c.id, "birthday", "bd",
+                   due_date=now - timedelta(days=400), recurring=True)
+    assert cm.expire_stale(db, now=now, user_id=u.id) == 1
+    surviving = {(f.key, f.value) for f in cm.get_facts(db, c.id)}
+    assert ("flight", "old") not in surviving
+    assert ("flight", "recent") in surviving and ("birthday", "bd") in surviving

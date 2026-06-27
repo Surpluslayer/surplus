@@ -89,9 +89,12 @@ def run_proactive_sweep(db=None, *, now: Optional[datetime] = None,
         db = SessionLocal()
     try:
         per_user: list[dict] = []
-        tot_contacts = tot_triggers = 0
+        tot_contacts = tot_triggers = tot_expired = 0
         for uid in _user_ids_with_contacts(db):
             try:
+                # GC ancient one-off triggers nobody consumed (collect-only never
+                # fires them), so they don't pile up as zombies in the feed.
+                tot_expired += contact_memory.expire_stale(db, user_id=uid, now=now)
                 contacts_due = cadence.due_contacts(
                     db, uid, now=now, within_days=within_days)
                 if on_due is None:
@@ -112,8 +115,8 @@ def run_proactive_sweep(db=None, *, now: Optional[datetime] = None,
                 per_user.append({"user_id": uid, "contacts_due": len(contacts_due),
                                  "triggers_due": n_trig})
         return {"users": len(per_user), "contacts_due": tot_contacts,
-                "triggers_due": tot_triggers, "fired": on_due is not None,
-                "detail": per_user}
+                "triggers_due": tot_triggers, "expired": tot_expired,
+                "fired": on_due is not None, "detail": per_user}
     finally:
         if own_db:
             db.close()

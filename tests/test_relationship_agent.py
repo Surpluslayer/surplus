@@ -373,6 +373,16 @@ def test_brief_contact_question_drives_answer_action():
     assert b["drafting_risks"] == []                       # contact owes the move, not host
 
 
+def test_brief_stale_capture_next_step_yields_to_thread_promise():
+    ctx = _ctx(
+        summary={"name": "Tom", "relationship_stage": "contacted",
+                 "next_step": "send the pricing deck", "last_touch_at": None},
+        thread=[_msg("host", "Here's the pricing deck you asked for.", days_ago=2)])
+    b = ragent._context_brief({"reason": "next step", "angle": ""}, ctx)
+    assert b["desired_next_step"] is None
+    assert "written next step" not in b["natural_action"]
+
+
 def test_brief_written_next_step_is_the_action_and_desired_step():
     ctx = _ctx(
         summary={"name": "Tom", "relationship_stage": "contacted",
@@ -535,7 +545,7 @@ def test_draft_message_sanitizes_em_dash(db):
     # it and must scrub the rationale it owns.
     res = ragent.run_relationship_agent_concurrent(
         db, u.id, client=client,
-        composer=lambda ctx, reason, channel, intent: {
+        composer=lambda ctx, reason, channel, directive="", intent=None: {
             "subject": None, "body": "Hey Maya, bumping this, still keen?"})
     pr = next(p for p in res.proposals if p.kind == "draft_message")
     assert "—" not in pr.text and "–" not in pr.text
