@@ -70,3 +70,24 @@ def test_sweep_with_on_due_fires_and_consumes(db, monkeypatch):
     assert res["fired"] is True and res["triggers_due"] == 1
     assert seen == [("flight", c.id)]                         # callback got the contact
     assert cm.get_facts(db, c.id, key="flight") == []        # one-off consumed
+
+
+def test_daily_plan_dedupes_trigger_over_cadence(monkeypatch):
+    """The plan merges both sources: a trigger outranks cadence, a contact due for
+    BOTH appears once (as the trigger), and cadence-only contacts rank by overdue."""
+    snap = {
+        "triggers_due": [{"contact_id": 1, "name": "A", "key": "birthday", "value": ""}],
+        "contacts_due": [
+            {"contact_id": 1, "name": "A", "reason": "stale A", "overdue_ratio": 2.0},  # dup
+            {"contact_id": 2, "name": "B", "reason": "stale B", "overdue_ratio": 1.5},
+            {"contact_id": 3, "name": "C", "reason": "stale C", "overdue_ratio": 1.1},
+        ],
+        "counts": {},
+    }
+    monkeypatch.setattr(proactive, "collect_due", lambda db, uid, **k: snap)
+    out = proactive.daily_plan(None, 1)
+    plan = out["plan"]
+    assert [p["contact_id"] for p in plan] == [1, 2, 3]       # trigger first, then by overdue desc
+    assert plan[0]["kind"] == "trigger" and "birthday" in plan[0]["reason"]
+    assert sum(1 for p in plan if p["contact_id"] == 1) == 1  # contact 1 deduped
+    assert plan[1]["kind"] == "cadence" and out["count"] == 3

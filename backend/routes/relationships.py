@@ -565,6 +565,20 @@ def relationship_due(
                                  cadence_limit=limit)
 
 
+@router.get("/plan")
+def relationship_plan(
+    within_days: int = 1,
+    limit: int = 25,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Today's outreach plan: one deduplicated, prioritized list across cadence +
+    dated triggers. A birthday outranks staleness; a contact due for both shows
+    once. The single 'who should I reach out to' surface for the UI/harness."""
+    from ..agents.relationship import proactive
+    return proactive.daily_plan(db, user.id, within_days=within_days, limit=limit)
+
+
 @router.get("/_status")
 def relationship_status(
     db: Session = Depends(get_db),

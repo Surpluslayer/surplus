@@ -65,6 +65,54 @@ def collect_due(db, user_id: int, *, now: Optional[datetime] = None,
     }
 
 
+# How a dated trigger reads as a one-line "why reach out". Unknown keys fall back
+# to a generic phrasing so a new fact kind never breaks the plan.
+_TRIGGER_PHRASES = {
+    "birthday": "It's {name}'s birthday",
+    "work_anniversary": "{name}'s work anniversary",
+    "upcoming_travel": "{name} has upcoming travel: {value}",
+    "flight": "{name} has an upcoming flight: {value}",
+}
+
+
+def _trigger_reason(t: dict) -> str:
+    name = t.get("name") or "They"
+    phrase = _TRIGGER_PHRASES.get(t.get("key"), "{name}: {key} ({value})")
+    return phrase.format(name=name, key=t.get("key"),
+                         value=(t.get("value") or "")).strip()
+
+
+def daily_plan(db, user_id: int, *, now: Optional[datetime] = None,
+               within_days: int = 1, limit: int = 25) -> dict:
+    """The unified 'who to reach out to' list, DEDUPED + prioritized.
+
+    Merges the two proactive sources into one action list: a DATED trigger (a
+    birthday today) outranks CADENCE staleness, and a contact due for BOTH appears
+    ONCE with the trigger as the reason. Each item: contact_id, name, kind
+    (trigger|cadence), reason, priority (0 = trigger, 1 = cadence). Read-only;
+    `within_days` lets 'today's plan' include tomorrow's dated triggers."""
+    snap = collect_due(db, user_id, now=now, within_days=within_days,
+                       cadence_limit=max(limit, 50))
+    plan: dict = {}
+    for t in snap["triggers_due"]:
+        cid = t.get("contact_id")
+        if cid is None or cid in plan:
+            continue
+        plan[cid] = {"contact_id": cid, "name": t.get("name"), "kind": "trigger",
+                     "trigger": t.get("key"), "reason": _trigger_reason(t),
+                     "priority": 0, "overdue_ratio": None}
+    for c in snap["contacts_due"]:
+        cid = c.get("contact_id")
+        if cid is None or cid in plan:       # a trigger already claimed this contact
+            continue
+        plan[cid] = {"contact_id": cid, "name": c.get("name"), "kind": "cadence",
+                     "trigger": None, "reason": c.get("reason"),
+                     "priority": 1, "overdue_ratio": c.get("overdue_ratio")}
+    items = sorted(plan.values(),
+                   key=lambda x: (x["priority"], -(x["overdue_ratio"] or 0.0)))
+    return {"count": len(items), "plan": items[:limit]}
+
+
 def _user_ids_with_contacts(db) -> list[int]:
     rows = db.query(models.Contact.user_id).distinct().all()
     return [r[0] for r in rows if r[0] is not None]
