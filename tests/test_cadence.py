@@ -74,3 +74,51 @@ def test_due_contacts_safe_empty_on_read_error(monkeypatch):
         raise RuntimeError("db down")
     monkeypatch.setattr(cadence.relationships, "list_contacts", boom)
     assert cadence.due_contacts(None, 1) == []
+
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from backend import models
+from backend.db import Base
+
+
+@pytest.fixture
+def db():
+    engine = create_engine("sqlite:///:memory:",
+                           connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
+    try:
+        yield s
+    finally:
+        s.close()
+
+
+def test_snooze_suppresses_then_expires_then_unsnooze(db, monkeypatch):
+    u = models.User(name="Host", email="h@x.com", unipile_account_id="a1")
+    db.add(u); db.commit()
+    c1 = models.Contact(user_id=u.id, primary_identity_key="li:a", name="A")
+    c2 = models.Contact(user_id=u.id, primary_identity_key="li:b", name="B")
+    db.add_all([c1, c2]); db.commit()
+    now = datetime(2026, 6, 27, tzinfo=timezone.utc)
+    monkeypatch.setattr(cadence.relationships, "list_contacts", lambda db, uid: [c1, c2])
+    monkeypatch.setattr(cadence.relationships, "prefetch_interactions_by_prospect",
+                        lambda db, cs: {})
+    monkeypatch.setattr(cadence.relationships, "prefetch_activity_updates_by_contact",
+                        lambda db, cs: {})
+    monkeypatch.setattr(cadence.relationships, "contact_summary",
+                        lambda db, c, ii, au: {"contact_id": c.id, "name": c.name,
+                                               "relationship_stage": "captured",
+                                               "last_touch_at": now - timedelta(days=400)})
+
+    def due_ids(at):
+        return {r["contact_id"] for r in cadence.due_contacts(db, u.id, now=at)}
+
+    assert due_ids(now) == {c1.id, c2.id}                 # both overdue
+    cadence.snooze_contact(db, u.id, c1.id, days=30, now=now)
+    assert due_ids(now) == {c2.id}                        # c1 dismissed
+    assert due_ids(now + timedelta(days=31)) == {c1.id, c2.id}   # snooze expired -> back
+    cadence.snooze_contact(db, u.id, c1.id, days=30, now=now)
+    assert cadence.unsnooze_contact(db, u.id, c1.id) is True
+    assert due_ids(now) == {c1.id, c2.id}                 # cleared -> back immediately

@@ -88,9 +88,12 @@ def due_contacts(db, user_id: int, *, now: Optional[datetime] = None,
         return []
     inter_index = relationships.prefetch_interactions_by_prospect(db, contacts)
     update_index = relationships.prefetch_activity_updates_by_contact(db, contacts)
+    snoozed = _snoozed_contact_ids(db, user_id, now=now)
 
     out: list[dict] = []
     for c in contacts:
+        if c.id in snoozed:
+            continue  # dismissed "not now" -> suppressed until the snooze expires
         s = relationships.contact_summary(db, c, inter_index, update_index.get(c.id))
         lt = s.get("last_touch_at")
         if lt is None:
@@ -105,3 +108,55 @@ def due_contacts(db, user_id: int, *, now: Optional[datetime] = None,
 
     out.sort(key=lambda r: (r["overdue_ratio"] or 0.0), reverse=True)
     return out[:limit] if limit else out
+
+
+# ── snooze / dismiss ──────────────────────────────────────────────────────────
+# A snooze suppresses a contact from the CADENCE feed (relationship maintenance)
+# until a date -- "not now", without sending. Stored as a ContactFact whose VALUE is
+# the until-timestamp (NOT due_date, so it never leaks into the dated-trigger feed).
+# Cadence-only: a snoozed contact's birthday trigger still surfaces.
+_SNOOZE_KEY = "cadence_snooze"
+
+
+def _parse_iso(s: str) -> Optional[datetime]:
+    try:
+        dt = datetime.fromisoformat((s or "").strip())
+    except (ValueError, TypeError):
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _snoozed_contact_ids(db, user_id: int, *, now: datetime) -> set:
+    """Contact ids with an ACTIVE snooze (until-value still in the future).
+    Best-effort: a read failure just means nothing is suppressed."""
+    from ... import models
+    try:
+        rows = (db.query(models.ContactFact)
+                .filter(models.ContactFact.user_id == user_id,
+                        models.ContactFact.key == _SNOOZE_KEY).all())
+    except Exception:  # noqa: BLE001
+        return set()
+    out = set()
+    for r in rows:
+        until = _parse_iso(r.value)
+        if until is not None and until > now:
+            out.add(r.contact_id)
+    return out
+
+
+def snooze_contact(db, user_id: int, contact_id: int, *, days: int = 30,
+                   now: Optional[datetime] = None) -> dict:
+    """Suppress a contact from the cadence feed until now+days. Idempotent (upsert)."""
+    from datetime import timedelta
+    from .contact_memory import upsert_fact
+    now = now or datetime.now(timezone.utc)
+    until = now + timedelta(days=max(days, 1))
+    upsert_fact(db, user_id, contact_id, _SNOOZE_KEY, until.isoformat(),
+                source="user", confidence="high")
+    return {"contact_id": contact_id, "snoozed_until": until.isoformat(), "days": days}
+
+
+def unsnooze_contact(db, user_id: int, contact_id: int) -> bool:
+    """Clear a snooze so the contact can surface in the cadence feed again."""
+    from .contact_memory import delete_fact
+    return delete_fact(db, contact_id, _SNOOZE_KEY)

@@ -605,6 +605,32 @@ def contacts_dedup(
     return contact_dedup.dedup_user(db, user.id, dry_run=not apply)
 
 
+@router.post("/contacts/{contact_id}/snooze")
+def snooze_contact_endpoint(
+    contact_id: int,
+    days: int = 30,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Dismiss a contact from the cadence due-feed for `days` ('not now', no send).
+    Their dated triggers (birthday) still surface. Owner-scoped (404 if not owned)."""
+    _owned_contact(db, contact_id, user)
+    from ..agents.relationship import cadence
+    return cadence.snooze_contact(db, user.id, contact_id, days=days)
+
+
+@router.delete("/contacts/{contact_id}/snooze")
+def unsnooze_contact_endpoint(
+    contact_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Clear a contact's cadence snooze so they can surface again. Owner-scoped."""
+    _owned_contact(db, contact_id, user)
+    from ..agents.relationship import cadence
+    return {"cleared": cadence.unsnooze_contact(db, user.id, contact_id)}
+
+
 @router.get("/contacts/{contact_id}")
 def contact_detail(
     contact_id: int,
