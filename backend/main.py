@@ -25,7 +25,7 @@ from .routes import (
     # shared
     auth, billing, demo, webhooks, admin,
     # relationship side (the phone-first "book" / CRM)
-    book, relationships, inperson, followups,
+    book, relationships, inperson, followups, integrations,
     # events side (the desktop event-ROI pipeline)
     events, pipeline, matching, roi, triage, curation, jobs,
 )
@@ -123,6 +123,7 @@ app.include_router(book.router)            # Today feed, drafts, ask-agent
 app.include_router(relationships.router)   # contact spine, star/VIP, imports, updates
 app.include_router(inperson.router)        # phone capture (QR / paste / manual)
 app.include_router(followups.router)       # scheduled follow-up queue
+app.include_router(integrations.router)    # OAuth source connectors (Google ...)
 
 # ── EVENTS side: the desktop event-ROI pipeline (www.surpluslayer.com) ───────
 app.include_router(events.router)          # 01 intake

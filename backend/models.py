@@ -1135,3 +1135,31 @@ class ScheduledFollowup(Base):
     sent_at: Mapped[Optional[datetime]] = mapped_column(default=None)
 
     prospect: Mapped["Prospect"] = relationship()
+
+
+class ConnectedAccount(Base):
+    """A host's OAuth connection to an external SOURCE (Google = Gmail + Calendar
+    today; Zoom etc. later) that surplus polls for relationship context. One row per
+    (user, provider, account_email). Holds the refreshable OAuth tokens.
+
+    SECURITY (v1): access_token / refresh_token are stored in PLAINTEXT --
+    `cryptography` isn't a dependency yet. BEFORE any production use, encrypt both at
+    rest (Fernet keyed off an env secret). Tracked as a hardening follow-up."""
+    __tablename__ = "connected_accounts"
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider", "account_email",
+                         name="uq_connected_account"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(40), index=True)        # "google"
+    account_email: Mapped[str] = mapped_column(String(200), default="")
+    access_token: Mapped[str] = mapped_column(Text, default="")
+    refresh_token: Mapped[str] = mapped_column(Text, default="")
+    token_expiry: Mapped[Optional[datetime]] = mapped_column(default=None)
+    scopes: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
