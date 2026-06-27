@@ -549,6 +549,22 @@ def contacts_due(
     return {"count": len(rows), "due_contacts": rows}
 
 
+@router.get("/due")
+def relationship_due(
+    within_days: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """The unified PROACTIVE feed: everything due for the caller right now --
+    relationship maintenance (cadence) + dated triggers (birthday, an upcoming
+    flight). Read-only; consumes nothing. The surface the UI and the harness pull
+    to decide who to reach out to. `within_days` looks ahead."""
+    from ..agents.relationship import proactive
+    return proactive.collect_due(db, user.id, within_days=within_days,
+                                 cadence_limit=limit)
+
+
 @router.get("/contacts/{contact_id}")
 def contact_detail(
     contact_id: int,

@@ -119,6 +119,14 @@ def _run_once() -> dict:
         except Exception as exc:  # noqa: BLE001
             print(f"[updates.scheduler] demo purge failed: {type(exc).__name__}: {exc}",
                   flush=True)
+    # Proactive sweep (cadence + dated triggers) on its OWN claim, so it runs even
+    # when the updates sweep is claimed elsewhere or finds nothing due.
+    try:
+        from .proactive import run_claimed_proactive_sweep
+        run_claimed_proactive_sweep()
+    except Exception as exc:  # noqa: BLE001 : never let it sink the updates tick
+        print(f"[updates.scheduler] proactive sweep error: "
+              f"{type(exc).__name__}: {exc}", flush=True)
     if not _claim("updates_sweep", _gap_seconds()):
         _LAST_TICK = {"at": stamp, "ran": False, "reason": "not due / claimed elsewhere"}
         return _LAST_TICK
