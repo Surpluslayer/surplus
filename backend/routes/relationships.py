@@ -591,6 +591,20 @@ def relationship_status(
     return observability.relationship_status(db, user.id)
 
 
+@router.post("/contacts/dedup")
+def contacts_dedup(
+    apply: bool = False,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Find (and with apply=true, MERGE) duplicate Contacts -- the same person split
+    across LinkedIn/email identities -- into one canonical row, reassigning every
+    prospect/interaction/fact so the gather reads one clean timeline. Owner-scoped.
+    Defaults to a DRY RUN (report only); pass apply=true to actually merge."""
+    from ..agents.relationship import contact_dedup
+    return contact_dedup.dedup_user(db, user.id, dry_run=not apply)
+
+
 @router.get("/contacts/{contact_id}")
 def contact_detail(
     contact_id: int,
