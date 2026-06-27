@@ -100,6 +100,41 @@ def test_updates_engine_change_upserts_state_facts(db):
     assert company[0].source == "linkedin"
 
 
+def test_promotion_same_company_emits_update_and_upserts_title(db):
+    """A NEW title at the SAME company emits a 'promotion' update (the company-only
+    diff used to miss this) and upserts the new current-state title fact. No
+    job_change fires because the employer didn't move."""
+    from backend.agents.relationship import updates_engine
+    u, c = _contact(db)
+    c.profile_baselined_at = None
+    db.commit()
+    updates_engine.apply_profile(db, c, {"company": "TechCorp", "title": "Engineer"})
+    db.commit()
+    changes = updates_engine.apply_profile(
+        db, c, {"company": "TechCorp", "title": "Staff Engineer"})
+    db.commit()
+    assert [ch["type"] for ch in changes] == ["promotion"]
+    ri = (db.query(models.RelationshipInteraction)
+          .filter_by(contact_id=c.id, interaction_type="promotion").one())
+    assert "Staff Engineer" in ri.summary and "was Engineer" in ri.summary
+    assert cm.get_facts(db, c.id, key="title")[0].value == "Staff Engineer"
+    assert (db.query(models.RelationshipInteraction)
+            .filter_by(contact_id=c.id, interaction_type="job_change").count() == 0)
+
+
+def test_no_promotion_when_title_unchanged(db):
+    """Re-scraping the same title at the same company emits nothing (no churn)."""
+    from backend.agents.relationship import updates_engine
+    u, c = _contact(db)
+    c.profile_baselined_at = None
+    db.commit()
+    updates_engine.apply_profile(db, c, {"company": "TechCorp", "title": "VP Eng"})
+    db.commit()
+    changes = updates_engine.apply_profile(
+        db, c, {"company": "TechCorp", "title": "VP Eng"})
+    assert changes == []
+
+
 def test_updates_engine_captures_about_as_low_confidence(db):
     """The LinkedIn About is captured on every scrape as a LOW-confidence fact
     (optional color), no migration needed -- it just lives in the fact store."""

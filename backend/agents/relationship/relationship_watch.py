@@ -35,6 +35,7 @@ from ... import models
 # Human labels for the timeline item title (summary carries the specifics).
 _TITLES = {
     "job_change": "Changed roles",
+    "promotion": "Promoted",
     "profile_update": "Updated profile",
     "new_post": "New LinkedIn post",
 }

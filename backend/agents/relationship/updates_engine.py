@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 
 from ... import models
 from . import updates_watch
-from .relationship_watch import _emit, _changed, _now
+from .relationship_watch import _emit, _changed, _norm, _now
 
 # --- cadence (tiered by the ⭐ vip flag) -----------------------------------
 _VIP_DAYS = max(1, int(os.environ.get("UPDATES_VIP_EVERY_DAYS", "1")))
@@ -172,6 +172,22 @@ def apply_profile(db, contact: models.Contact, profile: dict) -> list[dict]:
         _store_profile_facts(db, contact, new_company, new_title)
         changes.append(change)
         # autodraft fires inside _emit now (covers every watcher).
+    elif new_title and _changed(getattr(contact, "headline", None), new_title):
+        # Same employer, NEW title -> a promotion / role change. The company-only
+        # diff above used to miss this entirely, dropping a real congrats-worthy
+        # signal. Emit it as its own "promotion" update (auto-drafted in _emit).
+        prev_title = _norm(getattr(contact, "headline", None))
+        company = (getattr(contact, "company", None) or "").strip()
+        summary = ("Now " + new_title
+                   + (f" at {company}" if company and company.lower() != "unknown" else "")
+                   + (f" (was {prev_title})" if prev_title else ""))
+        change = _emit(db, contact, "promotion", summary,
+                       {"new_title": new_title, "prev_title": prev_title,
+                        "company": company, "source": "brightdata"})
+        contact.headline = new_title[:300]
+        # State change: upsert the new current-state title fact (company unchanged).
+        _store_profile_facts(db, contact, company, new_title)
+        changes.append(change)
     contact.watched_at = _now()
     return changes
 
