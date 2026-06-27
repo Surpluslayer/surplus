@@ -565,6 +565,18 @@ def relationship_due(
                                  cadence_limit=limit)
 
 
+@router.get("/_status")
+def relationship_status(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Health snapshot of the deterministic relationship layer for the caller:
+    fact-store coverage, the proactive due queue, automation-flag state, scheduler
+    heartbeats. A development/debugging surface for 'what does the agent know?'."""
+    from ..agents.relationship import observability
+    return observability.relationship_status(db, user.id)
+
+
 @router.get("/contacts/{contact_id}")
 def contact_detail(
     contact_id: int,
