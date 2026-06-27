@@ -345,6 +345,18 @@ def test_thread_signals_brandnew_obligation_not_yet_due():
     assert sig["followup_due"] is False
 
 
+def test_thread_signals_email_when_string_does_not_crash():
+    """Email merge stores `when` as an ISO string (Unipile date); LinkedIn uses
+    datetime occurred_at. _days_since must parse both."""
+    sig = ragent._thread_signals([
+        {"when": "2026-05-20", "who": "them", "channel": "email",
+         "text": "Dear host, it was a pleasure."},
+    ])
+    assert sig["last_message_from"] == "contact"
+    assert sig["last_message_age_days"] is not None
+    assert sig["awaiting_host_reply"] is True
+
+
 # ── _context_brief : the deterministic Phase-2 pre-read ───────────────────────
 # Pure function of (sel, ctx). Adds NO LLM call; every field is derived from the
 # thread signals + rollup summary already in ctx. These pin that the brief never

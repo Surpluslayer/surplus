@@ -229,6 +229,11 @@ def _thread_from_timeline(timeline: list[dict]) -> list[dict]:
 
 
 def _days_since(dt: Any) -> Optional[int]:
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt.strip())
+        except ValueError:
+            return None
     aware = relationships._as_aware(dt)
     if aware is None:
         return None
