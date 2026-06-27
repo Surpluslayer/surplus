@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from collections import Counter
 
-from ... import models
-from . import proactive
-from .sender import _automated_channels, _automation_master_on
-from .updates_scheduler import last_tick as _updates_last_tick
+from .... import models
+from ..pipeline.proactive import sweep as proactive
+from ..pipeline.send.sender import _automated_channels, _automation_master_on
+from ..updates_scheduler import last_tick as _updates_last_tick
 
 
 def _fact_stats(db, user_id: int) -> dict:

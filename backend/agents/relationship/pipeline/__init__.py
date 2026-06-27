@@ -6,6 +6,7 @@ Stages (in order):
   3. agent     — triage + Phase-2 decide (angle / skip / next_step)
   4. compose   — shared message composer (voice + thread → body)
   5. send      — route outbound + persist (clear fulfilled next_step)
+  proactive  — cadence + dated triggers (who's due, read-only feed)
 
 Import paths at ``relationship.*`` remain as backward-compatible shims.
 """
