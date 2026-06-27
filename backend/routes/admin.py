@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
 
 from .. import models
-from ..agents.relationship.sender import send_and_log
+from ..agents.relationship.pipeline.send.sender import send_and_log
 from ..auth import _as_aware_utc
 from ..db import get_db
 from ..providers import (
@@ -134,7 +134,7 @@ def _auto_send_enabled(prospect: models.Prospect, channel: str = "linkedin") -> 
     event = getattr(prospect, "event", None)
     owner = getattr(event, "user", None) if event is not None else None
     # Per-host toggle AND the channel-aware automation gate -- both required.
-    from ..agents.relationship.sender import automated_send_enabled
+    from ..agents.relationship.pipeline.send.sender import automated_send_enabled
     return (bool(getattr(owner, "auto_followups_enabled", False))
             and automated_send_enabled(channel))
 
@@ -194,7 +194,7 @@ def run_followups(
 
         try:
             if (getattr(row, "channel", "") or "linkedin") == "email":
-                from ..agents.relationship.sender import send_followup_email
+                from ..agents.relationship.pipeline.send.sender import send_followup_email
                 res = send_followup_email(db, prospect, text)
             else:
                 res = send_and_log(

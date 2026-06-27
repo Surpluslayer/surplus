@@ -467,7 +467,7 @@ def test_master_flag_default_off_opt_in():
     """The master automation flag is OFF by default for everyone (automated
     sending is opt-in); only the truthy env spellings turn it on."""
     import os
-    from backend.agents.relationship.sender import automated_sends_enabled
+    from backend.agents.relationship.pipeline.send.sender import automated_sends_enabled
     os.environ.pop("SURPLUS_AUTOMATED_SENDS", None)
     assert automated_sends_enabled() is False           # default OFF for everyone
     for off in ("false", "0", "no", "off", ""):
@@ -482,7 +482,7 @@ def test_master_flag_default_off_opt_in():
 def test_channel_allowlist_routes_auto_fire(monkeypatch):
     """Auto-fire is keyed to the CHANNEL: master on + an allowlist narrows which
     transports fire; the rest draft-for-review. Allowlist unset = all channels."""
-    from backend.agents.relationship.sender import automated_send_enabled
+    from backend.agents.relationship.pipeline.send.sender import automated_send_enabled
     # master off -> nothing fires regardless of channel
     monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "false")
     assert automated_send_enabled("whatsapp") is False
@@ -520,7 +520,7 @@ def test_master_flag_off_blocks_auto_dm(db, user, monkeypatch):
 
 def test_route_and_send_warm_path_uses_send_message(db, user, monkeypatch):
     from backend.providers.unipile import UnipileProvider
-    from backend.agents.relationship.send_flow import route_and_send
+    from backend.agents.relationship.pipeline.send.flow import route_and_send
     from backend.routes.inperson import scan_capture, ScanIn
     # Force a warm relation.
     monkeypatch.setattr(UnipileProvider, "is_relation", lambda self, url: True)

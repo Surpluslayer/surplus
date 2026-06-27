@@ -18,7 +18,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend import models
-from backend.agents.relationship.sender import send_and_log
+from backend.agents.relationship.pipeline.send.sender import send_and_log
 from backend.db import Base
 from backend.jsonx import extract_json
 from backend.providers import (

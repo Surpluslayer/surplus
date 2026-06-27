@@ -1,7 +1,7 @@
 """Unit tests for composer context wiring: compose_reason + infer_intent."""
 from __future__ import annotations
 
-from backend.agents.relationship.drafting import (
+from backend.agents.relationship.pipeline.compose.drafting import (
     _natural_action,
     compose_inputs,
     compose_reason,

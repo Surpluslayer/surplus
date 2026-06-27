@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from .contact_memory import due_facts, mark_fired
+from .spine.memory import due_facts, mark_fired
 
 
 def _now() -> datetime:

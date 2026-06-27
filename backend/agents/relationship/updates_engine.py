@@ -84,7 +84,7 @@ def autodraft(db, contact: models.Contact, change: dict) -> None:
         return
     try:
         import json
-        from . import drafting
+        from .pipeline.compose import drafting
         # Resolve the interaction this change emitted FIRST (cheap), so we can
         # skip the LLM entirely if it already has a draft (idempotent re-calls).
         # Session is autoflush=False -> flush so a just-emitted row is queryable.
@@ -197,7 +197,7 @@ def _store_profile_facts(db, contact, company: str, title: str) -> None:
     the knowledge store). Best-effort + commit=False : the caller's sweep owns
     the transaction, and a fact-write must never break the update path."""
     try:
-        from .contact_memory import upsert_fact
+        from .spine.memory import upsert_fact
         if company:
             upsert_fact(db, contact.user_id, contact.id, "company", company,
                         source="linkedin", confidence="high", commit=False)
@@ -212,7 +212,7 @@ def _store_about(db, contact, about: str) -> None:
     """Upsert the contact's LinkedIn About as LOW-confidence color -- optional
     grounding the draft may use, never asserted. Best-effort, commit=False."""
     try:
-        from .contact_memory import upsert_fact
+        from .spine.memory import upsert_fact
         upsert_fact(db, contact.user_id, contact.id, "about", about[:2000],
                     source="linkedin", confidence="low", commit=False)
     except Exception as exc:  # noqa: BLE001

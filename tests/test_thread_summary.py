@@ -1,8 +1,8 @@
 """Tests for LLM rolling thread summaries (cache + fallback)."""
 from __future__ import annotations
 
-from backend.agents.relationship.thread_reconcile import window_thread
-from backend.agents.relationship.thread_summary import (
+from backend.agents.relationship.pipeline.context.reconcile import window_thread
+from backend.agents.relationship.pipeline.context.summary import (
     _fingerprint,
     summarize_older_messages,
     window_and_summarize,

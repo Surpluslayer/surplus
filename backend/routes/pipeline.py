@@ -342,7 +342,7 @@ def outreach_preview(
 
 # Re-exported from the shared send helper : kept importable here because
 # /check-connections (below) and the historical call sites reference it.
-from ..agents.relationship.send_flow import _refresh_connection_status, route_and_send
+from ..agents.relationship.pipeline.send.flow import _refresh_connection_status, route_and_send
 
 
 @router.post("/{event_id}/prospects/{prospect_id}/invite")

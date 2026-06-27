@@ -15,9 +15,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .relationship_agent import _thread_from_timeline
-from .relationships import contact_timeline
-from .contact_memory import upsert_fact
+from .pipeline.context.gather import thread_from_timeline as _thread_from_timeline
+from .spine.relationships import contact_timeline
+from .spine.memory import upsert_fact
 
 # Real two-way messaging channels. A capture/note/manual row isn't a channel
 # someone "replies on", so it doesn't count toward channel preference.

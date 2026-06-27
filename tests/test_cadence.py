@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
 
-from backend.agents.relationship import cadence
+from backend.agents.relationship.pipeline.proactive import cadence
 
 
 def test_cadence_days_vip_active_loose():

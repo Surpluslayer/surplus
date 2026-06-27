@@ -20,7 +20,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend import models
 from backend.db import Base
-from backend.agents.relationship import relationships as rel
+from backend.agents.relationship.spine import relationships as rel
 from backend.routes import relationships as rel_route
 
 
@@ -244,7 +244,7 @@ def test_send_and_log_auto_links_contact_on_success(db):
     """A successful outbound send is a real touch -> the recipient lands on the
     spine (dry-run send still records success)."""
     from backend.providers import UnipileProvider
-    from backend.agents.relationship.sender import send_and_log
+    from backend.agents.relationship.pipeline.send.sender import send_and_log
 
     u = _user(db)
     ev = _event(db, u)
@@ -262,7 +262,7 @@ def test_send_and_log_batched_commit_false_does_not_link(db):
     """When the caller batches (commit=False, e.g. the cron follow-up) we must
     NOT auto-link : link_contact commits internally and would break the batch."""
     from backend.providers import UnipileProvider
-    from backend.agents.relationship.sender import send_and_log
+    from backend.agents.relationship.pipeline.send.sender import send_and_log
 
     u = _user(db)
     ev = _event(db, u)

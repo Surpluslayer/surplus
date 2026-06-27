@@ -17,8 +17,8 @@ from sqlalchemy.orm import sessionmaker
 from backend import models
 from backend.db import Base
 from backend.routes import relationships as rel_route
-from backend.agents.relationship import relationship_agent as ragent
-from backend.agents.relationship.relationship_agent import Proposal, RelationshipAgentResult
+from backend.agents.relationship.pipeline.agent import run as ragent
+from backend.agents.relationship.pipeline.agent.run import Proposal, RelationshipAgentResult
 
 
 @pytest.fixture

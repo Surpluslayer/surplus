@@ -1,7 +1,7 @@
 """Tests for spine-vs-thread reconciliation (stale next_step filtering)."""
 from __future__ import annotations
 
-from backend.agents.relationship.thread_reconcile import (
+from backend.agents.relationship.pipeline.context.reconcile import (
     apply_to_facts,
     clear_prospect_next_step_if_fulfilled,
     message_addresses_obligation,

@@ -32,7 +32,7 @@ from typing import Optional
 
 from .. import voice
 from .book import _llm_json
-from .drafting import _natural_action, compose_from_context, Intent
+from .pipeline.compose.drafting import _natural_action, compose_from_context, Intent
 
 # ── the scenario set ─────────────────────────────────────────────────────────
 # Each case is a self-contained context (synthetic, so the eval is reproducible

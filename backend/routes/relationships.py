@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from .. import billing_plans as bp
 from .. import models
-from ..agents.relationship import relationships
+from ..agents.relationship.spine import relationships
 from ..auth import current_user
 from ..db import SessionLocal, get_db
 
@@ -239,7 +239,7 @@ def send_contact_email(
             raise HTTPException(
                 409, "connect your email in Integrations before sending")
 
-    from ..agents.relationship.send_flow import _assert_no_recent_send
+    from ..agents.relationship.pipeline.send.flow import _assert_no_recent_send
     if not provider.dry_run:
         _assert_no_recent_send(db, prospect, channel="email")
 
@@ -391,7 +391,7 @@ def import_conversations(
     """Seed the Book from the user's genuine LinkedIn DM conversations (people
     they actually replied to and had an active back-and-forth with). Idempotent
     -- re-runs only add new people. Uses the user's OWN connected account."""
-    from ..agents.relationship.relationships import import_conversation_contacts
+    from ..agents.relationship.spine.relationships import import_conversation_contacts
     return import_conversation_contacts(db, user, want=max(1, min(want, 30)))
 
 
@@ -544,7 +544,7 @@ def contacts_due(
 
     Declared BEFORE /contacts/{contact_id} so the literal 'due' isn't captured by
     the int path param. Owner-scoped."""
-    from ..agents.relationship import cadence
+    from ..agents.relationship.pipeline.proactive import cadence
     rows = cadence.due_contacts(db, user.id, within_days=within_days, limit=limit)
     return {"count": len(rows), "due_contacts": rows}
 
@@ -560,7 +560,7 @@ def relationship_due(
     relationship maintenance (cadence) + dated triggers (birthday, an upcoming
     flight). Read-only; consumes nothing. The surface the UI and the harness pull
     to decide who to reach out to. `within_days` looks ahead."""
-    from ..agents.relationship import proactive
+    from ..agents.relationship.pipeline import proactive
     return proactive.collect_due(db, user.id, within_days=within_days,
                                  cadence_limit=limit)
 
@@ -575,7 +575,7 @@ def relationship_plan(
     """Today's outreach plan: one deduplicated, prioritized list across cadence +
     dated triggers. A birthday outranks staleness; a contact due for both shows
     once. The single 'who should I reach out to' surface for the UI/harness."""
-    from ..agents.relationship import proactive
+    from ..agents.relationship.pipeline import proactive
     return proactive.daily_plan(db, user.id, within_days=within_days, limit=limit)
 
 
@@ -601,7 +601,7 @@ def contacts_dedup(
     across LinkedIn/email identities -- into one canonical row, reassigning every
     prospect/interaction/fact so the gather reads one clean timeline. Owner-scoped.
     Defaults to a DRY RUN (report only); pass apply=true to actually merge."""
-    from ..agents.relationship import contact_dedup
+    from ..agents.relationship.spine import dedup as contact_dedup
     return contact_dedup.dedup_user(db, user.id, dry_run=not apply)
 
 
@@ -615,7 +615,7 @@ def snooze_contact_endpoint(
     """Dismiss a contact from the cadence due-feed for `days` ('not now', no send).
     Their dated triggers (birthday) still surface. Owner-scoped (404 if not owned)."""
     _owned_contact(db, contact_id, user)
-    from ..agents.relationship import cadence
+    from ..agents.relationship.pipeline.proactive import cadence
     return cadence.snooze_contact(db, user.id, contact_id, days=days)
 
 
@@ -627,7 +627,7 @@ def unsnooze_contact_endpoint(
 ):
     """Clear a contact's cadence snooze so they can surface again. Owner-scoped."""
     _owned_contact(db, contact_id, user)
-    from ..agents.relationship import cadence
+    from ..agents.relationship.pipeline.proactive import cadence
     return {"cleared": cadence.unsnooze_contact(db, user.id, contact_id)}
 
 
@@ -735,7 +735,7 @@ def relationship_chat(
     is sent here — the host approves a draft separately via the followup route,
     which is where the auto-send toggle is honored. Owner-scoped."""
     _enforce_relationship_quota(db, user)
-    from ..agents.relationship.relationship_agent import (
+    from ..agents.relationship.pipeline.agent.run import (
         run_relationship_agent_concurrent as _run)
     res = _run(db, user.id, instruction=(body.message or "").strip())
     _record_relationship_usage(db, user, res)
@@ -805,7 +805,7 @@ def relationship_chat_stream(
     # surface as an SSE `error` frame after the connection is already open.
     _enforce_relationship_quota(db, user)
 
-    from ..agents.relationship.relationship_agent import (
+    from ..agents.relationship.pipeline.agent.run import (
         run_relationship_agent_concurrent as _run)
 
     user_id = user.id
@@ -922,7 +922,7 @@ def send_contact_followup(
                 "prospect_id": prospect.id, "message": text}
 
     # Toggle on: send through the same path the follow-up cron uses.
-    from ..agents.relationship.sender import send_and_log
+    from ..agents.relationship.pipeline.send.sender import send_and_log
     from ..providers import get_provider
     try:
         res = send_and_log(
@@ -989,7 +989,7 @@ def schedule_contact_followup(
     want_email = (getattr(body, "channel", "") or "linkedin") == "email"
     if send_at is None or send_at <= now:
         if want_email:
-            from ..agents.relationship.sender import send_followup_email
+            from ..agents.relationship.pipeline.send.sender import send_followup_email
             try:
                 res = send_followup_email(db, prospect, text)
             except ValueError as exc:
@@ -1000,7 +1000,7 @@ def schedule_contact_followup(
             return {"status": "sent", "contact_id": contact_id,
                     "prospect_id": prospect.id, "channel": "email",
                     "dry_run": res.dry_run}
-        from ..agents.relationship.sender import send_and_log
+        from ..agents.relationship.pipeline.send.sender import send_and_log
         from ..providers import get_provider
         try:
             res = send_and_log(db, prospect, text, sent_state="follow_up_sent",

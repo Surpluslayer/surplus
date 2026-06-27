@@ -93,7 +93,7 @@ def daily_plan(db, user_id: int, *, now: Optional[datetime] = None,
     ONCE with the trigger as the reason. Each item: contact_id, name, kind
     (trigger|cadence), reason, priority (0 = trigger, 1 = cadence). Read-only;
     `within_days` lets 'today's plan' include tomorrow's dated triggers."""
-    from ... import proactive as _proactive
+    from .. import proactive as _proactive
     snap = _proactive.collect_due(db, user_id, now=now, within_days=within_days,
                                   cadence_limit=max(limit, 50))
     plan: dict = {}

@@ -122,7 +122,7 @@ def _run_once() -> dict:
     # Proactive sweep (cadence + dated triggers) on its OWN claim, so it runs even
     # when the updates sweep is claimed elsewhere or finds nothing due.
     try:
-        from .proactive import run_claimed_proactive_sweep
+        from .pipeline.proactive import run_claimed_proactive_sweep
         run_claimed_proactive_sweep()
     except Exception as exc:  # noqa: BLE001 : never let it sink the updates tick
         print(f"[updates.scheduler] proactive sweep error: "

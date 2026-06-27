@@ -149,7 +149,7 @@ def sync_email_contacts(
 ) -> dict:
     """Sync the user's mailbox into their Contact spine. Returns stats; never
     raises (the connect flow auto-kicks this best-effort)."""
-    from .relationships import _clean  # same cleaners as the LinkedIn spine
+    from .spine.relationships import _clean  # same cleaners as the LinkedIn spine
     from ...triage.enrichment_cache import identity_keys
 
     stats = {"scanned": 0, "people": 0, "contacts_created": 0,

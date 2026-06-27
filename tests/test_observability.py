@@ -9,7 +9,8 @@ from sqlalchemy.orm import sessionmaker
 
 from backend import models
 from backend.db import Base
-from backend.agents.relationship import contact_memory as cm, observability
+from backend.agents.relationship.spine import memory as cm
+from backend.agents.relationship import observability
 
 
 @pytest.fixture

@@ -7,9 +7,9 @@ from sqlalchemy.orm import sessionmaker
 
 from backend import models
 from backend.db import Base
-from backend.agents.relationship import contact_memory as cm
-from backend.agents.relationship import relationships as rel
-from backend.agents.relationship.thread_summary import (
+from backend.agents.relationship.spine import memory as cm
+from backend.agents.relationship.spine import relationships as rel
+from backend.agents.relationship.pipeline.context.summary import (
     _fingerprint,
     summarize_older_messages,
 )

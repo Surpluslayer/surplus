@@ -83,7 +83,7 @@ def _autoimport_conversations(user_id: int) -> None:
 
     def _worker():
         from ..db import SessionLocal
-        from ..agents.relationship.relationships import import_conversation_contacts
+        from ..agents.relationship.spine.relationships import import_conversation_contacts
         from ..models import User as _User
         db = SessionLocal()
         try:

@@ -21,12 +21,12 @@ from datetime import datetime, timezone
 
 from .. import models
 from ..db import get_db
-from ..agents.relationship import relationships
+from ..agents.relationship.spine import relationships
 from ..agents.outreach import compose
 from ..agents.relationship.reply_agent import (
     ReplyDecision, ThreadMessage, decide_reply, should_auto_send,
 )
-from ..agents.relationship.sender import automated_send_enabled, send_and_log
+from ..agents.relationship.pipeline.send.sender import automated_send_enabled, send_and_log
 from ..providers import (
     get_provider,
     get_provider_for_prospect,
