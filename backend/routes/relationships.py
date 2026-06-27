@@ -529,6 +529,26 @@ def list_contacts(
     return {"count": len(rows), "contacts": rows}
 
 
+@router.get("/contacts/due")
+def contacts_due(
+    within_days: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Who's overdue for a touch -- the relationship-MAINTENANCE surface, most
+    overdue first. Cadence (vip / stage -> an expected interval) compared against
+    days-since-last-touch; `within_days` looks ahead so a daily sweep can surface
+    contacts coming due. Complements the dated-trigger feed (birthdays/flights);
+    whether a nudge auto-fires is gated separately by the automation flag.
+
+    Declared BEFORE /contacts/{contact_id} so the literal 'due' isn't captured by
+    the int path param. Owner-scoped."""
+    from ..agents.relationship import cadence
+    rows = cadence.due_contacts(db, user.id, within_days=within_days, limit=limit)
+    return {"count": len(rows), "due_contacts": rows}
+
+
 @router.get("/contacts/{contact_id}")
 def contact_detail(
     contact_id: int,
