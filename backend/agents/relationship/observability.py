@@ -36,6 +36,28 @@ def _fact_stats(db, user_id: int) -> dict:
     }
 
 
+def _send_outcomes(db, user_id: int, *, days: int = 14) -> dict:
+    """Recent outbound results for the user's prospects -- is sending actually
+    landing? Joins OutreachLog -> Prospect -> Event -> user, counts by state over
+    the window. The signal for 'are my (manual or automated) sends succeeding?'."""
+    from datetime import datetime, timezone, timedelta
+    since = datetime.now(timezone.utc) - timedelta(days=max(days, 1))
+    rows = (db.query(models.OutreachLog.state)
+            .join(models.Prospect, models.OutreachLog.prospect_id == models.Prospect.id)
+            .join(models.Event, models.Prospect.event_id == models.Event.id)
+            .filter(models.Event.user_id == user_id, models.OutreachLog.ts >= since)
+            .all())
+    counts = Counter(r[0] for r in rows)
+    total = sum(counts.values())
+    failed = counts.get("failed", 0) + counts.get("unconfirmed", 0)
+    return {
+        "window_days": days,
+        "total": total,
+        "by_state": dict(counts.most_common()),
+        "failure_rate_pct": round(100 * failed / total, 1) if total else 0.0,
+    }
+
+
 def relationship_status(db, user_id: int) -> dict:
     """One-shot health snapshot of the deterministic layer for a user."""
     due = proactive.collect_due(db, user_id)
@@ -46,6 +68,7 @@ def relationship_status(db, user_id: int) -> dict:
             "contacts": due["counts"]["contacts"],
             "triggers": due["counts"]["triggers"],
         },
+        "sends": _send_outcomes(db, user_id),
         "automation": {
             # The agent only auto-sends when master is on AND the channel is allowed.
             "master_on": _automation_master_on(),

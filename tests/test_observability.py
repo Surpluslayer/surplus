@@ -58,3 +58,22 @@ def test_relationship_status_assembles_sections(db, monkeypatch):
     assert st["automation"]["master_on"] is True
     assert st["automation"]["channels"] == ["email", "whatsapp"]
     assert set(st["schedulers"]) == {"updates", "proactive"}
+    assert st["sends"]["total"] == 0          # no outreach seeded
+
+
+def test_send_outcomes_counts_and_failure_rate(db):
+    from datetime import datetime, timezone
+    u = models.User(name="Host", email="h@x.com", unipile_account_id="a1")
+    db.add(u); db.commit()
+    ev = models.Event(user_id=u.id, city="NYC")
+    db.add(ev); db.commit()
+    p = models.Prospect(event_id=ev.id, identity="x", name="X")
+    db.add(p); db.commit()
+    for state in ("message_sent", "follow_up_sent", "failed"):
+        db.add(models.OutreachLog(prospect_id=p.id, channel="linkedin",
+                                  state=state, ts=datetime.now(timezone.utc)))
+    db.commit()
+    out = observability._send_outcomes(db, u.id)
+    assert out["total"] == 3
+    assert out["by_state"]["message_sent"] == 1
+    assert out["failure_rate_pct"] == 33.3     # 1 failed of 3
