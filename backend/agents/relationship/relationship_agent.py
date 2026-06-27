@@ -150,24 +150,27 @@ _TOOLS = [
     {
         "name": "draft_message",
         "description": (
-            "Draft a short, warm follow-up that CONTINUES the existing thread "
-            "in `prior_messages` (build on the initial message / what was "
-            "already said), then adds the new reason to reach out. Grounded in "
-            "real shared history, never a generic cold restart. Staged for the "
-            "host to review and send — this does NOT send anything."
+            "Decide that a follow-up IS warranted for this person and hand off "
+            "the ANGLE (the hook to hit) to the shared composer, which writes the "
+            "actual message by continuing the real thread in `prior_messages`. "
+            "You choose whether to draft and the angle; you do NOT write the "
+            "message text. Staged for the host to review and send — this does NOT "
+            "send anything."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "contact_id": {"type": "integer"},
-                "message": {"type": "string",
-                            "description": "The message, under ~60 words."},
+                "angle": {"type": "string",
+                          "description": "The hook/angle for the follow-up, one "
+                          "phrase. The actual message text is written by the "
+                          "shared composer from this angle plus the thread."},
                 "rationale": {"type": "string",
                               "description": "ONE short, friendly sentence on why "
                               "this person / why now, grounded in history. Reads "
                               "as a chat aside to the host, not a report."},
             },
-            "required": ["contact_id", "message"],
+            "required": ["contact_id", "angle"],
         },
     },
 ]
@@ -924,21 +927,13 @@ Important distinctions:
 
 Before you draft, weigh the context_brief's drafting_risks: if it flags TOO SOON or THEIR COURT and prior_messages does not show a new reason to reach out, prefer skip_contact.
 
-If you draft:
-- The message must be grounded in prior_messages and the provided context.
-- Do not restate the host's do_not_repeat line from the brief; move the thread forward instead.
-- The message must make sense as the next message in the existing thread.
-- The message should be short, natural, and specific.
-- Under 60 words unless the context clearly requires slightly more.
-- No em dashes or en dashes.
-- Match the host's style examples.
-- Do not over-explain.
-- Do not sound like a sales sequence.
-- Do not mention internal labels such as triage, stale, open loop, converted, or relationship_stage.
-- Do not mention that you read their history.
-- Do not invent details, updates, or personal facts.
+You do NOT write the message text. A shared composer writes the actual message, in the host's voice, grounded in prior_messages. Your job is only to DECIDE that a follow-up is warranted and to choose the ANGLE: the one-phrase hook the composer should hit (e.g. "deliver the deck I promised", "answer their pricing question", "reconnect after the Seed Dinner"). Pass that as `angle` on draft_message. Do not draft sentences, do not worry about length, voice, punctuation, or phrasing — the composer owns all of that.
 
-An undelivered promise is never a skip. If the host promised to send or do something (reason 4 above) and prior_messages does not show it was delivered, you MUST act. Prefer draft_message: write the short note that delivers or accompanies the promised thing (the host attaches the actual file or link when they send it), so you do NOT need the deliverable itself in the context to write that note. Only fall back to propose_next_step when no sendable message could carry the promise forward. Never skip an open promise — that lets the host's commitment fall through, which is a failure, not a safe hold.
+When you choose an angle:
+- Ground it in prior_messages and the provided context; never invent updates, warmth, intent, or personal facts.
+- Point at the genuine open reason to reach out (their reply, the open loop, the next_step, the promise, the natural reconnect angle).
+
+An undelivered promise is never a skip. If the host promised to send or do something (reason 4 above) and prior_messages does not show it was delivered, you MUST act. Prefer draft_message with an angle that delivers or accompanies the promised thing (the host attaches the actual file or link when they send it), so you do NOT need the deliverable itself to choose the angle. Only fall back to propose_next_step when no message could carry the promise forward. Never skip an open promise — that lets the host's commitment fall through, which is a failure, not a safe hold.
 
 If the best next action is not a message but a relationship action, call propose_next_step.
 If a message is warranted, call draft_message.
@@ -974,6 +969,7 @@ def run_relationship_agent_concurrent(
     client: Any = None,
     on_proposal: Any = None,
     stop_event: Any = None,
+    composer: Any = None,
 ) -> RelationshipAgentResult:
     """Propose-only relationship agent, two-phase + parallel-draft variant.
 
@@ -990,6 +986,13 @@ def run_relationship_agent_concurrent(
     draft call, so a closed SSE client stops burning Claude tokens at the
     next call boundary instead of finishing the whole fan-out.
     """
+    # The shared follow-up writer. Lazy import to avoid a circular import
+    # (drafting imports helpers from this module at its top level). Injectable so
+    # offline tests can stub it — compose_from_context uses a real Anthropic
+    # client, not the scripted decision-client passed as `client`.
+    from . import drafting
+    composer = composer or drafting.compose_from_context
+
     result = RelationshipAgentResult()
 
     def _stopped() -> bool:
@@ -1206,7 +1209,14 @@ def run_relationship_agent_concurrent(
     jobs: list[dict] = []
     for sel in clean:
         c = by_id[sel["contact_id"]]
-        jobs.append({"sel": sel, "ctx": _context(c), "name": _name_of(sel["contact_id"])})
+        # compose_ctx is built HERE, on the serial job-building thread, because
+        # build_context does DB reads (SQLAlchemy session is not thread-safe).
+        # The composer (compose_from_context) is pure over this ctx, so it is
+        # safe to call inside _draft_one under the fan-out.
+        jobs.append({"sel": sel, "ctx": _context(c),
+                     "name": _name_of(sel["contact_id"]),
+                     "compose_ctx": drafting.build_context(
+                         db, user_id, c, channel="linkedin")})
 
     # Nominees a drafter declined via skip_contact (with the per-person reason),
     # so the closing summary reflects what was ACTUALLY staged, not what triage
@@ -1307,11 +1317,23 @@ def run_relationship_agent_concurrent(
                     kind="next_step", contact_id=cid, contact_name=name,
                     text=_strip_dashes(inp["next_step"]),
                     rationale=_strip_dashes(inp.get("rationale") or "")))
-            elif tname == "draft_message" and (inp.get("message") or "").strip():
-                _stage(Proposal(
-                    kind="draft_message", contact_id=cid, contact_name=name,
-                    text=_strip_dashes(inp["message"]),
-                    rationale=_strip_dashes(inp.get("rationale") or "")))
+            elif tname == "draft_message":
+                # The agent DECIDED to draft and gave an angle; the shared
+                # composer WRITES the message text (voice + grounding + dash
+                # scrub all live there — don't _strip_dashes the body). Empty
+                # body -> stage nothing.
+                msg = composer(
+                    job["compose_ctx"], sel.get("reason") or "following up",
+                    "linkedin",
+                    intent=drafting.Intent(kind="followup",
+                                           objective=(inp.get("angle")
+                                                      or sel.get("angle") or "")))
+                body = (msg or {}).get("body") or ""
+                if body:
+                    _stage(Proposal(
+                        kind="draft_message", contact_id=cid, contact_name=name,
+                        text=body,
+                        rationale=_strip_dashes(inp.get("rationale") or "")))
 
     async def _fan_out() -> None:
         sem = asyncio.Semaphore(max(1, concurrency))

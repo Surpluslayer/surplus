@@ -85,6 +85,19 @@ def _tool_use(name, tid, **inp):
     return SimpleNamespace(type="tool_use", name=name, id=tid, input=inp)
 
 
+def _stub_composer(ctx, reason, channel="email", directive="", intent=None):
+    """Offline stub for the shared follow-up composer. The real
+    compose_from_context hits a live Anthropic client; tests inject this so the
+    relationship agent's DECISION (scripted via ConcurrentScriptedClient) is
+    tested without a network call. Returns a deterministic body keyed on the
+    contact name so assertions can pin exactly what got staged.
+
+    NB: the signature MIRRORS compose_from_context(ctx, reason, channel, directive,
+    intent) exactly -- a looser stub once masked a real bug where the agent passed
+    Intent as the positional `directive`."""
+    return {"subject": None, "body": f"[draft for {ctx.get('name')}]"}
+
+
 class ScriptedClient:
     """Returns pre-programmed responses turn by turn. Each script entry is
     (stop_reason, [content blocks]). Records the messages it was called with."""
@@ -193,11 +206,12 @@ def test_agent_proposal_for_unknown_contact_is_rejected(db):
                                      "angle": "not owned"}],
                         closing="Drafted Maya.")]
     drafts = {a.id: [_tool_use("draft_message", "da", contact_id=a.id,
-                              message="Hey Maya, great chatting.",
+                              angle="great chatting",
                               rationale="40d cold")]}
     client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
 
-    res = ragent.run_relationship_agent_concurrent(db, u.id, client=client)
+    res = ragent.run_relationship_agent_concurrent(
+        db, u.id, client=client, composer=_stub_composer)
     assert res.error is None
     # The invented, non-owned id was never staged (owner-scoping rejects it).
     assert 99999 not in {pr.contact_id for pr in res.proposals}
@@ -498,9 +512,12 @@ def test_strip_dashes_removes_em_and_en_dashes():
 
 
 def test_draft_message_sanitizes_em_dash(db):
-    """End-to-end (concurrent): even if the model emits em/en dashes in the
-    drafted message AND its rationale, the staged proposal is clean. Proves the
-    guard sits on the tool impl, not just the prompt."""
+    """The staged proposal must never carry an em/en dash. The MESSAGE body is now
+    written by the shared composer, which scrubs dashes itself (its own eval pins
+    that), so the agent must NOT double-scrub the body. The RATIONALE is still the
+    agent's own text, so the agent still scrubs that. We stub the composer to
+    return an already-clean body (its contract) and feed a dashed rationale to
+    prove the agent's rationale scrub survives."""
     u = _user(db)
     ev = _event(db, u)
     c = _stale_contact(db, u, ev, name="Maya Rodriguez", ident="maya")
@@ -510,11 +527,16 @@ def test_draft_message_sanitizes_em_dash(db):
                                      "angle": "reconnect"}],
                         closing="Drafted Maya.")]
     drafts = {c.id: [_tool_use("draft_message", "da", contact_id=c.id,
-                              message="Hey Maya — bumping this — still keen?",
+                              angle="reconnect",
                               rationale="Continues the thread — light nudge.")]}
     client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
 
-    res = ragent.run_relationship_agent_concurrent(db, u.id, client=client)
+    # Composer returns a clean body (its own contract); the agent must not mangle
+    # it and must scrub the rationale it owns.
+    res = ragent.run_relationship_agent_concurrent(
+        db, u.id, client=client,
+        composer=lambda ctx, reason, channel, intent: {
+            "subject": None, "body": "Hey Maya, bumping this, still keen?"})
     pr = next(p for p in res.proposals if p.kind == "draft_message")
     assert "—" not in pr.text and "–" not in pr.text
     assert "—" not in pr.rationale
@@ -565,10 +587,11 @@ def test_agent_injects_host_voice_into_system_prompt(db):
                                      "angle": "reconnect"}],
                         closing="Drafted Maya.")]
     drafts = {c.id: [_tool_use("draft_message", "da", contact_id=c.id,
-                              message="Hey Maya, reconnecting.", rationale="cold")]}
+                              angle="reconnect", rationale="cold")]}
     client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
 
-    ragent.run_relationship_agent_concurrent(db, u.id, client=client)
+    ragent.run_relationship_agent_concurrent(
+        db, u.id, client=client, composer=_stub_composer)
     # The draft call's system can be a string or a list of blocks; flatten it.
     sys = client.draft_calls()[0]["system"]
     if isinstance(sys, list):
@@ -838,17 +861,16 @@ def test_concurrent_triages_then_drafts_in_parallel(db):
                         closing="Drafted both, Maya's the one I'd prioritize.")]
     drafts = {
         a.id: [_tool_use("draft_message", "da", contact_id=a.id,
-                         message="Hey Maya, great chatting at the Seed Dinner.",
-                         rationale="40d cold")],
+                         angle="Seed Dinner", rationale="40d cold")],
         b.id: [_tool_use("draft_message", "db", contact_id=b.id,
-                         message="Hey Shama, want that intro still?",
-                         rationale="warm intro")],
+                         angle="warm intro", rationale="warm intro")],
     }
     client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
 
     seen = []
     res = ragent.run_relationship_agent_concurrent(
-        db, u.id, client=client, on_proposal=lambda pr: seen.append(pr))
+        db, u.id, client=client, composer=_stub_composer,
+        on_proposal=lambda pr: seen.append(pr))
 
     assert res.error is None
     assert res.contacts_seen == 2
@@ -859,6 +881,10 @@ def test_concurrent_triages_then_drafts_in_parallel(db):
     assert len(res.proposals) == 2
     assert {pr.contact_name for pr in res.proposals} == {"Maya Rodriguez", "Shama Patel"}
     assert {pr.kind for pr in res.proposals} == {"draft_message"}
+    # The staged TEXT comes from the (stubbed) shared composer, not the decision
+    # model: one writer.
+    assert {pr.text for pr in res.proposals} == {
+        "[draft for Maya Rodriguez]", "[draft for Shama Patel]"}
     # on_proposal fired once per staged proposal.
     assert len(seen) == 2 and all(pr in res.proposals for pr in seen)
     # Closing line from triage becomes the summary.
@@ -916,14 +942,14 @@ def test_concurrent_summary_does_not_promise_a_skipped_draft(db):
                                 "draft and Laurel Dong gets a first-touch draft.")]
     drafts = {
         laurel.id: [_tool_use("draft_message", "dl", contact_id=laurel.id,
-                              message="Hey Laurel, great meeting you at Tech Week.",
-                              rationale="first touch")],
+                              angle="first touch", rationale="first touch")],
         ben.id: [_tool_use("skip_contact", "sb", contact_id=ben.id,
                            reason="The ball is in their court")],
     }
     client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
 
-    res = ragent.run_relationship_agent_concurrent(db, u.id, client=client)
+    res = ragent.run_relationship_agent_concurrent(
+        db, u.id, client=client, composer=_stub_composer)
     assert res.error is None
     # Only Laurel was actually staged.
     assert [pr.contact_name for pr in res.proposals] == ["Laurel Dong"]
@@ -949,12 +975,12 @@ def test_concurrent_force_draft_honors_explicit_command(db):
                         closing="Drafting for everyone you asked.",
                         force_draft=True)]
     drafts = {a.id: [_tool_use("draft_message", "da", contact_id=a.id,
-                              message="Hey Laurel, great meeting you.",
-                              rationale="host asked")]}
+                              angle="first touch", rationale="host asked")]}
     client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
 
     res = ragent.run_relationship_agent_concurrent(
-        db, u.id, instruction="draft messages for everyone", client=client)
+        db, u.id, instruction="draft messages for everyone", client=client,
+        composer=_stub_composer)
     assert res.error is None
     prompt = client.draft_calls()[0]["messages"][0]["content"]
     assert "EXPLICITLY asked you to draft" in prompt
@@ -973,11 +999,12 @@ def test_concurrent_no_force_draft_keeps_skip_judgment(db):
                                      "angle": "reconnect"}],
                         closing="Here's who I'd reconnect with.")]  # no force_draft
     drafts = {a.id: [_tool_use("draft_message", "da", contact_id=a.id,
-                              message="Hey Maya.", rationale="40d")]}
+                              angle="reconnect", rationale="40d")]}
     client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
 
     res = ragent.run_relationship_agent_concurrent(
-        db, u.id, instruction="who should I follow up with?", client=client)
+        db, u.id, instruction="who should I follow up with?", client=client,
+        composer=_stub_composer)
     assert res.error is None
     prompt = client.draft_calls()[0]["messages"][0]["content"]
     assert "call skip_contact" in prompt
@@ -1063,10 +1090,11 @@ def test_concurrent_uses_sonnet_for_every_call(db):
                         selections=[{"contact_id": c.id, "reason": "cold",
                                      "angle": "x"}], closing="done")]
     drafts = {c.id: [_tool_use("draft_message", "da", contact_id=c.id,
-                               message="Hey Maya, reconnecting.", rationale="cold")]}
+                               angle="reconnect", rationale="cold")]}
     client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
 
-    ragent.run_relationship_agent_concurrent(db, u.id, client=client)
+    ragent.run_relationship_agent_concurrent(
+        db, u.id, client=client, composer=_stub_composer)
     assert "sonnet" in ragent._AGENT_MODEL
     assert all(call["model"] == ragent._AGENT_MODEL for call in client.calls)
 
@@ -1086,11 +1114,12 @@ def test_concurrent_does_not_cap_selections(db):
                     for c in contacts],
         closing="lots")]
     drafts = {c.id: [_tool_use("draft_message", f"d{c.id}", contact_id=c.id,
-                               message=f"Hi {c.id}", rationale="cold")]
+                               angle="cold", rationale="cold")]
               for c in contacts}
     client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
 
-    res = ragent.run_relationship_agent_concurrent(db, u.id, client=client)
+    res = ragent.run_relationship_agent_concurrent(
+        db, u.id, client=client, composer=_stub_composer)
     assert len(client.draft_calls()) == n       # everyone drafted, uncapped
     assert len(res.proposals) == n
 
@@ -1109,10 +1138,11 @@ def test_concurrent_unknown_selection_is_dropped(db):
                                      "angle": "y"}],
                         closing="done")]
     drafts = {c.id: [_tool_use("draft_message", "da", contact_id=c.id,
-                               message="Hey Maya.", rationale="real")]}
+                               angle="real", rationale="real")]}
     client = ConcurrentScriptedClient(triage=triage, drafts=drafts)
 
-    res = ragent.run_relationship_agent_concurrent(db, u.id, client=client)
+    res = ragent.run_relationship_agent_concurrent(
+        db, u.id, client=client, composer=_stub_composer)
     # Only the real contact was drafted; the invented id was dropped pre-fan-out.
     assert len(client.draft_calls()) == 1
     assert [pr.contact_id for pr in res.proposals] == [c.id]
