@@ -85,6 +85,27 @@ def test_identity_keys_email_only_and_none():
     assert ec.identity_keys(email="", linkedin_url="") == []
 
 
+def test_phone_hash_normalizes_and_folds_country_code():
+    # country-code'd and national forms hash the same (last 10 digits)
+    assert ec._phone_hash("+1 (415) 555-1234") == ec._phone_hash("415-555-1234")
+    assert ec._phone_hash("+1 415 555 1234") == ec._phone_hash("4155551234")
+    # too short -> no key; namespaced apart from email hashes
+    assert ec._phone_hash("555-1234") == ""
+    assert ec._phone_hash("") == ""
+
+
+def test_identity_keys_phone_for_whatsapp_contacts():
+    # phone alone keys a WhatsApp/SMS contact (no email/LinkedIn)
+    assert ec.identity_keys(phone="+1 415 555 1234") == [
+        "ph:" + ec._phone_hash("4155551234")]
+    # ordering: li > em > ph
+    keys = ec.identity_keys(linkedin_url="https://www.linkedin.com/in/jane/",
+                            email="jane@acme.com", phone="4155551234")
+    assert [k[:3] for k in keys] == ["li:", "em:", "ph:"]
+    # backward compatible: existing email/linkedin callers unaffected
+    assert ec.identity_keys(email="jane@acme.com")[0].startswith("em:")
+
+
 # ── freshness / TTL ─────────────────────────────────────────────────────────
 def test_is_fresh_handles_naive_and_aware(monkeypatch):
     monkeypatch.delenv("TRIAGE_ENRICH_CACHE_TTL_DAYS", raising=False)

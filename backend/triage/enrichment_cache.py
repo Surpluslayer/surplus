@@ -86,12 +86,24 @@ def _email_hash(email: str) -> str:
     return hashlib.sha256((_SALT + "|" + e).encode("utf-8")).hexdigest()[:40]
 
 
-def identity_keys(*, email: str = "", linkedin_url: str = "") -> list[str]:
-    """Every STRONG cache key derivable from these inputs, slug first (strongest).
+def _phone_hash(phone: str) -> str:
+    """Salted sha256 of a normalized phone number. We key on the LAST 10 digits so
+    a country-code'd form (+1 415 555 1234) and a national one (415-555-1234) match
+    for the common case. '' when we can't key confidently (< 10 digits). The '|ph|'
+    namespace keeps phone hashes from ever colliding with email hashes."""
+    digits = "".join(c for c in (phone or "") if c.isdigit())
+    if len(digits) < 10:
+        return ""
+    return hashlib.sha256((_SALT + "|ph|" + digits[-10:]).encode("utf-8")).hexdigest()[:40]
 
-    Returns [] when neither a slug nor an email is available (we never key on a
-    weak signal). Order matters: callers read in this order and stop at the first
-    fresh hit, so the strongest identity wins."""
+
+def identity_keys(*, email: str = "", linkedin_url: str = "",
+                  phone: str = "") -> list[str]:
+    """Every STRONG cache key derivable from these inputs, strongest first
+    (li > em > ph). Returns [] when none is available (we never key on a weak
+    signal). Order matters: callers read in this order and stop at the first fresh
+    hit, so the strongest identity wins. `phone` powers WhatsApp/SMS contacts, which
+    have no email/LinkedIn to key on."""
     keys: list[str] = []
     slug = _linkedin_slug(linkedin_url) if linkedin_url else ""
     if slug:
@@ -99,6 +111,9 @@ def identity_keys(*, email: str = "", linkedin_url: str = "") -> list[str]:
     eh = _email_hash(email)
     if eh:
         keys.append("em:" + eh)
+    ph = _phone_hash(phone)
+    if ph:
+        keys.append("ph:" + ph)
     return keys
 
 
