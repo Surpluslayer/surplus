@@ -222,6 +222,20 @@ function TodayView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
   const updates = feed?.updates || [];
   const needs = feed?.needs_outreach || [];
 
+  // "New since you last looked": capture the prior seen-at ONCE, pop updates
+  // detected after it, then persist now so each new update only pops once.
+  const seenAtRef = useRef(null);
+  if (seenAtRef.current === null) {
+    const v = Number((typeof localStorage !== "undefined"
+      && localStorage.getItem("bk_updates_seen_at")) || 0);
+    seenAtRef.current = Number.isFinite(v) ? v : 0;
+  }
+  useEffect(() => {
+    if (updates.length && typeof localStorage !== "undefined") {
+      try { localStorage.setItem("bk_updates_seen_at", String(Date.now())); } catch {}
+    }
+  }, [updates.length]);
+
   return (
     <div className="bk-scroll">
       <header className="bk-topbar">
@@ -242,7 +256,8 @@ function TodayView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
           <SectionHead label="Updates" count={updates.length} />
           <div className="bk-group">
             {updates.map((u, i) => (
-              <div key={`u${i}`} className="bk-upd">
+              <div key={`u${i}`}
+                   className={"bk-upd" + (_is_new(u.detected_at, seenAtRef.current) ? " bk-upd--pop" : "")}>
                 <Row onOpen={u.contact_id ? () => onOpen(u) : null}>
                   <div className="bk-main">
                     <p className="bk-name">{u.name}<StarToggle contactId={u.contact_id} vip={u.vip} />
@@ -1196,6 +1211,16 @@ function _today_long() {
   } catch { return ""; }
 }
 
+// An update is "new" (worth a pop animation) if it was detected AFTER the user
+// last looked, bounded to the last 7 days so a first-ever visit doesn't flash the
+// whole backlog. seenMs is the prior persisted seen-at (0 on first ever).
+function _is_new(iso, seenMs) {
+  const t = iso ? new Date(iso).getTime() : 0;
+  if (!t || isNaN(t)) return false;
+  const floor = Math.max(Number(seenMs) || 0, Date.now() - 7 * 24 * 3600 * 1000);
+  return t > floor;
+}
+
 function _rel_time(iso) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -1389,6 +1414,15 @@ const BOOK_CSS = `
   padding:5px 12px;}
 .bk-spin{animation:bkspin 1s linear infinite;}
 @keyframes bkspin{to{transform:rotate(360deg);}}
+/* A freshly-detected update card pops in: slides up with a green highlight flash
+   that fades, so a new update draws the eye without disturbing the rest. */
+.bk-upd--pop{animation:bkpop 1.1s cubic-bezier(.2,.85,.25,1) both; border-radius:12px;}
+@keyframes bkpop{
+  0%{opacity:0; transform:translateY(12px) scale(.985); background:rgba(47,210,122,.22);}
+  35%{opacity:1; transform:translateY(0) scale(1.012); background:rgba(47,210,122,.16);}
+  70%{transform:translateY(0) scale(1); background:rgba(47,210,122,.10);}
+  100%{opacity:1; transform:none; background:transparent;}
+}
 
 .bk-scroll{flex:1; overflow-y:auto; padding-bottom:20px;}
 
