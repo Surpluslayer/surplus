@@ -155,7 +155,9 @@ def sync_email_contacts(
     stats = {"scanned": 0, "people": 0, "contacts_created": 0,
              "contacts_updated": 0, "skipped_junk": 0, "error": None}
     account_id = getattr(user, "unipile_email_account_id", None)
-    if not account_id:
+    # account_id is only needed for the DEFAULT (Unipile) fetcher. A caller that
+    # supplies its own fetch_page (e.g. the Gmail-OAuth sync) brings its own source.
+    if fetch_page is None and not account_id:
         stats["error"] = "no connected email account"
         return stats
     own = (getattr(user, "email_account_address", "") or "").strip().lower()

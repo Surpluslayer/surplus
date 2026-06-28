@@ -98,6 +98,23 @@ def callback(
         f"{base}/settings?integration={provider}&status=connected", status_code=302)
 
 
+@router.post("/google/sync")
+def google_sync(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Pull the caller's connected Google account(s) -- recent Gmail into the contact
+    spine + upcoming Calendar meetings as dated triggers. Owner-scoped; 409 if no
+    Google account is connected. READ-only (no sending/booking yet)."""
+    accts = (db.query(models.ConnectedAccount)
+             .filter_by(user_id=user.id, provider="google", status="active").all())
+    if not accts:
+        raise HTTPException(409, "no connected Google account")
+    from ..integrations import google_sync as gs
+    return {"accounts": [{"account_email": a.account_email,
+                          **gs.sync_google_account(db, user, a)} for a in accts]}
+
+
 @router.delete("/{provider}/{account_id}")
 def disconnect(
     provider: str,
