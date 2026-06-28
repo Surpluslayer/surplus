@@ -84,9 +84,17 @@ function report(attempt = 0) {
   }
 }
 
+function clearBar() {
+  chrome.runtime.sendMessage({ type: 'surplus:profile:clear' }).catch(() => {});
+}
+
 function checkUrl() {
-  if (location.href !== lastReportedUrl) {
-    lastReportedUrl = location.href;
+  if (location.href === lastReportedUrl) return;
+  lastReportedUrl = location.href;
+  // Clear immediately on any navigation so a stale person doesn't linger while
+  // the next page loads (or while you're on a non-profile page like the feed).
+  clearBar();
+  if (/linkedin\.com\/in\//.test(location.href)) {
     report();
   }
 }

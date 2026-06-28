@@ -50,6 +50,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     chrome.runtime
       .sendMessage({ type: 'surplus:profile:update', profile: lastProfile })
       .catch(() => {});
+  } else if (msg?.type === 'surplus:profile:clear') {
+    lastProfile = null;
+    chrome.runtime
+      .sendMessage({ type: 'surplus:profile:update', profile: null })
+      .catch(() => {});
   } else if (msg?.type === 'surplus:profile:get') {
     sendResponse(lastProfile);
   }
