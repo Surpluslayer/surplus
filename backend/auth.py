@@ -112,6 +112,32 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def hash_password(password: str) -> str:
+    """bcrypt hash of a password. We SHA-256 + base64 first so passwords longer than
+    bcrypt's 72-byte limit aren't silently truncated/rejected (the standard bcrypt
+    pre-hash). Returns the hash string to store in User.password_hash."""
+    import base64
+    import hashlib
+    import bcrypt
+    pre = base64.b64encode(hashlib.sha256((password or "").encode()).digest())
+    return bcrypt.hashpw(pre, bcrypt.gensalt()).decode()
+
+
+def verify_password(password: str, hashed: Optional[str]) -> bool:
+    """Constant-time check of a password against a stored bcrypt hash. False (never
+    raises) on a missing/garbage hash -- e.g. an OAuth-only user with no password."""
+    if not hashed:
+        return False
+    import base64
+    import hashlib
+    import bcrypt
+    pre = base64.b64encode(hashlib.sha256((password or "").encode()).digest())
+    try:
+        return bcrypt.checkpw(pre, hashed.encode())
+    except (ValueError, TypeError):
+        return False
+
+
 _OAUTH_SUB_FIELD = {"google": "google_sub", "microsoft": "microsoft_sub"}
 
 

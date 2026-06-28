@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from .db import ENGINE, init_db
 from .routes import (
     # shared
-    auth, google_login, microsoft_login, billing, demo, webhooks, admin,
+    auth, google_login, microsoft_login, password_auth, billing, demo, webhooks, admin,
     # relationship side (the phone-first "book" / CRM)
     book, relationships, inperson, followups, integrations,
     # events side (the desktop event-ROI pipeline)
@@ -115,6 +115,7 @@ async def no_store_for_api(request: Request, call_next):
 app.include_router(auth.router)
 app.include_router(google_login.router)    # Sign in with Google (decoupled login)
 app.include_router(microsoft_login.router) # Sign in with Microsoft (Outlook / 365)
+app.include_router(password_auth.router)   # email + password signup / sign-in
 app.include_router(billing.router)
 app.include_router(demo.router)
 app.include_router(webhooks.router)

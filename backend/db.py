@@ -147,6 +147,7 @@ def init_db() -> None:
         _migrate_user_is_demo,
         _migrate_user_google_sub,
         _migrate_user_microsoft_sub,
+        _migrate_user_password_hash,
         _migrate_session_client,
     ]
     for migration in migrations:
@@ -209,6 +210,20 @@ def _migrate_user_microsoft_sub() -> None:
     with ENGINE.begin() as conn:
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_microsoft_sub "
                           "ON users (microsoft_sub)"))
+
+
+def _migrate_user_password_hash() -> None:
+    """Add users.password_hash (VARCHAR(200), NULL) for email+password signup. Existing
+    users (OAuth/LinkedIn) stay NULL; no index (we look up by email)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "password_hash" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(200)"))
 
 
 def _migrate_session_client() -> None:

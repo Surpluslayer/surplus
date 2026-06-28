@@ -564,6 +564,11 @@ class User(Base):
     microsoft_sub: Mapped[Optional[str]] = mapped_column(
         String(80), unique=True, index=True, default=None,
     )
+    # bcrypt hash for email+password signup (the universal "any email" path beside the
+    # OAuth buttons). NULL for OAuth/LinkedIn-only users; set via /api/auth/signup and
+    # checked by /api/auth/login. Email is the identity, so a password user shares the
+    # SAME User row as a Google/Microsoft login on that email.
+    password_hash: Mapped[Optional[str]] = mapped_column(String(200), default=None)
     # Profile data pulled from Unipile after auth (best-effort, refreshable)
     email: Mapped[Optional[str]] = mapped_column(String(200), default=None, index=True)
     name: Mapped[str] = mapped_column(String(120), default="")
