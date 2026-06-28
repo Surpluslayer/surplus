@@ -126,10 +126,10 @@ def fetch_account_email(provider: str, access_token: str) -> str:
                       headers={"Authorization": f"Bearer {access_token}"}, timeout=15)
         r.raise_for_status()
         j = r.json()
-        # Google returns `email`; Microsoft Graph /me returns `mail` (or falls back
-        # to `userPrincipalName`).
-        return (j.get("email") or j.get("mail")
-                or j.get("userPrincipalName") or "").strip().lower()
+        # Google -> `email`; Microsoft Graph /me -> `mail`/`userPrincipalName`;
+        # Calendly /users/me -> nested under `resource.email`.
+        return (j.get("email") or j.get("mail") or j.get("userPrincipalName")
+                or (j.get("resource") or {}).get("email") or "").strip().lower()
     except Exception:  # noqa: BLE001
         return ""
 

@@ -107,6 +107,9 @@ def _account_syncer(provider: str):
     if provider == "microsoft":
         from ..integrations.outlook_sync import sync_outlook_account
         return sync_outlook_account
+    if provider == "calendly":
+        from ..integrations.calendly_sync import sync_calendly_account
+        return sync_calendly_account
     return None
 
 

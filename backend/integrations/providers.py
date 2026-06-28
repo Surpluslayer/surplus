@@ -55,7 +55,19 @@ MICROSOFT = ProviderConfig(
     userinfo_url="https://graph.microsoft.com/v1.0/me",
 )
 
-PROVIDERS: dict = {GOOGLE.name: GOOGLE, MICROSOFT.name: MICROSOFT}
+CALENDLY = ProviderConfig(
+    name="calendly",
+    auth_url="https://auth.calendly.com/oauth/authorize",
+    token_url="https://auth.calendly.com/oauth/token",
+    scopes=(),                      # Calendly OAuth scopes access to the user; no scope strings
+    client_id_env="CALENDLY_CLIENT_ID",
+    client_secret_env="CALENDLY_CLIENT_SECRET",
+    extra_auth_params={},
+    userinfo_url="https://api.calendly.com/users/me",   # email nested under .resource
+)
+
+PROVIDERS: dict = {GOOGLE.name: GOOGLE, MICROSOFT.name: MICROSOFT,
+                   CALENDLY.name: CALENDLY}
 
 
 def get_provider(name: str) -> Optional[ProviderConfig]:
