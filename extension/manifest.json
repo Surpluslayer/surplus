@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "surplus",
+  "version": "0.1.0",
+  "description": "Your surplus book, on the side. See your relationship workflows fire as you browse LinkedIn.",
+  "action": { "default_title": "Open surplus book" },
+  "background": { "service_worker": "background.js" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "permissions": [
+    "sidePanel",
+    "tabs",
+    "storage",
+    "scripting",
+    "declarativeNetRequestWithHostAccess"
+  ],
+  "host_permissions": [
+    "https://*.linkedin.com/*",
+    "https://event.surpluslayer.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://*.linkedin.com/*"],
+      "js": ["content-linkedin.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      { "id": "frame_ruleset", "enabled": true, "path": "rules.json" }
+    ]
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
