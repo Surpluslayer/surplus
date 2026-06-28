@@ -146,6 +146,7 @@ def init_db() -> None:
         _migrate_contact_preferred_channel,
         _migrate_user_is_demo,
         _migrate_user_google_sub,
+        _migrate_user_microsoft_sub,
         _migrate_session_client,
     ]
     for migration in migrations:
@@ -192,6 +193,22 @@ def _migrate_user_google_sub() -> None:
     with ENGINE.begin() as conn:
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_sub "
                           "ON users (google_sub)"))
+
+
+def _migrate_user_microsoft_sub() -> None:
+    """Add users.microsoft_sub (VARCHAR(80), NULL) + its unique index for Sign in with
+    Microsoft. Mirrors google_sub: existing users NULL, NULLs don't collide on PG/SQLite."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "microsoft_sub" not in cols:
+        with ENGINE.begin() as conn:
+            conn.execute(text("ALTER TABLE users ADD COLUMN microsoft_sub VARCHAR(80)"))
+    with ENGINE.begin() as conn:
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_microsoft_sub "
+                          "ON users (microsoft_sub)"))
 
 
 def _migrate_session_client() -> None:

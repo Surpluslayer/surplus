@@ -11,7 +11,6 @@ accepts cookie OR Bearer).
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -19,7 +18,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..auth import create_session, set_session_cookie
+from ..auth import create_session, find_or_create_oauth_user, set_session_cookie
 from ..db import get_db
 from ..integrations import google_login
 from .auth import _surplus_base_url
@@ -34,30 +33,9 @@ def _redirect_uri(request: Request) -> str:
 
 
 def find_or_create_google_user(db, *, sub: str, email: str, name: str) -> models.User:
-    """One User per person. Match on google_sub; else LINK to an existing same-email
-    (non-demo) user -- unifying a Google login with a LinkedIn-first account for the
-    same person; else create. Google emails are verified, so the email link is safe."""
-    u = None
-    if sub:
-        u = db.query(models.User).filter(models.User.google_sub == sub).first()
-    if u is None and email:
-        u = (db.query(models.User)
-             .filter(models.User.email == email, models.User.is_demo.is_(False))
-             .first())
-        if u is not None and not u.google_sub:
-            u.google_sub = sub or None
-    if u is None:
-        u = models.User(google_sub=sub or None, email=email or None, name=name or "")
-        db.add(u)
-    else:
-        if email and not u.email:
-            u.email = email
-        if name and not u.name:
-            u.name = name
-    u.last_login_at = datetime.now(timezone.utc)
-    db.commit()
-    db.refresh(u)
-    return u
+    """Thin wrapper over the shared, provider-agnostic find_or_create_oauth_user."""
+    return find_or_create_oauth_user(
+        db, provider="google", sub=sub, email=email, name=name)
 
 
 @router.get("/google/login")

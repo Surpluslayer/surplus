@@ -557,6 +557,13 @@ class User(Base):
     google_sub: Mapped[Optional[str]] = mapped_column(
         String(80), unique=True, index=True, default=None,
     )
+    # Stable Microsoft identity (Graph /me `id`) for Sign in with Microsoft -- the
+    # Outlook/365 path (finance, many enterprises + .edu students). Same decoupled
+    # model as google_sub; a user signing in with either provider on the same email
+    # resolves to ONE User. NULL for non-Microsoft logins.
+    microsoft_sub: Mapped[Optional[str]] = mapped_column(
+        String(80), unique=True, index=True, default=None,
+    )
     # Profile data pulled from Unipile after auth (best-effort, refreshable)
     email: Mapped[Optional[str]] = mapped_column(String(200), default=None, index=True)
     name: Mapped[str] = mapped_column(String(120), default="")

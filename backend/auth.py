@@ -112,6 +112,40 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_OAUTH_SUB_FIELD = {"google": "google_sub", "microsoft": "microsoft_sub"}
+
+
+def find_or_create_oauth_user(db: DbSession, *, provider: str, sub: str,
+                              email: str, name: str) -> User:
+    """One User per person across every OAuth login provider. Match on the provider's
+    stable sub (google_sub / microsoft_sub); else LINK to an existing same-email
+    (non-demo) user -- so signing in with Google AND Microsoft on the same address,
+    or a LinkedIn-first user adding either, all resolve to ONE User; else create.
+    Provider emails are verified, so the email link is safe."""
+    field = _OAUTH_SUB_FIELD[provider]
+    u = None
+    if sub:
+        u = db.query(User).filter(getattr(User, field) == sub).first()
+    if u is None and email:
+        u = (db.query(User)
+             .filter(User.email == email, User.is_demo.is_(False)).first())
+        if u is not None and not getattr(u, field):
+            setattr(u, field, sub or None)
+    if u is None:
+        u = User(email=email or None, name=name or "")
+        setattr(u, field, sub or None)
+        db.add(u)
+    else:
+        if email and not u.email:
+            u.email = email
+        if name and not u.name:
+            u.name = name
+    u.last_login_at = _utcnow()
+    db.commit()
+    db.refresh(u)
+    return u
+
+
 def _new_session_token() -> str:
     return secrets.token_urlsafe(32)
 
