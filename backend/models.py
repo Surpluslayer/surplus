@@ -550,6 +550,13 @@ class User(Base):
     unipile_account_id: Mapped[Optional[str]] = mapped_column(
         String(80), unique=True, index=True, default=None,
     )
+    # Stable Google identity ("sub" from Sign in with Google), set when a user logs
+    # in via the DECOUPLED OAuth login (routes/google_login). Independent of Unipile:
+    # a brand-new user gets a User + session keyed on this WITHOUT a LinkedIn connect,
+    # then connects LinkedIn later via the plugin. NULL for LinkedIn-first/demo users.
+    google_sub: Mapped[Optional[str]] = mapped_column(
+        String(80), unique=True, index=True, default=None,
+    )
     # Profile data pulled from Unipile after auth (best-effort, refreshable)
     email: Mapped[Optional[str]] = mapped_column(String(200), default=None, index=True)
     name: Mapped[str] = mapped_column(String(120), default="")
@@ -887,6 +894,11 @@ class Session(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     session_token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    # Which client this session belongs to ("web" | "ios" | "plugin"), so a user
+    # can have one independent, separately-revocable session per device. Defaults
+    # to "web" (the existing cookie flow). Web rides a cookie; ios/plugin ride a
+    # Bearer token -- both resolve against this one table (see auth.current_user).
+    client: Mapped[str] = mapped_column(String(20), default="web")
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
     expires_at: Mapped[datetime]
     last_seen_at: Mapped[datetime] = mapped_column(default=_utcnow)

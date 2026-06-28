@@ -16,7 +16,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Cookie, Depends, HTTPException, Response, status
+from fastapi import Cookie, Depends, Header, HTTPException, Response, status
 from sqlalchemy.orm import Session as DbSession
 
 from .db import get_db
@@ -116,12 +116,15 @@ def _new_session_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def create_session(db: DbSession, user: User) -> Session:
-    """Create + persist a session for `user`. Caller is responsible for
-    setting the cookie via set_session_cookie()."""
+def create_session(db: DbSession, user: User, *, client: str = "web") -> Session:
+    """Create + persist a session for `user`. `client` ("web"|"ios"|"plugin") tags
+    which device this session is for, so a user has one independent, separately
+    revocable session per client. Web callers set the cookie via set_session_cookie();
+    ios/plugin callers return sess.session_token as a Bearer token."""
     sess = Session(
         session_token=_new_session_token(),
         user_id=user.id,
+        client=(client or "web").strip().lower()[:20] or "web",
         expires_at=_utcnow() + timedelta(days=SESSION_TTL_DAYS),
     )
     db.add(sess)
@@ -251,12 +254,27 @@ def _load_user_by_session(db: DbSession, token: Optional[str]) -> Optional[User]
     return db.query(User).filter(User.id == sess.user_id).first()
 
 
+def _bearer_token(authorization: Optional[str]) -> Optional[str]:
+    """Extract the token from an 'Authorization: Bearer <token>' header, else None."""
+    if not authorization:
+        return None
+    parts = authorization.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1].strip() or None
+    return None
+
+
 def current_user(
     db: DbSession = Depends(get_db),
     surplus_session: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE),
+    authorization: Optional[str] = Header(default=None),
 ) -> User:
-    """Returns the signed-in User, or raises 401. Use for protected routes."""
-    user = _load_user_by_session(db, surplus_session)
+    """Returns the signed-in User, or raises 401. Accepts EITHER transport against the
+    one Session table: the web cookie OR an 'Authorization: Bearer <token>' header
+    (ios / plugin). The Bearer header wins when both are present (a native client that
+    also happens to carry a cookie should use its own token)."""
+    token = _bearer_token(authorization) or surplus_session
+    user = _load_user_by_session(db, token)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
