@@ -125,7 +125,11 @@ def fetch_account_email(provider: str, access_token: str) -> str:
         r = httpx.get(p.userinfo_url,
                       headers={"Authorization": f"Bearer {access_token}"}, timeout=15)
         r.raise_for_status()
-        return (r.json().get("email") or "").strip().lower()
+        j = r.json()
+        # Google returns `email`; Microsoft Graph /me returns `mail` (or falls back
+        # to `userPrincipalName`).
+        return (j.get("email") or j.get("mail")
+                or j.get("userPrincipalName") or "").strip().lower()
     except Exception:  # noqa: BLE001
         return ""
 

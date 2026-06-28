@@ -14,39 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from .. import models
-from ..triage.enrichment_cache import identity_keys
-from . import google_client, oauth
-
-
-def _parse_iso(s: Optional[str]) -> Optional[datetime]:
-    if not s:
-        return None
-    raw = s.strip().replace("Z", "+00:00")
-    try:
-        dt = datetime.fromisoformat(raw)
-    except ValueError:
-        try:                              # date-only ("2026-06-28")
-            dt = datetime.fromisoformat(raw + "T00:00:00")
-        except ValueError:
-            return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
-
-def _contact_by_email(db, user_id: int, addr: str):
-    addr = (addr or "").strip().lower()
-    if not addr:
-        return None
-    keys = identity_keys(email=addr)
-    c = None
-    if keys:
-        c = (db.query(models.Contact)
-             .filter_by(user_id=user_id, primary_identity_key=keys[0]).first())
-    if c is None:
-        c = (db.query(models.Contact)
-             .filter(models.Contact.user_id == user_id,
-                     models.Contact.email == addr).first())
-    return c
+from . import google_client, oauth, sync_common
 
 
 def sync_google_email(db, user, account, *, newer_than_days: int = 30) -> dict:
@@ -68,10 +36,8 @@ def sync_google_email(db, user, account, *, newer_than_days: int = 30) -> dict:
 
 def sync_google_calendar(db, user, account, *, days_back: int = 1,
                          days_ahead: int = 21) -> dict:
-    """Write a dated `upcoming_meeting` fact per known attendee of upcoming events.
-    Only attendees already in the contact spine get a fact (no new contacts from a
-    calendar invite). Idempotent per event via dedup_key=event id."""
-    from ..agents.relationship.spine.memory import upsert_fact
+    """Write dated `upcoming_meeting` facts for known attendees (via the shared
+    calendar ingest)."""
     token = oauth.get_valid_access_token(db, account)
     if not token:
         return {"error": "no valid token"}
@@ -80,22 +46,7 @@ def sync_google_calendar(db, user, account, *, days_back: int = 1,
         token,
         time_min_iso=(now - timedelta(days=days_back)).isoformat(),
         time_max_iso=(now + timedelta(days=days_ahead)).isoformat())
-    written = 0
-    for e in events:
-        start = _parse_iso(e.get("start"))
-        if start is None or start < now:           # only upcoming
-            continue
-        for addr in (e.get("attendees") or []):
-            c = _contact_by_email(db, user.id, addr)
-            if c is None:
-                continue
-            upsert_fact(db, user.id, c.id, "upcoming_meeting",
-                        e.get("summary") or "meeting", source="gcal",
-                        confidence="high", due_date=start,
-                        dedup_key=(e.get("id") or "")[:60], commit=False)
-            written += 1
-    db.commit()
-    return {"events": len(events), "meeting_facts": written}
+    return sync_common.ingest_meeting_events(db, user.id, events, source="gcal")
 
 
 def sync_google_account(db, user, account) -> dict:

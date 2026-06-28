@@ -98,21 +98,36 @@ def callback(
         f"{base}/settings?integration={provider}&status=connected", status_code=302)
 
 
-@router.post("/google/sync")
-def google_sync(
+def _account_syncer(provider: str):
+    """Per-provider 'sync one connected account' fn (lazy import). None when a
+    provider has no read sync."""
+    if provider == "google":
+        from ..integrations.google_sync import sync_google_account
+        return sync_google_account
+    if provider == "microsoft":
+        from ..integrations.outlook_sync import sync_outlook_account
+        return sync_outlook_account
+    return None
+
+
+@router.post("/{provider}/sync")
+def provider_sync(
+    provider: str,
     db: Session = Depends(get_db),
     user: models.User = Depends(current_user),
 ):
-    """Pull the caller's connected Google account(s) -- recent Gmail into the contact
-    spine + upcoming Calendar meetings as dated triggers. Owner-scoped; 409 if no
-    Google account is connected. READ-only (no sending/booking yet)."""
+    """Pull the caller's connected account(s) for `provider` into the spine: recent
+    mail -> contacts/timeline, upcoming meetings -> dated triggers. Owner-scoped;
+    409 if none connected; 404 if the provider has no read sync. READ-only."""
+    fn = _account_syncer(provider)
+    if fn is None:
+        raise HTTPException(404, f"no read sync for provider {provider!r}")
     accts = (db.query(models.ConnectedAccount)
-             .filter_by(user_id=user.id, provider="google", status="active").all())
+             .filter_by(user_id=user.id, provider=provider, status="active").all())
     if not accts:
-        raise HTTPException(409, "no connected Google account")
-    from ..integrations import google_sync as gs
+        raise HTTPException(409, f"no connected {provider} account")
     return {"accounts": [{"account_email": a.account_email,
-                          **gs.sync_google_account(db, user, a)} for a in accts]}
+                          **fn(db, user, a)} for a in accts]}
 
 
 @router.delete("/{provider}/{account_id}")

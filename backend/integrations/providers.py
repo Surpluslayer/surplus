@@ -40,7 +40,22 @@ GOOGLE = ProviderConfig(
     userinfo_url="https://openidconnect.googleapis.com/v1/userinfo",
 )
 
-PROVIDERS: dict = {GOOGLE.name: GOOGLE}
+MICROSOFT = ProviderConfig(
+    name="microsoft",
+    auth_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+    token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    scopes=(
+        "openid", "email", "offline_access",   # offline_access = the refresh token
+        "https://graph.microsoft.com/Mail.Read",
+        "https://graph.microsoft.com/Calendars.Read",
+    ),
+    client_id_env="MICROSOFT_CLIENT_ID",
+    client_secret_env="MICROSOFT_CLIENT_SECRET",
+    extra_auth_params={"prompt": "consent"},
+    userinfo_url="https://graph.microsoft.com/v1.0/me",
+)
+
+PROVIDERS: dict = {GOOGLE.name: GOOGLE, MICROSOFT.name: MICROSOFT}
 
 
 def get_provider(name: str) -> Optional[ProviderConfig]:
