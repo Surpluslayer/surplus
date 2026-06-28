@@ -31,7 +31,9 @@ GOOGLE = ProviderConfig(
     scopes=(
         "openid", "email",
         "https://www.googleapis.com/auth/gmail.readonly",
-        "https://www.googleapis.com/auth/calendar.readonly",
+        # calendar.events grants create/update (booking) AND read of events, so it
+        # supersedes the old calendar.readonly -- the read sync keeps working.
+        "https://www.googleapis.com/auth/calendar.events",
     ),
     client_id_env="GOOGLE_CLIENT_ID",
     client_secret_env="GOOGLE_CLIENT_SECRET",
@@ -47,7 +49,9 @@ MICROSOFT = ProviderConfig(
     scopes=(
         "openid", "email", "offline_access",   # offline_access = the refresh token
         "https://graph.microsoft.com/Mail.Read",
-        "https://graph.microsoft.com/Calendars.Read",
+        # Calendars.ReadWrite grants create (booking) and read, so the read sync
+        # keeps working off the same scope.
+        "https://graph.microsoft.com/Calendars.ReadWrite",
     ),
     client_id_env="MICROSOFT_CLIENT_ID",
     client_secret_env="MICROSOFT_CLIENT_SECRET",

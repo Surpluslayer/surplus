@@ -18,6 +18,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -53,6 +54,54 @@ def list_integrations(
         "available": {**{name: oauth.configured(name) for name in _PROVIDERS},
                       "granola": True},
     }
+
+
+# ── Booking (Phase-2 WRITE action) — create a calendar meeting with a contact.
+# Declared BEFORE the /{provider} routes so the literal 'calendar' wins.
+class BookIn(BaseModel):
+    contact_id: Optional[int] = None        # resolve attendee email/name from a Contact
+    attendee_email: Optional[str] = None    # ...or pass them directly
+    attendee_name: Optional[str] = ""
+    title: str
+    start_iso: str                          # ISO 8601 w/ offset, e.g. 2026-07-01T15:00:00-07:00
+    duration_min: int = 30
+    tz: str = "UTC"
+    description: str = ""
+    add_video: bool = True                  # Google Meet / Teams link
+    notify: bool = True                     # email the attendee the invite
+    provider: Optional[str] = None          # force google|microsoft (else auto)
+
+
+@router.post("/calendar/book")
+def calendar_book(
+    body: BookIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Create a calendar event inviting a contact, with a native video link. Owner-scoped;
+    the explicit host action (no agent auto-call). 409 if no calendar connected, 400 on a
+    bad time / missing attendee email / upstream error."""
+    email = (body.attendee_email or "").strip()
+    name = body.attendee_name or ""
+    if body.contact_id and not email:
+        c = db.get(models.Contact, body.contact_id)
+        if c is None or c.user_id != user.id:
+            raise HTTPException(404, "contact not found")
+        email = (c.email or "").strip()
+        name = name or (c.name or "")
+    if not email:
+        raise HTTPException(400, "no attendee email (contact has none; pass attendee_email)")
+    from ..integrations.booking import book_meeting
+    try:
+        return book_meeting(
+            db, user, attendee_email=email, attendee_name=name, title=body.title,
+            start_iso=body.start_iso, duration_min=body.duration_min, tz=body.tz,
+            description=body.description, add_video=body.add_video,
+            notify=body.notify, provider=body.provider)
+    except ValueError as exc:
+        msg = str(exc)
+        code = 409 if ("connected" in msg or "reconnection" in msg) else 400
+        raise HTTPException(code, msg)
 
 
 # ── Granola (MCP: DCR + PKCE) — its own connect/callback, NOT the generic OAuth one.

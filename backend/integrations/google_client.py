@@ -9,6 +9,7 @@ Returns NORMALIZED shapes the relationship sync consumes:
 from __future__ import annotations
 
 import email.utils
+import uuid
 from typing import Optional
 
 import httpx
@@ -20,6 +21,14 @@ _GCAL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 def _get(token: str, url: str, params: Optional[dict] = None) -> dict:
     r = httpx.get(url, headers={"Authorization": f"Bearer {token}"},
                   params=params or {}, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def _post(token: str, url: str, body: dict, params: Optional[dict] = None) -> dict:
+    r = httpx.post(url, headers={"Authorization": f"Bearer {token}",
+                                 "Content-Type": "application/json"},
+                   params=params or {}, json=body, timeout=20)
     r.raise_for_status()
     return r.json()
 
@@ -83,3 +92,45 @@ def fetch_calendar_events(token: str, *, time_min_iso: str, time_max_iso: str,
             "html_link": e.get("htmlLink"),
         })
     return out
+
+
+def _meet_url(data: dict) -> Optional[str]:
+    """Pull the Google Meet join URL from a created event (hangoutLink, else the
+    video entryPoint in conferenceData)."""
+    if data.get("hangoutLink"):
+        return data["hangoutLink"]
+    for ep in ((data.get("conferenceData") or {}).get("entryPoints") or []):
+        if ep.get("entryPointType") == "video" and ep.get("uri"):
+            return ep["uri"]
+    return None
+
+
+def create_calendar_event(token: str, *, summary: str, start_iso: str, end_iso: str,
+                          attendees: list, description: str = "", tz: str = "UTC",
+                          add_video: bool = True, notify: bool = True) -> dict:
+    """Create an event on the host's primary calendar (Calendar API events.insert).
+    `attendees` is a list of email strings -- with notify=True Google emails them the
+    invite (sendUpdates=all). add_video=True attaches a Google Meet link. Returns
+    {id, html_link, video_url, start, attendees}."""
+    body: dict = {
+        "summary": summary,
+        "start": {"dateTime": start_iso, "timeZone": tz},
+        "end": {"dateTime": end_iso, "timeZone": tz},
+        "attendees": [{"email": a} for a in attendees if a],
+    }
+    if description:
+        body["description"] = description
+    params: dict = {"sendUpdates": "all" if notify else "none"}
+    if add_video:
+        body["conferenceData"] = {"createRequest": {
+            "requestId": uuid.uuid4().hex,
+            "conferenceSolutionKey": {"type": "hangoutsMeet"}}}
+        params["conferenceDataVersion"] = 1
+    data = _post(token, _GCAL, body, params)
+    return {
+        "id": data.get("id"),
+        "html_link": data.get("htmlLink"),
+        "video_url": _meet_url(data),
+        "start": (data.get("start") or {}).get("dateTime"),
+        "attendees": [a.get("email") for a in (data.get("attendees") or [])],
+    }

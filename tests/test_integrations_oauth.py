@@ -67,7 +67,7 @@ def test_authorize_url_has_scopes_state_and_offline(monkeypatch):
     monkeypatch.setenv("SURPLUS_OAUTH_STATE_SECRET", "s")
     url = oauth.authorize_url("google", redirect_uri="https://x/cb", user_id=3)
     assert url.startswith("https://accounts.google.com/o/oauth2/v2/auth?")
-    assert "gmail.readonly" in url and "calendar.readonly" in url
+    assert "gmail.readonly" in url and "calendar.events" in url   # events = booking write scope
     assert "access_type=offline" in url and "prompt=consent" in url
     assert "client_id=cid" in url and "state=" in url
 
