@@ -17,13 +17,6 @@
     "https://*.linkedin.com/*",
     "https://event.surpluslayer.com/*"
   ],
-  "content_scripts": [
-    {
-      "matches": ["https://*.linkedin.com/*"],
-      "js": ["content-linkedin.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "declarative_net_request": {
     "rule_resources": [
       { "id": "frame_ruleset", "enabled": true, "path": "rules.json" }

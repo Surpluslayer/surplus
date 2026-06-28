@@ -12,7 +12,6 @@ const ctx = document.getElementById('context');
 const ctxName = document.getElementById('ctx-name');
 const ctxHeadline = document.getElementById('ctx-headline');
 const captureBtn = document.getElementById('capture');
-const openProfileBtn = document.getElementById('open-profile');
 
 let current = null; // the profile currently shown in the context bar
 
@@ -27,16 +26,21 @@ document.getElementById('reload').addEventListener('click', () => {
 });
 
 function renderProfile(p) {
-  current = p;
-  if (!p || !p.name) {
-    ctx.classList.remove('show');
+  current = p && p.name ? p : null;
+  // The bar is ALWAYS present (fixed footprint) to avoid layout shift; we only
+  // swap its contents. Empty state = muted placeholder, Capture hidden.
+  if (!current) {
+    ctx.classList.add('empty');
+    ctxName.textContent = 'Open a LinkedIn profile';
+    ctxHeadline.textContent = '';
+    captureBtn.disabled = true;
     return;
   }
-  ctxName.textContent = p.name;
-  ctxHeadline.textContent = p.headline || '';
+  ctx.classList.remove('empty');
+  ctxName.textContent = current.name;
+  ctxHeadline.textContent = current.headline || '';
   captureBtn.disabled = false;
   captureBtn.textContent = 'Capture to surplus';
-  ctx.classList.add('show');
 }
 
 // Live updates pushed from the background relay as you browse LinkedIn.
@@ -45,26 +49,36 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === 'surplus:profile:update') renderProfile(msg.profile);
 });
 
-// On open, ask the background for the last-seen profile.
+// On open, show any cached profile immediately, then actively rescan the
+// current tab so the bar reflects the LinkedIn page that's in front right now.
 chrome.runtime.sendMessage({ type: 'surplus:profile:get' }, (p) => {
   if (!chrome.runtime.lastError && p) renderProfile(p);
 });
+chrome.runtime.sendMessage({ type: 'surplus:scan-active' });
 
-// Hand the captured person to the book. The book can listen for this
-// postMessage to kick off its workflow (search / add contact / draft).
-// Until the book wires up a handler, this is a no-op on its side; the
-// button still gives the user feedback.
+// Capture the person into surplus via the background service worker (which
+// calls the in-person scan API with the session cookie). On success, reload
+// the book so the fresh capture + draft show up.
 captureBtn.addEventListener('click', () => {
   if (!current) return;
-  book.contentWindow?.postMessage(
-    { type: 'surplus:capture', profile: current },
-    BOOK_URL,
-  );
   captureBtn.disabled = true;
-  captureBtn.textContent = 'Sent to surplus ✓';
-});
-
-// Open the LinkedIn profile in a normal tab (handy from the panel).
-openProfileBtn.addEventListener('click', () => {
-  if (current?.url) chrome.tabs.create({ url: current.url });
+  captureBtn.textContent = 'Capturing…';
+  chrome.runtime.sendMessage(
+    { type: 'surplus:capture', profile: current },
+    (resp) => {
+      if (chrome.runtime.lastError || !resp?.ok) {
+        captureBtn.disabled = false;
+        captureBtn.textContent = 'Retry capture';
+        console.warn(
+          '[surplus] capture failed',
+          chrome.runtime.lastError || resp?.error,
+        );
+        return;
+      }
+      captureBtn.textContent = 'Captured ✓';
+      // Show the new capture/draft in the book.
+      loading.style.display = 'flex';
+      book.src = BOOK_URL;
+    },
+  );
 });
