@@ -36,14 +36,68 @@ _EXTRACT_SYSTEM = (
     "You scan recent web results about ONE professional contact and decide if "
     "there is a single noteworthy recent update worth telling someone who already "
     "knows them: a role change, a fundraise, a launch/announcement, an award, "
-    "press, or a notable post/talk. Ignore stale, generic, or unrelated results, "
-    "and ignore results that are clearly a DIFFERENT person of the same name. "
+    "press, or a notable post/talk. Ignore stale, generic, or unrelated results.\n"
+    "IDENTITY IS CRITICAL: web search returns same-name DIFFERENT people. Only "
+    "accept a result you can tie to THIS EXACT person -- their company, role, or "
+    "context must match. `identity_confidence`=high ONLY when the result clearly "
+    "corroborates this person (e.g. names their company/role); otherwise low. Set "
+    "`matched_company` to the employer the result is actually about (so a mismatch "
+    "with the given company is visible).\n"
     "Return ONLY JSON: {\"has_update\":true|false,\"type\":\"job_change|new_post|"
     "profile_update\",\"headline\":\"<=8 words\",\"summary\":\"<=25 words, "
-    "specific, names the thing\",\"url\":\"<source url>\"}. Use job_change for a "
-    "new role/company, new_post for a post/launch/press/talk, profile_update "
-    "otherwise. has_update=false unless the evidence is solid and recent."
+    "specific, names the thing\",\"url\":\"<source url>\","
+    "\"identity_confidence\":\"high|low\",\"matched_company\":\"<employer in the result>\"}. "
+    "Use job_change for a new role/company, new_post for a post/launch/press/talk, "
+    "profile_update otherwise. has_update=false unless the evidence is solid, recent, "
+    "AND clearly about this exact person."
 )
+
+
+# Generic company words that don't distinguish one employer from another -- a match
+# on these alone doesn't corroborate identity.
+_GENERIC_COMPANY_WORDS = {
+    "inc", "llc", "ltd", "co", "corp", "company", "group", "the", "and",
+    "technologies", "technology", "tech", "labs", "lab", "ai", "io", "capital",
+    "ventures", "partners", "global", "solutions", "systems", "security",
+    "services", "studio", "studios", "holdings", "ventures",
+}
+
+
+def _norm_text(s: str) -> str:
+    """Lowercased, alnum-or-space, single-spaced -- for substring identity checks."""
+    return " ".join("".join(c if (c.isalnum() or c.isspace()) else " "
+                            for c in (s or "").lower()).split())
+
+
+def _result_blob(out: dict, packed: list[dict]) -> str:
+    """Normalized text of the SPECIFIC result the extractor chose (by url); falls
+    back to all results' text if the url isn't among them."""
+    url = (out.get("url") or "").strip()
+    chosen = next((p for p in packed if (p.get("url") or "") == url), None)
+    src = ([chosen] if chosen else packed)
+    return _norm_text(" ".join((p.get("title") or "") + " " + (p.get("text") or "")
+                               for p in src))
+
+
+def _identity_ok(out: dict, packed: list[dict], name: str, company: str) -> bool:
+    """Deterministic identity gate for an Exa web hit -- the fix for same-name
+    mis-attribution. Requires the extractor's own high confidence AND, when we know
+    the contact's company, that the chosen result actually corroborates it (full
+    company string OR a distinctive company token present). No company on file ->
+    fall back to requiring the contact's name in the result."""
+    if (out.get("identity_confidence") or "").strip().lower() != "high":
+        return False
+    blob = _result_blob(out, packed)
+    if not blob:
+        return False
+    comp = _norm_text(company)
+    if comp:
+        if comp in blob:
+            return True
+        tokens = [t for t in comp.split()
+                  if len(t) >= 4 and t not in _GENERIC_COMPANY_WORDS]
+        return any(t in blob for t in tokens)   # company known but uncorroborated -> reject
+    return _norm_text(name) in blob              # no company: name must at least appear
 
 
 def _exa_search(query: str, *, lookback_days: int = _LOOKBACK_DAYS,
@@ -98,6 +152,14 @@ def find_updates(db, contact: models.Contact) -> list[dict]:
             f"Recent web results:\n{json.dumps(packed, default=str)}")
     out = _llm_json(_EXTRACT_SYSTEM, user, max_tokens=300, cheap=True, background=True)
     if not out or not out.get("has_update") or not (out.get("summary") or "").strip():
+        return []
+    # Identity gate: web search collides on same-name different people. Drop any hit
+    # we can't tie to THIS contact (company corroboration), so we never attribute a
+    # stranger's news (e.g. a different "Vinita") to the wrong person.
+    if not _identity_ok(out, packed, name, company):
+        print(f"  [updates.exa] dropped same-name mismatch for {name!r} "
+              f"(matched_company={out.get('matched_company')!r}, "
+              f"conf={out.get('identity_confidence')!r})", flush=True)
         return []
     url = (out.get("url") or "").strip()
     seen = _seen_urls(contact)
