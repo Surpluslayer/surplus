@@ -145,6 +145,8 @@ def init_db() -> None:
         _migrate_contact_profile_baselined,
         _migrate_contact_preferred_channel,
         _migrate_user_is_demo,
+        _migrate_user_google_sub,
+        _migrate_session_client,
     ]
     for migration in migrations:
         try:
@@ -173,6 +175,37 @@ def init_db() -> None:
         _ensure_operator_user_and_backfill()
     except Exception as exc:  # noqa: BLE001
         print(f"  [init_db] operator backfill failed: {type(exc).__name__}: {exc}")
+
+
+def _migrate_user_google_sub() -> None:
+    """Add users.google_sub (VARCHAR(80), NULL) + its unique index for Sign in with
+    Google. Existing users are all NULL (LinkedIn-first); a Google login links to them
+    by email or creates a new row. NULLs don't collide in a unique index on PG/SQLite."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "google_sub" not in cols:
+        with ENGINE.begin() as conn:
+            conn.execute(text("ALTER TABLE users ADD COLUMN google_sub VARCHAR(80)"))
+    with ENGINE.begin() as conn:
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_sub "
+                          "ON users (google_sub)"))
+
+
+def _migrate_session_client() -> None:
+    """Add sessions.client (VARCHAR(20), default 'web'). Existing sessions become 'web'
+    (the cookie flow), so multi-client (ios/plugin Bearer) is purely additive."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "sessions" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("sessions")}
+    if "client" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text("ALTER TABLE sessions ADD COLUMN client VARCHAR(20) DEFAULT 'web'"))
 
 
 def _migrate_event_event_name() -> None:
