@@ -136,7 +136,7 @@ def run_proactive_sweep(db=None, *, now: Optional[datetime] = None,
     now = now or datetime.now(timezone.utc)
     own_db = db is None
     if own_db:
-        from ...db import SessionLocal
+        from .....db import SessionLocal
         db = SessionLocal()
     try:
         per_user: list[dict] = []
@@ -202,7 +202,7 @@ def run_claimed_proactive_sweep() -> dict:
     if not _enabled():
         _LAST_TICK = {"at": stamp, "ran": False, "reason": "disabled"}
         return _LAST_TICK
-    from .updates_scheduler import _claim  # reuse the one atomic claim primitive
+    from ...updates_scheduler import _claim  # reuse the one atomic claim primitive
     if not _claim("proactive_sweep", _gap_seconds()):
         _LAST_TICK = {"at": stamp, "ran": False, "reason": "not due / claimed elsewhere"}
         return _LAST_TICK

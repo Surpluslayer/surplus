@@ -92,3 +92,17 @@ def test_daily_plan_dedupes_trigger_over_cadence(monkeypatch):
     assert plan[0]["kind"] == "trigger" and "birthday" in plan[0]["reason"]
     assert sum(1 for p in plan if p["contact_id"] == 1) == 1  # contact 1 deduped
     assert plan[1]["kind"] == "cadence" and out["count"] == 3
+
+
+def test_scheduler_entry_lazy_imports_resolve(monkeypatch):
+    """Regression: the reorg broke sweep.py's lazy relative imports
+    (...updates_scheduler._claim, .....db.SessionLocal), so the background sweep
+    silently no-op'd. Guard that the scheduler entry's lazy imports resolve."""
+    import backend.agents.relationship.updates_scheduler as us
+    from backend.agents.relationship.pipeline.proactive import sweep
+    # _claim import must resolve; False -> returns without running a real sweep
+    monkeypatch.setattr(us, "_claim", lambda name, gap: False)
+    assert "ran" in sweep.run_claimed_proactive_sweep()
+    # SessionLocal import (db=None path) must resolve; empty users -> no work
+    monkeypatch.setattr(sweep, "_user_ids_with_contacts", lambda db: [])
+    assert sweep.run_proactive_sweep()["users"] == 0
