@@ -91,3 +91,18 @@ def test_ingest_sweep_bounds_and_aggregates(db, monkeypatch):
     monkeypatch.setattr(extract, "ingest_contact_facts", fake_ingest)
     res = extract.ingest_sweep(db, u.id)
     assert res == {"contacts": 2, "with_facts": 1, "extracted": 2}
+
+
+def test_ingest_scheduled_sweep_off_by_default(monkeypatch):
+    monkeypatch.delenv("MESSAGE_INGEST_ENABLED", raising=False)
+    r = extract.run_claimed_ingest_sweep()
+    assert r["ran"] is False and r["reason"] == "disabled"   # opt-in: no LLM cost unless enabled
+
+
+def test_ingest_scheduled_sweep_lazy_imports_resolve(monkeypatch):
+    """Guard the scheduler entry's lazy relative imports (the reorg-break class)."""
+    monkeypatch.setenv("MESSAGE_INGEST_ENABLED", "1")
+    import backend.agents.relationship.updates_scheduler as us
+    monkeypatch.setattr(us, "_claim", lambda name, gap: False)   # not due -> returns before db
+    r = extract.run_claimed_ingest_sweep()
+    assert r["ran"] is False and "not due" in r["reason"]        # _claim import resolved

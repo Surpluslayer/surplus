@@ -11,6 +11,9 @@ Capturing context only: it WRITES facts, it does not touch the messaging harness
 """
 from __future__ import annotations
 
+import os
+from datetime import datetime, timezone
+
 from ...spine import relationships
 from ...spine.memory import upsert_fact
 from .gather import thread_from_timeline
@@ -103,3 +106,56 @@ def ingest_sweep(db, user_id: int, *, limit: int = 60) -> dict:
             extracted += r["extracted"]
             touched += 1
     return {"contacts": len(contacts), "with_facts": touched, "extracted": extracted}
+
+
+# ── scheduled activation (OPT-IN, off by default) ─────────────────────────────
+# Mining messages is per-contact LLM cost, so the periodic sweep is OFF unless
+# MESSAGE_INGEST_ENABLED is set -- same opt-in posture as the automation flag.
+# Claim-guarded (its own "message_ingest" row) so one worker/replica runs it.
+_LAST_INGEST_TICK: dict = {}
+
+
+def ingest_last_tick() -> dict:
+    return _LAST_INGEST_TICK
+
+
+def _ingest_enabled() -> bool:
+    return (os.environ.get("MESSAGE_INGEST_ENABLED", "0").strip().lower()
+            in ("1", "true", "yes", "on"))
+
+
+def _ingest_gap_seconds() -> int:
+    return max(300, int(os.environ.get("MESSAGE_INGEST_GAP_SECONDS", "21600")))  # 6h
+
+
+def run_claimed_ingest_sweep() -> dict:
+    """Claim + run one ingestion sweep across all users. No-op when disabled
+    (default) or claimed elsewhere. Fail-soft. The opt-in activation of message ->
+    fact ingestion; flip MESSAGE_INGEST_ENABLED=1 to turn it on."""
+    global _LAST_INGEST_TICK
+    stamp = datetime.now(timezone.utc).isoformat()
+    if not _ingest_enabled():
+        _LAST_INGEST_TICK = {"at": stamp, "ran": False, "reason": "disabled"}
+        return _LAST_INGEST_TICK
+    from ...updates_scheduler import _claim
+    if not _claim("message_ingest", _ingest_gap_seconds()):
+        _LAST_INGEST_TICK = {"at": stamp, "ran": False, "reason": "not due / claimed elsewhere"}
+        return _LAST_INGEST_TICK
+    from .....db import SessionLocal
+    from ..... import models
+    db = SessionLocal()
+    try:
+        uids = [r[0] for r in db.query(models.Contact.user_id).distinct().all() if r[0]]
+        users = extracted = 0
+        for uid in uids:
+            r = ingest_sweep(db, uid)
+            if r.get("extracted"):
+                users += 1
+                extracted += r["extracted"]
+        _LAST_INGEST_TICK = {"at": stamp, "ran": True,
+                             "result": {"users": users, "extracted": extracted}}
+    except Exception as exc:  # noqa: BLE001 : a bad tick must never kill the loop
+        _LAST_INGEST_TICK = {"at": stamp, "ran": True, "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        db.close()
+    return _LAST_INGEST_TICK

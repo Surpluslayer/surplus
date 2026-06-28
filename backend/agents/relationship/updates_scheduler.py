@@ -127,6 +127,14 @@ def _run_once() -> dict:
     except Exception as exc:  # noqa: BLE001 : never let it sink the updates tick
         print(f"[updates.scheduler] proactive sweep error: "
               f"{type(exc).__name__}: {exc}", flush=True)
+    # Message -> fact ingestion on its OWN claim. OFF by default (MESSAGE_INGEST_ENABLED);
+    # no-ops cheaply when disabled, so this line is safe even before it's turned on.
+    try:
+        from .pipeline.context.extract import run_claimed_ingest_sweep
+        run_claimed_ingest_sweep()
+    except Exception as exc:  # noqa: BLE001 : never let it sink the updates tick
+        print(f"[updates.scheduler] ingest sweep error: "
+              f"{type(exc).__name__}: {exc}", flush=True)
     if not _claim("updates_sweep", _gap_seconds()):
         _LAST_TICK = {"at": stamp, "ran": False, "reason": "not due / claimed elsewhere"}
         return _LAST_TICK
