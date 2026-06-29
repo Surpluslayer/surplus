@@ -58,7 +58,7 @@ def test_relationship_status_assembles_sections(db, monkeypatch):
     assert st["due"] == {"contacts": 3, "triggers": 1}
     assert st["automation"]["master_on"] is True
     assert st["automation"]["channels"] == ["email", "whatsapp"]
-    assert set(st["schedulers"]) == {"updates", "proactive"}
+    assert set(st["schedulers"]) == {"updates", "proactive", "catch_up"}
     assert st["sends"]["total"] == 0          # no outreach seeded
 
 

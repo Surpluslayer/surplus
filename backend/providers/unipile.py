@@ -559,7 +559,45 @@ class UnipileProvider(LinkedInProvider):
         posts = self._fetch_recent_posts(handle)
         if posts:
             out["recent_posts"] = posts
+        bday = data.get("birthdate") or data.get("birthday")
+        if isinstance(bday, dict):
+            month = bday.get("month")
+            day = bday.get("day")
+            if month and day:
+                out["birthdate"] = {"month": int(month), "day": int(day)}
         return out
+
+    def linkedin_raw(
+        self,
+        *,
+        method: str,
+        request_url: str,
+        query_params: Optional[dict] = None,
+        body: Optional[dict] = None,
+        encoding: bool = False,
+    ) -> dict:
+        """POST /api/v1/linkedin — proxy an internal LinkedIn request through the
+        connected account (Catch Up / SDUI / Voyager). See Unipile raw-data docs.
+        Returns the Unipile envelope ({object, data, ...}); callers unwrap. Missing
+        creds degrade to {}. Read-only: ignores UNIPILE_DRY_RUN (dry-run blocks
+        sends, not Catch Up / profile fetches)."""
+        if not (self.api_key and self.dsn and self.account_id):
+            return {}
+        payload: dict = {
+            "account_id": self.account_id,
+            "method": (method or "GET").upper(),
+            "request_url": (request_url or "").strip(),
+            "encoding": bool(encoding),
+        }
+        if query_params:
+            payload["query_params"] = query_params
+        if body is not None:
+            payload["body"] = body
+        try:
+            return self._post("/api/v1/linkedin", payload)
+        except Exception as exc:  # noqa: BLE001 : ingest paths are best-effort
+            print(f"  [unipile.linkedin_raw] skipped: {type(exc).__name__}: {exc}")
+            return {}
 
     def _fetch_recent_posts(self, handle: str, limit: int = 3) -> list[str]:
         """GET /users/{handle}/posts -> text of their last few posts.

@@ -12,6 +12,7 @@ from collections import Counter
 
 from .... import models
 from ..pipeline.proactive import sweep as proactive
+from ..pipeline.context.ingest.catch_up import catch_up_last_tick as _catch_up_last_tick
 from ..pipeline.send.sender import _automated_channels, _automation_master_on
 from ..updates_scheduler import last_tick as _updates_last_tick
 
@@ -78,5 +79,6 @@ def relationship_status(db, user_id: int) -> dict:
             # In-process tick state (per-worker; empty on a worker that hasn't ticked).
             "updates": _updates_last_tick(),
             "proactive": proactive.last_tick(),
+            "catch_up": _catch_up_last_tick(),
         },
     }

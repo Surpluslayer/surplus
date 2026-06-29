@@ -135,6 +135,14 @@ def _run_once() -> dict:
     except Exception as exc:  # noqa: BLE001 : never let it sink the updates tick
         print(f"[updates.scheduler] ingest sweep error: "
               f"{type(exc).__name__}: {exc}", flush=True)
+    # LinkedIn Catch Up -> ContactFact (birthdays, job changes, …). ON by default;
+    # own claim row, daily by default (CATCH_UP_INGEST_GAP_SECONDS=86400).
+    try:
+        from .pipeline.context.ingest.catch_up import run_claimed_catch_up_sweep
+        run_claimed_catch_up_sweep()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[updates.scheduler] catch_up ingest error: "
+              f"{type(exc).__name__}: {exc}", flush=True)
     if not _claim("updates_sweep", _gap_seconds()):
         _LAST_TICK = {"at": stamp, "ran": False, "reason": "not due / claimed elsewhere"}
         return _LAST_TICK
