@@ -40,7 +40,21 @@ const config: CapacitorConfig = {
   },
   // In LIVE mode, hand the WebView the deployed origin. Empty string → omit the
   // server block entirely so Capacitor serves the bundled dist/ assets instead.
-  ...(liveUrl ? { server: { url: liveUrl, cleartext: false } } : {}),
+  //
+  // allowNavigation: keep the backend's OWN host inside the native WebView so
+  // server-side redirects (e.g. the demo /api/demo/enter → /book hop, or the
+  // LinkedIn hosted-auth return) don't get kicked out to an external Safari
+  // sheet — which would drop the just-set session cookie and break the flow.
+  // Derived from CAP_SERVER_URL so it tracks whatever backend you point at.
+  ...(liveUrl
+    ? {
+        server: {
+          url: liveUrl,
+          cleartext: false,
+          allowNavigation: [new URL(liveUrl).hostname],
+        },
+      }
+    : {}),
 };
 
 export default config;
