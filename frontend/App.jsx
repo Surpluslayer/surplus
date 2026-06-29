@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, Component } from "react";
 import { SURPLUS_APP_CSS as CSS } from "./surplusTheme.js";
 import TriageApp, { UploadStep, ReviewStep, TRIAGE_CSS } from "./TriageApp.jsx";
+import AuthOptions from "./components/AuthOptions.jsx";
 import {
   ArrowRight, Check, Circle, Activity, Send, Network, Target,
   GitBranch, BriefcaseBusiness, Zap, TrendingUp, RotateCw, Mail,
@@ -3190,7 +3191,7 @@ function ConnectLinkedinGate({ user, onConnect, onLogout }) {
 }
 
 
-function SignInModal({ open, onClose, onSignIn, onSecondary, title, sub, ctaLabel, secondaryCtaLabel, primaryIcon = "linkedin" }) {
+function SignInModal({ open, onClose, onSignIn, onSecondary, title, sub, ctaLabel, secondaryCtaLabel, primaryIcon = "linkedin", emailAuth = false }) {
   const [busy, setBusy] = useState(false);
   const [busy2, setBusy2] = useState(false);
   if (!open) return null;
@@ -3243,6 +3244,12 @@ function SignInModal({ open, onClose, onSignIn, onSecondary, title, sub, ctaLabe
             <CreditCard size={18} />
             <span>{busy2 ? "Redirecting…" : (secondaryCtaLabel || "Upgrade with Stripe")}</span>
           </button>
+        )}
+
+        {emailAuth && (
+          <div style={{ marginTop: 14 }}>
+            <AuthOptions onSignedIn={() => window.location.reload()} />
+          </div>
         )}
 
         <button type="button" className="signin-modal-dismiss" onClick={onClose}>
@@ -3421,9 +3428,10 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
           onClose={() => setSignInModalOpen(false)}
           onSignIn={onSignIn}
           title="Sign in to surplus"
-          sub="We use Unipile's hosted auth so your LinkedIn account stays on your LinkedIn, not ours. Returning users : your events, paid status, and connected LinkedIn account are all preserved."
+          sub="Continue with LinkedIn, Google, or Microsoft, or use any email + password. Returning users : your events, paid status, and connected accounts are all preserved."
           ctaLabel="Sign in with LinkedIn"
           primaryIcon="linkedin"
+          emailAuth
         />
         <main className="canvas" key={stage}>
           {stage === 0 && (

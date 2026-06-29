@@ -613,6 +613,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name, email }),
     }),
+  // Email + password account system (works for any email). Sets the session
+  // cookie on success (web); the caller reloads / routes into the app.
+  signup: ({ name, email, password }) =>
+    request("/api/auth/signup", {
+      method: "POST",
+      body: JSON.stringify({ name, email, password }),
+    }),
+  login: ({ email, password }) =>
+    request("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  // One-tap OAuth: fetch the consent URL, then top-level navigate to it (the
+  // session cookie is set on the callback redirect, not a fetch).
+  startGoogleAuth: () => request("/api/auth/google/login"),
+  startMicrosoftAuth: () => request("/api/auth/microsoft/login"),
   // Zero-friction triage entry : creates an anonymous User row + session
   // so 'Triage mode' button can route straight into the flow with no form.
   triageQuickStart: () => request("/api/auth/triage/quick-start", { method: "POST" }),
