@@ -627,7 +627,6 @@ function DraftPanel({ detail, isDemo = false }) {
 
 function AccountScreen({ user, onBack, onConnections }) {
   const initials = _initials(user?.name);
-  const calendarOff = true; // No calendar backend yet — surfaced as the hint.
   const plan = user?.billing?.plan_label || (user?.paid_at ? "Pro" : "Individual");
 
   const signOut = async () => {
@@ -654,7 +653,6 @@ function AccountScreen({ user, onBack, onConnections }) {
         <button className="bk-set-row" onClick={onConnections}>
           <span className="bk-set-lead"><Plug size={19} /><span className="bk-set-lbl">Connections</span></span>
           <span className="bk-set-right">
-            {calendarOff && <Health status="warm" word="Calendar off" />}
             <ChevronRight size={17} className="bk-chev" />
           </span>
         </button>
@@ -677,8 +675,19 @@ function AccountScreen({ user, onBack, onConnections }) {
 
 function ConnectionsScreen({ user, onBack }) {
   const [note, setNote] = useState("");
-  const liOn = user?.linkedin_status === "active";
+  const [integrations, setIntegrations] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    api.listIntegrations().then((d) => { if (!cancelled) setIntegrations(d); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  // LinkedIn is connected only when an actual Unipile account is tied -- linkedin_status
+  // defaults to "active" even with none, so check unipile_account_id too.
+  const liOn = !!user?.unipile_account_id && user?.linkedin_status === "active";
   const emailOn = user?.email_status === "active";
+  // Google (calendar + contacts) -- read the real ConnectedAccount list.
+  const googleOn = !!(integrations?.connected || []).some(
+    (a) => a.provider === "google" && a.status === "active");
 
   const connect = async (starter, label) => {
     try {
@@ -707,10 +716,10 @@ function ConnectionsScreen({ user, onBack }) {
                    : "Tracks replies, sends your drafts"}
                  connected={emailOn}
                  onConnect={() => connect(api.startEmailAuth, "Gmail")} />
-        <ConnRow icon={<Calendar size={21} />} name="Google Calendar"
-                 sub="Logs meetings, books reviews"
-                 connected={false}
-                 onConnect={() => setNote("Calendar sync is coming soon.")} />
+        <ConnRow icon={<Calendar size={21} />} name="Google Calendar & Contacts"
+                 sub={googleOn ? "Connected" : "Logs meetings, syncs contacts"}
+                 connected={googleOn}
+                 onConnect={() => connect(api.connectGoogle, "Google")} />
       </div>
 
       {note && <p className="bk-note bk-note--warn">{note}</p>}

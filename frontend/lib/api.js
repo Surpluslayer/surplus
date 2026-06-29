@@ -629,6 +629,9 @@ export const api = {
   // session cookie is set on the callback redirect, not a fetch).
   startGoogleAuth: () => request("/api/auth/google/login"),
   startMicrosoftAuth: () => request("/api/auth/microsoft/login"),
+  // Connected OAuth sources (Google/Microsoft/Calendly/Zoom) for the signed-in user.
+  listIntegrations: () => request("/api/integrations"),
+  connectGoogle: () => request("/api/integrations/google/connect"),
   // Link a provider to the CURRENT signed-in account (safe migration).
   linkGoogle: () => request("/api/auth/google/link"),
   linkMicrosoft: () => request("/api/auth/microsoft/link"),
