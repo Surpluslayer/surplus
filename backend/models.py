@@ -1005,6 +1005,51 @@ class Contact(Base):
     )
 
 
+class ContactIdentity(Base):
+    """One STRONG identity that points at a Contact -- the identity-resolution
+    spine for the merge layer.
+
+    A single person can carry MANY identities (several emails, a work + personal
+    phone, a LinkedIn account), so one Contact has MANY ContactIdentity rows. This
+    is what lets the merge engine notice that two Contact rows are the SAME person
+    (they share an exact normalized email / phone / linkedin id) or that a "bridge"
+    record spans two otherwise-separate contacts.
+
+    DEDUP KEY : UniqueConstraint(user_id, kind, value). The same normalized
+    identity can never point at two contacts for one owner -- that uniqueness is
+    exactly how a future upsert can find the existing person instead of forking a
+    duplicate. `value` is always stored NORMALIZED (lowercased email, last-10-digit
+    phone, lowercased linkedin slug/provider id) so equality is meaningful.
+
+    STRONG SIGNALS ONLY. We only ever store email / phone / linkedin here -- never a
+    name or company (those mis-merge different people). MEDIUM signals (name +
+    company_domain) are surfaced for review by the merge engine, never written here.
+    """
+    __tablename__ = "contact_identities"
+    __table_args__ = (
+        UniqueConstraint("user_id", "kind", "value",
+                         name="uq_contact_identity_value"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    # "email" | "phone" | "linkedin".
+    kind: Mapped[str] = mapped_column(String(20), index=True)
+    # The NORMALIZED identity value (lowercased email, last-10-digit phone,
+    # lowercased linkedin public_id/provider_id). Equality here == "same identity".
+    value: Mapped[str] = mapped_column(String(200), index=True)
+    # Is this the identity that matches the contact's primary_identity_key.
+    is_primary: Mapped[bool] = mapped_column(default=False)
+    # Where this identity came from : "email_sync" | "google_contacts" |
+    # "linkedin_profile" | "enrichment" | "manual" | "backfill".
+    source: Mapped[str] = mapped_column(String(30), default="manual")
+    # How sure we are this identity belongs to this person (0..1). Exact stored
+    # values backfill at 1.0.
+    confidence: Mapped[float] = mapped_column(default=1.0)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
 class ContactFact(Base):
     """One typed piece of context about a contact : the per-contact MEMORY that
     any source (LinkedIn, WhatsApp, calendar, email, manual, enrichment) writes
