@@ -90,13 +90,15 @@ def signup(body: SignupBody, db: DbSession = Depends(get_db)) -> JSONResponse:
         db.commit()
         user = oldest
 
-    # Fire the verification email -- a 6-digit PIN code (best-effort; dormant until
-    # RESEND_API_KEY is set). The client then prompts for the code.
+    # Fire the verification email -- a 6-digit PIN code. `sent` is True only when an
+    # email provider is configured AND accepted it. We REQUIRE the code only when it
+    # actually went out, so a dormant provider can never lock a new user out.
     from .account_email import send_verification_code
-    send_verification_code(db, user)
+    sent = send_verification_code(db, user)
 
     return _session_response(db, user, normalize_client(body.client), {
-        "ok": True, "user_id": user.id, "name": user.name, "email": user.email})
+        "ok": True, "user_id": user.id, "name": user.name, "email": user.email,
+        "verification_required": bool(sent)})
 
 
 @router.post("/login", dependencies=[Depends(_rl_login)])

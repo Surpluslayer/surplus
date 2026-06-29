@@ -143,3 +143,16 @@ def test_password_then_google_is_one_user(client):
     assert s.query(models.User).filter(models.User.email == "dual@x.com").count() == 1
     assert u.google_sub == "G1" and u.password_hash is not None
     s.close()
+
+
+def test_signup_verification_required_reflects_send(client, monkeypatch):
+    """The gate is conditional: required ONLY when a code actually sends (email live),
+    so a dormant provider never locks a new user out."""
+    c, _ = client
+    # dormant email (no RESEND in tests) -> send returns False -> NOT required
+    r = c.post("/api/auth/signup", json={"name": "A", "email": "a@x.com", "password": "secret12"})
+    assert r.json().get("verification_required") is False
+    # when a code DID send -> required
+    monkeypatch.setattr("backend.routes.account_email.send_verification_code", lambda db, u: True)
+    r2 = c.post("/api/auth/signup", json={"name": "B", "email": "b@x.com", "password": "secret12"})
+    assert r2.json().get("verification_required") is True

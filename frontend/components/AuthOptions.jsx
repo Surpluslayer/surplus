@@ -97,10 +97,12 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
     setBusy(true);
     try {
       if (mode === "signup") {
-        await api.signup({ name: name.trim(), email: email.trim(), password });
-        // Signed in (session set); now collect the emailed PIN to verify the address.
+        const res = await api.signup({ name: name.trim(), email: email.trim(), password });
         setBusy(false);
-        setVerifying(true);
+        // Require the emailed PIN ONLY when one actually went out (email provider live).
+        // If it didn't (dormant provider), proceed -- never lock a new user out.
+        if (res?.verification_required) { setVerifying(true); return; }
+        done();
         return;
       }
       await api.login({ email: email.trim(), password });
@@ -136,7 +138,6 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
         {error && <div className="authopts-error" role="alert"><AlertCircle size={14} /> {error}</div>}
         {notice && <div className="authopts-notice">{notice}</div>}
         <button type="button" className="authopts-forgot" onClick={resendCode}>Resend code</button>
-        <button type="button" className="authopts-switch" onClick={done}>Skip for now</button>
       </div>
     );
   }
