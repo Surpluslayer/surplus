@@ -637,6 +637,10 @@ export const api = {
   // Password reset (always 200 on forgot, no enumeration).
   forgotPassword: (email) =>
     request("/api/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) }),
+  // Email verification PIN (authenticated; after signup).
+  sendCode: () => request("/api/auth/send-code", { method: "POST" }),
+  verifyCode: (code) =>
+    request("/api/auth/verify-code", { method: "POST", body: JSON.stringify({ code }) }),
   resetPassword: ({ token, password }) =>
     request("/api/auth/reset-password", { method: "POST", body: JSON.stringify({ token, password }) }),
   // Zero-friction triage entry : creates an anonymous User row + session

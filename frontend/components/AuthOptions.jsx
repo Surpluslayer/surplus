@@ -37,8 +37,33 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
   const [oauthBusy, setOauthBusy] = useState(null); // "google" | "microsoft"
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
+  const [verifying, setVerifying] = useState(false);   // after signup: enter the email PIN
+  const [code, setCode] = useState("");
 
   const done = () => { if (onSignedIn) onSignedIn(); else window.location.reload(); };
+
+  const verifyEmailCode = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      await api.verifyCode(code.trim());
+      done();                                          // verified -> into the app
+    } catch (err) {
+      setBusy(false);
+      setError(err.message || "That code is invalid or expired.");
+    }
+  };
+
+  const resendCode = async () => {
+    setError(null); setNotice(null);
+    try {
+      const r = await api.sendCode();
+      setNotice(r?.sent ? "Sent a new code." : "Code refreshed (email isn't configured here).");
+    } catch (err) {
+      setError(err.message || "Couldn't resend the code.");
+    }
+  };
 
   const handleForgot = async () => {
     setError(null); setNotice(null);
@@ -73,9 +98,12 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
     try {
       if (mode === "signup") {
         await api.signup({ name: name.trim(), email: email.trim(), password });
-      } else {
-        await api.login({ email: email.trim(), password });
+        // Signed in (session set); now collect the emailed PIN to verify the address.
+        setBusy(false);
+        setVerifying(true);
+        return;
       }
+      await api.login({ email: email.trim(), password });
       done();
     } catch (err) {
       setBusy(false);
@@ -85,6 +113,33 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
 
   const canSubmit = email.trim().includes("@") && password.length >= 8
     && (mode === "login" || name.trim());
+
+  // After signup: collect the 6-digit email PIN. Non-gating -- "Skip for now" proceeds.
+  if (verifying) {
+    return (
+      <div className="authopts">
+        <style>{AUTHOPTS_CSS}</style>
+        <div className="authopts-divider"><span>verify your email</span></div>
+        <p style={{ fontSize: 13, color: "#5b616a", margin: "0 0 4px" }}>
+          We emailed a 6-digit code to <b>{email.trim()}</b>. Enter it to confirm your address.
+        </p>
+        <form onSubmit={verifyEmailCode} className="authopts-form">
+          <input className="authopts-in" inputMode="numeric" maxLength={6} value={code}
+                 placeholder="123456" autoFocus
+                 onChange={(e) => setCode(e.target.value.replace(/[^0-9]/g, ""))} />
+          <button type="submit" className="authopts-submit"
+                  disabled={busy || code.trim().length < 6}>
+            {busy ? <><Loader2 className="spin" size={16} /> Verifying…</>
+                  : <>Verify email <ArrowRight size={16} /></>}
+          </button>
+        </form>
+        {error && <div className="authopts-error" role="alert"><AlertCircle size={14} /> {error}</div>}
+        {notice && <div className="authopts-notice">{notice}</div>}
+        <button type="button" className="authopts-forgot" onClick={resendCode}>Resend code</button>
+        <button type="button" className="authopts-switch" onClick={done}>Skip for now</button>
+      </div>
+    );
+  }
 
   return (
     <div className="authopts">
