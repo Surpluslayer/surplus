@@ -173,12 +173,19 @@ export default function BookApp() {
     <div className="bk-root">
       <style>{BOOK_CSS}</style>
       <div className="bk-frame">
-        {user?.is_demo && (
+        {user?.is_demo ? (
           <div className="bk-demobar">
             <span><b>Demo</b> · sample data. Sign in to use it for real, or skip the tour.</span>
             <button className="bk-demobar-cta" data-onb="signin" onClick={() => signInWithLinkedIn("banner")}>Sign in</button>
           </div>
-        )}
+        ) : !(user?.unipile_account_id && user?.linkedin_status === "active") ? (
+          // Real user without LinkedIn connected: nudge them into the connectors
+          // screen (the one place connect lives) instead of a standalone CTA.
+          <div className="bk-demobar">
+            <span><b>Connect LinkedIn</b> to enrich your book and catch job changes.</span>
+            <button className="bk-demobar-cta" onClick={() => setRoute({ name: "connections" })}>Connect</button>
+          </div>
+        ) : null}
         {screen}
         <nav className="bk-nav">
           <button className={"bk-nav-item" + (activeNav === "today" ? " on" : "")}
