@@ -743,7 +743,7 @@ function ConnectionsScreen({ user, onBack }) {
                        onConnect={() => connect(api.startEmailAuth, "email")} />
             ))}
             <ConnRow icon={<Mail size={21} />} name="Add another email"
-                     sub="Connect another Gmail or Outlook mailbox"
+                     sub="Gmail or Outlook"
                      connected={false}
                      onConnect={() => connect(api.startEmailAuth, "email")} />
           </React.Fragment>
