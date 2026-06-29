@@ -21,6 +21,9 @@ const rvMessage = document.getElementById('rv-message');
 const rvStatus = document.getElementById('rv-status');
 const rvSend = document.getElementById('rv-send');
 const rvCancel = document.getElementById('rv-cancel');
+const liConnect = document.getElementById('li-connect');
+const liConnectBtn = document.getElementById('li-connect-btn');
+const liConnectSub = document.getElementById('li-connect-sub');
 
 let reviewProspectId = null;
 
@@ -35,7 +38,84 @@ function loadBook() {
   loading.style.display = 'flex';
   book.src = BOOK_URL;
   bookLoaded = true;
+  // Now that we know the user is signed into surplus, surface the LinkedIn
+  // connect affordance (it hides itself if LinkedIn is already connected).
+  refreshLinkedInConnect();
 }
+
+// --- LinkedIn connect-cookie (v4) ----------------------------------------
+// Show a one-tap "Connect LinkedIn" row only when the user is signed into
+// surplus and LinkedIn is NOT yet connected. The status/connect calls run in
+// the service worker (background.js) so they ride the same surplus session
+// cookie + base URL as the rest of the panel's API calls.
+
+function setLiSub(text, cls) {
+  liConnectSub.textContent = text;
+  liConnectSub.className = 'li-sub' + (cls ? ' ' + cls : '');
+}
+
+function showLiConnected() {
+  // Already connected: collapse the row entirely (per "show only when not
+  // already connected").
+  liConnect.classList.remove('show');
+}
+
+function refreshLinkedInConnect() {
+  chrome.runtime.sendMessage({ type: 'surplus:linkedin:status' }, (resp) => {
+    if (chrome.runtime.lastError) return; // worker asleep / not signed in
+    if (resp?.ok && resp.res?.connected) {
+      showLiConnected();
+      return;
+    }
+    // Not connected (or status unknown): offer the connect affordance.
+    liConnectBtn.disabled = false;
+    liConnectBtn.textContent = 'Connect';
+    setLiSub('One tap to auto-connect via your LinkedIn session.');
+    liConnect.classList.add('show');
+  });
+}
+
+liConnectBtn.addEventListener('click', () => {
+  liConnectBtn.disabled = true;
+  liConnectBtn.textContent = 'Connecting…';
+  setLiSub('Connecting your LinkedIn…');
+  chrome.runtime.sendMessage(
+    { type: 'surplus:linkedin:connect', userAgent: navigator.userAgent },
+    (resp) => {
+      if (chrome.runtime.lastError || !resp?.ok) {
+        liConnectBtn.disabled = false;
+        liConnectBtn.textContent = 'Retry';
+        setLiSub(
+          'Could not connect: ' +
+            (chrome.runtime.lastError?.message || resp?.error || 'unknown'),
+          'err',
+        );
+        return;
+      }
+      const r = resp.res;
+      if (r?.needLinkedInLogin) {
+        liConnectBtn.disabled = false;
+        liConnectBtn.textContent = 'Retry';
+        setLiSub('Log into LinkedIn first, then tap Connect.', 'err');
+        return;
+      }
+      if (r?.connected) {
+        if (r.alreadyConnected) {
+          showLiConnected();
+          return;
+        }
+        liConnectBtn.textContent = 'Connected ✓';
+        setLiSub('LinkedIn connected ✓', 'ok');
+        setTimeout(showLiConnected, 1600);
+        return;
+      }
+      // Unexpected: backend returned ok but not connected.
+      liConnectBtn.disabled = false;
+      liConnectBtn.textContent = 'Retry';
+      setLiSub('Could not connect LinkedIn. Try again.', 'err');
+    },
+  );
+});
 
 // Decide whether to show the book or the sign-in screen. LinkedIn auth can't
 // run inside the panel iframe, so a signed-out user must authenticate in a real
@@ -51,6 +131,9 @@ function gateOnAuth() {
       if (!bookLoaded) loadBook();
     } else {
       signin.classList.add('show');
+      // Signed out of surplus: the connect-cookie call wouldn't be authed, so
+      // hide the LinkedIn affordance until they sign in.
+      liConnect.classList.remove('show');
       // Poll while signed out so the book appears automatically once they
       // finish signing in in the other tab (the panel stays "visible" across
       // tab switches, so focus events alone aren't reliable).
@@ -65,7 +148,13 @@ document.getElementById('reload').addEventListener('click', () => {
 });
 
 document.getElementById('signin-btn').addEventListener('click', () => {
-  chrome.tabs.create({ url: BOOK_URL });
+  // Clear any leftover (demo) session first so the book tab lands on the real
+  // sign-in screen, not the demo sample data. Best-effort: open the tab either
+  // way so a logout hiccup never strands the user.
+  chrome.runtime.sendMessage({ type: 'surplus:signout' }, () => {
+    void chrome.runtime.lastError; // swallow "no receiver" if the worker slept
+    chrome.tabs.create({ url: BOOK_URL });
+  });
 });
 document.getElementById('signin-recheck').addEventListener('click', gateOnAuth);
 

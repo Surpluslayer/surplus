@@ -116,6 +116,85 @@ async function sendCapture(prospectId, note, message) {
   return res.json();
 }
 
+// --- LinkedIn connect-cookie (v4): one-tap LinkedIn auto-connect ---------
+// Read the user's li_at session cookie from linkedin.com and hand it to surplus
+// so it can attach their LinkedIn via Unipile -- skipping the slow hosted-auth
+// flow. All surplus calls reuse BOOK_ORIGIN + the session cookie (credentials:
+// 'include') exactly like captureProfile/sendCapture above, so they're
+// authenticated as the signed-in surplus user.
+
+// Read the LinkedIn auth cookie. Resolves null if the user isn't logged into
+// LinkedIn (cookie absent) so callers can prompt them to log in first.
+function getLinkedInCookie() {
+  return new Promise((resolve) => {
+    try {
+      chrome.cookies.get(
+        { url: 'https://www.linkedin.com', name: 'li_at' },
+        (cookie) => {
+          if (chrome.runtime.lastError || !cookie || !cookie.value) {
+            resolve(null);
+            return;
+          }
+          resolve(cookie.value);
+        },
+      );
+    } catch (e) {
+      console.warn('[surplus][bg] cookies.get failed', e);
+      resolve(null);
+    }
+  });
+}
+
+// Is LinkedIn already connected to this surplus account? Call FIRST so we never
+// create a second Unipile account (the backend dedup guard).
+async function linkedinStatus() {
+  const res = await fetch(
+    `${BOOK_ORIGIN}/api/integrations/linkedin/status`,
+    { credentials: 'include' },
+  );
+  if (!res.ok) throw new Error(`status ${res.status}`);
+  return res.json(); // {connected, account_id, status}
+}
+
+// Hand the li_at cookie to surplus to attach LinkedIn via Unipile.
+async function connectLinkedInCookie(liAt, userAgent) {
+  const res = await fetch(
+    `${BOOK_ORIGIN}/api/integrations/linkedin/connect-cookie`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ li_at: liAt, user_agent: userAgent || undefined }),
+    },
+  );
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const j = await res.json();
+      detail = j?.detail || j?.error || j?.message || '';
+    } catch (_) {
+      /* non-JSON body */
+    }
+    throw new Error(detail || `connect-cookie ${res.status}`);
+  }
+  return res.json(); // {connected, account_id, reused}
+}
+
+// Orchestrate the one-tap flow: check status -> read cookie -> connect.
+// Returns {connected, reused?, alreadyConnected?, needLinkedInLogin?}.
+async function linkedinConnectFlow(userAgent) {
+  const status = await linkedinStatus();
+  if (status?.connected) {
+    return { connected: true, alreadyConnected: true };
+  }
+  const liAt = await getLinkedInCookie();
+  if (!liAt) {
+    return { connected: false, needLinkedInLogin: true };
+  }
+  const res = await connectLinkedInCookie(liAt, userAgent);
+  return { connected: !!res?.connected, reused: !!res?.reused };
+}
+
 // Remember the last profile so a side panel opened *after* navigation can
 // ask for it (the panel may not have been listening when it was scraped).
 let lastProfile = null;
@@ -146,11 +225,54 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
   }
   if (msg?.type === 'surplus:auth-check') {
-    // Are we signed in to surplus? /me returns 200 with the session cookie,
-    // 401 without. The cookie rides the fetch via our host permission.
+    // Are we signed in to surplus with a REAL account? /me returns 200 with the
+    // session cookie, 401 without. The cookie rides the fetch via our host
+    // permission. A leftover demo session (anyone who opened the /demo
+    // walkthrough in this browser) also returns 200 -- but with is_demo:true and
+    // seeded sample data, not the user's real book. Treat demo as signed-OUT so
+    // the panel shows its sign-in screen instead of loading the demo.
     fetch(`${BOOK_ORIGIN}/api/auth/me`, { credentials: 'include' })
-      .then((r) => sendResponse({ authed: r.ok }))
+      .then(async (r) => {
+        if (!r.ok) return sendResponse({ authed: false });
+        const me = await r.json().catch(() => null);
+        sendResponse({ authed: !!(me && me.id && !me.is_demo) });
+      })
       .catch(() => sendResponse({ authed: false }));
+    return true; // async
+  }
+  if (msg?.type === 'surplus:signout') {
+    // Clear any session on this origin before sending the user to sign in. The
+    // case that matters: a leftover DEMO session (sample data) would otherwise
+    // make the book tab re-open the demo instead of the real sign-in screen.
+    // POST carries the cookie via our host permission; the Set-Cookie clears it
+    // from the shared jar the panel iframe / book tab both use.
+    fetch(`${BOOK_ORIGIN}/api/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+    })
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true; // async
+  }
+  if (msg?.type === 'surplus:linkedin:status') {
+    linkedinStatus()
+      .then((res) => sendResponse({ ok: true, res }))
+      .catch((e) => {
+        console.warn('[surplus][bg] linkedin status failed', e);
+        sendResponse({ ok: false, error: String(e) });
+      });
+    return true; // async
+  }
+  if (msg?.type === 'surplus:linkedin:connect') {
+    linkedinConnectFlow(msg.userAgent)
+      .then((res) => {
+        console.log('[surplus][bg] linkedin connect', res);
+        sendResponse({ ok: true, res });
+      })
+      .catch((e) => {
+        console.warn('[surplus][bg] linkedin connect failed', e);
+        sendResponse({ ok: false, error: String(e) });
+      });
     return true; // async
   }
   if (msg?.type === 'surplus:capture') {
