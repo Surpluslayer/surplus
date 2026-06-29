@@ -36,8 +36,22 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
   const [busy, setBusy] = useState(false);
   const [oauthBusy, setOauthBusy] = useState(null); // "google" | "microsoft"
   const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
 
   const done = () => { if (onSignedIn) onSignedIn(); else window.location.reload(); };
+
+  const handleForgot = async () => {
+    setError(null); setNotice(null);
+    const addr = email.trim();
+    if (!addr.includes("@")) { setError("Enter your email above first."); return; }
+    try {
+      await api.forgotPassword(addr);
+      setNotice("If that email has an account, a reset link is on its way.");
+    } catch {
+      // forgot-password is always 200; on a network blip, show the same neutral note.
+      setNotice("If that email has an account, a reset link is on its way.");
+    }
+  };
 
   const startOAuth = (provider, fn) => async () => {
     setError(null);
@@ -107,9 +121,15 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
       </form>
 
       {error && <div className="authopts-error" role="alert"><AlertCircle size={14} /> {error}</div>}
+      {notice && <div className="authopts-notice">{notice}</div>}
 
+      {mode === "login" && (
+        <button type="button" className="authopts-forgot" onClick={handleForgot}>
+          Forgot password?
+        </button>
+      )}
       <button type="button" className="authopts-switch"
-              onClick={() => { setError(null); setMode(mode === "signup" ? "login" : "signup"); }}>
+              onClick={() => { setError(null); setNotice(null); setMode(mode === "signup" ? "login" : "signup"); }}>
         {mode === "signup" ? "Already have an account? Sign in" : "New here? Create an account"}
       </button>
     </div>
@@ -145,4 +165,7 @@ const AUTHOPTS_CSS = `
 .authopts-error { display:flex; align-items:center; gap:6px; color:#c43146; background:#fce6ea; padding:8px 10px; border-radius:8px; font-size:13px; }
 .authopts-switch { width:100%; margin-top:4px; padding:6px; border:0; background:none; color:#2f6df6; font:inherit; font-size:13px; font-weight:600; cursor:pointer; }
 .authopts-switch:hover { text-decoration:underline; }
+.authopts-forgot { width:100%; padding:2px; border:0; background:none; color:#5b616a; font:inherit; font-size:12px; cursor:pointer; }
+.authopts-forgot:hover { text-decoration:underline; }
+.authopts-notice { color:#1f6f43; background:#e7f6ee; padding:8px 10px; border-radius:8px; font-size:13px; }
 `;

@@ -629,6 +629,16 @@ export const api = {
   // session cookie is set on the callback redirect, not a fetch).
   startGoogleAuth: () => request("/api/auth/google/login"),
   startMicrosoftAuth: () => request("/api/auth/microsoft/login"),
+  // Link a provider to the CURRENT signed-in account (safe migration).
+  linkGoogle: () => request("/api/auth/google/link"),
+  linkMicrosoft: () => request("/api/auth/microsoft/link"),
+  setPassword: (password) =>
+    request("/api/auth/set-password", { method: "POST", body: JSON.stringify({ password }) }),
+  // Password reset (always 200 on forgot, no enumeration).
+  forgotPassword: (email) =>
+    request("/api/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) }),
+  resetPassword: ({ token, password }) =>
+    request("/api/auth/reset-password", { method: "POST", body: JSON.stringify({ token, password }) }),
   // Zero-friction triage entry : creates an anonymous User row + session
   // so 'Triage mode' button can route straight into the flow with no form.
   triageQuickStart: () => request("/api/auth/triage/quick-start", { method: "POST" }),
