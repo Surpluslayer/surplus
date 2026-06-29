@@ -172,6 +172,22 @@ def find_or_create_oauth_user(db: DbSession, *, provider: str, sub: str,
     return u
 
 
+def link_oauth_identity(db: DbSession, user: User, *, provider: str, sub: str) -> bool:
+    """Attach a provider identity (google_sub/microsoft_sub) to an EXISTING signed-in
+    user -- the safe migration path: a LinkedIn-first user links Google/Microsoft while
+    logged in, so it joins their account instead of risking a duplicate. Returns False
+    (no-op) if the sub is already bound to a DIFFERENT user."""
+    field = _OAUTH_SUB_FIELD[provider]
+    if not sub:
+        return False
+    existing = db.query(User).filter(getattr(User, field) == sub).first()
+    if existing is not None and existing.id != user.id:
+        return False
+    setattr(user, field, sub)
+    db.commit()
+    return True
+
+
 def _new_session_token() -> str:
     return secrets.token_urlsafe(32)
 

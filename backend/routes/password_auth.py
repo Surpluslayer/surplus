@@ -18,8 +18,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session as DbSession
 
-from ..auth import (create_session, hash_password, set_session_cookie,
-                    verify_password)
+from ..auth import (create_session, current_user, hash_password,
+                    set_session_cookie, verify_password)
 from ..db import get_db
 from ..models import User
 from ..rate_limit import per_ip_rate_limit
@@ -46,6 +46,10 @@ class LoginBody(BaseModel):
     email: str
     password: str
     client: str = "web"
+
+
+class SetPasswordBody(BaseModel):
+    password: str
 
 
 def _client(value: str) -> str:
@@ -106,3 +110,17 @@ def login(body: LoginBody, db: DbSession = Depends(get_db)) -> JSONResponse:
         raise HTTPException(401, "invalid email or password")
     return _session_response(db, user, _client(body.client), {
         "ok": True, "user_id": user.id, "name": user.name, "email": user.email})
+
+
+@router.post("/set-password")
+def set_password(body: SetPasswordBody, db: DbSession = Depends(get_db),
+                 user: User = Depends(current_user)) -> JSONResponse:
+    """Add or change the password on the CURRENT signed-in account -- lets an
+    OAuth/LinkedIn-first user add email+password login without creating a duplicate.
+    Authenticated (cookie or Bearer); no email/identity check needed."""
+    pw = body.password or ""
+    if not (_MIN_PW <= len(pw) <= _MAX_PW):
+        raise HTTPException(400, f"password must be {_MIN_PW}-{_MAX_PW} characters")
+    user.password_hash = hash_password(pw)
+    db.commit()
+    return JSONResponse({"ok": True})

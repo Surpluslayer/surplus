@@ -38,9 +38,16 @@ def configured() -> bool:
     return bool(_client_id() and _client_secret())
 
 
-def authorize_url(*, redirect_uri: str, client: str = "web") -> str:
-    state = oauth.sign_state(
-        {"k": "login", "p": "microsoft", "c": client, "exp": time.time() + _STATE_TTL})
+def authorize_url(*, redirect_uri: str, client: str = "web",
+                  intent: str = "login", user_id: int = 0) -> str:
+    """Consent URL. intent="login" (find-or-create + session) or "link" (attach to the
+    signed-in user_id -- the safe migration)."""
+    payload = {"k": "login", "p": "microsoft", "c": client,
+               "intent": "link" if intent == "link" else "login",
+               "exp": time.time() + _STATE_TTL}
+    if intent == "link" and user_id:
+        payload["uid"] = int(user_id)
+    state = oauth.sign_state(payload)
     params = {
         "client_id": _client_id(),
         "redirect_uri": redirect_uri,

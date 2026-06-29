@@ -18,7 +18,8 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..auth import create_session, find_or_create_oauth_user, set_session_cookie
+from ..auth import (create_session, current_user, find_or_create_oauth_user,
+                   link_oauth_identity, set_session_cookie)
 from ..db import get_db
 from ..integrations import google_login
 from .auth import _surplus_base_url
@@ -51,6 +52,18 @@ def google_login_start(request: Request, client: str = "web", redirect: int = 0)
     return {"url": url}
 
 
+@router.get("/google/link")
+def google_link_start(request: Request, user: models.User = Depends(current_user)):
+    """Start linking Google to the CURRENT signed-in account (the safe migration).
+    Authenticated; embeds the user id in the state so the callback attaches Google to
+    THIS user instead of find-or-create."""
+    if not google_login.configured():
+        raise HTTPException(409, "Google sign-in is not configured on this server")
+    url = google_login.authorize_url(
+        redirect_uri=_redirect_uri(request), intent="link", user_id=user.id)
+    return {"url": url}
+
+
 @router.get("/google/callback")
 def google_login_callback(
     request: Request,
@@ -74,6 +87,16 @@ def google_login_callback(
     ident = google_login.fetch_identity(tokens.get("access_token", ""))
     if not ident.get("sub"):
         raise HTTPException(400, "Google did not return an identity")
+
+    # Link intent: attach Google to the already-signed-in user from the state (no new
+    # account, no new session). Bounces back with a clear status.
+    if payload.get("intent") == "link" and payload.get("uid"):
+        target = db.get(models.User, int(payload["uid"]))
+        if target is None:
+            raise HTTPException(400, "unknown user for this link")
+        ok = link_oauth_identity(db, target, provider="google", sub=ident["sub"])
+        status = "linked" if ok else "link_conflict"
+        return RedirectResponse(f"{base}/?link=google&status={status}", status_code=302)
 
     user = find_or_create_google_user(
         db, sub=ident["sub"], email=ident["email"], name=ident["name"])

@@ -15,7 +15,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from ..auth import create_session, find_or_create_oauth_user, set_session_cookie
+from .. import models
+from ..auth import (create_session, current_user, find_or_create_oauth_user,
+                   link_oauth_identity, set_session_cookie)
 from ..db import get_db
 from ..integrations import microsoft_login
 from .auth import _surplus_base_url
@@ -41,6 +43,16 @@ def microsoft_login_start(request: Request, client: str = "web", redirect: int =
     return {"url": url}
 
 
+@router.get("/microsoft/link")
+def microsoft_link_start(request: Request, user: models.User = Depends(current_user)):
+    """Start linking Microsoft to the CURRENT signed-in account (safe migration)."""
+    if not microsoft_login.configured():
+        raise HTTPException(409, "Microsoft sign-in is not configured on this server")
+    url = microsoft_login.authorize_url(
+        redirect_uri=_redirect_uri(request), intent="link", user_id=user.id)
+    return {"url": url}
+
+
 @router.get("/microsoft/callback")
 def microsoft_login_callback(
     request: Request,
@@ -63,6 +75,14 @@ def microsoft_login_callback(
     ident = microsoft_login.fetch_identity(tokens.get("access_token", ""))
     if not ident.get("sub"):
         raise HTTPException(400, "Microsoft did not return an identity")
+
+    if payload.get("intent") == "link" and payload.get("uid"):
+        target = db.get(models.User, int(payload["uid"]))
+        if target is None:
+            raise HTTPException(400, "unknown user for this link")
+        ok = link_oauth_identity(db, target, provider="microsoft", sub=ident["sub"])
+        status = "linked" if ok else "link_conflict"
+        return RedirectResponse(f"{base}/?link=microsoft&status={status}", status_code=302)
 
     user = find_or_create_oauth_user(
         db, provider="microsoft", sub=ident["sub"], email=ident["email"],

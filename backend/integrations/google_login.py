@@ -39,11 +39,17 @@ def configured() -> bool:
     return bool(_client_id() and _client_secret())
 
 
-def authorize_url(*, redirect_uri: str, client: str = "web") -> str:
-    """Consent URL for sign-in. State carries the login intent + which client started
-    it (web/ios/plugin), so the callback issues the right kind of session."""
-    state = oauth.sign_state(
-        {"k": "login", "p": "google", "c": client, "exp": time.time() + _STATE_TTL})
+def authorize_url(*, redirect_uri: str, client: str = "web",
+                  intent: str = "login", user_id: int = 0) -> str:
+    """Consent URL. State carries the client (web/ios/plugin) and the intent: "login"
+    (default, find-or-create + session) or "link" (attach this provider to the already
+    signed-in user_id -- the safe migration). user_id is embedded only for link."""
+    payload = {"k": "login", "p": "google", "c": client,
+               "intent": "link" if intent == "link" else "login",
+               "exp": time.time() + _STATE_TTL}
+    if intent == "link" and user_id:
+        payload["uid"] = int(user_id)
+    state = oauth.sign_state(payload)
     params = {
         "client_id": _client_id(),
         "redirect_uri": redirect_uri,
