@@ -18,12 +18,15 @@ import urllib.parse
 import httpx
 
 from . import oauth
+from .providers import MICROSOFT as _CFG
 
 PROVIDER = "microsoft"
 _AUTH = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
 _TOKEN = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 _GRAPH_ME = "https://graph.microsoft.com/v1.0/me"
-_SCOPES = "openid email profile User.Read"
+# Login requests profile/User.Read + the connector's data scopes (Mail + Calendars +
+# offline_access), so Microsoft sign-in ALSO auto-connects Outlook mail + calendar.
+_SCOPES = " ".join(dict.fromkeys(("openid", "email", "profile", "User.Read", *_CFG.scopes)))
 _STATE_TTL = 600
 
 
@@ -56,7 +59,9 @@ def authorize_url(*, redirect_uri: str, client: str = "web",
         "scope": _SCOPES,
         "state": state,
         "response_mode": "query",
-        "prompt": "select_account",
+        # consent ensures we get a refresh token (offline_access) for the auto-connected
+        # ConnectedAccount we save on callback.
+        "prompt": "consent",
     }
     return _AUTH + "?" + urllib.parse.urlencode(params)
 

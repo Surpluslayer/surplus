@@ -14,11 +14,24 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from .. import models
 from ..auth import (create_session, find_or_create_oauth_user,
                     link_oauth_identity, normalize_client, set_session_cookie)
+from ..integrations import oauth
 from .auth import _surplus_base_url
 
 
 def _redirect_uri(request: Request, provider: str) -> str:
     return f"{_surplus_base_url(request)}/api/auth/{provider}/callback"
+
+
+def _auto_connect(db, *, user_id: int, provider: str, email: str, tokens: dict) -> None:
+    """Save a ConnectedAccount from the login tokens, so signing in ALSO connects the
+    provider's data (Google -> calendar/contacts; Microsoft -> mail/calendar). Best-effort:
+    a save hiccup must never break sign-in."""
+    try:
+        if tokens.get("access_token") or tokens.get("refresh_token"):
+            oauth.save_tokens(db, user_id=user_id, provider=provider,
+                              account_email=email or "", tokens=tokens)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def login_url(login_mod, request: Request, *, client: str, redirect: int):
@@ -63,11 +76,16 @@ def callback(login_mod, request: Request, db, *, code, state, error):
         if target is None:
             raise HTTPException(400, "unknown user for this link")
         ok = link_oauth_identity(db, target, provider=provider, sub=ident["sub"])
+        if ok:
+            _auto_connect(db, user_id=target.id, provider=provider,
+                          email=ident["email"], tokens=tokens)
         status = "linked" if ok else "link_conflict"
         return RedirectResponse(f"{base}/?link={provider}&status={status}", status_code=302)
 
     user = find_or_create_oauth_user(
         db, provider=provider, sub=ident["sub"], email=ident["email"], name=ident["name"])
+    _auto_connect(db, user_id=user.id, provider=provider,
+                  email=ident["email"], tokens=tokens)
     sess = create_session(db, user, client=client)
     if client == "web":
         resp = RedirectResponse(f"{base}/?login={provider}&status=ok", status_code=302)

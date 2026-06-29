@@ -133,3 +133,25 @@ def test_bearer_token_parsing():
     assert auth_mod._bearer_token("Basic abc") is None
     assert auth_mod._bearer_token("") is None
     assert auth_mod._bearer_token(None) is None
+
+
+# ── auto-connect: login also connects the provider's data ─────────────────────
+def test_login_requests_data_scopes_and_offline(monkeypatch):
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "cid")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "sec")
+    monkeypatch.setenv("SURPLUS_OAUTH_STATE_SECRET", "s")
+    url = google_login.authorize_url(redirect_uri="https://x/cb")
+    # login consent now also covers calendar + contacts (auto-connect) + offline refresh
+    assert "calendar.events" in url and "contacts.readonly" in url
+    assert "access_type=offline" in url
+    assert "gmail" not in url                      # Gmail stays on Unipile (no CASA)
+
+
+def test_auto_connect_saves_connected_account(db):
+    from backend.routes._oauth_login import _auto_connect
+    u = find_or_create_google_user(db, sub="G1", email="a@x.com", name="A")
+    _auto_connect(db, user_id=u.id, provider="google", email="a@x.com",
+                  tokens={"access_token": "at", "refresh_token": "rt", "expires_in": 3600})
+    acct = (db.query(models.ConnectedAccount)
+            .filter_by(user_id=u.id, provider="google").first())
+    assert acct is not None and acct.account_email == "a@x.com"

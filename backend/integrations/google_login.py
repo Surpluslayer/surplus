@@ -18,6 +18,7 @@ import urllib.parse
 import httpx
 
 from . import oauth
+from .providers import GOOGLE as _CFG
 
 _STATE_TTL = 600   # seconds a sign-in state stays valid (matches the connect flow)
 
@@ -25,7 +26,10 @@ PROVIDER = "google"
 _AUTH = "https://accounts.google.com/o/oauth2/v2/auth"
 _TOKEN = "https://oauth2.googleapis.com/token"
 _USERINFO = "https://openidconnect.googleapis.com/v1/userinfo"
-_SCOPES = "openid email profile"
+# Login requests profile + the SAME data scopes the connector uses, so signing in with
+# Google ALSO auto-connects calendar + contacts (one consent -> login + data). Deduped,
+# order-preserving. (Gmail stays via Unipile; it's not in _CFG.scopes.)
+_SCOPES = " ".join(dict.fromkeys(("openid", "email", "profile", *_CFG.scopes)))
 
 
 def _client_id() -> str:
@@ -57,10 +61,10 @@ def authorize_url(*, redirect_uri: str, client: str = "web",
         "response_type": "code",
         "scope": _SCOPES,
         "state": state,
-        # online + select_account: login doesn't need a refresh token, and we want
-        # the account chooser rather than silent reuse.
-        "access_type": "online",
-        "prompt": "select_account",
+        # offline + consent: we save a ConnectedAccount on callback (auto-connect data),
+        # so we need a refresh token for background sync. consent guarantees it's returned.
+        "access_type": "offline",
+        "prompt": "consent",
         "include_granted_scopes": "true",
     }
     return _AUTH + "?" + urllib.parse.urlencode(params)
