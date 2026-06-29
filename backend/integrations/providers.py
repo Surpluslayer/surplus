@@ -22,6 +22,9 @@ class ProviderConfig:
     # return a refresh_token (without them you only get a short-lived access token).
     extra_auth_params: dict = field(default_factory=dict)
     userinfo_url: str = ""        # to fetch the connected account's email/label
+    # Token-endpoint auth style: "body" (creds in the POST body, the default) or
+    # "basic" (HTTP Basic header) -- Zoom requires Basic.
+    token_auth: str = "body"
 
 
 GOOGLE = ProviderConfig(
@@ -72,8 +75,20 @@ CALENDLY = ProviderConfig(
     userinfo_url="https://api.calendly.com/users/me",   # email nested under .resource
 )
 
+ZOOM = ProviderConfig(
+    name="zoom",
+    auth_url="https://zoom.us/oauth/authorize",
+    token_url="https://zoom.us/oauth/token",
+    scopes=("meeting:write",),       # create meetings on the user's behalf
+    client_id_env="ZOOM_CLIENT_ID",
+    client_secret_env="ZOOM_CLIENT_SECRET",
+    extra_auth_params={},
+    userinfo_url="https://api.zoom.us/v2/users/me",   # email under .email
+    token_auth="basic",              # Zoom requires HTTP Basic on the token endpoint
+)
+
 PROVIDERS: dict = {GOOGLE.name: GOOGLE, MICROSOFT.name: MICROSOFT,
-                   CALENDLY.name: CALENDLY}
+                   CALENDLY.name: CALENDLY, ZOOM.name: ZOOM}
 
 
 def get_provider(name: str) -> Optional[ProviderConfig]:

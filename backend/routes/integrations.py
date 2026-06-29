@@ -29,7 +29,7 @@ from .auth import _surplus_base_url
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
 
-_PROVIDERS = ["google", "microsoft", "calendly"]   # static-client OAuth providers
+_PROVIDERS = ["google", "microsoft", "calendly", "zoom"]   # static-client OAuth providers
 
 
 def _redirect_uri(request: Request, provider: str) -> str:
@@ -68,6 +68,7 @@ class BookIn(BaseModel):
     tz: str = "UTC"
     description: str = ""
     add_video: bool = True                  # Google Meet / Teams link
+    with_zoom: bool = False                 # use a Zoom link instead (if Zoom connected)
     notify: bool = True                     # email the attendee the invite
     provider: Optional[str] = None          # force google|microsoft (else auto)
 
@@ -97,7 +98,7 @@ def calendar_book(
             db, user, attendee_email=email, attendee_name=name, title=body.title,
             start_iso=body.start_iso, duration_min=body.duration_min, tz=body.tz,
             description=body.description, add_video=body.add_video,
-            notify=body.notify, provider=body.provider)
+            with_zoom=body.with_zoom, notify=body.notify, provider=body.provider)
     except ValueError as exc:
         msg = str(exc)
         code = 409 if ("connected" in msg or "reconnection" in msg) else 400
@@ -143,6 +144,31 @@ def linkedin_connect_cookie(
     user.linkedin_status = "active"
     db.commit()
     return {"connected": True, "account_id": res["account_id"], "reused": False}
+
+
+# ── Calendly scheduling link (share / send as an invite). Before /{provider}.
+@router.get("/calendly/scheduling-link")
+def calendly_scheduling_link(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """The host's public Calendly link to share in a message. 409 if Calendly isn't
+    connected / can't refresh."""
+    acct = (db.query(models.ConnectedAccount)
+            .filter_by(user_id=user.id, provider="calendly", status="active").first())
+    if acct is None:
+        raise HTTPException(409, "no connected calendly account")
+    token = oauth.get_valid_access_token(db, acct)
+    if not token:
+        raise HTTPException(409, "calendly needs reconnection")
+    from ..integrations.calendly_client import scheduling_url
+    try:
+        url = scheduling_url(token)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "calendly error")
+    if not url:
+        raise HTTPException(404, "no scheduling link on this calendly account")
+    return {"scheduling_url": url}
 
 
 # ── Granola (MCP: DCR + PKCE) — its own connect/callback, NOT the generic OAuth one.
