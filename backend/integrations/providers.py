@@ -33,9 +33,11 @@ GOOGLE = ProviderConfig(
     token_url="https://oauth2.googleapis.com/token",
     scopes=(
         "openid", "email",
-        "https://www.googleapis.com/auth/gmail.readonly",
-        # calendar.events grants create/update (booking) AND read of events, so it
-        # supersedes the old calendar.readonly -- the read sync keeps working.
+        # NOTE: NO gmail scope on purpose -- gmail.readonly is a RESTRICTED scope that
+        # triggers Google's CASA security assessment. Gmail context comes via Unipile
+        # (we inherit their verification), so direct Google stays on SENSITIVE-only
+        # scopes (calendar/contacts), which need brand verification but no CASA.
+        # calendar.events grants create/update (booking) AND read of events.
         "https://www.googleapis.com/auth/calendar.events",
         # contacts.readonly -> import the phone address book (People API) into the spine.
         "https://www.googleapis.com/auth/contacts.readonly",

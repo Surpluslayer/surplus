@@ -18,7 +18,11 @@ from . import google_client, oauth, sync_common
 
 
 def sync_google_email(db, user, account, *, newer_than_days: int = 30) -> dict:
-    """Pull recent Gmail into the Contact spine via the shared email_sync pipeline."""
+    """Pull recent Gmail into the Contact spine via the shared email_sync pipeline.
+
+    NOT wired into sync_google_account by default: Gmail context comes via UNIPILE so we
+    avoid the restricted gmail.readonly scope (CASA). This stays as a fallback if you ever
+    add gmail.readonly to the Google scopes + complete CASA."""
     from ..agents.relationship import email_sync
     token = oauth.get_valid_access_token(db, account)
     if not token:
@@ -96,7 +100,7 @@ def sync_google_contacts(db, user, account, *, max_pages: int = 10) -> dict:
 
 
 def sync_google_account(db, user, account) -> dict:
-    """Full read sync for one connected Google account: Gmail + Calendar + Contacts."""
-    return {"email": sync_google_email(db, user, account),
-            "calendar": sync_google_calendar(db, user, account),
+    """Read sync for one connected Google account: Calendar + Contacts. (Gmail is NOT
+    here -- it comes via Unipile to avoid the restricted gmail.readonly scope / CASA.)"""
+    return {"calendar": sync_google_calendar(db, user, account),
             "contacts": sync_google_contacts(db, user, account)}
