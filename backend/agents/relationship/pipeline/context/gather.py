@@ -198,11 +198,21 @@ def gather_contact_context(
     except Exception:  # noqa: BLE001
         events = []
 
+    try:
+        from .chain import resolve_active_chain
+        active_chain = resolve_active_chain(db, contact, fallback=channel)
+    except Exception:  # noqa: BLE001 : chain resolution must never break gather
+        active_chain = {"channel": channel, "thread_id": None,
+                        "to_handle": "", "reason": "fallback"}
+
     return {
         "name": name,
         "company": _real(getattr(contact, "company", None)),
         "role": (_real(getattr(contact, "title", None))
                  or _real(getattr(contact, "headline", None))),
+        # The chain to CONTINUE (channel + thread to reply into), so the agent
+        # doesn't start a new thread. See context/chain.resolve_active_chain.
+        "active_chain": active_chain,
         "timeline": timeline,
         "prior_full": prior_full,
         "prior": prior,
