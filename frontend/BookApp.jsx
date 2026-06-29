@@ -678,7 +678,9 @@ function ConnectionsScreen({ user, onBack }) {
   const [integrations, setIntegrations] = useState(null);
   useEffect(() => {
     let cancelled = false;
-    api.listIntegrations().then((d) => { if (!cancelled) setIntegrations(d); }).catch(() => {});
+    api.listIntegrations()
+       .then((d) => { if (!cancelled) setIntegrations(d || { connected: [] }); })
+       .catch(() => { if (!cancelled) setIntegrations({ connected: [] }); });
     return () => { cancelled = true; };
   }, []);
   // LinkedIn is connected only when an actual Unipile account is tied -- linkedin_status
@@ -719,6 +721,7 @@ function ConnectionsScreen({ user, onBack }) {
         <ConnRow icon={<Calendar size={21} />} name="Google Calendar & Contacts"
                  sub={googleOn ? "Connected" : "Logs meetings, syncs contacts"}
                  connected={googleOn}
+                 loading={integrations === null}
                  onConnect={() => connect(api.connectGoogle, "Google")} />
       </div>
 
@@ -728,7 +731,7 @@ function ConnectionsScreen({ user, onBack }) {
   );
 }
 
-function ConnRow({ icon, name, sub, connected, onConnect }) {
+function ConnRow({ icon, name, sub, connected, loading, onConnect }) {
   return (
     <div className="bk-conn-row">
       <span className="bk-tile">{icon}</span>
@@ -736,7 +739,11 @@ function ConnRow({ icon, name, sub, connected, onConnect }) {
         <p className="bk-name">{name}</p>
         <p className="bk-sub">{sub}</p>
       </div>
-      {connected ? (
+      {loading ? (
+        // Status not yet known -- show a neutral placeholder, NOT "Connect"
+        // (defaulting to Connect makes a connected account flicker Connect->Connected).
+        <span className="bk-conn-status" style={{ opacity: 0.4 }}>…</span>
+      ) : connected ? (
         <span className="bk-conn-status"><CheckCircle2 size={14} />Connected</span>
       ) : (
         <button className="bk-btn bk-btn--primary" onClick={onConnect}>Connect</button>
