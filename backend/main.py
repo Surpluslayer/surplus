@@ -18,6 +18,7 @@ load_env()
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import ENGINE, init_db
@@ -166,6 +167,65 @@ def _frontend_fingerprint() -> dict:
         pass
     _FRONTEND_FP = info
     return info
+
+
+_EXTENSION_PRIVACY_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>surplus Chrome extension — Privacy Policy</title>
+<style>
+ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+ max-width:720px;margin:48px auto;padding:0 20px;color:#1b1e22;line-height:1.6}
+ h1{font-weight:800;letter-spacing:-.03em} h2{margin-top:28px;font-size:18px}
+ .upd{color:#99a0a8;font-size:14px} a{color:#2f6df6} code{background:#f1f3f6;padding:1px 5px;border-radius:5px}
+</style></head><body>
+<h1>surplus Chrome Extension — Privacy Policy</h1>
+<p class="upd">Last updated: June 28, 2026</p>
+<p>The surplus Chrome extension ("the extension") lets you view your surplus
+relationship book alongside your browser and capture LinkedIn profiles into your
+surplus account. This policy explains what data the extension handles.</p>
+<h2>What the extension accesses</h2>
+<ul>
+<li><b>LinkedIn profile information.</b> When you are viewing a LinkedIn profile
+page (<code>linkedin.com/in/...</code>), the extension reads the publicly
+displayed name, headline, and profile URL so it can show you who you are viewing
+and, if you choose, capture them into surplus.</li>
+<li><b>Your surplus session.</b> The extension loads your surplus book
+(<code>event.surpluslayer.com</code>) in a side panel using the session cookie
+already set when you signed in to surplus. The extension never sees or stores
+your password.</li>
+</ul>
+<h2>What the extension sends, and when</h2>
+<ul>
+<li>A LinkedIn profile is sent to surplus <b>only when you click "Capture to
+surplus."</b> At that point the name, headline, and URL are sent to your own
+surplus account to create a contact and draft a message.</li>
+<li>The extension does <b>not</b> continuously upload or track your browsing, and
+does <b>not</b> send data to any third party other than your surplus account.</li>
+</ul>
+<h2>Storage</h2>
+<p>The extension keeps only the most recently viewed profile in memory to
+populate the panel. Captured contacts live in your surplus account, governed by
+the surplus privacy policy.</p>
+<h2>Data sharing and sale</h2>
+<p>We do <b>not</b> sell your data or share it with advertisers or third parties.
+Captured data goes only to your surplus account.</p>
+<h2>Permissions, and why</h2>
+<ul>
+<li><b>linkedin.com</b> — read the profile you are viewing.</li>
+<li><b>event.surpluslayer.com</b> — display your book and capture profiles.</li>
+<li><b>side panel, tabs, scripting, storage</b> — show the panel, detect the
+active LinkedIn page, and inject the profile reader.</li>
+</ul>
+<h2>Contact</h2>
+<p>Questions: <a href="mailto:support@surpluslayer.com">support@surpluslayer.com</a></p>
+</body></html>"""
+
+
+@app.get("/extension-privacy", include_in_schema=False)
+def extension_privacy():
+    """Public privacy policy for the surplus Chrome extension (Web Store req)."""
+    return HTMLResponse(_EXTENSION_PRIVACY_HTML)
 
 
 @app.get("/api/health", tags=["meta"])
