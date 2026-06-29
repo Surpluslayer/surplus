@@ -687,6 +687,12 @@ function ConnectionsScreen({ user, onBack }) {
   // defaults to "active" even with none, so check unipile_account_id too.
   const liOn = !!user?.unipile_account_id && user?.linkedin_status === "active";
   const emailOn = user?.email_status === "active";
+  // All connected mailboxes. Falls back to the legacy single-account view when
+  // the API doesn't return the array (older session / pre-feature backend).
+  const emailAccounts = Array.isArray(user?.email_accounts)
+    ? user.email_accounts : null;
+  const providerLabel = (p) =>
+    p === "outlook" ? "Outlook" : p === "google" ? "Gmail" : "Mailbox";
   // Google (calendar + contacts) -- read the real ConnectedAccount list.
   const googleOn = !!(integrations?.connected || []).some(
     (a) => a.provider === "google" && a.status === "active");
@@ -712,12 +718,34 @@ function ConnectionsScreen({ user, onBack }) {
                  sub="Enrichment & job-change updates"
                  connected={liOn}
                  onConnect={() => connect(api.startLinkedinAuth, "LinkedIn")} />
-        <ConnRow icon={<Mail size={21} />} name="Gmail"
-                 sub={emailOn && user?.email_account_address
-                   ? `Connected as ${user.email_account_address}`
-                   : "Tracks replies, sends your drafts"}
-                 connected={emailOn}
-                 onConnect={() => connect(api.startEmailAuth, "Gmail")} />
+        {emailAccounts && emailAccounts.length > 0 ? (
+          // One row per connected mailbox (personal Gmail + work Outlook ...),
+          // plus an "Add another email" row to connect one more.
+          <React.Fragment>
+            {emailAccounts.map((acct) => (
+              <ConnRow key={acct.unipile_account_id}
+                       icon={<Mail size={21} />}
+                       name={providerLabel(acct.provider)}
+                       sub={acct.address
+                         ? `Connected as ${acct.address}`
+                         : "Connected"}
+                       connected={acct.status === "active"}
+                       onConnect={() => connect(api.startEmailAuth, "email")} />
+            ))}
+            <ConnRow icon={<Mail size={21} />} name="Add another email"
+                     sub="Connect another Gmail or Outlook mailbox"
+                     connected={false}
+                     onConnect={() => connect(api.startEmailAuth, "email")} />
+          </React.Fragment>
+        ) : (
+          // Legacy / no-mailbox fallback : the original single Gmail row.
+          <ConnRow icon={<Mail size={21} />} name="Gmail"
+                   sub={emailOn && user?.email_account_address
+                     ? `Connected as ${user.email_account_address}`
+                     : "Tracks replies, sends your drafts"}
+                   connected={emailOn}
+                   onConnect={() => connect(api.startEmailAuth, "Gmail")} />
+        )}
         <ConnRow icon={<Calendar size={21} />} name="Google Calendar & Contacts"
                  sub={googleOn ? "Connected" : "Logs meetings, syncs contacts"}
                  connected={googleOn}

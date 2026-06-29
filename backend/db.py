@@ -138,6 +138,7 @@ def init_db() -> None:
         _migrate_user_onboarding,
         _migrate_prospect_vip,
         _migrate_user_email_account,
+        _migrate_email_accounts,
         _migrate_prospect_email,
         _migrate_contact_email_thread,
         _migrate_followup_channel,
@@ -1091,6 +1092,77 @@ def _migrate_user_email_account() -> None:
             conn.execute(text(
                 f"ALTER TABLE users ADD COLUMN {ine}email_connected_at TIMESTAMP"
             ))
+
+
+def _migrate_email_accounts() -> None:
+    """Create the email_accounts table (one row per connected mailbox) and
+    BACKFILL a primary row for every user that has a legacy single-mailbox
+    set on the users row. Cross-dialect-safe : SQLite + Postgres.
+
+    Backward compatibility : the legacy User.* email fields stay as a MIRROR
+    of the user's primary mailbox, so this migration never removes anything --
+    it just lifts the existing single account into the new multi-account table.
+    Idempotent : CREATE TABLE IF NOT EXISTS + skip users that already have a
+    matching row."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    is_pg = ENGINE.dialect.name == "postgresql"
+    if "email_accounts" not in insp.get_table_names():
+        pk = ("id SERIAL PRIMARY KEY" if is_pg
+              else "id INTEGER PRIMARY KEY AUTOINCREMENT")
+        ts = "TIMESTAMP" if is_pg else "TIMESTAMP"
+        boolt = "BOOLEAN" if is_pg else "BOOLEAN"
+        with ENGINE.begin() as conn:
+            conn.execute(text(
+                f"CREATE TABLE IF NOT EXISTS email_accounts ("
+                f"{pk}, "
+                "user_id INTEGER NOT NULL REFERENCES users(id), "
+                "provider VARCHAR(40) DEFAULT '', "
+                "address VARCHAR(200), "
+                "unipile_account_id VARCHAR(80) NOT NULL, "
+                "status VARCHAR(20) DEFAULT 'active', "
+                f"is_primary {boolt} DEFAULT FALSE, "
+                f"connected_at {ts}, "
+                f"last_synced_at {ts}"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ix_email_accounts_unipile_account_id "
+                "ON email_accounts (unipile_account_id)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_email_accounts_user_id "
+                "ON email_accounts (user_id)"
+            ))
+
+    # ── Backfill : lift each user's legacy single mailbox into a primary row.
+    if "users" not in insp.get_table_names():
+        return
+    user_cols = {c["name"] for c in insp.get_columns("users")}
+    if "unipile_email_account_id" not in user_cols:
+        return  # legacy email columns not present yet : nothing to backfill
+    with ENGINE.begin() as conn:
+        rows = conn.execute(text(
+            "SELECT id, unipile_email_account_id, email_account_address, "
+            "email_status, email_connected_at FROM users "
+            "WHERE unipile_email_account_id IS NOT NULL"
+        )).fetchall()
+        for r in rows:
+            uid, acct_id, addr, status, connected_at = r
+            exists = conn.execute(text(
+                "SELECT 1 FROM email_accounts WHERE unipile_account_id = :a"
+            ), {"a": acct_id}).first()
+            if exists:
+                continue
+            conn.execute(text(
+                "INSERT INTO email_accounts "
+                "(user_id, provider, address, unipile_account_id, status, "
+                " is_primary, connected_at, last_synced_at) "
+                "VALUES (:uid, '', :addr, :acct, :status, :prim, :conn, NULL)"
+            ), {"uid": uid, "addr": addr, "acct": acct_id,
+                "status": status or "active", "prim": True,
+                "conn": connected_at})
 
 
 def _ensure_operator_user_and_backfill() -> None:

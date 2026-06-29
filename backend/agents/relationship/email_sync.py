@@ -147,22 +147,59 @@ def sync_email_contacts(
     fetch_page: Optional[Callable[[Optional[str]], dict]] = None,
     max_pages: int = _MAX_PAGES,
 ) -> dict:
-    """Sync the user's mailbox into their Contact spine. Returns stats; never
-    raises (the connect flow auto-kicks this best-effort)."""
-    from .spine.relationships import _clean  # same cleaners as the LinkedIn spine
-    from ...triage.enrichment_cache import identity_keys
+    """Sync the user's mailbox(es) into their Contact spine. Returns aggregate
+    stats; never raises (the connect flow auto-kicks this best-effort).
+
+    Multi-mailbox: a user can connect N mailboxes (personal Gmail + work
+    Outlook + ...). We iterate every ACTIVE EmailAccount, syncing each with
+    its OWN Unipile account id + own mailbox address. If the user has no
+    EmailAccount rows (legacy / fresh dev), we fall back to the single
+    User.unipile_email_account_id field so nothing regresses.
+
+    A caller that supplies its own `fetch_page` (e.g. the Gmail-OAuth sync, or
+    a test) drives a SINGLE source against the user's own address -- we don't
+    fan the injected fetcher across accounts."""
+    from ...models import list_email_accounts
 
     stats = {"scanned": 0, "people": 0, "contacts_created": 0,
              "contacts_updated": 0, "skipped_junk": 0, "error": None}
-    account_id = getattr(user, "unipile_email_account_id", None)
-    # account_id is only needed for the DEFAULT (Unipile) fetcher. A caller that
-    # supplies its own fetch_page (e.g. the Gmail-OAuth sync) brings its own source.
-    if fetch_page is None and not account_id:
-        stats["error"] = "no connected email account"
-        return stats
-    own = (getattr(user, "email_account_address", "") or "").strip().lower()
-    fetcher = fetch_page or (
-        lambda cursor: _default_fetch_page(dsn, api_key, account_id, cursor))
+
+    # Injected fetcher : single-source path (unchanged behavior for tests /
+    # the Gmail-OAuth sync). Uses the user's mirrored own-address.
+    if fetch_page is not None:
+        own = (getattr(user, "email_account_address", "") or "").strip().lower()
+        return _sync_one_mailbox(db, user, stats, fetch_page, own, max_pages)
+
+    # Default (Unipile) path : iterate every connected mailbox.
+    accounts = list_email_accounts(db, user)
+    if not accounts:
+        # Legacy fallback : no EmailAccount rows, use the single User field.
+        account_id = getattr(user, "unipile_email_account_id", None)
+        if not account_id:
+            stats["error"] = "no connected email account"
+            return stats
+        own = (getattr(user, "email_account_address", "") or "").strip().lower()
+        fetcher = lambda cursor: _default_fetch_page(  # noqa: E731
+            dsn, api_key, account_id, cursor)
+        return _sync_one_mailbox(db, user, stats, fetcher, own, max_pages)
+
+    from datetime import datetime, timezone
+    for acct in accounts:
+        own = (acct.address or "").strip().lower()
+        fetcher = (lambda cursor, _aid=acct.unipile_account_id:
+                   _default_fetch_page(dsn, api_key, _aid, cursor))
+        _sync_one_mailbox(db, user, stats, fetcher, own, max_pages)
+        acct.last_synced_at = datetime.now(timezone.utc)
+    db.commit()
+    return stats
+
+
+def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
+    """Page + aggregate + upsert ONE mailbox into the contact spine, folding
+    its counts into the shared `stats` dict. `own` is this mailbox's address
+    (per-account, so in/out direction is correct per source)."""
+    from .spine.relationships import _clean  # same cleaners as the LinkedIn spine
+    from ...triage.enrichment_cache import identity_keys
 
     # ── 1+2+3 : page + aggregate per counterpart ────────────────────────────
     agg: dict[str, dict] = {}

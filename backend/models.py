@@ -1225,3 +1225,161 @@ class ConnectedAccount(Base):
     last_synced_at: Mapped[Optional[datetime]] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
+
+
+class EmailAccount(Base):
+    """One connected mailbox (Gmail / Outlook via Unipile hosted auth) for a
+    user. A user can connect N of these -- e.g. a personal Gmail plus a work
+    Outlook. Each row carries its own Unipile account id + display address, so
+    the sync pages each mailbox independently.
+
+    Backward compatibility: the legacy single-mailbox fields on User
+    (unipile_email_account_id / email_account_address / email_status /
+    email_connected_at) are kept as a MIRROR of this user's PRIMARY mailbox
+    (is_primary=True). Every existing read site that touches those User fields
+    keeps working unchanged -- they just always reflect the primary account.
+    The writer that maintains the mirror is `upsert_email_account` below.
+    """
+    __tablename__ = "email_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"), index=True, nullable=False)
+    # "google" / "outlook" -- best-effort provider label for the UI tile.
+    provider: Mapped[str] = mapped_column(String(40), default="")
+    # The mailbox address Unipile reports (e.g. "daniel@gmail.com"). Display.
+    address: Mapped[Optional[str]] = mapped_column(String(200), default=None)
+    # The Unipile account id for this mailbox. UNIQUE across all rows -- the
+    # same id can only belong to one user at a time (re-connect releases it
+    # from any prior owner, mirroring the legacy webhook dedup).
+    unipile_account_id: Mapped[str] = mapped_column(
+        String(80), unique=True, index=True, nullable=False)
+    # "active" | "disconnected" | "credentials" -- mirrors email_status.
+    status: Mapped[str] = mapped_column(String(20), default="active")
+    # Exactly one row per user should be primary; it drives the User mirror.
+    is_primary: Mapped[bool] = mapped_column(default=False)
+    connected_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+
+
+# ─── Multi-mailbox helpers ──────────────────────────────────────────────────
+# Thin query/writer helpers so callers (webhook, sync, me()) don't hand-roll
+# the EmailAccount queries or the User-mirror bookkeeping.
+
+
+def list_email_accounts(db, user) -> "list[EmailAccount]":
+    """All ACTIVE mailboxes for a user, primary first then oldest-first."""
+    return (db.query(EmailAccount)
+            .filter(EmailAccount.user_id == user.id,
+                    EmailAccount.status == "active")
+            .order_by(EmailAccount.is_primary.desc(), EmailAccount.id.asc())
+            .all())
+
+
+def primary_email_account(db, user) -> "Optional[EmailAccount]":
+    """The user's primary mailbox (is_primary), or the first active one as a
+    fallback if no row is flagged primary yet."""
+    rows = (db.query(EmailAccount)
+            .filter(EmailAccount.user_id == user.id,
+                    EmailAccount.status == "active")
+            .order_by(EmailAccount.is_primary.desc(), EmailAccount.id.asc())
+            .all())
+    return rows[0] if rows else None
+
+
+def _sync_user_email_mirror(db, user) -> None:
+    """Keep the legacy single-mailbox User.* fields in lockstep with this
+    user's PRIMARY EmailAccount, so every existing read site keeps working.
+    If the user has no active mailbox, mark the mirror disconnected."""
+    primary = primary_email_account(db, user)
+    if primary is None:
+        user.unipile_email_account_id = None
+        user.email_account_address = None
+        user.email_status = "disconnected"
+        # leave email_connected_at as historical breadcrumb (no need to clear)
+        return
+    user.unipile_email_account_id = primary.unipile_account_id
+    user.email_account_address = primary.address
+    user.email_status = primary.status
+    user.email_connected_at = primary.connected_at
+
+
+def upsert_email_account(db, *, user, unipile_account_id, address,
+                         provider="", status="active") -> "EmailAccount":
+    """Find-or-create the EmailAccount for `unipile_account_id` and attach it
+    to `user`. Reassigns the id from any other user (the cross-user dedup the
+    legacy webhook did), promotes the row to primary if the user has no other
+    mailbox, and keeps the User.* mirror in sync with the primary.
+
+    Returns the EmailAccount row (already flushed)."""
+    now = _utcnow()
+
+    # Legacy release : a pre-migration row may hold this mailbox only on the
+    # User.* mirror (no EmailAccount row yet). Clear that other user's mirror
+    # first, or the UNIQUE index on users.unipile_email_account_id rejects the
+    # mirror UPDATE we do below. (Matched-EmailAccount reassign is handled
+    # right after.)
+    legacy_other = (db.query(User)
+                    .filter(User.unipile_email_account_id == unipile_account_id,
+                            User.id != user.id)
+                    .first())
+    if legacy_other is not None:
+        legacy_other.unipile_email_account_id = None
+        legacy_other.email_account_address = None
+        legacy_other.email_status = "disconnected"
+        db.flush()
+
+    acct = (db.query(EmailAccount)
+            .filter(EmailAccount.unipile_account_id == unipile_account_id)
+            .first())
+
+    if acct is not None and acct.user_id != user.id:
+        # Re-connect from another user's row : move the mailbox over. Refresh
+        # the prior owner's mirror so they no longer show it as connected.
+        prior_owner_id = acct.user_id
+        acct.user_id = user.id
+        acct.is_primary = False  # re-evaluated below for the new owner
+        prior = db.query(User).filter(User.id == prior_owner_id).first()
+        if prior is not None:
+            db.flush()
+            _sync_user_email_mirror(db, prior)
+            # Flush the prior owner's mirror clear (their
+            # unipile_email_account_id -> NULL) BEFORE we later set the new
+            # owner's mirror to this same id, or the UNIQUE index on
+            # users.unipile_email_account_id rejects the second UPDATE.
+            db.flush()
+
+    if acct is None:
+        acct = EmailAccount(
+            user_id=user.id,
+            unipile_account_id=unipile_account_id,
+            address=address,
+            provider=provider,
+            status=status,
+            connected_at=now,
+            is_primary=False,
+        )
+        db.add(acct)
+    else:
+        if address:
+            acct.address = address
+        if provider:
+            acct.provider = provider
+        acct.status = status
+        if acct.connected_at is None:
+            acct.connected_at = now
+    db.flush()
+
+    # First mailbox for this user becomes the primary.
+    has_primary = (db.query(EmailAccount)
+                   .filter(EmailAccount.user_id == user.id,
+                           EmailAccount.status == "active",
+                           EmailAccount.is_primary.is_(True),
+                           EmailAccount.id != acct.id)
+                   .first())
+    if has_primary is None:
+        acct.is_primary = True
+    db.flush()
+
+    _sync_user_email_mirror(db, user)
+    return acct
