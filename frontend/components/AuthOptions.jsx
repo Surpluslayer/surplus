@@ -5,7 +5,7 @@
 // LinkedIn is intentionally NOT here -- each surface owns its LinkedIn CTA (the modal
 // has demo/paid pre-flight). On success the session cookie is set; we reload so
 // /api/auth/me re-renders into the signed-in app.
-import { useState } from "react";
+import React, { useState } from "react";
 import { Loader2, ArrowRight, AlertCircle } from "lucide-react";
 import { api } from "../lib/api.js";
 

@@ -2,7 +2,7 @@
 // Standalone page (rendered by main.jsx when the path matches) so it doesn't depend on
 // the main app's auth state. Reads the token from the URL, takes a new password, POSTs
 // to /api/auth/reset-password, then sends the user to sign in.
-import { useState } from "react";
+import React, { useState } from "react";
 import { Loader2, ArrowRight, AlertCircle, CheckCircle2 } from "lucide-react";
 import { api } from "../lib/api.js";
 
