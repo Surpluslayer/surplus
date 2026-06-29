@@ -77,13 +77,16 @@ def sync_google_contacts(db, user, account, *, max_pages: int = 10) -> dict:
             if contact is None:
                 db.add(models.Contact(
                     user_id=user.id, primary_identity_key=primary,
-                    name=ct.get("name") or None, email=ct.get("email") or None))
+                    name=ct.get("name") or None, email=ct.get("email") or None,
+                    phone=ct.get("phone") or None))
                 stats["contacts_created"] += 1
             else:
                 if not contact.email and ct.get("email"):
                     contact.email = ct["email"]
                 if not contact.name and ct.get("name"):
                     contact.name = ct["name"]
+                if not contact.phone and ct.get("phone"):
+                    contact.phone = ct["phone"]
                 stats["contacts_updated"] += 1
         cursor = page.get("cursor")
         if not cursor:

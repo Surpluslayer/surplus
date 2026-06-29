@@ -952,6 +952,10 @@ class Contact(Base):
     linkedin_url: Mapped[Optional[str]] = mapped_column(String(200), default=None)
     linkedin_public_id: Mapped[Optional[str]] = mapped_column(String(120), default=None)
     email: Mapped[Optional[str]] = mapped_column(String(200), default=None)
+    # The actual phone number (best-effort normalized), so we can message/track via
+    # SMS/iMessage/WhatsApp. Populated from Google Contacts + the message-ingestion
+    # endpoint. The hashed ph: identity key is what DEDUPES; this stores the raw value.
+    phone: Mapped[Optional[str]] = mapped_column(String(40), default=None)
     company: Mapped[Optional[str]] = mapped_column(String(120), default=None)
     company_domain: Mapped[Optional[str]] = mapped_column(String(160), default=None)
     # The Unipile email thread the HOST CONFIRMED as "my thread with this
@@ -1084,6 +1088,32 @@ class RelationshipInteraction(Base):
 
     contact: Mapped[Optional["Contact"]] = relationship(back_populates="interactions")
     prospect: Mapped[Optional["Prospect"]] = relationship()
+
+
+class OutgoingMessage(Base):
+    """A queued/scheduled outbound message -- the server-side send queue.
+
+    The BRAINS live here (schedule, channel, body, status); the actual send hop varies:
+      * CLOUD channels (whatsapp/linkedin/email) -> the server drains + sends them at
+        scheduled_at, no device needed.
+      * DEVICE channels (imessage/sms) -> the user's Mac/Android companion polls
+        /outbox/due and executes them, then POSTs /outbox/{id}/sent. So an iMessage
+        sends when a device of the user is awake (on time, or it waits in the queue).
+    """
+    __tablename__ = "outgoing_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    contact_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("contacts.id"), default=None, index=True)
+    channel: Mapped[str] = mapped_column(String(20))          # whatsapp|linkedin|email|imessage|sms
+    to_handle: Mapped[Optional[str]] = mapped_column(String(200), default=None)  # phone/email for device sends
+    body: Mapped[str] = mapped_column(Text, default="")
+    scheduled_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
+    status: Mapped[str] = mapped_column(String(12), default="queued", index=True)  # queued|sent|failed|canceled
+    error: Mapped[Optional[str]] = mapped_column(String(300), default=None)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(default=None)
 
 
 class Job(Base):

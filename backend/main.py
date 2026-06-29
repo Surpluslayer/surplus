@@ -26,7 +26,7 @@ from .routes import (
     auth, google_login, microsoft_login, password_auth, account_email,
     billing, demo, webhooks, admin,
     # relationship side (the phone-first "book" / CRM)
-    book, relationships, inperson, followups, integrations,
+    book, relationships, inperson, followups, integrations, messages,
     # events side (the desktop event-ROI pipeline)
     events, pipeline, matching, roi, triage, curation, jobs,
 )
@@ -127,6 +127,7 @@ app.include_router(admin.router)
 app.include_router(book.router)            # Today feed, drafts, ask-agent
 app.include_router(relationships.router)   # contact spine, star/VIP, imports, updates
 app.include_router(inperson.router)        # phone capture (QR / paste / manual)
+app.include_router(messages.router)        # message capture (context in) + send queue
 app.include_router(followups.router)       # scheduled follow-up queue
 app.include_router(integrations.router)    # OAuth source connectors (Google ...)
 

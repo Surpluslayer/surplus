@@ -150,6 +150,7 @@ def init_db() -> None:
         _migrate_user_password_hash,
         _migrate_user_email_verified,
         _migrate_session_client,
+        _migrate_contact_phone,
     ]
     for migration in migrations:
         try:
@@ -225,6 +226,20 @@ def _migrate_user_password_hash() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(200)"))
+
+
+def _migrate_contact_phone() -> None:
+    """Add contacts.phone (VARCHAR(40), NULL) for the actual number (SMS/iMessage/
+    WhatsApp). The hashed ph: key dedupes; this stores the raw value."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "contacts" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("contacts")}
+    if "phone" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text("ALTER TABLE contacts ADD COLUMN phone VARCHAR(40)"))
 
 
 def _migrate_user_email_verified() -> None:
