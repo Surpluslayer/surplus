@@ -23,6 +23,18 @@ backend/data/*.db
 frontend/node_modules/
 frontend/dist/
 frontend/*.code-workspace
+
+# Capacitor / iOS native shell (the ios/ project is generated on a Mac via
+# `npm run ios:add`; commit the project but never these generated/secret bits)
+frontend/ios/App/Pods/
+frontend/ios/App/build/
+frontend/ios/App/Podfile.lock
+frontend/ios/App/App/public/
+frontend/ios/.gitignore
+DerivedData/
+*.xcuserstate
+*.mobileprovision
+*.p12
 .claude/
 
 # matching library cache + outputs
