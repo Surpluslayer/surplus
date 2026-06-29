@@ -104,6 +104,47 @@ def calendar_book(
         raise HTTPException(code, msg)
 
 
+# ── LinkedIn one-tap connect from a captured browser cookie (the plugin path).
+# Declared BEFORE the /{provider} routes so the literal 'linkedin' wins.
+class CookieConnectIn(BaseModel):
+    li_at: str               # the user's LinkedIn session cookie, captured by the plugin
+    user_agent: str = ""
+
+
+@router.get("/linkedin/status")
+def linkedin_status(user: models.User = Depends(current_user)):
+    """Whether THIS user has a live LinkedIn (Unipile) connection -- the plugin checks
+    this before offering to connect, so it never creates a duplicate."""
+    return {
+        "connected": bool(user.unipile_account_id) and user.linkedin_status == "active",
+        "account_id": user.unipile_account_id,
+        "status": user.linkedin_status,
+    }
+
+
+@router.post("/linkedin/connect-cookie")
+def linkedin_connect_cookie(
+    body: CookieConnectIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Connect LinkedIn from the plugin's captured cookie. Dedup guard (one User = one
+    Unipile account): if already actively connected, no-op and reuse -- never create a
+    second account. Otherwise hand the cookie to Unipile and bind the account to the user."""
+    if user.unipile_account_id and user.linkedin_status == "active":
+        return {"connected": True, "account_id": user.unipile_account_id, "reused": True}
+    from ..integrations.linkedin_cookie import connect_with_cookie
+    try:
+        res = connect_with_cookie(li_at=body.li_at, user_agent=body.user_agent)
+    except ValueError as exc:
+        msg = str(exc)
+        raise HTTPException(409 if "not configured" in msg else 400, msg)
+    user.unipile_account_id = res["account_id"]
+    user.linkedin_status = "active"
+    db.commit()
+    return {"connected": True, "account_id": res["account_id"], "reused": False}
+
+
 # ── Granola (MCP: DCR + PKCE) — its own connect/callback, NOT the generic OAuth one.
 # Declared BEFORE the /{provider} routes so the literal 'granola' wins.
 @router.get("/granola/connect")
