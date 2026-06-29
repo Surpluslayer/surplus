@@ -7,7 +7,11 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "ios:add": "cap add ios",
+    "ios:sync": "npm run build && cap sync ios",
+    "ios:open": "cap open ios",
+    "ios:assets": "npx @capacitor/assets generate --ios --iconBackgroundColor '#0a66c2' --splashBackgroundColor '#0a66c2'"
   },
   "keywords": [],
   "author": "",
@@ -15,11 +19,20 @@
   "type": "module",
   "private": "true",
   "dependencies": {
+    "@capacitor/app": "^6.0.3",
+    "@capacitor/core": "^6.2.1",
+    "@capacitor/ios": "^6.2.1",
+    "@capacitor/splash-screen": "^6.0.4",
+    "@capacitor/status-bar": "^6.0.3",
     "jsqr": "^1.4.0",
     "lucide-react": "^1.14.0",
     "posthog-js": "^1.376.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "vite": "^6.4.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.1",
+    "typescript": "^5.9.3"
   }
 }
