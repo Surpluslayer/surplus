@@ -253,8 +253,10 @@ def _migrate_user_email_verified() -> None:
     cols = {c["name"] for c in insp.get_columns("users")}
     if "email_verified" in cols:
         return
+    is_pg = ENGINE.dialect.name == "postgresql"
+    bool_default = "FALSE" if is_pg else "0"
     with ENGINE.begin() as conn:
-        conn.execute(text("ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT 0"))
+        conn.execute(text(f"ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT {bool_default}"))
 
 
 def _migrate_user_verify_code() -> None:
