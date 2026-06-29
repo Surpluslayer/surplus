@@ -22,6 +22,7 @@ import {
 import { api } from "./lib/api.js";
 import ContactsButton from "./components/ContactsButton.jsx";
 import ContactsPage from "./components/ContactsPage.jsx";
+import AuthOptions from "./components/AuthOptions.jsx";
 import { ensureNotifyPermission, notifyDevice } from "./lib/notify.js";
 import { actionLabel, statusMeta, outreachStateLabel } from "./lib/labels.js";
 
@@ -369,6 +370,9 @@ export function SignInBounce({ authError = null, onRetry = null }) {
           <button className="ip-btn primary lg block" onClick={go} disabled={busy}>
             {busy ? <Loader2 className="spin" size={18} /> : "Sign in with LinkedIn"}
           </button>
+          <div style={{ width: "100%", maxWidth: 340, marginTop: 14, textAlign: "left" }}>
+            <AuthOptions onSignedIn={() => window.location.reload()} />
+          </div>
           {authError && (
             <div className="ip-warn" style={{ marginTop: 14, maxWidth: 340 }}>
               <AlertCircle size={13} />
