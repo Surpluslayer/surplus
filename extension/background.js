@@ -129,6 +129,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     scanActiveTab(); // panel opened: scrape whatever's in front right now
     return;
   }
+  if (msg?.type === 'surplus:auth-check') {
+    // Are we signed in to surplus? /me returns 200 with the session cookie,
+    // 401 without. The cookie rides the fetch via our host permission.
+    fetch(`${BOOK_ORIGIN}/api/auth/me`, { credentials: 'include' })
+      .then((r) => sendResponse({ authed: r.ok }))
+      .catch(() => sendResponse({ authed: false }));
+    return true; // async
+  }
   if (msg?.type === 'surplus:capture') {
     captureProfile(msg.profile)
       .then((res) => {

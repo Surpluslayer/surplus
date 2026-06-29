@@ -109,6 +109,44 @@
         background: var(--bg);
         pointer-events: none;
       }
+      #signin {
+        position: absolute;
+        inset: 0;
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        gap: 10px;
+        padding: 0 28px;
+        background: var(--bg);
+      }
+      #signin.show { display: flex; }
+      #signin img { width: 56px; height: 56px; margin-bottom: 4px; }
+      #signin h2 { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
+      #signin p { font-size: 13px; color: var(--ink-dim); line-height: 1.5; }
+      #signin .cta {
+        margin-top: 6px;
+        font: inherit;
+        font-size: 14px;
+        font-weight: 600;
+        border: 0;
+        border-radius: 999px;
+        padding: 12px 22px;
+        background: var(--acc);
+        color: #fff;
+        cursor: pointer;
+      }
+      #signin .cta:hover { background: #2257d6; }
+      #signin .recheck {
+        font: inherit;
+        font-size: 12px;
+        color: var(--ink-faint);
+        background: none;
+        border: 0;
+        cursor: pointer;
+        text-decoration: underline;
+      }
     </style>
   </head>
   <body>
@@ -131,6 +169,17 @@
     <div id="frame-wrap">
       <div id="loading">Loading your surplus book…</div>
       <iframe id="book" referrerpolicy="origin"></iframe>
+      <div id="signin">
+        <img src="icons/icon128.png" alt="" />
+        <h2>Sign in to surplus</h2>
+        <p>
+          Sign-in opens in a new tab (LinkedIn login can't run inside this
+          panel). Finish there, then come back — the panel updates
+          automatically.
+        </p>
+        <button class="cta" id="signin-btn">Sign in to surplus</button>
+        <button class="recheck" id="signin-recheck">I've signed in — reload</button>
+      </div>
     </div>
 
     <script src="sidepanel.js"></script>
