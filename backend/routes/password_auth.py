@@ -12,7 +12,7 @@ Email verification + password reset live in routes/account_email (Resend-backed)
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session as DbSession
@@ -63,8 +63,7 @@ def _session_response(db: DbSession, user: User, client: str, body: dict) -> JSO
 
 
 @router.post("/signup", dependencies=[Depends(_rl_signup)])
-def signup(body: SignupBody, request: Request,
-           db: DbSession = Depends(get_db)) -> JSONResponse:
+def signup(body: SignupBody, db: DbSession = Depends(get_db)) -> JSONResponse:
     """Create an email+password account. 409 if the email is already registered (via
     password OR an OAuth provider) -- the owner signs in instead; we never attach a
     password to a pre-existing account (that would be takeover)."""
@@ -91,9 +90,10 @@ def signup(body: SignupBody, request: Request,
         db.commit()
         user = oldest
 
-    # Fire the verification email (best-effort; dormant until RESEND_API_KEY is set).
-    from .account_email import send_verification_email
-    send_verification_email(request, user)
+    # Fire the verification email -- a 6-digit PIN code (best-effort; dormant until
+    # RESEND_API_KEY is set). The client then prompts for the code.
+    from .account_email import send_verification_code
+    send_verification_code(db, user)
 
     return _session_response(db, user, normalize_client(body.client), {
         "ok": True, "user_id": user.id, "name": user.name, "email": user.email})

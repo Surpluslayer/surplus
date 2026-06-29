@@ -149,6 +149,7 @@ def init_db() -> None:
         _migrate_user_microsoft_sub,
         _migrate_user_password_hash,
         _migrate_user_email_verified,
+        _migrate_user_verify_code,
         _migrate_session_client,
         _migrate_contact_phone,
     ]
@@ -254,6 +255,21 @@ def _migrate_user_email_verified() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT 0"))
+
+
+def _migrate_user_verify_code() -> None:
+    """Add users.email_verify_code_hash (VARCHAR(200)) + email_verify_code_expires
+    (DATETIME) for the PIN/OTP email-confirmation code. Both NULL by default."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    with ENGINE.begin() as conn:
+        if "email_verify_code_hash" not in cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN email_verify_code_hash VARCHAR(200)"))
+        if "email_verify_code_expires" not in cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN email_verify_code_expires TIMESTAMP"))
 
 
 def _migrate_session_client() -> None:

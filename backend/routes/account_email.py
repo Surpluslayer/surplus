@@ -18,7 +18,10 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session as DbSession
 
-from ..auth import current_user, hash_password
+import secrets
+from datetime import datetime, timedelta, timezone
+
+from ..auth import current_user, hash_password, verify_password
 from ..db import get_db
 from ..integrations import email_sender, oauth
 from ..models import User
@@ -27,11 +30,13 @@ from .auth import _surplus_base_url
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-_TTL_VERIFY = 60 * 60 * 24      # 24h to confirm an email
+_TTL_VERIFY = 60 * 60 * 24      # 24h to confirm an email (link)
 _TTL_RESET = 60 * 30           # 30m to reset a password
+_CODE_TTL = 60 * 10            # 10m for the PIN/OTP email code
 _MIN_PW, _MAX_PW = 8, 128
 
 _rl_forgot = per_ip_rate_limit(limit=5, window_s=60, tag="pw_forgot")
+_rl_code = per_ip_rate_limit(limit=8, window_s=60, tag="verify_code")  # brute-force guard
 
 
 class ForgotBody(BaseModel):
@@ -41,6 +46,32 @@ class ForgotBody(BaseModel):
 class ResetBody(BaseModel):
     token: str
     password: str
+
+
+class CodeBody(BaseModel):
+    code: str
+
+
+def _gen_code() -> str:
+    """A 6-digit numeric PIN (100000-999999)."""
+    return str(secrets.randbelow(900000) + 100000)
+
+
+def send_verification_code(db: DbSession, user: User) -> bool:
+    """Generate a 6-digit code, store its bcrypt hash + 10m expiry on the user, and email
+    it. Best-effort: returns whether mail actually went out (False = dormant/no email)."""
+    if not user.email:
+        return False
+    code = _gen_code()
+    user.email_verify_code_hash = hash_password(code)
+    user.email_verify_code_expires = datetime.now(timezone.utc) + timedelta(seconds=_CODE_TTL)
+    db.commit()
+    return email_sender.send_email(
+        to=user.email, subject="Your surplus verification code",
+        html=f"<p>Your surplus verification code is:</p>"
+             f'<p style="font-size:24px;font-weight:700;letter-spacing:3px">{code}</p>'
+             f"<p>It expires in 10 minutes.</p>",
+        text=f"Your surplus verification code is {code} (expires in 10 minutes).")
 
 
 def _sign(purpose: str, uid: int, ttl: int) -> str:
@@ -126,5 +157,38 @@ def reset_password(body: ResetBody, db: DbSession = Depends(get_db)) -> JSONResp
     if user is None:
         raise HTTPException(400, "invalid or expired reset link")
     user.password_hash = hash_password(pw)
+    db.commit()
+    return JSONResponse({"ok": True})
+
+
+@router.post("/send-code")
+def send_code(db: DbSession = Depends(get_db),
+              user: User = Depends(current_user)) -> JSONResponse:
+    """(Re)send the 6-digit email-verification code to the signed-in user. `sent` is
+    False when no email provider is configured (dormant) -- the code is still stored."""
+    if user.email_verified:
+        return JSONResponse({"ok": True, "already_verified": True})
+    sent = send_verification_code(db, user)
+    return JSONResponse({"ok": True, "sent": sent})
+
+
+@router.post("/verify-code", dependencies=[Depends(_rl_code)])
+def verify_code(body: CodeBody, db: DbSession = Depends(get_db),
+                user: User = Depends(current_user)) -> JSONResponse:
+    """Confirm the email with the 6-digit code. 400 on missing/expired/wrong code;
+    rate-limited so the 6-digit space can't be brute-forced."""
+    if user.email_verified:
+        return JSONResponse({"ok": True, "already_verified": True})
+    expires = user.email_verify_code_expires
+    if not user.email_verify_code_hash or expires is None:
+        raise HTTPException(400, "no code requested")
+    exp = expires if expires.tzinfo else expires.replace(tzinfo=timezone.utc)
+    if exp < datetime.now(timezone.utc):
+        raise HTTPException(400, "code expired")
+    if not verify_password((body.code or "").strip(), user.email_verify_code_hash):
+        raise HTTPException(400, "invalid code")
+    user.email_verified = True
+    user.email_verify_code_hash = None       # one-time use
+    user.email_verify_code_expires = None
     db.commit()
     return JSONResponse({"ok": True})

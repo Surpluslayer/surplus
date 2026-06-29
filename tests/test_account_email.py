@@ -6,6 +6,7 @@ RESEND_API_KEY) so send_email no-ops -- we assert flow + token behavior, not del
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -40,6 +41,7 @@ def client():
         finally: s.close()
     app.dependency_overrides[get_db] = _override
     app.dependency_overrides[ae._rl_forgot] = lambda: None
+    app.dependency_overrides[ae._rl_code] = lambda: None
     yield TestClient(app), Session
     app.dependency_overrides.clear()
 
@@ -115,3 +117,60 @@ def test_reset_password_rejects_short_password(client):
     token = ae._sign("reset_password", uid, 1800)
     assert c.post("/api/auth/reset-password",
                   json={"token": token, "password": "short"}).status_code == 400
+
+
+# ── PIN / OTP email code ──────────────────────────────────────────────────────
+def _signed_in_user(Session, **kw):
+    """A user + session cookie token (for authenticated code endpoints)."""
+    s = Session()
+    u = models.User(name="U", email="u@x.com", password_hash="h", **kw)
+    s.add(u); s.commit()
+    tok = auth_mod.create_session(s, u).session_token
+    uid = u.id; s.close()
+    return tok, uid
+
+
+def test_send_code_stores_hash_dormant_sender(client):
+    c, Session = client
+    tok, uid = _signed_in_user(Session)
+    c.cookies.set("surplus_session", tok)
+    r = c.post("/api/auth/send-code")
+    assert r.status_code == 200 and r.json()["sent"] is False   # no RESEND key -> dormant
+    s = Session(); u = s.get(models.User, uid)
+    assert u.email_verify_code_hash and u.email_verify_code_expires is not None
+    s.close()
+
+
+def test_verify_code_marks_verified(client):
+    c, Session = client
+    tok, uid = _signed_in_user(Session)
+    c.cookies.set("surplus_session", tok)
+    # set a known code directly (the real one is random + only emailed)
+    s = Session(); u = s.get(models.User, uid)
+    u.email_verify_code_hash = auth_mod.hash_password("123456")
+    u.email_verify_code_expires = datetime.now(timezone.utc) + timedelta(minutes=10)
+    s.commit(); s.close()
+    assert c.post("/api/auth/verify-code", json={"code": "000000"}).status_code == 400  # wrong
+    r = c.post("/api/auth/verify-code", json={"code": "123456"})
+    assert r.status_code == 200
+    s = Session(); u = s.get(models.User, uid)
+    assert u.email_verified is True and u.email_verify_code_hash is None   # one-time use
+    s.close()
+
+
+def test_verify_code_expired(client):
+    c, Session = client
+    tok, uid = _signed_in_user(Session)
+    c.cookies.set("surplus_session", tok)
+    s = Session(); u = s.get(models.User, uid)
+    u.email_verify_code_hash = auth_mod.hash_password("123456")
+    u.email_verify_code_expires = datetime.now(timezone.utc) - timedelta(minutes=1)  # past
+    s.commit(); s.close()
+    assert c.post("/api/auth/verify-code", json={"code": "123456"}).status_code == 400
+
+
+def test_verify_code_none_requested(client):
+    c, Session = client
+    tok, uid = _signed_in_user(Session)
+    c.cookies.set("surplus_session", tok)
+    assert c.post("/api/auth/verify-code", json={"code": "123456"}).status_code == 400

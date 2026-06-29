@@ -569,10 +569,14 @@ class User(Base):
     # checked by /api/auth/login. Email is the identity, so a password user shares the
     # SAME User row as a Google/Microsoft login on that email.
     password_hash: Mapped[Optional[str]] = mapped_column(String(200), default=None)
-    # Whether the email was confirmed via the verification link. Informational for now
-    # (we don't block login on it); OAuth providers verify email on their side. Set by
-    # /api/auth/verify-email.
+    # Whether the email was confirmed (via the verification link OR the PIN/OTP code).
+    # Informational for now (we don't block login on it); OAuth providers verify on
+    # their side. Set by /api/auth/verify-email or /api/auth/verify-code.
     email_verified: Mapped[bool] = mapped_column(default=False)
+    # PIN/OTP email confirmation: a bcrypt hash of the 6-digit code + its expiry. Set by
+    # /api/auth/send-code, cleared on success. Hashed so a DB read can't reveal the code.
+    email_verify_code_hash: Mapped[Optional[str]] = mapped_column(String(200), default=None)
+    email_verify_code_expires: Mapped[Optional[datetime]] = mapped_column(default=None)
     # Profile data pulled from Unipile after auth (best-effort, refreshable)
     email: Mapped[Optional[str]] = mapped_column(String(200), default=None, index=True)
     name: Mapped[str] = mapped_column(String(120), default="")
