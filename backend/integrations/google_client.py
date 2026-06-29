@@ -16,6 +16,7 @@ import httpx
 
 _GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me"
 _GCAL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+_PEOPLE = "https://people.googleapis.com/v1/people/me/connections"
 
 
 def _get(token: str, url: str, params: Optional[dict] = None) -> dict:
@@ -70,6 +71,29 @@ def gmail_fetch_page(token: str, *, own_email: str = "", cursor: Optional[str] =
                       "date": hdrs.get("date"), "role": role,
                       "provider_id": m.get("id")})
     return {"items": items, "cursor": lst.get("nextPageToken")}
+
+
+def fetch_contacts(token: str, *, cursor: Optional[str] = None,
+                   page_size: int = 200) -> dict:
+    """One page of the user's Google Contacts (People API connections.list), normalized
+    to {name, email, phone} (first of each). Returns {"items":[...], "cursor": <next>}.
+    Entries with neither an email nor a phone are dropped (nothing to key on)."""
+    data = _get(token, _PEOPLE, {
+        "personFields": "names,emailAddresses,phoneNumbers",
+        "pageSize": page_size,
+        **({"pageToken": cursor} if cursor else {})})
+    items = []
+    for p in (data.get("connections") or []):
+        names = p.get("names") or []
+        emails = p.get("emailAddresses") or []
+        phones = p.get("phoneNumbers") or []
+        name = (names[0].get("displayName") or "").strip() if names else ""
+        email = (emails[0].get("value") or "").strip().lower() if emails else ""
+        phone = (phones[0].get("value") or "").strip() if phones else ""
+        if not (email or phone):
+            continue
+        items.append({"name": name, "email": email, "phone": phone})
+    return {"items": items, "cursor": data.get("nextPageToken")}
 
 
 def fetch_calendar_events(token: str, *, time_min_iso: str, time_max_iso: str,

@@ -34,6 +34,8 @@ GOOGLE = ProviderConfig(
         # calendar.events grants create/update (booking) AND read of events, so it
         # supersedes the old calendar.readonly -- the read sync keeps working.
         "https://www.googleapis.com/auth/calendar.events",
+        # contacts.readonly -> import the phone address book (People API) into the spine.
+        "https://www.googleapis.com/auth/contacts.readonly",
     ),
     client_id_env="GOOGLE_CLIENT_ID",
     client_secret_env="GOOGLE_CLIENT_SECRET",
