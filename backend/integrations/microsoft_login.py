@@ -19,6 +19,7 @@ import httpx
 
 from . import oauth
 
+PROVIDER = "microsoft"
 _AUTH = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
 _TOKEN = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 _GRAPH_ME = "https://graph.microsoft.com/v1.0/me"

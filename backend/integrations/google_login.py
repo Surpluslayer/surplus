@@ -21,6 +21,7 @@ from . import oauth
 
 _STATE_TTL = 600   # seconds a sign-in state stays valid (matches the connect flow)
 
+PROVIDER = "google"
 _AUTH = "https://accounts.google.com/o/oauth2/v2/auth"
 _TOKEN = "https://oauth2.googleapis.com/token"
 _USERINFO = "https://openidconnect.googleapis.com/v1/userinfo"

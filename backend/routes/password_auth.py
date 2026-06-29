@@ -8,8 +8,7 @@ buttons. Email is the identity, so a password user shares the SAME User row as a
 Google/Microsoft login on that address. Web clients get the session cookie; ios/plugin
 pass client=ios|plugin and get a Bearer token (auth.current_user accepts either).
 
-Not yet built (hardening follow-ups): email verification + password reset (both need an
-HTTPS transactional email provider, since Railway blocks SMTP port 25).
+Email verification + password reset live in routes/account_email (Resend-backed).
 """
 from __future__ import annotations
 
@@ -19,14 +18,13 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session as DbSession
 
 from ..auth import (create_session, current_user, hash_password,
-                    set_session_cookie, verify_password)
+                    normalize_client, set_session_cookie, verify_password)
 from ..db import get_db
 from ..models import User
 from ..rate_limit import per_ip_rate_limit
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-_CLIENTS = {"web", "ios", "plugin"}
 _MIN_PW = 8
 _MAX_PW = 128
 
@@ -50,10 +48,6 @@ class LoginBody(BaseModel):
 
 class SetPasswordBody(BaseModel):
     password: str
-
-
-def _client(value: str) -> str:
-    return value if value in _CLIENTS else "web"
 
 
 def _session_response(db: DbSession, user: User, client: str, body: dict) -> JSONResponse:
@@ -101,7 +95,7 @@ def signup(body: SignupBody, request: Request,
     from .account_email import send_verification_email
     send_verification_email(request, user)
 
-    return _session_response(db, user, _client(body.client), {
+    return _session_response(db, user, normalize_client(body.client), {
         "ok": True, "user_id": user.id, "name": user.name, "email": user.email})
 
 
@@ -113,7 +107,7 @@ def login(body: LoginBody, db: DbSession = Depends(get_db)) -> JSONResponse:
     user = db.query(User).filter(User.email == email).first() if email else None
     if user is None or not verify_password(body.password or "", user.password_hash):
         raise HTTPException(401, "invalid email or password")
-    return _session_response(db, user, _client(body.client), {
+    return _session_response(db, user, normalize_client(body.client), {
         "ok": True, "user_id": user.id, "name": user.name, "email": user.email})
 
 

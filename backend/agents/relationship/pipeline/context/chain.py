@@ -15,9 +15,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-# Channels we can hold a back-and-forth on.
-_MESSAGING = ("email", "linkedin", "whatsapp", "imessage", "sms")
-
 
 def _has_identity(contact, channel: str) -> bool:
     if channel == "email":

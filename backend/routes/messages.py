@@ -23,13 +23,13 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..agents.relationship.channels import DEVICE_CHANNELS as _DEVICE_CHANNELS
+from ..agents.relationship.channels import MESSAGING_CHANNELS as _ALL_CHANNELS
 from ..auth import current_user
 from ..db import get_db
+from ..integrations.sync_common import parse_iso
 
 router = APIRouter(prefix="/api/messages", tags=["messages"])
-
-_DEVICE_CHANNELS = {"imessage", "sms"}
-_ALL_CHANNELS = {"whatsapp", "linkedin", "email", "imessage", "sms"}
 
 
 def _utcnow() -> datetime:
@@ -37,15 +37,9 @@ def _utcnow() -> datetime:
 
 
 def _parse_ts(ts: Optional[str]) -> datetime:
-    if not ts:
-        return _utcnow()
-    try:
-        s = ts.strip()
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        return datetime.fromisoformat(s)
-    except (TypeError, ValueError):
-        return _utcnow()
+    """Message timestamp -> aware datetime, defaulting to now (a message always gets a
+    time). Reuses the tolerant sync_common.parse_iso (handles 'Z', offsets, date-only)."""
+    return parse_iso(ts) or _utcnow()
 
 
 class IncomingMessage(BaseModel):

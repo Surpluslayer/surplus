@@ -26,6 +26,15 @@ from .models import Session, User
 SESSION_COOKIE = "surplus_session"
 SESSION_TTL_DAYS = 30
 
+# Valid session clients (one independent, separately-revocable session per surface).
+CLIENTS = ("web", "ios", "plugin")
+
+
+def normalize_client(value: str) -> str:
+    """Coerce a client tag to a known one, defaulting to 'web'."""
+    v = (value or "").strip().lower()
+    return v if v in CLIENTS else "web"
+
 # Identity of demo users minted by the hidden demo link (routes/demo.py).
 # Kept here so both demo.py and /me reference one source of truth without a
 # circular import. DEMO_USER_EMAIL is the legacy shared row; per-visitor demo
