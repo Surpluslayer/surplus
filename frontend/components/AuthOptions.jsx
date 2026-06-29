@@ -116,7 +116,8 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
   const canSubmit = email.trim().includes("@") && password.length >= 8
     && (mode === "login" || name.trim());
 
-  // After signup: collect the 6-digit email PIN. Non-gating -- "Skip for now" proceeds.
+  // After signup: collect the 6-digit email PIN. REQUIRED (no skip) -- this view only
+  // shows when a code actually went out (verification_required), so it never dead-ends.
   if (verifying) {
     return (
       <div className="authopts">
