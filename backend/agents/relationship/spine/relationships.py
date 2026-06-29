@@ -60,6 +60,10 @@ _CHANNEL_BY_SOURCE = {
     "calendar_meeting": "calendar",
     "relationship_interaction": "manual",
     "draft_generated": "manual",
+    # Ingested message threads (routes/messages) set source_type = the channel itself,
+    # so map each to its own channel for the timeline + channel-preference signal.
+    "imessage": "imessage", "sms": "sms", "whatsapp": "whatsapp",
+    "linkedin": "linkedin", "email": "email",
 }
 
 

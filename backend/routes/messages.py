@@ -129,13 +129,17 @@ def ingest(body: IngestIn, db: Session = Depends(get_db),
             if dup is not None:
                 stats["skipped"] += 1
                 continue
-        direction = "in" if m.direction != "out" else "out"
+        # Timeline convention is inbound/outbound (the thread builder maps these to
+        # them/host); the API takes the short in/out.
+        direction = "outbound" if m.direction == "out" else "inbound"
         db.add(models.RelationshipInteraction(
             actor_user_id=user.id, contact_id=contact.id,
             source_type=(m.channel or "imessage"), interaction_type="message",
             direction=direction, occurred_at=_parse_ts(m.ts),
             title="", summary=(m.text or "")[:1000],
-            meta_json=json.dumps({"ext": m.external_id or "", "channel": m.channel})))
+            # NB: no "channel" key -- it collides with _item(channel=...) in the
+            # timeline assembler; the channel is carried by source_type above.
+            meta_json=json.dumps({"ext": m.external_id or ""})))
         stats["appended"] += 1
     db.commit()
     return stats

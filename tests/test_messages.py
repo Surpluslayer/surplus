@@ -108,3 +108,23 @@ def test_outbox_mark_sent(client):
     # no longer due
     assert c.get("/api/messages/outbox/due").json()["due"] == []
     s = Session(); assert s.get(models.OutgoingMessage, mid).sent_at is not None; s.close()
+
+
+def test_ingested_message_reaches_timeline_with_right_channel(client):
+    """Regression: meta_json must not collide with _item(channel=...), and the device
+    channel must survive into the timeline (so context + channel-preference see it)."""
+    from backend.agents.relationship.spine import relationships as rel
+    from backend.agents.relationship.pipeline.context.chain import resolve_active_chain
+    c, Session, uid = client
+    c.post("/api/messages/ingest", json={"messages": [
+        {"handle": "+14155551234", "name": "Sarah", "direction": "in",
+         "text": "coffee thursday?", "channel": "imessage", "external_id": "x1"}]})
+    s = Session()
+    ct = s.query(models.Contact).filter_by(user_id=uid).one()
+    timeline = rel.contact_timeline(s, ct)           # must NOT raise
+    msg = [it for it in timeline if it.get("interaction_type") == "message"]
+    assert msg and msg[0]["channel"] == "imessage"   # channel survived, not "manual"
+    # right-chain now sees iMessage as her ACTIVE channel (not just identity fallback)
+    chain = resolve_active_chain(s, ct)
+    assert chain["channel"] == "imessage" and chain["reason"] == "active_channel"
+    s.close()

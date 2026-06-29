@@ -21,7 +21,7 @@ from .spine.memory import upsert_fact
 
 # Real two-way messaging channels. A capture/note/manual row isn't a channel
 # someone "replies on", so it doesn't count toward channel preference.
-_MESSAGING = {"linkedin", "email", "whatsapp"}
+_MESSAGING = {"linkedin", "email", "whatsapp", "imessage", "sms"}
 
 
 def derive_channel_preference(db, contact, *, commit: bool = False) -> Optional[str]:

@@ -15,7 +15,7 @@ from .... import voice
 
 # Timeline rows that carry host<->contact conversation (not system/metadata).
 _MESSAGE_SOURCE_TYPES = {"in_person_capture", "manual_note", "linkedin_outreach",
-                         "email"}
+                         "email", "imessage", "sms", "whatsapp", "linkedin"}
 
 
 def thread_from_timeline(timeline: list[dict]) -> list[dict]:
