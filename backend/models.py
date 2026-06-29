@@ -569,6 +569,10 @@ class User(Base):
     # checked by /api/auth/login. Email is the identity, so a password user shares the
     # SAME User row as a Google/Microsoft login on that email.
     password_hash: Mapped[Optional[str]] = mapped_column(String(200), default=None)
+    # Whether the email was confirmed via the verification link. Informational for now
+    # (we don't block login on it); OAuth providers verify email on their side. Set by
+    # /api/auth/verify-email.
+    email_verified: Mapped[bool] = mapped_column(default=False)
     # Profile data pulled from Unipile after auth (best-effort, refreshable)
     email: Mapped[Optional[str]] = mapped_column(String(200), default=None, index=True)
     name: Mapped[str] = mapped_column(String(120), default="")

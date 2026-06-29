@@ -148,6 +148,7 @@ def init_db() -> None:
         _migrate_user_google_sub,
         _migrate_user_microsoft_sub,
         _migrate_user_password_hash,
+        _migrate_user_email_verified,
         _migrate_session_client,
     ]
     for migration in migrations:
@@ -224,6 +225,20 @@ def _migrate_user_password_hash() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(200)"))
+
+
+def _migrate_user_email_verified() -> None:
+    """Add users.email_verified (BOOLEAN, default 0/false). Existing users default to
+    not-verified; OAuth/LinkedIn users are unaffected (we don't gate on it)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "email_verified" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT 0"))
 
 
 def _migrate_session_client() -> None:
