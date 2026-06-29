@@ -147,6 +147,60 @@
         cursor: pointer;
         text-decoration: underline;
       }
+      #review {
+        position: absolute;
+        inset: 0;
+        display: none;
+        flex-direction: column;
+        gap: 8px;
+        padding: 16px;
+        overflow-y: auto;
+        background: var(--panel);
+      }
+      #review.show { display: flex; }
+      #review .rv-head { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
+      #review .rv-head span { color: var(--acc); }
+      #review .rv-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--ink-faint);
+        font-weight: 600;
+        margin-top: 4px;
+      }
+      #review .rv-count { text-transform: none; letter-spacing: 0; }
+      #review textarea {
+        font: inherit;
+        font-size: 13px;
+        line-height: 1.45;
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 9px 11px;
+        resize: vertical;
+        background: var(--bg);
+      }
+      #review textarea:focus { outline: none; border-color: var(--acc); }
+      #review #rv-status { font-size: 12px; min-height: 16px; }
+      #review #rv-status.err { color: #c0433d; }
+      #review #rv-status.ok { color: #1f9d62; }
+      #review .rv-actions { display: flex; gap: 8px; margin-top: 4px; }
+      #review .rv-actions button {
+        font: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        border-radius: 999px;
+        padding: 9px 16px;
+        cursor: pointer;
+      }
+      #review .rv-primary { flex: 1; border: 0; background: var(--acc); color: #fff; }
+      #review .rv-primary:hover { background: #2257d6; }
+      #review .rv-primary:disabled { opacity: 0.6; cursor: default; }
+      #review .rv-secondary {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        color: var(--ink-dim);
+      }
     </style>
   </head>
   <body>
@@ -179,6 +233,25 @@
         </p>
         <button class="cta" id="signin-btn">Sign in to surplus</button>
         <button class="recheck" id="signin-recheck">I've signed in — reload</button>
+      </div>
+
+      <div id="review">
+        <div class="rv-head">
+          Connect with <span id="rv-name">…</span>
+        </div>
+        <label class="rv-label">
+          Connection note <span class="rv-count" id="rv-note-count"></span>
+        </label>
+        <textarea id="rv-note" maxlength="300" rows="3"
+          placeholder="Short note sent with the invite"></textarea>
+        <label class="rv-label">Message (sent once they accept)</label>
+        <textarea id="rv-message" rows="6"
+          placeholder="The follow-up message"></textarea>
+        <div id="rv-status"></div>
+        <div class="rv-actions">
+          <button id="rv-cancel" class="rv-secondary">Cancel</button>
+          <button id="rv-send" class="rv-primary">Connect &amp; send</button>
+        </div>
       </div>
     </div>
 
