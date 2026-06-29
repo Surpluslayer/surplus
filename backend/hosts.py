@@ -50,9 +50,16 @@ def request_browser_host(request) -> str:
     Behind the CDN / Railway the Host header is rewritten to the origin's
     internal name, but the Origin header (the SPA fetch is same-origin) and
     X-Forwarded-Host preserve the real user-facing host. Prefer Origin, then
-    X-Forwarded-Host, then Host."""
+    X-Forwarded-Host, then Host.
+
+    Non-web origins are ignored: the Chrome extension calls these APIs with an
+    `Origin: chrome-extension://<id>` header, whose hostname is the extension
+    id, not a surpluslayer host. Honoring it would drop the request out of the
+    in-person surface and wrongly trip the paywall. Skipping it falls through to
+    X-Forwarded-Host (the real `event.surpluslayer.com`), so the extension gets
+    the same in-person treatment as the web app."""
     origin = request.headers.get("origin") or ""
-    if origin:
+    if origin.startswith(("http://", "https://")):
         host = urlsplit(origin).hostname or ""
         if host:
             return host.lower()

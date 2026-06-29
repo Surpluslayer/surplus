@@ -100,6 +100,22 @@ async function captureProfile(profile) {
   return scanRes.json();
 }
 
+// Fire the LinkedIn connect request (with note) + DM for a captured prospect.
+// note/message override the composed draft; the backend routes warm vs cold.
+async function sendCapture(prospectId, note, message) {
+  const res = await fetch(
+    `${BOOK_ORIGIN}/api/inperson/captures/${prospectId}/send`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ note: note ?? null, message: message ?? null }),
+    },
+  );
+  if (!res.ok) throw new Error(`send ${res.status}`);
+  return res.json();
+}
+
 // Remember the last profile so a side panel opened *after* navigation can
 // ask for it (the panel may not have been listening when it was scraped).
 let lastProfile = null;
@@ -129,6 +145,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     scanActiveTab(); // panel opened: scrape whatever's in front right now
     return;
   }
+  if (msg?.type === 'surplus:auth-check') {
+    // Are we signed in to surplus? /me returns 200 with the session cookie,
+    // 401 without. The cookie rides the fetch via our host permission.
+    fetch(`${BOOK_ORIGIN}/api/auth/me`, { credentials: 'include' })
+      .then((r) => sendResponse({ authed: r.ok }))
+      .catch(() => sendResponse({ authed: false }));
+    return true; // async
+  }
   if (msg?.type === 'surplus:capture') {
     captureProfile(msg.profile)
       .then((res) => {
@@ -137,6 +161,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       })
       .catch((e) => {
         console.warn('[surplus][bg] capture failed', e);
+        sendResponse({ ok: false, error: String(e) });
+      });
+    return true; // async response: keep the channel open
+  }
+  if (msg?.type === 'surplus:send') {
+    sendCapture(msg.prospectId, msg.note, msg.message)
+      .then((res) => {
+        console.log('[surplus][bg] sent', res);
+        sendResponse({ ok: true, res });
+      })
+      .catch((e) => {
+        console.warn('[surplus][bg] send failed', e);
         sendResponse({ ok: false, error: String(e) });
       });
     return true; // async response: keep the channel open
