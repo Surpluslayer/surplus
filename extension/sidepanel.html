@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>surplus</title>
+    <style>
+      :root {
+        --bg: #f4f5f7;
+        --panel: #ffffff;
+        --line: #e6e8eb;
+        --ink: #1b1e22;
+        --ink-dim: #5b616a;
+        --ink-faint: #99a0a8;
+        --acc: #2f6df6;
+        --acc-soft: #eaf1fe;
+        --purple: #7c3aed;
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { height: 100%; }
+      body {
+        display: flex;
+        flex-direction: column;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--line);
+      }
+      header img { width: 22px; height: 22px; }
+      header .brand { font-weight: 800; letter-spacing: -0.04em; font-size: 16px; }
+      header .spacer { flex: 1; }
+      header button {
+        font: inherit;
+        font-size: 12px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        color: var(--ink-dim);
+        border-radius: 999px;
+        padding: 5px 10px;
+        cursor: pointer;
+      }
+      header button:hover { background: var(--bg); }
+
+      #context {
+        padding: 10px 12px;
+        background: var(--acc-soft);
+        border-bottom: 1px solid var(--line);
+      }
+      #context.empty { background: var(--bg); }
+      #context .label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--acc);
+        font-weight: 600;
+        margin-bottom: 3px;
+      }
+      #context.empty .label { color: var(--ink-faint); }
+      #context .name {
+        font-size: 15px;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #context.empty .name { color: var(--ink-faint); font-weight: 500; }
+      #context .headline {
+        font-size: 12px;
+        color: var(--ink-dim);
+        margin-top: 1px;
+        line-height: 1.35;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #context .headline:empty { display: none; }
+      #context .actions { margin-top: 8px; display: flex; gap: 8px; }
+      #context.empty .actions { visibility: hidden; }
+      #context .actions button {
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        border: 0;
+        border-radius: 999px;
+        padding: 7px 14px;
+        cursor: pointer;
+      }
+      #capture { background: var(--acc); color: #fff; }
+      #capture:hover { background: #2257d6; }
+      #capture:disabled { opacity: 0.6; cursor: default; }
+
+      #frame-wrap { flex: 1; position: relative; }
+      iframe { width: 100%; height: 100%; border: 0; background: var(--bg); }
+      #loading {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--ink-faint);
+        font-size: 13px;
+        background: var(--bg);
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <img src="icons/icon48.png" alt="" />
+      <span class="brand">surplus</span>
+      <span class="spacer"></span>
+      <button id="reload" title="Reload the book">Reload</button>
+    </header>
+
+    <section id="context" class="empty">
+      <div class="label">Viewing on LinkedIn</div>
+      <div class="name" id="ctx-name">Open a LinkedIn profile</div>
+      <div class="headline" id="ctx-headline"></div>
+      <div class="actions">
+        <button id="capture">Capture to surplus</button>
+      </div>
+    </section>
+
+    <div id="frame-wrap">
+      <div id="loading">Loading your surplus book…</div>
+      <iframe id="book" referrerpolicy="origin"></iframe>
+    </div>
+
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

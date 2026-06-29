@@ -51,3 +51,6 @@ fly.batch.toml
 # Build stamp baked into the Docker image at build time (see Dockerfile); never
 # committed — only generated inside the image so /api/health can report it.
 backend/.build_time
+
+# browser extension build artifact
+/surplus-extension.zip
