@@ -691,8 +691,18 @@ function ConnectionsScreen({ user, onBack }) {
   // the API doesn't return the array (older session / pre-feature backend).
   const emailAccounts = Array.isArray(user?.email_accounts)
     ? user.email_accounts : null;
-  const providerLabel = (p) =>
-    p === "outlook" ? "Outlook" : p === "google" ? "Gmail" : "Mailbox";
+  // Prefer the stored provider; fall back to the address domain (webhook rows
+  // don't carry a provider) so a connected mailbox reads "Gmail"/"Outlook", not
+  // a bare "Mailbox".
+  const providerLabel = (acct) => {
+    const p = acct?.provider;
+    if (p === "outlook") return "Outlook";
+    if (p === "google") return "Gmail";
+    const dom = (acct?.address || "").split("@")[1]?.toLowerCase() || "";
+    if (/gmail|googlemail/.test(dom)) return "Gmail";
+    if (/outlook|hotmail|live|microsoft|office365/.test(dom)) return "Outlook";
+    return "Mailbox";
+  };
   // Google (calendar + contacts) -- read the real ConnectedAccount list.
   const googleOn = !!(integrations?.connected || []).some(
     (a) => a.provider === "google" && a.status === "active");
@@ -725,7 +735,7 @@ function ConnectionsScreen({ user, onBack }) {
             {emailAccounts.map((acct) => (
               <ConnRow key={acct.unipile_account_id}
                        icon={<Mail size={21} />}
-                       name={providerLabel(acct.provider)}
+                       name={providerLabel(acct)}
                        sub={acct.address
                          ? `Connected as ${acct.address}`
                          : "Connected"}
