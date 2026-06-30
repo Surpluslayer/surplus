@@ -254,19 +254,13 @@ function TriageLanding({ onSignedIn }) {
   const [liBusy, setLiBusy] = useState(false);
   const [error, setError] = useState(null);
 
-  const handleLinkedInSignin = async () => {
+  const handleSignupCta = () => {
     setError(null);
     setLiBusy(true);
-    try {
-      const r = await api.startLinkedinAuth();
-      if (!r?.url) throw new Error("Backend didn't return a hosted-auth URL");
-      // Top-level navigation : surplus_last_account cookie + session cookie
-      // are set during the callback redirect, not a fetch.
-      window.location.href = r.url;
-    } catch (err) {
-      setLiBusy(false);
-      setError(err.message || "Could not start LinkedIn sign-in.");
-    }
+    // Lead with sign-up, not LinkedIn OAuth. Send the visitor to the shared
+    // in-app sign-up screen (AuthOptions, "Create account"). LinkedIn becomes a
+    // CONNECT option later, after they have an account.
+    window.location.href = "/?signup";
   };
 
   const handleSkipSubmit = async (e) => {
@@ -303,17 +297,17 @@ function TriageLanding({ onSignedIn }) {
           for every applicant.
         </p>
 
-        {/* Primary path : Sign in with LinkedIn. Most operators have a
-            LinkedIn already + want their existing connection to be the
-            identity for follow-up communications later. */}
+        {/* Primary path : Sign up now. Drops the operator on the shared in-app
+            sign-up screen (email / Google / Microsoft). LinkedIn connects later
+            as a data source, once they have an account. */}
         <button type="button"
                 className="triage-li-cta"
-                onClick={handleLinkedInSignin}
+                onClick={handleSignupCta}
                 disabled={liBusy}>
           {liBusy ? (
-            <><Loader2 className="spin" size={16} /> Redirecting to LinkedIn…</>
+            <><Loader2 className="spin" size={16} /> Redirecting…</>
           ) : (
-            <><LinkedInMark size={16} /> <span>Sign in with LinkedIn</span></>
+            <span>Sign up now</span>
           )}
         </button>
 

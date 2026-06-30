@@ -2312,6 +2312,57 @@ function UserMenu({ user, onLogout }) {
 //   - UserMenu component below          : header pill, just not mounted
 //   - get_provider_for_user(user)       : per-user Unipile factory
 // ──────────────────────────────────────────────────────────────
+// True when the URL asks for the sign-up screen (?signup). Shared target for
+// every "Sign up now" CTA + the landing "Try now" button.
+function wantsSignup() {
+  try { return new URLSearchParams(window.location.search).has("signup"); }
+  catch { return false; }
+}
+
+// The ?signup screen: AuthOptions in "Create account" mode, centered. On
+// success we drop the param and reload into the signed-in app.
+function SignupScreen() {
+  const onSignedIn = () => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      params.delete("signup");
+      const qs = params.toString();
+      window.location.href = window.location.pathname + (qs ? `?${qs}` : "");
+    } catch {
+      window.location.href = "/";
+    }
+  };
+  return (
+    <div className="root">
+      <style>{CSS}</style>
+      <div className="frame">
+        <header className="topbar">
+          <div className="brand">
+            <img className="brand-logo" src="/surplus-logo.png" alt="Surplus logo" />
+            <div className="brand-text">
+              <span className="brand-name">surplus</span>
+            </div>
+          </div>
+        </header>
+        <main className="canvas">
+          <div className="stage" style={{ maxWidth: 420, margin: "48px auto" }}>
+            <header className="stage-head">
+              <h1>Create your account</h1>
+              <p className="lede">
+                Sign up now to turn surplus into your own book - your contacts,
+                your voice, your follow-ups. You can connect LinkedIn later.
+              </p>
+            </header>
+            <div style={{ marginTop: 14 }}>
+              <AuthOptions defaultMode="signup" onSignedIn={onSignedIn} />
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   // Persist the mode in localStorage so a refresh / new tab returns the
@@ -2468,6 +2519,15 @@ export default function App() {
 
   if (user === null || (user && !hydrated)) {
     return <div style={{ minHeight: "100vh", background: "#f6f7f9" }} />;
+  }
+
+  // ?signup → force the in-app sign-up screen (AuthOptions, "Create account")
+  // regardless of state. This is the shared target every "Sign up now" CTA and
+  // the landing "Try now" button point at (the same ?signup the event-host
+  // BookApp honors). A real signed-in (non-demo) user is already past sign-up,
+  // so we let them fall through to their app rather than re-prompting.
+  if (wantsSignup() && (!user || user.is_demo)) {
+    return <SignupScreen />;
   }
 
   // ── Pay-first signup, second step : connect LinkedIn ────────────────
@@ -3230,14 +3290,16 @@ function SignInModal({ open, onClose, onSignIn, onSecondary, title, sub, ctaLabe
         onClick={(e) => e.stopPropagation()}
       >
         <p id="signin-modal-title" className="signin-modal-title">
-          {title || "Please sign in with LinkedIn"}
+          {title || "Sign up for surplus"}
         </p>
         <p className="signin-modal-sub">
-          {sub || "You need to connect LinkedIn before surplus can create an event and run outreach."}
+          {sub || "Create your account to start using surplus."}
         </p>
         <button type="button" className="signin-modal-cta" onClick={handleSignIn} disabled={anyBusy}>
-          {primaryIcon === "stripe" ? <CreditCard size={18} /> : <LinkedInMark size={18} />}
-          <span>{busy ? "Redirecting…" : (ctaLabel || "Sign in with LinkedIn")}</span>
+          {primaryIcon === "stripe" ? <CreditCard size={18} />
+            : primaryIcon === "signup" ? <ArrowRight size={18} />
+            : <LinkedInMark size={18} />}
+          <span>{busy ? "Redirecting…" : (ctaLabel || "Sign up now")}</span>
         </button>
         {onSecondary && (
           <button type="button" className="signin-modal-cta" onClick={handleSecondary} disabled={anyBusy}>
@@ -3426,11 +3488,11 @@ function SurplusApp({ user, onLogout, onSignIn, onSwitchToTriage }) {
         <SignInModal
           open={signInModalOpen}
           onClose={() => setSignInModalOpen(false)}
-          onSignIn={onSignIn}
-          title="Sign in to surplus"
-          sub="Continue with LinkedIn, Google, or Microsoft, or use any email + password. Returning users : your events, paid status, and connected accounts are all preserved."
-          ctaLabel="Sign in with LinkedIn"
-          primaryIcon="linkedin"
+          onSignIn={() => { window.location.href = "/?signup"; }}
+          title="Sign up for surplus"
+          sub="Create your account with Google, Microsoft, or any email + password. Returning users : sign in just below - your events, paid status, and connected accounts are all preserved."
+          ctaLabel="Sign up now"
+          primaryIcon="signup"
           emailAuth
         />
         <main className="canvas" key={stage}>

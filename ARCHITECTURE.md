@@ -20,17 +20,28 @@ Two product surfaces share the codebase:
 Host header picks the shell: `event.*` → `inperson.html` → `main-inperson.jsx` →
 **BookApp**; apex → `index.html` → `main.jsx` → **App**.
 
-- **Marketing landing** (`join.surpluslayer.com`) - the public "Try now with
-  LinkedIn" page. Ported in-app from the old standalone `roi-engine` FastAPI
+- **Marketing landing** (`join.surpluslayer.com`) - the public "Try now"
+  page. Ported in-app from the old standalone `roi-engine` FastAPI
   service (which 502'd whenever its Postgres blipped at startup). It is a
   self-contained static `backend/landing/join.html` plus assets served at
   `/landing-assets/*`, with **zero DB dependency** (pure file serve). Host
   routing: any `join.*` host serves the landing instead of the React SPA;
   `event.*` and `www`/apex are unchanged. A host-independent preview lives at
-  `/landing` (alias `/join`) for staging verification. The hero CTA points at
-  the existing relative `/api/auth/linkedin/start-redirect`; the secondary
-  email-capture posts to a DB-free `/api/join/demo-request` (validate + log,
-  no persistence). See `main.py` `_is_landing_host` / `_landing_response`.
+  `/landing` (alias `/join`) for staging verification. The hero "Try now" CTA
+  points at `https://event.surpluslayer.com/?signup` (the shared sign-up
+  target, below); the secondary email-capture posts to a DB-free
+  `/api/join/demo-request` (validate + log, no persistence). See `main.py`
+  `_is_landing_host` / `_landing_response`.
+
+- **Sign-up entry (`?signup`)** - the app leads with sign-up, not LinkedIn.
+  Every "Sign up now" CTA (BookApp demo banner / draft / tour, CaptureShared
+  send-gate, TriageApp, App.jsx sign-in modal) and the landing "Try now" button
+  navigate to `/?signup` on their host. Both shells read this param at the app
+  root and render `<AuthOptions defaultMode="signup">` ("Create account" with
+  email / Google / Microsoft) over any state - signed-out OR demo - so a demo
+  visitor can convert without a LinkedIn OAuth bounce. A real signed-in
+  (non-demo) user who hits `?signup` falls through to their app. LinkedIn is no
+  longer a sign-in door; it stays a CONNECT data-source option after sign-up.
 
 ## 1b. The two sides (read this to know which half a file belongs to)
 

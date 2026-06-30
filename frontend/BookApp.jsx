@@ -28,6 +28,7 @@ import {
   loadActiveEvent, saveActiveEvent, loadRecentLabels, pushRecentLabel,
 } from "./CaptureShared.jsx";
 import { StageChip } from "./components/ContactsPage.jsx";
+import AuthOptions from "./components/AuthOptions.jsx";
 
 // Demo → real conversion: send the visitor into the connect-first LinkedIn
 // flow (same entry the send-gate uses). The callback returns them to the real
@@ -41,12 +42,27 @@ function track(event, props) {
   try { window.__surplusTrack && window.__surplusTrack(event, props); } catch { /* no-op */ }
 }
 
-function signInWithLinkedIn(source) {
+// Demo -> real conversion now lands on the in-app SIGN-UP screen (AuthOptions,
+// "Create account" with email / Google / Microsoft), NOT LinkedIn OAuth. The
+// `?signup` param on the event host forces that screen to render over the demo
+// (see SIGNUP_PARAM handling in BookApp). LinkedIn stays a CONNECT option once
+// the user is signed in; it is no longer the sign-in door.
+function goToSignup(source) {
   // `source` labels which conversion CTA was tapped (banner / tour_final /
   // tour_skip / draft_send / ...). When called as a bare onClick handler the
   // arg is a DOM event, so only strings count.
   track("demo_signin_click", { source: typeof source === "string" ? source : "unknown" });
-  window.location.href = "/api/auth/linkedin/start-redirect";
+  window.location.href = "/?signup";
+}
+
+// True when the URL asks for the sign-up screen (?signup). This is the single
+// shared target every "Sign up now" CTA + the landing "Try now" button point
+// at. Read once at module scope so the value is stable for the initial render.
+function wantsSignup() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.has("signup");
+  } catch { return false; }
 }
 
 // Health word + colour token by relationship status.
@@ -133,8 +149,17 @@ export default function BookApp() {
     }
   }, [user && typeof user === "object" ? user.is_demo : false]);
 
-  // Signed out → the same LinkedIn sign-in bounce as the event surface (this
-  // is the shell event hosts serve, so it must gate, not error).
+  // ?signup → force the in-app sign-up screen (AuthOptions, "Create account")
+  // regardless of demo state. This is the shared target every "Sign up now"
+  // CTA and the landing "Try now" button point at. A real signed-in (non-demo)
+  // user who hits ?signup is already past sign-up, so we let them fall through
+  // to their app rather than showing a redundant create-account screen.
+  if (wantsSignup() && (user === undefined || (user && typeof user === "object" && user.is_demo))) {
+    return <BookSignupScreen />;
+  }
+
+  // Signed out → the same email/Google/Microsoft sign-in bounce as the event
+  // surface (this is the shell event hosts serve, so it must gate, not error).
   if (user === undefined) return <SignInBounce />;
 
   const openDetail = (row) => setRoute({ name: "detail", row });
@@ -176,7 +201,7 @@ export default function BookApp() {
         {user?.is_demo ? (
           <div className="bk-demobar">
             <span><b>Demo</b> · sample data. Sign in to use it for real, or skip the tour.</span>
-            <button className="bk-demobar-cta" data-onb="signin" onClick={() => signInWithLinkedIn("banner")}>Sign in</button>
+            <button className="bk-demobar-cta" data-onb="signin" onClick={() => goToSignup("banner")}>Sign up now</button>
           </div>
         ) : !(user?.unipile_account_id && user?.linkedin_status === "active") ? (
           // Real user without LinkedIn connected: nudge them into the connectors
@@ -209,6 +234,39 @@ export default function BookApp() {
                                isDemo={!!user?.is_demo} />}
 
       {onbOn && <BookOnboarding step={onbStep} onGo={onbGo} onClose={onbClose} />}
+    </div>
+  );
+}
+
+// ── Sign-up screen (the ?signup target) ──────────────────────────────────────
+// Renders AuthOptions in "Create account" mode over the event host. Reached by
+// every "Sign up now" CTA and the landing "Try now" button (both navigate to
+// /?signup). On success we drop the param and reload into the real signed-in
+// Book, so the new account sees their own book, not the demo.
+function BookSignupScreen() {
+  const onSignedIn = () => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      params.delete("signup");
+      const qs = params.toString();
+      window.location.href = window.location.pathname + (qs ? `?${qs}` : "");
+    } catch {
+      window.location.href = "/";
+    }
+  };
+  return (
+    <div className="ip-root">
+      <style>{IP_CSS}</style>
+      <div className="ip-centered">
+        <div className="ip-empty">
+          <Sparkles size={36} />
+          <p className="ip-empty-title">Create your surplus account</p>
+          <p>Sign up now to turn this into your real book, with your own contacts, your voice, and your follow-ups.</p>
+          <div style={{ width: "100%", maxWidth: 340, marginTop: 18, textAlign: "left" }}>
+            <AuthOptions defaultMode="signup" onSignedIn={onSignedIn} />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -536,7 +594,7 @@ function DraftPanel({ detail, isDemo = false }) {
   const [sendAt, setSendAt] = useState("");
 
   // Real Send/Schedule need a numeric contact id; demo-book slugs get Copy.
-  // Demo users can never really send -> always show the "Sign in to send"
+  // Demo users can never really send -> always show the "Sign up now"
   // conversion CTA at the moment of intent (no 402-then-redirect detour).
   const canSend = !isDemo && !!detail.contact_id && /^\d+$/.test(String(detail.contact_id));
 
@@ -607,9 +665,9 @@ function DraftPanel({ detail, isDemo = false }) {
                 {working === "send" ? "Sending…" : "Send"}
               </button>
             ) : isDemo ? (
-              <button className="bk-btn bk-btn--primary" onClick={() => signInWithLinkedIn("draft_send")}>
+              <button className="bk-btn bk-btn--primary" onClick={() => goToSignup("draft_send")}>
                 <Send size={13} style={{ marginRight: 5, verticalAlign: -1 }} />
-                Sign in to send
+                Sign up now
               </button>
             ) : (
               <button className="bk-btn bk-btn--primary" onClick={copy}>
@@ -1028,7 +1086,7 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
 
   // Send / Schedule are keyed on a real numeric contact id; demo-book slugs
   // can't send, so we only offer Copy for those. Demo users never really send
-  // -> always the "Sign in to send" conversion CTA (no 402-then-redirect).
+  // -> always the "Sign up now" conversion CTA (no 402-then-redirect).
   const canSend = !isDemo && !!draft.contact_id && /^\d+$/.test(String(draft.contact_id));
 
   const generate = useCallback(() => {
@@ -1079,8 +1137,9 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
     } catch (e) {
       const code = e?.body?.detail?.code || e?.body?.code;
       if (e?.status === 402 || code === "linkedin_send_locked" || code === "payment_required") {
-        // Sending is gated for demo / not-signed-in users : take them to sign in.
-        window.location.href = "/api/auth/linkedin/start-redirect"; return;
+        // Sending is gated for demo / not-signed-in users : take them to the
+        // sign-up screen (they connect LinkedIn later, after they have an account).
+        window.location.href = "/?signup"; return;
       }
       setErr(e.message || "Couldn't send");
     }
@@ -1162,9 +1221,9 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
                   {working === "send" ? "Sending…" : "Send now"}
                 </button>
               ) : isDemo ? (
-                <button className="bk-btn bk-btn--primary bk-btn--block" onClick={() => signInWithLinkedIn("draft_send")}>
+                <button className="bk-btn bk-btn--primary bk-btn--block" onClick={() => goToSignup("draft_send")}>
                   <Send size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
-                  Sign in to send
+                  Sign up now
                 </button>
               ) : (
                 <button className="bk-btn bk-btn--block" onClick={copy}>
@@ -1358,9 +1417,9 @@ const BK_ONB_STEPS = [
   {
     key: "signin", tab: "today", anchor: "signin", place: "bottom",
     title: "Make it yours",
-    body: "Sign in with your LinkedIn up top to turn this into your real book, "
+    body: "Sign up now to turn this into your real book, "
         + "with your own contacts, your voice, and your follow-ups.",
-    final: true, cta: "Sign in with LinkedIn", convert: true,
+    final: true, cta: "Sign up now", convert: true,
   },
 ];
 
@@ -1418,7 +1477,7 @@ function BookOnboarding({ step, onGo, onClose }) {
   }, [selector]);
 
   const next = () => {
-    if (def.convert) { signInWithLinkedIn("tour_final"); return; }  // final step = convert
+    if (def.convert) { goToSignup("tour_final"); return; }  // final step = convert
     if (def.final) onClose(); else onGo(idx + 1);
   };
   const back = () => { if (idx > 0) onGo(idx - 1); };
@@ -1443,11 +1502,11 @@ function BookOnboarding({ step, onGo, onClose }) {
         <div className="bk-onb-body">{def.body}</div>
         <div className="bk-onb-actions">
           {/* Skipping the tour is a conversion moment, not a dead end: drop the
-              visitor straight into LinkedIn sign-in to use it for real. The
+              visitor straight into the sign-up screen to use it for real. The
               corner ✕ remains a plain dismiss for anyone who just wants to keep
               poking around the demo. */}
-          <button className="bk-onb-skip" onClick={() => signInWithLinkedIn("tour_skip")}>
-            Skip tour &amp; sign in
+          <button className="bk-onb-skip" onClick={() => goToSignup("tour_skip")}>
+            Skip tour &amp; sign up
           </button>
           <div className="bk-onb-nav">
             {idx > 0 && <button className="bk-onb-back" onClick={back}>Back</button>}

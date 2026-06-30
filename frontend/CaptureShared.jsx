@@ -775,9 +775,9 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
     } catch (e) {
       const code = e?.body?.detail?.code || e?.body?.code;
       if (e?.status === 402 || code === "linkedin_send_locked" || code === "payment_required") {
-        // Sending is gated for demo / not-signed-in visitors : take them to
-        // sign in for real (LinkedIn hosted auth) instead of a red error.
-        window.location.href = "/api/auth/linkedin/start-redirect";
+        // Sending is gated for demo / not-signed-in visitors : take them to the
+        // sign-up screen (create an account first) instead of a red error.
+        window.location.href = "/?signup";
         return;
       }
       setErr(e.message || "Send failed"); setBusy("");
@@ -905,7 +905,7 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
         <button data-onb="send" className="ip-btn primary lg"
                 onClick={() => (canSend ? send(false) : setSigninPrompt(true))}
                 disabled={!!busy}
-                title={canSend ? "" : "Sign in to send"}>
+                title={canSend ? "" : "Sign up to send"}>
           {busy === "send" ? <Loader2 className="spin" size={18} />
             : <><Send size={18} /> Connect on LinkedIn</>}
         </button>
@@ -918,7 +918,7 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
                   onClick={() => (canSend ? send(true) : setSigninPrompt(true))}
                   disabled={!!busy}
                   title={canSend ? "Send a bare invite; the message goes out once accepted"
-                                : "Sign in to send"}>
+                                : "Sign up to send"}>
             {busy === "nonote" ? <Loader2 className="spin" size={15} />
               : "Connect, no note"}
           </button>
@@ -938,21 +938,21 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
               maxWidth: 360, width: "100%", textAlign: "center",
               boxShadow: "0 16px 48px rgba(0,0,0,.28)" }}>
             <p style={{ font: "700 18px Inter, system-ui, sans-serif", margin: "0 0 6px", color: "#0a0c10" }}>
-              Connect LinkedIn to send
+              Sign up to send
             </p>
             <p style={{ color: "#5b6472", font: "400 14px/1.45 Inter, system-ui, sans-serif", margin: "0 0 18px" }}>
-              Your draft for {p.name || "this contact"} is saved. Connect your LinkedIn
-              account to send it for real.
+              Your draft for {p.name || "this contact"} is saved. Create your account
+              to send it for real.
             </p>
             <button onClick={() => {
                 try { window.__surplusTrack && window.__surplusTrack("demo_signin_click", { source: "capture_connect" }); } catch { /* no-op */ }
-                window.location.href = "/api/auth/linkedin/start-redirect";
+                window.location.href = "/?signup";
               }}
               style={{ display: "inline-flex", alignItems: "center", justifyContent: "center",
                 gap: 8, width: "100%", border: 0, borderRadius: 999, padding: "12px 18px",
                 background: "#0a66c2", color: "#fff", font: "600 15px Inter, system-ui, sans-serif",
                 cursor: "pointer" }}>
-              <img src="/linkedin-icon.png" width={18} height={18} alt="" /> Sign in with LinkedIn
+              Sign up now
             </button>
             <button onClick={() => setSigninPrompt(false)}
               style={{ marginTop: 12, border: 0, background: "none", color: "#8a93a0",
