@@ -149,17 +149,30 @@ export default function BookApp() {
     }
   }, [user && typeof user === "object" ? user.is_demo : false]);
 
+  // Auth still resolving (user === null): brief neutral loading, NOT the book
+  // shell and NOT the sign-in screen, so a returning user with a valid session
+  // lands straight in the book once /me resolves (no login flash).
+  if (user === null) {
+    return (
+      <div className="bk-root">
+        <style>{BOOK_CSS}</style>
+        <div className="bk-frame">
+          <div className="bk-loading" style={{ minHeight: "60vh" }}>
+            <Loader2 className="bk-spin" size={18} /> Loading…
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // ?signup → force the in-app sign-up screen (AuthOptions, "Create account")
-  // regardless of demo state. This is the shared target every "Sign up now"
-  // CTA and the landing "Try now" button point at. A real signed-in (non-demo)
-  // user who hits ?signup is already past sign-up, so we let them fall through
-  // to their app rather than showing a redundant create-account screen.
+  // regardless of demo state. Shared target for every "Sign up now" CTA and the
+  // landing "Try now". A real signed-in (non-demo) user falls through to their app.
   if (wantsSignup() && (user === undefined || (user && typeof user === "object" && user.is_demo))) {
     return <BookSignupScreen />;
   }
 
-  // Signed out → the same email/Google/Microsoft sign-in bounce as the event
-  // surface (this is the shell event hosts serve, so it must gate, not error).
+  // Signed out (real 401, user === undefined) → the sign-in bounce.
   if (user === undefined) return <SignInBounce />;
 
   const openDetail = (row) => setRoute({ name: "detail", row });
