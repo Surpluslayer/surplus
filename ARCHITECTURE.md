@@ -78,8 +78,9 @@ split is visible at the entrypoint.
   build frontend with Node, serve via uvicorn). Env: `production` (branch `main`,
   `event.surpluslayer.com`) + `staging` (branch `demo`). 2 replicas. Cloudflare in front.
 - **Modal** (`modal_jobs.py`, app `surplus-jobs`) runs off-box batch + scheduled
-  jobs when `USE_MODAL=1` (triage scoring, prospecting, CRM refresh, the hourly
-  updates sweep). Secrets: `surplus-jobs` (DB/Anthropic/etc) + `surplus-brightdata`.
+  jobs when `USE_MODAL=1` (triage scoring, prospecting, CRM refresh, the
+  on-connect WhatsApp first sync, the hourly updates sweep). Secrets:
+  `surplus-jobs` (DB/Anthropic/etc) + `surplus-brightdata`.
 - **Postgres** (Railway) in prod; SQLite (`backend/data/surplus.db`) for local dev.
   Schema migrations are inline idempotent `_migrate_*()` functions in `db.py`
   (no Alembic).
@@ -112,7 +113,7 @@ scheduler thread.
 - `demo_seed.py` — demo workspace bootstrap. `seed.py` — dev-only CLI (`python -m backend.seed`), not imported by the app.
 
 ### Routes (`backend/routes/`) — all mounted in `main.py`
-- `auth.py` — LinkedIn/email sign-in (Unipile), session, `/api/me`, onboarding, **auto-import on connect** (background worker seeds the Book from genuine DM conversations AND auto-syncs the host's voice from their own sent messages via `live_enrich.sync_host_voice_on_connect` — same ban-safe own-account read, idempotent).
+- `auth.py` — LinkedIn/email sign-in (Unipile), session, `/api/me`, onboarding, **auto-import on connect** (background worker seeds the Book from genuine DM conversations AND auto-syncs the host's voice from their own sent messages via `live_enrich.sync_host_voice_on_connect` — same ban-safe own-account read, idempotent). The WhatsApp connect webhook dispatches its first conversation sync DURABLY off the request lifecycle via `jobs.dispatch_whatsapp_first_sync` (Modal `run_whatsapp_first_sync` when `USE_MODAL`, else a daemon thread that owns its own DB session): minutes of Unipile I/O can't run in the webhook thread or it gets killed mid-sync. `whatsapp_sync` fetches each chat's attendees+messages concurrently (bounded `ThreadPoolExecutor`, read-only HTTP) then ingests single-threaded; idempotent by message id.
 - `book.py` — the BookApp surface: `/api/book/today` feed, `/draft`(+stream), `/ask`(+stream), relationship detail, `run-updates` sweep, `_updates-status` diagnostics, `_draft-preview` (admin: composes drafts across a user's top contacts + the "natural move" reasoning, to inspect messaging quality — read-only, bounded).
 - `relationships.py` — contact spine read API, star/VIP, email threads, **import-conversations**, CRM refresh, updates feed.
 - `demo.py` — token-gated demo entry + public walkthrough.

@@ -278,6 +278,77 @@ def execute_crm_refresh(user_id: int, *, limit: int | None = None) -> dict:
         db.close()
 
 
+# ─── WhatsApp first-sync (durable on-connect import) ───────────────────────
+# When a user connects WhatsApp, the webhook kicks a FIRST sync that pages the
+# account's chats and ingests each conversation. That sync is minutes of
+# Unipile I/O, so it must NOT live in the request lifecycle (a throwaway thread
+# inside the webhook gets killed when the worker recycles, leaving the user with
+# 0 conversations). This is the durable worker -- own DB session, resolves its
+# own Unipile config, best-effort -- spawned to Modal (run_whatsapp_first_sync)
+# with a local-thread fallback, exactly like execute_crm_refresh / run_crm_refresh.
+#
+# Idempotent: ingest_messages skips by Unipile message id, so a retry/re-run
+# (Modal retries, or the fallback firing after a Modal spawn that also ran) only
+# re-ingests genuinely-new messages. Read-only against WhatsApp.
+
+def _unipile_env() -> tuple[str, str]:
+    """(dsn, api_key) from env, normalized like routes.auth helpers. Empty
+    strings when unset -- the sync then records 'unipile not configured'."""
+    dsn = (os.environ.get("UNIPILE_DSN", "") or "").strip().rstrip("/")
+    if dsn and not dsn.startswith(("http://", "https://")):
+        dsn = f"https://{dsn}"
+    api_key = (os.environ.get("UNIPILE_API_KEY", "") or "").strip()
+    return dsn, api_key
+
+
+def execute_whatsapp_first_sync(user_id: int) -> dict:
+    """Run a user's first WhatsApp conversation sync on its own DB session.
+
+    Returns the sync stats dict. Best-effort and never raises: the sync itself
+    swallows account/HTTP errors into stats['error']. Used by the durable Modal
+    path (run_whatsapp_first_sync) and the local BackgroundTask/thread fallback.
+    """
+    from .db import SessionLocal
+    from . import models
+    from .agents.relationship.whatsapp_sync import sync_whatsapp_contacts
+
+    dsn, api_key = _unipile_env()
+    db = SessionLocal()
+    try:
+        user = db.get(models.User, user_id)
+        if user is None:
+            print(f"  [jobs] whatsapp_first_sync user {user_id} NOT FOUND")
+            return {"user_id": user_id, "error": "user not found"}
+        stats = sync_whatsapp_contacts(db, user, dsn=dsn, api_key=api_key)
+        print(f"  [jobs] whatsapp_first_sync user={user_id}: {stats}")
+        return {"user_id": user_id, **stats}
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [jobs] whatsapp_first_sync user={user_id} FAILED: "
+              f"{type(exc).__name__}: {exc}")
+        return {"user_id": user_id, "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        db.close()
+
+
+def dispatch_whatsapp_first_sync(user_id: int) -> str:
+    """Dispatch a user's first WhatsApp sync DURABLY, off the request lifecycle.
+
+    Modal when USE_MODAL (and reachable) -- the job then survives the webhook
+    returning, autoscales, and gets one retry. Otherwise a daemon thread on this
+    process (same shape as the old in-request thread, but it owns its DB session
+    via execute_whatsapp_first_sync). Returns 'modal' or 'local'. Idempotent, so
+    a belt-and-suspenders double-run is safe. Never raises into the webhook."""
+    if use_modal() and _spawn_modal("run_whatsapp_first_sync", user_id):
+        return "modal"
+
+    import threading
+    threading.Thread(
+        target=execute_whatsapp_first_sync, args=(user_id,),
+        name=f"whatsapp-first-sync-{user_id}", daemon=True,
+    ).start()
+    return "local"
+
+
 def dispatch_job(background_tasks, db, job, **kwargs) -> str:
     """Dispatch a Job's work. Modal when USE_MODAL (and reachable), else a local
     BackgroundTask. Stamps job.runner and returns 'modal' or 'local'."""

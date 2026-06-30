@@ -1239,29 +1239,19 @@ async def whatsapp_webhook(payload: dict,
     if orphan_unipile_account_id and dsn and api_key:
         await _delete_unipile_account(orphan_unipile_account_id, dsn, api_key)
 
-    # The magic moment: connect -> the book fills itself. Kick the first
-    # WhatsApp sync in the background (own thread + own DB session -- this
-    # webhook must ack fast or Unipile retries). Best-effort by design.
+    # The magic moment: connect -> the book fills itself. The first WhatsApp
+    # sync is MINUTES of Unipile I/O (page chats, fetch each conversation), so
+    # it must NOT run inside this webhook's request lifecycle -- an in-request
+    # thread gets killed when the worker recycles and the user is left with 0
+    # conversations. Dispatch it DURABLY (Modal when USE_MODAL is on, else a
+    # daemon thread that owns its own DB session) so it survives the ack and can
+    # take its time. Idempotent (skip-by-message-id) so a retry is safe.
     user_id = user.id
     if dsn and api_key:
-        import threading
-
-        def _first_sync():
-            from ..db import SessionLocal
-            from ..agents.relationship.whatsapp_sync import sync_whatsapp_contacts
-            sdb = SessionLocal()
-            try:
-                u = sdb.query(User).filter(User.id == user_id).first()
-                if u is not None:
-                    stats = sync_whatsapp_contacts(sdb, u, dsn=dsn, api_key=api_key)
-                    print(f"  [auth.whatsapp] first sync user.id={user_id}: {stats}")
-            except Exception as exc:  # noqa: BLE001
-                print(f"  [auth.whatsapp] first sync failed: "
-                      f"{type(exc).__name__}: {exc}")
-            finally:
-                sdb.close()
-
-        threading.Thread(target=_first_sync, daemon=True).start()
+        from ..jobs import dispatch_whatsapp_first_sync
+        runner = dispatch_whatsapp_first_sync(user_id)
+        print(f"  [auth.whatsapp] dispatched first sync user.id={user_id} "
+              f"runner={runner}")
 
     return JSONResponse({"ok": True, "user_id": user.id})
 

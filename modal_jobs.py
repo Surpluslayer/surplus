@@ -361,6 +361,33 @@ def crm_refresh_sweep() -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
+# 5b) WHATSAPP FIRST SYNC : the on-connect conversation import.
+#    When a user connects WhatsApp, the webhook kicks a first sync that pages
+#    the account's chats and ingests each conversation. That's minutes of
+#    Unipile I/O, so it can't live in the request lifecycle (a throwaway thread
+#    inside the webhook dies when the worker recycles -> user gets 0 convos).
+#    The web app spawns THIS off the webhook (USE_MODAL on); it survives the ack,
+#    autoscales, and retries once. The work lives in
+#    backend/jobs.py::execute_whatsapp_first_sync (shared with the local-thread
+#    fallback) -- thin shell here. Idempotent (ingest skips by message id).
+# --------------------------------------------------------------------------- #
+@app.function(
+    image=image,
+    secrets=[secret],
+    timeout=_CRM_TIMEOUT,
+    retries=1,  # WhatsApp reads are non-deterministic; one retry, not two
+)
+def run_whatsapp_first_sync(user_id: int) -> dict:
+    """Run a user's first WhatsApp conversation sync. Returns the stats dict.
+    Read-only against WhatsApp; best-effort per chat."""
+    from backend.db import init_db
+    from backend.jobs import execute_whatsapp_first_sync
+
+    init_db()
+    return execute_whatsapp_first_sync(user_id)
+
+
+# --------------------------------------------------------------------------- #
 # 6) UPDATES SWEEP — the tiered "what's new" sweep (job changes + milestone
 #    posts) for the Book contact spine. Primary scheduler. Bright Data scrapes
 #    on its own infra and delivers to the Railway webhook; this function just

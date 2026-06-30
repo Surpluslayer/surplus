@@ -32,7 +32,7 @@ Unipile shape notes (kept defensive -- shapes vary across their endpoints):
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
 # How many chats to scan per sync (most-recent-first) and how many message
@@ -41,6 +41,13 @@ _MAX_CHATS = 50
 _CHAT_PAGE_SIZE = 20
 _MSG_PAGE_SIZE = 100
 _MAX_MSG_PAGES = 3
+
+# How many chats' fetches run concurrently. Each chat's fetch is independent,
+# read-only Unipile HTTP I/O (attendees + up to _MAX_MSG_PAGES message pages),
+# so a small bounded pool collapses the ~3.5 min sequential wall to well under a
+# minute without hammering Unipile. The DB ingest stays single-threaded on the
+# main thread AFTER the fetches return (see sync_whatsapp_contacts).
+_FETCH_WORKERS = 8
 
 _CHANNEL = "whatsapp"
 
@@ -131,6 +138,62 @@ def _default_chat_messages(dsn: str, api_key: str, account_id: str,
     return r.json() or {}
 
 
+def _fetch_chat_batch(
+    chat_id: str,
+    *,
+    chat_attendees: Callable[[str], dict],
+    chat_messages: Callable[[str, Optional[str]], dict],
+    max_msg_pages: int,
+) -> list[_Msg]:
+    """Fetch ONE chat's attendees + messages and build its _Msg batch.
+
+    Pure read-only Unipile network I/O -- NO database access. Safe to run in a
+    worker thread: it never touches the shared SQLAlchemy session (the caller
+    ingests the returned batch single-threaded on the main thread). Returns an
+    empty list for group chats, attendee-less/phone-less chats, or empty chats.
+
+    Message pages stay sequential WITHIN a chat (each page's cursor chains off
+    the previous response); the concurrency is ACROSS chats, where the win is.
+    """
+    # Resolve the counterpart phone (its 'ph:' identity key). 1:1 WhatsApp
+    # chats have one non-self attendee. Group chats (many non-self attendees)
+    # are skipped -- not a 1:1 relationship.
+    att = chat_attendees(chat_id)
+    others = [a for a in (att.get("items") or att.get("attendees") or [])
+              if not a.get("is_self")]
+    if len(others) != 1:
+        return []
+    other = others[0]
+    phone = _phone_from_attendee(
+        other.get("provider_id") or other.get("phone")
+        or other.get("id") or "")
+    if not phone:
+        return []
+    cp_name = (other.get("name") or other.get("display_name") or "").strip()
+
+    # Page this chat's messages into a batch (built off-thread; ingested later).
+    batch: list[_Msg] = []
+    mcursor = None
+    for _ in range(max_msg_pages):
+        mpage = chat_messages(chat_id, mcursor)
+        items = mpage.get("items") or mpage.get("messages") or []
+        for it in items:
+            text = (it.get("text") or it.get("body") or "").strip()
+            ext = str(it.get("id") or it.get("message_id") or "")
+            if not text or not ext:
+                continue
+            is_sender = bool(it.get("is_sender") or it.get("from_me"))
+            batch.append(_Msg(
+                handle=phone, name=cp_name,
+                direction="out" if is_sender else "in",
+                text=text, ts=_msg_ts(it), channel=_CHANNEL,
+                external_id=ext))
+        mcursor = mpage.get("cursor")
+        if not mcursor or not items:
+            break
+    return batch
+
+
 def sync_whatsapp_contacts(
     db,
     user,
@@ -142,6 +205,7 @@ def sync_whatsapp_contacts(
     chat_messages: Optional[Callable[[str, Optional[str]], dict]] = None,
     max_chats: int = _MAX_CHATS,
     max_msg_pages: int = _MAX_MSG_PAGES,
+    fetch_workers: int = _FETCH_WORKERS,
 ) -> dict:
     """Sync the user's WhatsApp conversations into their relationship timeline.
     Returns aggregate stats; never raises (the connect flow auto-kicks this
@@ -174,68 +238,56 @@ def sync_whatsapp_contacts(
         dsn, api_key, account_id, cid, cursor))
 
     try:
-        scanned = 0
+        # 1) PAGE chat ids (cheap, sequential -- cursor chains; few pages).
+        chat_ids: list[str] = []
         cursor = None
-        while scanned < max_chats:
+        while len(chat_ids) < max_chats:
             page = _list(cursor)
             chats = page.get("items") or page.get("chats") or []
             if not chats:
                 break
             for ch in chats:
-                if scanned >= max_chats:
+                if len(chat_ids) >= max_chats:
                     break
-                scanned += 1
                 chat_id = str(ch.get("id") or ch.get("chat_id") or "")
-                if not chat_id:
-                    continue
-
-                # Resolve the counterpart phone (its 'ph:' identity key). 1:1
-                # WhatsApp chats have one non-self attendee. Group chats (many
-                # non-self attendees) are skipped -- not a 1:1 relationship.
-                att = _atts(chat_id)
-                others = [a for a in (att.get("items") or att.get("attendees") or [])
-                          if not a.get("is_self")]
-                if len(others) != 1:
-                    continue
-                other = others[0]
-                phone = _phone_from_attendee(
-                    other.get("provider_id") or other.get("phone")
-                    or other.get("id") or "")
-                if not phone:
-                    continue
-                cp_name = (other.get("name") or other.get("display_name")
-                           or "").strip()
-
-                # Page this chat's messages and feed them to the shared sink.
-                batch: list[_Msg] = []
-                mcursor = None
-                for _ in range(max_msg_pages):
-                    mpage = _msgs(chat_id, mcursor)
-                    items = mpage.get("items") or mpage.get("messages") or []
-                    for it in items:
-                        text = (it.get("text") or it.get("body") or "").strip()
-                        ext = str(it.get("id") or it.get("message_id") or "")
-                        if not text or not ext:
-                            continue
-                        is_sender = bool(it.get("is_sender") or it.get("from_me"))
-                        batch.append(_Msg(
-                            handle=phone, name=cp_name,
-                            direction="out" if is_sender else "in",
-                            text=text, ts=_msg_ts(it), channel=_CHANNEL,
-                            external_id=ext))
-                    mcursor = mpage.get("cursor")
-                    if not mcursor or not items:
-                        break
-
-                if batch:
-                    s = ingest_messages(db, user, batch)
-                    stats["chats"] += 1
-                    stats["appended"] += s.get("appended", 0)
-                    stats["contacts_created"] += s.get("contacts_created", 0)
-                    stats["skipped"] += s.get("skipped", 0)
+                if chat_id:
+                    chat_ids.append(chat_id)
             cursor = page.get("cursor")
             if not cursor:
                 break
+
+        # 2) FETCH each chat's attendees + messages CONCURRENTLY (read-only
+        # Unipile HTTP, no DB). A bounded pool keeps the load civil. Worker
+        # threads never touch `db` -- they only build _Msg batches.
+        workers = max(1, min(fetch_workers, len(chat_ids))) if chat_ids else 1
+        results: list[tuple[str, list[_Msg]]] = []
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {
+                pool.submit(
+                    _fetch_chat_batch, cid,
+                    chat_attendees=_atts, chat_messages=_msgs,
+                    max_msg_pages=max_msg_pages,
+                ): cid
+                for cid in chat_ids
+            }
+            for fut in futs:
+                cid = futs[fut]
+                try:
+                    results.append((cid, fut.result()))
+                except Exception as exc:  # noqa: BLE001 : one bad chat != whole sync
+                    stats["error"] = f"{type(exc).__name__}: {exc}"
+
+        # 3) INGEST sequentially on the MAIN THREAD -- the only writer to the
+        # shared SQLAlchemy session. Preserves idempotency (skip-by-message-id
+        # lives in ingest_messages) and keeps DB access single-threaded.
+        for _cid, batch in results:
+            if not batch:
+                continue
+            s = ingest_messages(db, user, batch)
+            stats["chats"] += 1
+            stats["appended"] += s.get("appended", 0)
+            stats["contacts_created"] += s.get("contacts_created", 0)
+            stats["skipped"] += s.get("skipped", 0)
     except Exception as exc:  # noqa: BLE001 : a flaky account must not 500
         stats["error"] = f"{type(exc).__name__}: {exc}"
 
