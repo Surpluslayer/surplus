@@ -16,7 +16,7 @@ function _friendly(status, text) {
   // Never echo a raw error body at the user : gateway/edge failures ship whole
   // HTML pages (Cloudflare's 524 template) that are noise in an error chip.
   const isHtml = /^\s*</.test(text || "");
-  if (TRANSIENT.has(status)) return "The server took too long — try again in a moment.";
+  if (TRANSIENT.has(status)) return "The server took too long - try again in a moment.";
   if (isHtml) return `Request failed (${status}).`;
   return `${status} : ${(text || "").slice(0, 240)}`;
 }
@@ -39,7 +39,7 @@ async function request(path, opts = {}) {
       });
     } catch (e) {
       // Network drop / deploy blip : retriable for reads, friendly either way.
-      lastErr = new Error("Couldn't reach the server — check your connection.");
+      lastErr = new Error("Couldn't reach the server - check your connection.");
       lastErr.status = 0;
       lastErr.body = null;
       continue;
@@ -68,7 +68,7 @@ async function request(path, opts = {}) {
       // cut mid-response (container restart during a deploy). Safari surfaces
       // this as the cryptic "The string did not match the expected pattern."
       // Treat it as transient — reads retry, writes get a friendly message.
-      lastErr = new Error("The connection dropped mid-response — try again.");
+      lastErr = new Error("The connection dropped mid-response - try again.");
       lastErr.status = 0;
       lastErr.body = null;
       continue;
@@ -234,7 +234,7 @@ export const api = {
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      const err = new Error(`${res.status} ${res.statusText} — ${text.slice(0, 240)}`);
+      const err = new Error(`${res.status} ${res.statusText} - ${text.slice(0, 240)}`);
       err.status = res.status;
       throw err;
     }
@@ -315,7 +315,7 @@ export const api = {
       stallTimer = setTimeout(() => { stalled = true; controller.abort(); }, STALL_MS);
     };
     const stallError = () =>
-      new Error("the connection went quiet and was closed — try asking again");
+      new Error("the connection went quiet and was closed - try asking again");
 
     armWatchdog();
     try {
@@ -532,7 +532,7 @@ export const api = {
       stallTimer = setTimeout(() => { stalled = true; controller.abort(); }, STALL_MS);
     };
     const stallError = () =>
-      new Error("the connection went quiet and was closed — try asking again");
+      new Error("the connection went quiet and was closed - try asking again");
     armWatchdog();
     try {
       let res;

@@ -171,7 +171,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
         // ('make it 60 seats') re-sync the form on top of what's already there.
         const captured = Array.isArray(res.captured) ? res.captured : [];
         const base =
-          res.summary || "Updated the form — tell me anything you'd like to change.";
+          res.summary || "Updated the form - tell me anything you'd like to change.";
         const summary = captured.length
           ? `${base} (Also captured: ${captured.join("; ")}.)`
           : base;
@@ -504,7 +504,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
             >
               {chatLog.length === 0 && !chatBusy && (
                 <p className="hint" style={{ margin: 0, fontSize: 13, lineHeight: 1.5 }}>
-                  Tell me about your event in a sentence — who it&apos;s for, the vibe,
+                  Tell me about your event in a sentence - who it&apos;s for, the vibe,
                   roughly how many seats. I&apos;ll ask if I need more, then fill the
                   form for you.
                 </p>
