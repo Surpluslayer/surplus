@@ -92,20 +92,11 @@ _FOLLOWUP_SYSTEM = (
 # compose_followup() chains both for the single-draft (/draft tap) caller.
 
 
-def _voice_block_for(db, user_id: int, channel: str) -> str:
-    """The full model-ready voice context for this host: the distilled
-    <host_voice_profile> rules PLUS the ground-truth <style_examples>, scoped to
-    the channel being drafted. This is the same packaged voice the relationship
-    agent uses -- richer than raw examples alone, which is what made earlier
-    drafts read generic. DetachedInstance/lookup-safe (returns "")."""
-    from ..... import models
-    try:
-        user = db.get(models.User, user_id)
-    except Exception:  # noqa: BLE001 - keep the run alive on any lookup failure
-        user = None
-    vch = "email" if channel == "email" else "linkedin"
-    return voice.build_voice_context(
-        user, channel=vch, message_type="warm_followup")["block"]
+# Back-compat alias: the canonical voice-block builder lives in context.gather
+# (_voice_block); _voice_block_for was a byte-identical copy. Kept under the
+# historical name so existing call sites (this module's compose path,
+# routes/book.py) keep resolving.
+from ..context.gather import _voice_block as _voice_block_for
 
 
 def _months_ago(dt) -> str:
