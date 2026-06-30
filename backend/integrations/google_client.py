@@ -16,16 +16,17 @@ import httpx
 
 _GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me"
 _GCAL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
-_GCAL_PRIMARY = "https://www.googleapis.com/calendar/v3/calendars/primary"
 _PEOPLE = "https://people.googleapis.com/v1/people/me/connections"
 
 
 def get_calendar_timezone(token: str) -> Optional[str]:
     """The host's primary-calendar IANA timezone (e.g. 'America/New_York'), or
-    None if it can't be read. This is the user's REAL timezone as set in Google
-    Calendar, so bookings land in their local time instead of a shared default."""
+    None if it can't be read. Read from the events.list response (which carries
+    the calendar's timeZone) because that works with the calendar.events scope we
+    request -- the calendars/primary resource needs a broader scope (403). This
+    is the user's REAL timezone, so bookings land in their local time."""
     try:
-        data = _get(token, _GCAL_PRIMARY)
+        data = _get(token, _GCAL, {"maxResults": 1})
         tzname = (data.get("timeZone") or "").strip()
         return tzname or None
     except Exception:  # noqa: BLE001
