@@ -423,6 +423,11 @@ export const api = {
   // seat. Returns { url } — redirect the browser there; the hosted page does
   // the OAuth and bounces back with the Integrations tile flipped.
   startEmailAuth: () => request("/api/auth/email/start", { method: "POST" }),
+  // Connect the signed-in user's WhatsApp as a Unipile CLOUD seat (like the
+  // email/LinkedIn seats, not a device companion). Returns { url } — redirect
+  // the browser there; the hosted page does the WhatsApp pairing and bounces
+  // back with the Connections tile flipped.
+  startWhatsappAuth: () => request("/api/auth/whatsapp/start", { method: "POST" }),
   // Star / unstar a contact — starred contacts are monitored more often by the
   // updates engine. Pass vip true/false to set, or omit to toggle server-side.
   starContact: (id, vip) =>

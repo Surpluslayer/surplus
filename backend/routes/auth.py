@@ -1094,6 +1094,199 @@ async def email_callback(
         f"/?email_connect={'ok' if ok else 'pending'}", status_code=303)
 
 
+# ─── 3b'. Connect WhatsApp (Unipile WHATSAPP account) ─────────────
+#
+# A THIRD Unipile seat on the same workspace, pointing at the signed-in
+# user's WhatsApp account. WhatsApp is a CLOUD channel on Unipile (a hosted
+# WhatsApp account -- like the LinkedIn + email seats above, NOT a device
+# companion). Same INTEGRATION shape as the email connect: the user already
+# has a session, so the webhook just attaches the new account_id to their
+# existing row -- no dedup/upsert gymnastics. Flow:
+#
+#   1. POST /whatsapp/start (auth required) : mint AuthState(state_token,
+#      user_id pre-tagged), POST /hosted/accounts/link with
+#      providers=[WHATSAPP], return {url}.
+#   2. User authenticates on Unipile's hosted page (WhatsApp QR pairing).
+#   3. Unipile POSTs /whatsapp/webhook {status, account_id, name=state_token}:
+#      stamp unipile_whatsapp_account_id + whatsapp_status='active' on the
+#      user (with the cross-user release/dedup + orphan handling), then kick
+#      a first sync.
+#   4. Browser lands on GET /whatsapp/callback?state=... : brief-poll the
+#      AuthState so the Connections tile shows Connected immediately.
+#
+# NOTE on the provider name: Unipile's hosted-auth provider token for the
+# WhatsApp messaging channel is "WHATSAPP" (same family as "LINKEDIN" used by
+# the LinkedIn seat). Verified against the Unipile hosted-auth provider list.
+
+def _whatsapp_create_body(dsn: str, expires: str, state_token: str,
+                          base: str, failure_url: str) -> dict:
+    """Hosted-auth create body for the WhatsApp channel. Mirrors
+    _email_create_body but with the WHATSAPP provider and the whatsapp
+    webhook/callback URLs."""
+    return {
+        "type": "create",
+        "providers": ["WHATSAPP"],
+        "api_url": dsn,
+        "expiresOn": expires,
+        "success_redirect_url": f"{base}/api/auth/whatsapp/callback?state={state_token}",
+        "failure_redirect_url": failure_url,
+        "notify_url": f"{base}/api/auth/whatsapp/webhook",
+        "name": state_token,
+    }
+
+
+@router.post("/whatsapp/start")
+async def whatsapp_start(
+    request: Request,
+    db: DbSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> JSONResponse:
+    """Mint a hosted-auth link for connecting the signed-in user's WhatsApp.
+    Auth required : the WhatsApp seat always attaches to an existing account,
+    so anonymous callers have nothing to attach it to."""
+    dsn, api_key = _ensure_unipile_configured()
+
+    state_token = secrets.token_urlsafe(32)
+    auth_state = AuthState(state_token=state_token, status="pending",
+                           user_id=user.id)
+    db.add(auth_state)
+    db.commit()
+
+    base = _redirect_base(request)
+    expires = _unipile_iso_timestamp(_utcnow() + timedelta(hours=1))
+    failure_url = f"{base}/?whatsapp_connect=failed"
+
+    status_code, data = await _post_hosted_link(
+        dsn, api_key,
+        _whatsapp_create_body(dsn, expires, state_token, base, failure_url))
+    url = (data or {}).get("url")
+    if status_code >= 400 or not url:
+        print(f"  [auth.whatsapp] hosted link failed status={status_code} "
+              f"body={str(data)[:300]}")
+        raise HTTPException(502, "couldn't start the WhatsApp connect flow")
+    return JSONResponse({"url": url})
+
+
+@router.post("/whatsapp/webhook")
+async def whatsapp_webhook(payload: dict,
+                           db: DbSession = Depends(get_db)) -> JSONResponse:
+    """Unipile posts here when a hosted-auth WHATSAPP account is created (or
+    fails). Attaches the new account to the AuthState's pre-tagged user. Like
+    the email webhook this requires a signed-in caller (no user creation), but
+    it also releases the account_id from any OTHER user that held it (a
+    re-connect of the same WhatsApp from a different seat) so the UNIQUE index
+    on users.unipile_whatsapp_account_id never rejects the write, and orphans
+    the previously-attached account for a post-commit Unipile delete."""
+    status_raw = (payload.get("status") or "").upper()
+    state_token = (payload.get("name") or "").strip()
+    account_id = (payload.get("account_id") or "").strip()
+
+    if not state_token:
+        return JSONResponse({"ok": True, "ignored": "no state_token"})
+    auth_state = (db.query(AuthState)
+                  .filter(AuthState.state_token == state_token).first())
+    if not auth_state:
+        return JSONResponse({"ok": True, "ignored": "unknown state_token"})
+
+    if status_raw not in {"CREATION_SUCCESS", "RECONNECTED"} or not account_id:
+        auth_state.status = "failed"
+        auth_state.error = f"unipile status={status_raw}"
+        auth_state.completed_at = _utcnow()
+        db.commit()
+        return JSONResponse({"ok": True, "recorded": "failure"})
+
+    user = (db.query(User).filter(User.id == auth_state.user_id).first()
+            if auth_state.user_id is not None else None)
+    if user is None:
+        auth_state.status = "failed"
+        auth_state.error = "no user on auth_state"
+        auth_state.completed_at = _utcnow()
+        db.commit()
+        return JSONResponse({"ok": True, "ignored": "no user"})
+
+    now = _utcnow()
+
+    # Cross-user release : if this account_id is already attached to a DIFFERENT
+    # user, detach it there first (and orphan THAT user's prior account if it
+    # differs) so the UNIQUE index doesn't reject our UPDATE. Mirrors the
+    # release/dedup the email + LinkedIn flows do.
+    orphan_unipile_account_id: Optional[str] = None
+    other = (db.query(User)
+             .filter(User.unipile_whatsapp_account_id == account_id,
+                     User.id != user.id).first())
+    if other is not None:
+        other.unipile_whatsapp_account_id = None
+        other.whatsapp_status = "disconnected"
+        other.whatsapp_connected_at = None
+    if (user.unipile_whatsapp_account_id
+            and user.unipile_whatsapp_account_id != account_id):
+        orphan_unipile_account_id = user.unipile_whatsapp_account_id
+
+    user.unipile_whatsapp_account_id = account_id
+    user.whatsapp_status = "active"
+    user.whatsapp_connected_at = now
+
+    auth_state.status = "webhook_done"
+    auth_state.completed_at = now
+    db.commit()
+    print(f"  [auth.whatsapp] attached whatsapp account {account_id} to "
+          f"user.id={user.id}")
+
+    dsn, api_key = _unipile_dsn(), _unipile_api_key()
+
+    # Best-effort: drop the orphaned (replaced) account from Unipile after
+    # commit, mirroring the LinkedIn/email orphan handling.
+    if orphan_unipile_account_id and dsn and api_key:
+        await _delete_unipile_account(orphan_unipile_account_id, dsn, api_key)
+
+    # The magic moment: connect -> the book fills itself. Kick the first
+    # WhatsApp sync in the background (own thread + own DB session -- this
+    # webhook must ack fast or Unipile retries). Best-effort by design.
+    user_id = user.id
+    if dsn and api_key:
+        import threading
+
+        def _first_sync():
+            from ..db import SessionLocal
+            from ..agents.relationship.whatsapp_sync import sync_whatsapp_contacts
+            sdb = SessionLocal()
+            try:
+                u = sdb.query(User).filter(User.id == user_id).first()
+                if u is not None:
+                    stats = sync_whatsapp_contacts(sdb, u, dsn=dsn, api_key=api_key)
+                    print(f"  [auth.whatsapp] first sync user.id={user_id}: {stats}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [auth.whatsapp] first sync failed: "
+                      f"{type(exc).__name__}: {exc}")
+            finally:
+                sdb.close()
+
+        threading.Thread(target=_first_sync, daemon=True).start()
+
+    return JSONResponse({"ok": True, "user_id": user.id})
+
+
+@router.get("/whatsapp/callback")
+async def whatsapp_callback(
+    state: str = Query(...),
+    db: DbSession = Depends(get_db),
+):
+    """Browser lands here after the hosted page. The WEBHOOK is the writer;
+    this just gives it a few seconds to arrive so the Connections tile reads
+    Connected on the very next paint, then bounces into the app."""
+    import asyncio as _asyncio
+    for _ in range(10):  # up to ~5s
+        auth_state = (db.query(AuthState)
+                      .filter(AuthState.state_token == state).first())
+        if auth_state and auth_state.status in ("webhook_done", "failed"):
+            break
+        await _asyncio.sleep(0.5)
+        db.expire_all()  # re-read committed webhook writes, not session cache
+    ok = bool(auth_state and auth_state.status == "webhook_done")
+    return RedirectResponse(
+        f"/?whatsapp_connect={'ok' if ok else 'pending'}", status_code=303)
+
+
 # ─── 3c. Triage quick-start : zero-friction anonymous session ─────
 #
 # For demos / first-time users who just want to upload a CSV and see
@@ -1274,6 +1467,10 @@ def me(user: User = Depends(current_user),
         "email_status": getattr(user, "email_status", "disconnected") or "disconnected",
         "email_account_address": getattr(user, "email_account_address", None),
         "unipile_email_account_id": getattr(user, "unipile_email_account_id", None),
+        # WhatsApp channel (a CLOUD Unipile seat). The Connections tile branches
+        # on whatsapp_status; mirrors the email_status shape.
+        "whatsapp_status": getattr(user, "whatsapp_status", "disconnected") or "disconnected",
+        "unipile_whatsapp_account_id": getattr(user, "unipile_whatsapp_account_id", None),
         # All connected mailboxes (Gmail/Outlook). Empty for users with no
         # email connected. The Connections screen renders one row per entry.
         "email_accounts": email_accounts,

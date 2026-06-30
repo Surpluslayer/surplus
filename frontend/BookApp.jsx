@@ -20,7 +20,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Sparkles, ArrowUp, ArrowRight, Star, LayoutDashboard, Plus, BookText, Loader2, X,
   ChevronLeft, ChevronRight, ChevronDown, MapPin, QrCode, Link2, Search, Send,
-  Mail, Calendar, Plug, CreditCard, LogOut, CheckCircle2, Mic, Video,
+  Mail, Calendar, Plug, CreditCard, LogOut, CheckCircle2, Mic, Video, MessageCircle,
 } from "lucide-react";
 import { api } from "./lib/api.js";
 import {
@@ -816,6 +816,10 @@ function ConnectionsScreen({ user, onBack }) {
   // defaults to "active" even with none, so check unipile_account_id too.
   const liOn = !!u?.unipile_account_id && u?.linkedin_status === "active";
   const emailOn = u?.email_status === "active";
+  // WhatsApp is a CLOUD seat (Unipile), like email -- connected when the
+  // account is tied AND active.
+  const whatsappOn = !!u?.unipile_whatsapp_account_id
+    && u?.whatsapp_status === "active";
   // All connected mailboxes. Falls back to the legacy single-account view when
   // the API doesn't return the array (older session / pre-feature backend).
   const emailAccounts = Array.isArray(u?.email_accounts)
@@ -889,6 +893,12 @@ function ConnectionsScreen({ user, onBack }) {
                    connected={emailOn}
                    onConnect={() => connect(api.startEmailAuth, "Gmail")} />
         )}
+        <ConnRow icon={<MessageCircle size={21} />} name="WhatsApp"
+                 sub={whatsappOn
+                   ? "Connected"
+                   : "Tracks chats, sends your drafts"}
+                 connected={whatsappOn}
+                 onConnect={() => connect(api.startWhatsappAuth, "WhatsApp")} />
         <ConnRow icon={<Calendar size={21} />} name="Google Calendar & Contacts"
                  sub={googleOn ? "Connected" : "Logs meetings, syncs contacts"}
                  connected={googleOn}
