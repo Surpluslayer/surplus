@@ -926,14 +926,9 @@ def send_contact_followup(
                 "prospect_id": prospect.id, "message": text}
 
     # Toggle on: send through the same path the follow-up cron uses.
-    from ..agents.relationship.pipeline.send.sender import send_and_log
-    from ..providers import get_provider
+    from ..agents.relationship.pipeline.send.sender import send_followup
     try:
-        res = send_and_log(
-            db, prospect, text,
-            sent_state="follow_up_sent",
-            fallback_provider=get_provider(),
-        )
+        res = send_followup(db, prospect, text, channel="linkedin")
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"send failed: {type(exc).__name__}: {exc}")
     if getattr(res, "error", None):
@@ -999,10 +994,10 @@ def schedule_contact_followup(
     want_email = (getattr(body, "channel", "") or "linkedin") == "email"
     booking_payload = getattr(body, "booking_payload", None)
     if send_at is None or send_at <= now:
+        from ..agents.relationship.pipeline.send.sender import send_followup
         if want_email:
-            from ..agents.relationship.pipeline.send.sender import send_followup_email
             try:
-                res = send_followup_email(db, prospect, text)
+                res = send_followup(db, prospect, text, channel="email")
             except ValueError as exc:
                 raise HTTPException(409, str(exc))
             db.commit()
@@ -1012,11 +1007,8 @@ def schedule_contact_followup(
             return {"status": "sent", "contact_id": contact_id,
                     "prospect_id": prospect.id, "channel": "email",
                     "dry_run": res.dry_run, **({"booking": booked} if booked else {})}
-        from ..agents.relationship.pipeline.send.sender import send_and_log
-        from ..providers import get_provider
         try:
-            res = send_and_log(db, prospect, text, sent_state="follow_up_sent",
-                               fallback_provider=get_provider())
+            res = send_followup(db, prospect, text, channel="linkedin")
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"send failed: {type(exc).__name__}: {exc}")
         if getattr(res, "error", None):

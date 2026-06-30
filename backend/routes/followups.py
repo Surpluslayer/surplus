@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..agents.relationship.pipeline.send.sender import send_and_log
+from ..agents.relationship.pipeline.send.sender import send_followup
 from ..auth import current_user
 from ..db import get_db
 from ..providers import get_provider
@@ -212,16 +212,12 @@ def send_followup_now(
 
     now = datetime.now(timezone.utc)
     try:
-        if (getattr(row, "channel", "") or "linkedin") == "email":
-            from ..agents.relationship.pipeline.send.sender import send_followup_email
-            res = send_followup_email(db, prospect, text)
-        else:
-            res = send_and_log(
-                db, prospect, text,
-                sent_state="follow_up_sent",
-                fallback_provider=get_provider(),
-                commit=False,
-            )
+        res = send_followup(
+            db, prospect, text,
+            channel=(getattr(row, "channel", "") or "linkedin"),
+            commit=False,
+            fallback_provider=get_provider(),
+        )
     except Exception as exc:  # noqa: BLE001
         row.status = "failed"
         row.cancel_reason = type(exc).__name__

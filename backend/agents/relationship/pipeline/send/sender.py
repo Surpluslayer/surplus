@@ -185,6 +185,43 @@ def send_and_log(
     return res
 
 
+def send_followup(
+    db,
+    prospect,
+    text: str,
+    *,
+    channel: str,
+    commit: bool = True,
+    fallback_provider: "LinkedInProvider | None" = None,
+):
+    """The ONE transport switch for a follow-up message: dispatch `text` to
+    `prospect` over `channel` and write the truthful OutreachLog row, returning
+    the ProviderResult. This owns the email-vs-linkedin (and future
+    whatsapp/imessage) branch that the send-now / cron / chat callers used to
+    copy-paste; each caller keeps its own status/HTTP mapping off the result.
+
+    channel='email' -> send_followup_email (the email path manages its own
+    commit). Anything else -> send_and_log over LinkedIn with the standard
+    'follow_up_sent' state; `commit` is forwarded so a caller can batch (the
+    cron sends with commit=False), and `fallback_provider` defaults to
+    get_provider() when the caller does not pre-build one.
+
+    Behavior-preserving: gating stays at the call sites (this never decides
+    whether a send is allowed), and which channel a message goes on is the
+    caller's choice."""
+    if (channel or "linkedin") == "email":
+        return send_followup_email(db, prospect, text)
+    if fallback_provider is None:
+        from .....providers import get_provider
+        fallback_provider = get_provider()
+    return send_and_log(
+        db, prospect, text,
+        sent_state="follow_up_sent",
+        fallback_provider=fallback_provider,
+        commit=commit,
+    )
+
+
 def send_followup_email(db, prospect, text: str):
     """Dispatch one follow-up AS EMAIL from the prospect's owner's mailbox.
     Resolves owner -> mailbox seat, contact -> address + linked thread
