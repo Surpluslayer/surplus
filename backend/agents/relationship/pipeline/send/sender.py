@@ -63,6 +63,64 @@ def automated_send_enabled(channel: str = "") -> bool:
     return (channel or "").strip().lower() in allow
 
 
+def fire_booking_on_send(db, user, contact, booking_payload, *, topic: str = "") -> dict:
+    """Fire the actual calendar booking that a SENT meeting-proposal draft carried.
+
+    Booking is a SIDE EFFECT OF SENDING such a draft (manual: host send; auto:
+    auto-send), so this is called from every send path AFTER a clean dispatch. It
+    is the bridge from the staged `booking_payload` to integrations.booking:
+
+      * mode == "calendly": the self-serve link in the message body IS the booking,
+        so there is nothing to create here -> {"booked": False, "mode": "calendly"}.
+      * mode == "propose_time": create the event + invite the contact at the
+        proposed slot via agent_book_meeting (idempotent, email-required). On
+        success -> {"booked": True, ...event...}; if the contact has no email, or
+        the slot/calendar is unusable, -> {"booked": False, "reason": ...} (the
+        message still sent; only the auto-create was skipped).
+
+    Never raises: a booking miss must NOT unwind or fail a message that already
+    went out. `booking_payload` may be a JSON string (as stored on the row) or an
+    already-parsed dict."""
+    import json
+    if not booking_payload:
+        return {"booked": False, "reason": "no booking payload"}
+    payload = booking_payload
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:  # noqa: BLE001
+            return {"booked": False, "reason": "unparseable booking payload"}
+    if not isinstance(payload, dict):
+        return {"booked": False, "reason": "bad booking payload"}
+
+    mode = (payload.get("mode") or "").strip()
+    if mode == "calendly":
+        # The link in the body is the booking; nothing to create on send.
+        return {"booked": False, "mode": "calendly"}
+    if mode != "propose_time":
+        return {"booked": False, "reason": f"no actionable mode ({mode or 'none'})"}
+    if contact is None:
+        return {"booked": False, "reason": "no contact to invite"}
+
+    from .....integrations.booking import _DEFAULT_TZ, agent_book_meeting
+    topic = (topic or payload.get("topic") or "Quick chat").strip() or "Quick chat"
+    try:
+        ev = agent_book_meeting(
+            db, user, contact,
+            topic=topic,
+            start_iso=(payload.get("start_iso") or "").strip(),
+            duration_min=int(payload.get("duration_min") or 30),
+            tz=(payload.get("tz") or "").strip() or _DEFAULT_TZ,
+            with_zoom=payload.get("with_zoom"))
+        return {"booked": True, **ev}
+    except ValueError as exc:
+        # Email-required / no-calendar / bad-time / upstream: the message sent;
+        # we just didn't auto-create the event. Surface a clean reason, no stack.
+        return {"booked": False, "reason": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {"booked": False, "reason": f"{type(exc).__name__}"}
+
+
 def send_and_log(
     db,
     prospect: models.Prospect,

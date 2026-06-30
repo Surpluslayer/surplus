@@ -142,6 +142,7 @@ def init_db() -> None:
         _migrate_prospect_email,
         _migrate_contact_email_thread,
         _migrate_followup_channel,
+        _migrate_followup_booking_payload,
         _migrate_contact_vip,
         _migrate_contact_profile_baselined,
         _migrate_contact_preferred_channel,
@@ -1151,6 +1152,24 @@ def _migrate_followup_channel() -> None:
         conn.execute(text(
             f"ALTER TABLE scheduled_followups ADD COLUMN {ine}channel "
             "VARCHAR(20) DEFAULT 'linkedin'"
+        ))
+
+
+def _migrate_followup_booking_payload() -> None:
+    """Add scheduled_followups.booking_payload (TEXT, NULL). Carries the structured
+    booking intent for a meeting-proposal draft so the SEND step can fire the
+    calendar event + invite. NULL for an ordinary follow-up."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "scheduled_followups" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("scheduled_followups")}
+    if "booking_payload" in cols:
+        return
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            f"ALTER TABLE scheduled_followups ADD COLUMN {ine}booking_payload TEXT"
         ))
 
 

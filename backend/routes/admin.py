@@ -139,6 +139,26 @@ def _auto_send_enabled(prospect: models.Prospect, channel: str = "linkedin") -> 
             and automated_send_enabled(channel))
 
 
+def _fire_followup_booking(db, prospect, booking_payload, text: str) -> None:
+    """Fire the calendar booking a SENT meeting-proposal follow-up carries, in the
+    cron (auto-send) path. Resolves the host (prospect.event.user) and the durable
+    Contact from the prospect, then delegates to fire_booking_on_send. Never raises:
+    a booking miss must never fail or unwind a follow-up that already sent."""
+    if not booking_payload:
+        return
+    try:
+        from ..agents.relationship.pipeline.send.sender import fire_booking_on_send
+        owner = getattr(getattr(prospect, "event", None), "user", None)
+        contact = (db.get(models.Contact, prospect.contact_id)
+                   if getattr(prospect, "contact_id", None) else None)
+        if owner is None or contact is None:
+            return
+        topic = (text or "Quick chat").strip().split("\n", 1)[0][:80] or "Quick chat"
+        fire_booking_on_send(db, owner, contact, booking_payload, topic=topic)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @router.post("/run-followups", status_code=200)
 def run_followups(
     db: Session = Depends(get_db),
@@ -222,6 +242,11 @@ def run_followups(
         row.status = "sent"
         row.sent_at = now
         row.updated_at = now
+        # Auto-send equivalent of manual approve: if this draft carried a meeting
+        # booking payload, the SEND fires the calendar event + invite now. Gated
+        # implicitly by reaching here (auto-send is ON). Never fails the send.
+        _fire_followup_booking(db, prospect, getattr(row, "booking_payload", None),
+                               text)
         sent.append({"followup_id": row.id, "prospect_id": prospect.id,
                      "state": res.state, "dry_run": res.dry_run})
 

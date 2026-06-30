@@ -240,6 +240,29 @@ def send_followup_now(
     row.status = "sent"
     row.sent_at = now
     row.updated_at = now
+    # An explicit host send-now is the manual approve of this draft: if it carried
+    # a meeting booking payload, fire the calendar event + invite now. Never fails
+    # the send (no contact email / no open slot just skips the auto-create).
+    _fire_followup_booking(db, prospect, getattr(row, "booking_payload", None), text)
     db.commit()
     db.refresh(row)
     return _to_out(row)
+
+
+def _fire_followup_booking(db, prospect, booking_payload, text: str) -> None:
+    """Fire the booking a SENT meeting-proposal follow-up carries (manual send-now).
+    Resolves host + Contact from the prospect, delegates to fire_booking_on_send.
+    Never raises: a booking miss must not fail a follow-up that already sent."""
+    if not booking_payload:
+        return
+    try:
+        from ..agents.relationship.pipeline.send.sender import fire_booking_on_send
+        owner = getattr(getattr(prospect, "event", None), "user", None)
+        contact = (db.get(models.Contact, prospect.contact_id)
+                   if getattr(prospect, "contact_id", None) else None)
+        if owner is None or contact is None:
+            return
+        topic = (text or "Quick chat").strip().split("\n", 1)[0][:80] or "Quick chat"
+        fire_booking_on_send(db, owner, contact, booking_payload, topic=topic)
+    except Exception:  # noqa: BLE001
+        pass

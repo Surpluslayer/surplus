@@ -95,6 +95,23 @@ def _sendable_prospect(contact: models.Contact) -> models.Prospect:
     return linked[0]
 
 
+def _fire_booking_after_send(db, user, contact, booking_payload, text: str):
+    """Fire the calendar booking a meeting-proposal draft carries, AFTER its
+    message sent. Booking is a side effect of SENDING the draft (manual host send
+    here; the cron does the auto-send equivalent). Never raises and never affects
+    the send's success: a booking miss (no contact email, no open slot) just means
+    the message went out without the auto-created invite. Returns the booking
+    result dict to surface on the response, or None when there's no payload."""
+    if not booking_payload:
+        return None
+    from ..agents.relationship.pipeline.send.sender import fire_booking_on_send
+    try:
+        topic = (text or "Quick chat").strip().split("\n", 1)[0][:80] or "Quick chat"
+        return fire_booking_on_send(db, user, contact, booking_payload, topic=topic)
+    except Exception:  # noqa: BLE001 : a booking miss never fails a sent message
+        return None
+
+
 def _owned_prospect(db: Session, prospect_id: int, user: models.User) -> models.Prospect:
     """Fetch a Prospect, requiring `user` to own its event. 404 in both the
     not-found and not-owned cases so we never leak another user's prospects."""
@@ -947,6 +964,12 @@ class FollowupScheduleIn(BaseModel):
     message: str
     send_at: Optional[datetime] = None
     channel: str = "linkedin"  # "linkedin" | "email"
+    # Structured booking intent for a MEETING-PROPOSAL draft (see
+    # integrations.booking.propose_meeting_slot). When present, SENDING this draft
+    # also fires the calendar booking: a "propose_time" payload creates the event +
+    # invites the contact; a "calendly" payload is self-serve (the link is in the
+    # body) so it fires nothing. None for an ordinary follow-up.
+    booking_payload: Optional[dict] = None
 
 
 @router.post("/contacts/{contact_id}/schedule")
@@ -987,6 +1010,7 @@ def schedule_contact_followup(
     # Send now: no future time chosen. Explicit host action, sends regardless of
     # the auto toggle (same as the followups send-now route).
     want_email = (getattr(body, "channel", "") or "linkedin") == "email"
+    booking_payload = getattr(body, "booking_payload", None)
     if send_at is None or send_at <= now:
         if want_email:
             from ..agents.relationship.pipeline.send.sender import send_followup_email
@@ -997,9 +1021,10 @@ def schedule_contact_followup(
             db.commit()
             if res.error and res.state == "failed":
                 raise HTTPException(502, f"email send failed: {res.error}")
+            booked = _fire_booking_after_send(db, user, contact, booking_payload, text)
             return {"status": "sent", "contact_id": contact_id,
                     "prospect_id": prospect.id, "channel": "email",
-                    "dry_run": res.dry_run}
+                    "dry_run": res.dry_run, **({"booking": booked} if booked else {})}
         from ..agents.relationship.pipeline.send.sender import send_and_log
         from ..providers import get_provider
         try:
@@ -1009,22 +1034,28 @@ def schedule_contact_followup(
             raise HTTPException(502, f"send failed: {type(exc).__name__}: {exc}")
         if getattr(res, "error", None):
             raise HTTPException(502, f"send failed: {res.error}")
+        booked = _fire_booking_after_send(db, user, contact, booking_payload, text)
         return {"status": "sent", "contact_id": contact_id,
-                "prospect_id": prospect.id, "message": text}
+                "prospect_id": prospect.id, "message": text,
+                **({"booking": booked} if booked else {})}
 
     # Schedule: upsert the prospect's one pending row (idempotent per prospect,
     # mirroring stage_followup) so re-approving just reschedules instead of
     # stacking duplicates.
+    import json as _json
+    payload_str = _json.dumps(booking_payload) if booking_payload else None
     row = pending_followup(db, prospect.id)
     if row is None:
         row = models.ScheduledFollowup(
             prospect_id=prospect.id, body=text, send_at=send_at,
-            suggested_send_at=send_at, status="scheduled")
+            suggested_send_at=send_at, status="scheduled",
+            booking_payload=payload_str)
         db.add(row)
     else:
         row.body = text
         row.send_at = send_at
         row.updated_at = now
+        row.booking_payload = payload_str
     row.channel = "email" if want_email else "linkedin"
     db.commit()
     db.refresh(row)

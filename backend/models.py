@@ -1237,6 +1237,13 @@ class ScheduledFollowup(Base):
     suggested_send_at: Mapped[datetime] = mapped_column(default=_utcnow)
     status: Mapped[str] = mapped_column(String(20), default="scheduled", index=True)
     cancel_reason: Mapped[str] = mapped_column(String(20), default="")
+    # Structured booking intent carried alongside a MEETING-PROPOSAL draft. When the
+    # drafter proposes a time (or a Calendly self-serve link), it stashes the payload
+    # here (JSON: {mode, start_iso, duration_min, tz, with_zoom, contact_id, ...}) so
+    # that the SEND step can fire the actual calendar event + invite. NULL/'' for an
+    # ordinary follow-up. A Calendly link IS the booking, so its payload fires nothing
+    # on send; a propose_time payload creates the event+invite when the draft sends.
+    booking_payload: Mapped[Optional[str]] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
     sent_at: Mapped[Optional[datetime]] = mapped_column(default=None)
