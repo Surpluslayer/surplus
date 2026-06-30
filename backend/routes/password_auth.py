@@ -12,7 +12,7 @@ Email verification + password reset live in routes/account_email (Resend-backed)
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session as DbSession
@@ -50,20 +50,22 @@ class SetPasswordBody(BaseModel):
     password: str
 
 
-def _session_response(db: DbSession, user: User, client: str, body: dict) -> JSONResponse:
+def _session_response(db: DbSession, user: User, client: str, body: dict,
+                      host: str | None = None) -> JSONResponse:
     """Mint a session for `user` and return it the right way for the client: web sets
     the cookie on THIS response (FastAPI gotcha: must be the returned instance); native
-    clients get the Bearer token in the JSON to store."""
+    clients get the Bearer token in the JSON to store. `host` (the request's user-facing
+    host) is threaded into the cookie so its Domain is shared across *.surpluslayer.com."""
     sess = create_session(db, user, client=client)
     if client == "web":
         resp = JSONResponse(body)
-        set_session_cookie(resp, sess.session_token)
+        set_session_cookie(resp, sess.session_token, host=host)
         return resp
     return JSONResponse({**body, "token": sess.session_token, "client": client})
 
 
 @router.post("/signup", dependencies=[Depends(_rl_signup)])
-def signup(body: SignupBody, db: DbSession = Depends(get_db)) -> JSONResponse:
+def signup(body: SignupBody, request: Request, db: DbSession = Depends(get_db)) -> JSONResponse:
     """Create an email+password account. 409 if the email is already registered (via
     password OR an OAuth provider) -- the owner signs in instead; we never attach a
     password to a pre-existing account (that would be takeover)."""
@@ -98,11 +100,11 @@ def signup(body: SignupBody, db: DbSession = Depends(get_db)) -> JSONResponse:
 
     return _session_response(db, user, normalize_client(body.client), {
         "ok": True, "user_id": user.id, "name": user.name, "email": user.email,
-        "verification_required": bool(sent)})
+        "verification_required": bool(sent)}, host=request.headers.get("host"))
 
 
 @router.post("/login", dependencies=[Depends(_rl_login)])
-def login(body: LoginBody, db: DbSession = Depends(get_db)) -> JSONResponse:
+def login(body: LoginBody, request: Request, db: DbSession = Depends(get_db)) -> JSONResponse:
     """Sign in with email + password. Generic 401 on any failure (no user / no password
     set / wrong password) so we don't reveal which emails exist or use OAuth."""
     email = (body.email or "").strip().lower()
@@ -110,7 +112,8 @@ def login(body: LoginBody, db: DbSession = Depends(get_db)) -> JSONResponse:
     if user is None or not verify_password(body.password or "", user.password_hash):
         raise HTTPException(401, "invalid email or password")
     return _session_response(db, user, normalize_client(body.client), {
-        "ok": True, "user_id": user.id, "name": user.name, "email": user.email})
+        "ok": True, "user_id": user.id, "name": user.name, "email": user.email},
+        host=request.headers.get("host"))
 
 
 @router.post("/set-password")

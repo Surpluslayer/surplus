@@ -69,6 +69,33 @@ def test_signup_creates_account_and_cookie(client):
     assert "surplus_session" in r.cookies
 
 
+def test_signup_cookie_carries_cross_subdomain_domain(client):
+    """The session cookie must thread the request host into set_session_cookie so its
+    Domain is shared across *.surpluslayer.com (host-only would not persist across the
+    apex/event subdomains). With a surpluslayer.com Host header _cookie_domain derives
+    Domain=.surpluslayer.com."""
+    c, _ = client
+    r = c.post("/api/auth/signup",
+               headers={"host": "app.surpluslayer.com"},
+               json={"name": "J", "email": "dom@x.com", "password": "secret12"})
+    assert r.status_code == 200, r.text
+    set_cookie = r.headers["set-cookie"]
+    assert "surplus_session=" in set_cookie
+    assert "Domain=.surpluslayer.com" in set_cookie
+
+
+def test_login_cookie_carries_cross_subdomain_domain(client):
+    c, _ = client
+    c.post("/api/auth/signup",
+           json={"name": "J", "email": "dom2@x.com", "password": "secret12"})
+    c.cookies.clear()
+    r = c.post("/api/auth/login",
+               headers={"host": "app.surpluslayer.com"},
+               json={"email": "dom2@x.com", "password": "secret12"})
+    assert r.status_code == 200, r.text
+    assert "Domain=.surpluslayer.com" in r.headers["set-cookie"]
+
+
 def test_signup_rejects_short_password(client):
     c, _ = client
     r = c.post("/api/auth/signup",

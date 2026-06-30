@@ -6,15 +6,15 @@ until RESEND_API_KEY is set: the endpoints work, mail just isn't sent until conf
 
     POST /api/auth/forgot-password   {email}            -> always 200 (no enumeration)
     POST /api/auth/reset-password    {token, password}  -> set a new password
-    GET  /api/auth/verify-email?token=...               -> mark email verified, redirect
-    POST /api/auth/resend-verification (authenticated)  -> resend the link
+    POST /api/auth/send-code         (authenticated)    -> (re)send a 6-digit PIN
+    POST /api/auth/verify-code       {code}             -> confirm the email via PIN
 """
 from __future__ import annotations
 
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session as DbSession
 
@@ -30,7 +30,6 @@ from .auth import _surplus_base_url
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-_TTL_VERIFY = 60 * 60 * 24      # 24h to confirm an email (link)
 _TTL_RESET = 60 * 30           # 30m to reset a password
 _CODE_TTL = 60 * 10            # 10m for the PIN/OTP email code
 _MIN_PW, _MAX_PW = 8, 128
@@ -84,48 +83,6 @@ def _verify(token: str, purpose: str) -> int:
     if not payload or payload.get("purpose") != purpose:
         return 0
     return int(payload.get("uid") or 0)
-
-
-def _send_verification(request: Request, user: User) -> None:
-    if not user.email:
-        return
-    token = _sign("verify_email", user.id, _TTL_VERIFY)
-    link = f"{_surplus_base_url(request)}/api/auth/verify-email?token={token}"
-    email_sender.send_email(
-        to=user.email, subject="Confirm your surplus email",
-        html=f'<p>Confirm your email to finish setting up surplus:</p>'
-             f'<p><a href="{link}">Confirm my email</a></p>'
-             f'<p>This link expires in 24 hours.</p>',
-        text=f"Confirm your surplus email: {link} (expires in 24h)")
-
-
-# Called from signup (best-effort; dormant until RESEND_API_KEY is set).
-def send_verification_email(request: Request, user: User) -> None:
-    try:
-        _send_verification(request, user)
-    except Exception:  # noqa: BLE001 : email must never break signup
-        pass
-
-
-@router.post("/resend-verification")
-def resend_verification(request: Request, user: User = Depends(current_user)) -> JSONResponse:
-    if user.email_verified:
-        return JSONResponse({"ok": True, "already_verified": True})
-    send_verification_email(request, user)
-    return JSONResponse({"ok": True, "sent": email_sender.configured()})
-
-
-@router.get("/verify-email")
-def verify_email(token: str, request: Request, db: DbSession = Depends(get_db)):
-    base = _surplus_base_url(request)
-    uid = _verify(token, "verify_email")
-    user = db.get(User, uid) if uid else None
-    if user is None:
-        return RedirectResponse(f"{base}/?verify=email&status=invalid", status_code=302)
-    if not user.email_verified:
-        user.email_verified = True
-        db.commit()
-    return RedirectResponse(f"{base}/?verify=email&status=ok", status_code=302)
 
 
 @router.post("/forgot-password", dependencies=[Depends(_rl_forgot)])

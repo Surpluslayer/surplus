@@ -15,7 +15,12 @@ from backend import models
 from backend.db import Base
 from backend import auth as auth_mod
 from backend.integrations import google_login
-from backend.routes.google_login import find_or_create_google_user
+
+
+def find_or_create_google_user(db, *, sub: str, email: str, name: str):
+    """Test shim: the route now calls the shared provider-agnostic helper directly."""
+    return auth_mod.find_or_create_oauth_user(
+        db, provider="google", sub=sub, email=email, name=name)
 
 
 @pytest.fixture

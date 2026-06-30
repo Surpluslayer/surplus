@@ -1104,7 +1104,8 @@ async def email_callback(
 
 @router.post("/triage/quick-start",
              dependencies=[Depends(_rl_triage_signup)])
-def triage_quick_start(db: DbSession = Depends(get_db)) -> JSONResponse:
+def triage_quick_start(db: DbSession = Depends(get_db),
+                       request: Request = None) -> JSONResponse:
     """Create an anonymous User row + session cookie. Caller reloads and
     lands in TriageApp (App.jsx routes there for users with no
     unipile_account_id)."""
@@ -1121,7 +1122,8 @@ def triage_quick_start(db: DbSession = Depends(get_db)) -> JSONResponse:
     db.refresh(user)
     sess = create_session(db, user)
     resp = JSONResponse({"ok": True, "user_id": user.id, "mode": "triage_only"})
-    set_session_cookie(resp, sess.session_token)
+    set_session_cookie(resp, sess.session_token,
+                       host=request.headers.get("host") if request else None)
     return resp
 
 
@@ -1179,6 +1181,7 @@ class TriageSignupBody(BaseModel):
 def triage_signup(
     body: TriageSignupBody,
     db: DbSession = Depends(get_db),
+    request: Request = None,
 ) -> JSONResponse:
     """Create a User row + session for someone who only wants triage.
 
@@ -1225,7 +1228,8 @@ def triage_signup(
         "email": user.email,
         "mode": "triage_only",
     })
-    set_session_cookie(resp, sess.session_token)
+    set_session_cookie(resp, sess.session_token,
+                       host=request.headers.get("host") if request else None)
     return resp
 
 

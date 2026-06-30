@@ -183,6 +183,7 @@ def demo_enter(
     surface: Optional[str] = Query(
         None, description="Which surface to land on: book | inperson | app (default)"),
     db: DbSession = Depends(get_db),
+    request: Request = None,
 ):
     """Issue a session for the demo user and redirect to the chosen surface.
 
@@ -216,7 +217,8 @@ def demo_enter(
     response = RedirectResponse(target, status_code=303)
     for k, v in _NO_STORE.items():
         response.headers[k] = v
-    set_session_cookie(response, sess.session_token)
+    set_session_cookie(response, sess.session_token,
+                       host=request.headers.get("host") if request else None)
     return response
 
 

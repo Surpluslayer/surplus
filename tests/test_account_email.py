@@ -64,23 +64,6 @@ def test_sender_dormant_without_key():
     assert email_sender.send_email(to="a@x.com", subject="s", text="t") is False
 
 
-# ── verify-email ──────────────────────────────────────────────────────────────
-def test_verify_email_marks_verified(client):
-    c, Session = client
-    s = Session(); u = models.User(name="U", email="a@x.com", password_hash="h"); s.add(u); s.commit()
-    uid = u.id; s.close()
-    token = ae._sign("verify_email", uid, 3600)
-    r = c.get(f"/api/auth/verify-email?token={token}", follow_redirects=False)
-    assert r.status_code == 302 and "status=ok" in r.headers["location"]
-    s = Session(); assert s.get(models.User, uid).email_verified is True; s.close()
-
-
-def test_verify_email_bad_token_redirects_invalid(client):
-    c, _ = client
-    r = c.get("/api/auth/verify-email?token=nope", follow_redirects=False)
-    assert r.status_code == 302 and "status=invalid" in r.headers["location"]
-
-
 # ── forgot / reset ────────────────────────────────────────────────────────────
 def test_forgot_password_always_200_no_enumeration(client):
     c, Session = client

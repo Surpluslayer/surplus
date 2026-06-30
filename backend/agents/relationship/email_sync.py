@@ -119,15 +119,11 @@ def counterparts_of(mail: dict, own_address: str) -> tuple[str, list[tuple[str, 
     return "in", [(from_addr, from_name)]
 
 
-def _default_fetch_page(dsn: str, api_key: str, account_id: str,
-                        cursor: Optional[str]) -> dict:
-    """GET one page of mail metadata. Plain httpx; meta_only keeps bodies
-    (and their PII bulk) out of the wire entirely."""
+def _unipile_get_emails(dsn: str, api_key: str, **params: Any) -> dict:
+    """GET Unipile /api/v1/emails with the shared headers/timeout/error handling.
+    Plain httpx; callers pass the query params (account_id, limit, meta_only,
+    cursor, thread_id, any_email, ...)."""
     import httpx
-    params: dict[str, Any] = {"account_id": account_id,
-                              "limit": _PAGE_SIZE, "meta_only": "true"}
-    if cursor:
-        params["cursor"] = cursor
     with httpx.Client(timeout=30.0) as client:
         r = client.get(f"{dsn}/api/v1/emails",
                        headers={"X-API-KEY": api_key,
@@ -136,6 +132,17 @@ def _default_fetch_page(dsn: str, api_key: str, account_id: str,
     if r.status_code >= 400:
         raise RuntimeError(f"Unipile /emails {r.status_code}: {r.text[:200]}")
     return r.json() or {}
+
+
+def _default_fetch_page(dsn: str, api_key: str, account_id: str,
+                        cursor: Optional[str]) -> dict:
+    """GET one page of mail metadata. meta_only keeps bodies (and their PII
+    bulk) out of the wire entirely."""
+    params: dict[str, Any] = {"account_id": account_id,
+                              "limit": _PAGE_SIZE, "meta_only": "true"}
+    if cursor:
+        params["cursor"] = cursor
+    return _unipile_get_emails(dsn, api_key, **params)
 
 
 def sync_email_contacts(
@@ -323,17 +330,8 @@ def list_threads_for_address(*, dsn: str, api_key: str, account_id: str,
                              fetch: Optional[Callable[..., dict]] = None) -> list[dict]:
     """Candidate threads with `address`, newest activity first — what the
     host picks from when confirming the thread for a contact."""
-    import httpx
-
     def _default(**params):
-        with httpx.Client(timeout=30.0) as client:
-            r = client.get(f"{dsn}/api/v1/emails",
-                           headers={"X-API-KEY": api_key,
-                                    "accept": "application/json"},
-                           params=params)
-        if r.status_code >= 400:
-            raise RuntimeError(f"Unipile /emails {r.status_code}: {r.text[:200]}")
-        return r.json() or {}
+        return _unipile_get_emails(dsn, api_key, **params)
 
     page = (fetch or _default)(account_id=account_id, any_email=address,
                                limit=100, meta_only="true")
@@ -366,17 +364,8 @@ def thread_messages(*, dsn: str, api_key: str, account_id: str,
     it to headers (timeline view); True pulls bodies (composer grounding).
     The LAST message's provider_id + subject are what a reply must use
     (reply_to + 'Re:' subject) to stay in-thread."""
-    import httpx
-
     def _default(**params):
-        with httpx.Client(timeout=30.0) as client:
-            r = client.get(f"{dsn}/api/v1/emails",
-                           headers={"X-API-KEY": api_key,
-                                    "accept": "application/json"},
-                           params=params)
-        if r.status_code >= 400:
-            raise RuntimeError(f"Unipile /emails {r.status_code}: {r.text[:200]}")
-        return r.json() or {}
+        return _unipile_get_emails(dsn, api_key, **params)
 
     params = {"account_id": account_id, "thread_id": thread_id, "limit": 100}
     if not with_bodies:

@@ -15,17 +15,12 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..auth import current_user, find_or_create_oauth_user
+from ..auth import current_user
 from ..db import get_db
 from ..integrations import google_login
 from . import _oauth_login
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-
-
-def find_or_create_google_user(db, *, sub: str, email: str, name: str) -> models.User:
-    """Thin wrapper over the shared, provider-agnostic find_or_create_oauth_user."""
-    return find_or_create_oauth_user(db, provider="google", sub=sub, email=email, name=name)
 
 
 @router.get("/google/login")
