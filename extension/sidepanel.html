@@ -96,6 +96,40 @@
       #capture:hover { background: #2257d6; }
       #capture:disabled { opacity: 0.6; cursor: default; }
 
+      #li-connect {
+        display: none;
+        align-items: center;
+        gap: 10px;
+        padding: 9px 12px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--line);
+      }
+      #li-connect.show { display: flex; }
+      #li-connect .li-text { flex: 1; min-width: 0; }
+      #li-connect .li-title { font-size: 12px; font-weight: 600; color: var(--ink); }
+      #li-connect .li-sub {
+        font-size: 11px;
+        color: var(--ink-dim);
+        line-height: 1.35;
+        margin-top: 1px;
+      }
+      #li-connect .li-sub.err { color: #c0433d; }
+      #li-connect .li-sub.ok { color: #1f9d62; }
+      #li-connect-btn {
+        flex: none;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        border: 0;
+        border-radius: 999px;
+        padding: 7px 14px;
+        background: var(--acc);
+        color: #fff;
+        cursor: pointer;
+      }
+      #li-connect-btn:hover { background: #2257d6; }
+      #li-connect-btn:disabled { opacity: 0.6; cursor: default; }
+
       #frame-wrap { flex: 1; position: relative; }
       iframe { width: 100%; height: 100%; border: 0; background: var(--bg); }
       #loading {
@@ -218,6 +252,16 @@
       <div class="actions">
         <button id="capture">Capture to surplus</button>
       </div>
+    </section>
+
+    <section id="li-connect">
+      <div class="li-text">
+        <div class="li-title">Connect LinkedIn</div>
+        <div class="li-sub" id="li-connect-sub">
+          One tap to auto-connect via your LinkedIn session.
+        </div>
+      </div>
+      <button id="li-connect-btn">Connect</button>
     </section>
 
     <div id="frame-wrap">
