@@ -39,6 +39,7 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
   const [notice, setNotice] = useState(null);
   const [verifying, setVerifying] = useState(false);   // after signup: enter the email PIN
   const [code, setCode] = useState("");
+  const [forgot, setForgot] = useState(false);         // dedicated "reset your password" step
 
   const done = () => { if (onSignedIn) onSignedIn(); else window.location.reload(); };
 
@@ -68,12 +69,15 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
   const handleForgot = async () => {
     setError(null); setNotice(null);
     const addr = email.trim();
-    if (!addr.includes("@")) { setError("Enter your email above first."); return; }
+    if (!addr.includes("@")) { setError("Enter your email."); return; }
+    setBusy(true);
     try {
       await api.forgotPassword(addr);
+      setBusy(false);
       setNotice("If that email has an account, a reset link is on its way.");
     } catch {
       // forgot-password is always 200; on a network blip, show the same neutral note.
+      setBusy(false);
       setNotice("If that email has an account, a reset link is on its way.");
     }
   };
@@ -143,6 +147,35 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
     );
   }
 
+  // "Forgot password?" -> a dedicated step: enter email -> send reset link -> confirmation.
+  if (forgot) {
+    return (
+      <div className="authopts">
+        <style>{AUTHOPTS_CSS}</style>
+        <div className="authopts-divider"><span>reset your password</span></div>
+        <p style={{ fontSize: 13, color: "#5b616a", margin: "0 0 4px" }}>
+          Enter your email and we'll send you a link to reset your password.
+        </p>
+        <form onSubmit={(e) => { e.preventDefault(); handleForgot(); }} className="authopts-form">
+          <input className="authopts-in" type="email" value={email} required autoFocus
+                 placeholder="you@anywhere.com"
+                 onChange={(e) => setEmail(e.target.value)} />
+          <button type="submit" className="authopts-submit"
+                  disabled={busy || !email.trim().includes("@")}>
+            {busy ? <><Loader2 className="spin" size={16} /> Sending…</>
+                  : <>Send reset link <ArrowRight size={16} /></>}
+          </button>
+        </form>
+        {error && <div className="authopts-error" role="alert"><AlertCircle size={14} /> {error}</div>}
+        {notice && <div className="authopts-notice">{notice}</div>}
+        <button type="button" className="authopts-switch"
+                onClick={() => { setError(null); setNotice(null); setForgot(false); }}>
+          Back to sign in
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="authopts">
       <style>{AUTHOPTS_CSS}</style>
@@ -179,7 +212,8 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
       {notice && <div className="authopts-notice">{notice}</div>}
 
       {mode === "login" && (
-        <button type="button" className="authopts-forgot" onClick={handleForgot}>
+        <button type="button" className="authopts-forgot"
+                onClick={() => { setError(null); setNotice(null); setForgot(true); }}>
           Forgot password?
         </button>
       )}
