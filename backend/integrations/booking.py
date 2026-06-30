@@ -164,6 +164,24 @@ def _pick_account(db, user_id: int, provider: Optional[str]):
     return rows.get("google") or rows.get("microsoft")
 
 
+def host_timezone(db, user) -> str:
+    """The host's REAL timezone (IANA), read from their connected calendar so the
+    agent proposes + books in the user's local time, not a shared default. Uses the
+    Google primary-calendar timezone; falls back to _DEFAULT_TZ for Outlook (whose
+    API returns Windows tz names) or when nothing is readable."""
+    try:
+        acct = _pick_account(db, user.id, None)
+        if acct is None or acct.provider != "google":
+            return _DEFAULT_TZ
+        token = oauth.get_valid_access_token(db, acct)
+        if not token:
+            return _DEFAULT_TZ
+        from .google_client import get_calendar_timezone
+        return get_calendar_timezone(token) or _DEFAULT_TZ
+    except Exception:  # noqa: BLE001
+        return _DEFAULT_TZ
+
+
 def _zoom_link(db, user, *, topic: str, start_iso: str, duration_min: int, tz: str) -> Optional[str]:
     """Create a Zoom meeting if the host has Zoom connected; returns the join URL or None.
     Best-effort -- a Zoom hiccup falls back to the calendar's native video link."""
@@ -335,11 +353,12 @@ def propose_meeting_slot(db, user, *, duration_min: int = 30) -> dict:
     acct = _pick_account(db, user.id, None)
     if acct is None:
         return {"mode": "none", "reason": "no calendar or calendly connected"}
-    slot = find_open_slot(db, acct, duration_min=duration_min, tz=_DEFAULT_TZ)
+    tz = host_timezone(db, user)
+    slot = find_open_slot(db, acct, duration_min=duration_min, tz=tz)
     if not slot:
         return {"mode": "none",
                 "reason": "no open slot in the next business week"}
-    return {"mode": "propose_time", "start_iso": slot, "tz": _DEFAULT_TZ,
+    return {"mode": "propose_time", "start_iso": slot, "tz": tz,
             "duration_min": duration_min, "with_zoom": _zoom_connected(db, user)}
 
 
@@ -373,6 +392,11 @@ def agent_book_meeting(db, user, contact, *, topic: str, start_iso: str = "",
 
     if with_zoom is None:
         with_zoom = _zoom_connected(db, user)
+
+    # Default tz -> the host's REAL calendar timezone. An explicit tz (e.g. from a
+    # proposal payload) is already host-resolved upstream, so honor it as-is.
+    if tz == _DEFAULT_TZ:
+        tz = host_timezone(db, user)
 
     acct = _pick_account(db, user.id, None)
     if acct is None:
