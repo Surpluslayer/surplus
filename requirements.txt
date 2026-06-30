@@ -30,3 +30,4 @@ stripe==11.4.1
 # never imported at runtime and the dyno behaves exactly as before. Pinned to
 # the version validated against the deployed surplus-jobs app.
 modal==1.2.6
+bcrypt>=4.1,<6

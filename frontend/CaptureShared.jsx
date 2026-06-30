@@ -22,6 +22,7 @@ import {
 import { api } from "./lib/api.js";
 import ContactsButton from "./components/ContactsButton.jsx";
 import ContactsPage from "./components/ContactsPage.jsx";
+import AuthOptions from "./components/AuthOptions.jsx";
 import { ensureNotifyPermission, notifyDevice } from "./lib/notify.js";
 import { actionLabel, statusMeta, outreachStateLabel } from "./lib/labels.js";
 
@@ -331,33 +332,8 @@ function InPersonAppInner() {
 // ── sign-in bounce ───────────────────────────────────────────────────────────
 
 export function SignInBounce({ authError = null, onRetry = null }) {
-  const [busy, setBusy] = useState(false);
-  // Mirror the desktop App's onSignIn: LinkedIn-connect is gated behind Stripe
-  // payment (pay-first product flow), so /linkedin/start returns 402
-  // payment_required for an anonymous / unpaid browser. Instead of dumping that
-  // JSON in an alert, fall back to Stripe Checkout : the checkout mints the
-  // account, and post-payment they come back signed-in + paid and can connect.
-  const go = async () => {
-    setBusy(true);
-    try {
-      const r = await api.startLinkedinAuth();
-      if (r?.url) { window.location.href = r.url; return; }
-      setBusy(false);
-    } catch (e) {
-      const code = e?.body?.detail?.code || e?.body?.code;
-      if (e?.status === 402 || code === "payment_required") {
-        try {
-          const r = await api.startCheckout();
-          if (r?.url) { window.location.href = r.url; return; }
-        } catch (e2) {
-          alert("Could not start checkout: " + (e2.message || "unknown"));
-        }
-      } else {
-        alert("Could not start sign-in: " + (e.message || "unknown"));
-      }
-      setBusy(false);
-    }
-  };
+  // Sign-in is via email / Google / Microsoft (AuthOptions). LinkedIn is no longer a
+  // login door -- it's connected as a DATA source AFTER sign-in (Unipile / the plugin).
   return (
     <div className="ip-root">
       <style>{IP_CSS}</style>
@@ -366,9 +342,9 @@ export function SignInBounce({ authError = null, onRetry = null }) {
           <QrCode size={40} />
           <p className="ip-empty-title">Capture people you meet</p>
           <p>Scan a LinkedIn QR, send a connection, and we’ll draft the message for you.</p>
-          <button className="ip-btn primary lg block" onClick={go} disabled={busy}>
-            {busy ? <Loader2 className="spin" size={18} /> : "Sign in with LinkedIn"}
-          </button>
+          <div style={{ width: "100%", maxWidth: 340, marginTop: 18, textAlign: "left" }}>
+            <AuthOptions onSignedIn={() => window.location.reload()} />
+          </div>
           {authError && (
             <div className="ip-warn" style={{ marginTop: 14, maxWidth: 340 }}>
               <AlertCircle size={13} />

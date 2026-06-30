@@ -9,17 +9,27 @@ Returns NORMALIZED shapes the relationship sync consumes:
 from __future__ import annotations
 
 import email.utils
+import uuid
 from typing import Optional
 
 import httpx
 
 _GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me"
 _GCAL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+_PEOPLE = "https://people.googleapis.com/v1/people/me/connections"
 
 
 def _get(token: str, url: str, params: Optional[dict] = None) -> dict:
     r = httpx.get(url, headers={"Authorization": f"Bearer {token}"},
                   params=params or {}, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def _post(token: str, url: str, body: dict, params: Optional[dict] = None) -> dict:
+    r = httpx.post(url, headers={"Authorization": f"Bearer {token}",
+                                 "Content-Type": "application/json"},
+                   params=params or {}, json=body, timeout=20)
     r.raise_for_status()
     return r.json()
 
@@ -63,6 +73,29 @@ def gmail_fetch_page(token: str, *, own_email: str = "", cursor: Optional[str] =
     return {"items": items, "cursor": lst.get("nextPageToken")}
 
 
+def fetch_contacts(token: str, *, cursor: Optional[str] = None,
+                   page_size: int = 200) -> dict:
+    """One page of the user's Google Contacts (People API connections.list), normalized
+    to {name, email, phone} (first of each). Returns {"items":[...], "cursor": <next>}.
+    Entries with neither an email nor a phone are dropped (nothing to key on)."""
+    data = _get(token, _PEOPLE, {
+        "personFields": "names,emailAddresses,phoneNumbers",
+        "pageSize": page_size,
+        **({"pageToken": cursor} if cursor else {})})
+    items = []
+    for p in (data.get("connections") or []):
+        names = p.get("names") or []
+        emails = p.get("emailAddresses") or []
+        phones = p.get("phoneNumbers") or []
+        name = (names[0].get("displayName") or "").strip() if names else ""
+        email = (emails[0].get("value") or "").strip().lower() if emails else ""
+        phone = (phones[0].get("value") or "").strip() if phones else ""
+        if not (email or phone):
+            continue
+        items.append({"name": name, "email": email, "phone": phone})
+    return {"items": items, "cursor": data.get("nextPageToken")}
+
+
 def fetch_calendar_events(token: str, *, time_min_iso: str, time_max_iso: str,
                           max_results: int = 50) -> list:
     """Flattened calendar events in [time_min, time_max]: {id, summary, start (ISO
@@ -83,3 +116,45 @@ def fetch_calendar_events(token: str, *, time_min_iso: str, time_max_iso: str,
             "html_link": e.get("htmlLink"),
         })
     return out
+
+
+def _meet_url(data: dict) -> Optional[str]:
+    """Pull the Google Meet join URL from a created event (hangoutLink, else the
+    video entryPoint in conferenceData)."""
+    if data.get("hangoutLink"):
+        return data["hangoutLink"]
+    for ep in ((data.get("conferenceData") or {}).get("entryPoints") or []):
+        if ep.get("entryPointType") == "video" and ep.get("uri"):
+            return ep["uri"]
+    return None
+
+
+def create_calendar_event(token: str, *, summary: str, start_iso: str, end_iso: str,
+                          attendees: list, description: str = "", tz: str = "UTC",
+                          add_video: bool = True, notify: bool = True) -> dict:
+    """Create an event on the host's primary calendar (Calendar API events.insert).
+    `attendees` is a list of email strings -- with notify=True Google emails them the
+    invite (sendUpdates=all). add_video=True attaches a Google Meet link. Returns
+    {id, html_link, video_url, start, attendees}."""
+    body: dict = {
+        "summary": summary,
+        "start": {"dateTime": start_iso, "timeZone": tz},
+        "end": {"dateTime": end_iso, "timeZone": tz},
+        "attendees": [{"email": a} for a in attendees if a],
+    }
+    if description:
+        body["description"] = description
+    params: dict = {"sendUpdates": "all" if notify else "none"}
+    if add_video:
+        body["conferenceData"] = {"createRequest": {
+            "requestId": uuid.uuid4().hex,
+            "conferenceSolutionKey": {"type": "hangoutsMeet"}}}
+        params["conferenceDataVersion"] = 1
+    data = _post(token, _GCAL, body, params)
+    return {
+        "id": data.get("id"),
+        "html_link": data.get("htmlLink"),
+        "video_url": _meet_url(data),
+        "start": (data.get("start") or {}).get("dateTime"),
+        "attendees": [a.get("email") for a in (data.get("attendees") or [])],
+    }

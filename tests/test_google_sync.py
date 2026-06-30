@@ -110,3 +110,38 @@ def test_sync_calendar_writes_meeting_facts_for_known_attendees_only(db, monkeyp
     # idempotent: same event re-synced -> upsert in place, no duplicate
     google_sync.sync_google_calendar(db, u, acct)
     assert len(cm.get_facts(db, known.id, key="upcoming_meeting")) == 1
+
+
+# ── contacts (People API) ──────────────────────────────────────────────────────
+def test_fetch_contacts_normalizes(monkeypatch):
+    monkeypatch.setattr(google_client, "_get", lambda *a, **k: {"connections": [
+        {"names": [{"displayName": "Sarah Lee"}],
+         "emailAddresses": [{"value": "Sarah@X.com"}],
+         "phoneNumbers": [{"value": "+1 415 555 1234"}]},
+        {"names": [{"displayName": "No Contact Info"}]},          # dropped (no email/phone)
+        {"phoneNumbers": [{"value": "415-555-9999"}]},            # phone-only kept
+    ], "nextPageToken": "N2"})
+    page = google_client.fetch_contacts("tok")
+    assert page["cursor"] == "N2"
+    assert len(page["items"]) == 2
+    assert page["items"][0] == {"name": "Sarah Lee", "email": "sarah@x.com", "phone": "+1 415 555 1234"}
+    assert page["items"][1]["email"] == "" and page["items"][1]["phone"] == "415-555-9999"
+
+
+def test_sync_contacts_creates_by_email_and_phone(db, monkeypatch):
+    u = _user(db)
+    monkeypatch.setattr(oauth, "get_valid_access_token", lambda db, a, **k: "tok")
+    monkeypatch.setattr(google_client, "fetch_contacts", lambda *a, **k: {"items": [
+        {"name": "Sarah Lee", "email": "sarah@x.com", "phone": ""},
+        {"name": "Phone Only", "email": "", "phone": "+1 415 555 1234"},
+    ], "cursor": None})
+    acct = SimpleNamespace(account_email="me@x.com")
+    stats = google_sync.sync_google_contacts(db, u, acct)
+    assert stats["contacts_created"] == 2
+    rows = db.query(models.Contact).filter_by(user_id=u.id).all()
+    keys = {c.primary_identity_key[:3] for c in rows}
+    assert keys == {"em:", "ph:"}                  # email-keyed + phone-keyed
+    # idempotent: re-sync enriches, doesn't duplicate
+    stats2 = google_sync.sync_google_contacts(db, u, acct)
+    assert stats2["contacts_created"] == 0
+    assert db.query(models.Contact).filter_by(user_id=u.id).count() == 2

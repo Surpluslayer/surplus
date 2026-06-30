@@ -20,6 +20,14 @@ def _get(token: str, url: str, params: Optional[dict] = None) -> dict:
     return r.json()
 
 
+def _post(token: str, url: str, body: dict) -> dict:
+    r = httpx.post(url, headers={"Authorization": f"Bearer {token}",
+                                 "Content-Type": "application/json"},
+                   json=body, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
 def _attendee(ea: Optional[dict]) -> dict:
     """Graph emailAddress object -> {identifier, display_name} (email_sync shape)."""
     e = (ea or {}).get("emailAddress") or {}
@@ -74,3 +82,34 @@ def fetch_calendar_events(token: str, *, time_min_iso: str, time_max_iso: str,
                           if (a.get("emailAddress") or {}).get("address")],
         })
     return out
+
+
+def create_calendar_event(token: str, *, summary: str, start_iso: str, end_iso: str,
+                          attendees: list, description: str = "", tz: str = "UTC",
+                          add_video: bool = True, notify: bool = True) -> dict:
+    """Create an event on the host's calendar (Graph POST /me/events). Graph sends the
+    invite to attendees automatically on create, so `notify=False` omits attendees and
+    just holds the slot (Graph has no per-create sendUpdates toggle). add_video=True
+    attaches a Teams link. Returns {id, html_link, video_url, start, attendees}."""
+    body: dict = {
+        "subject": summary,
+        "start": {"dateTime": start_iso, "timeZone": tz},
+        "end": {"dateTime": end_iso, "timeZone": tz},
+    }
+    if notify:
+        body["attendees"] = [{"emailAddress": {"address": a}, "type": "required"}
+                             for a in attendees if a]
+    if description:
+        body["body"] = {"contentType": "text", "content": description}
+    if add_video:
+        body["isOnlineMeeting"] = True
+        body["onlineMeetingProvider"] = "teamsForBusiness"
+    data = _post(token, f"{_GRAPH}/events", body)
+    return {
+        "id": data.get("id"),
+        "html_link": data.get("webLink"),
+        "video_url": (data.get("onlineMeeting") or {}).get("joinUrl"),
+        "start": (data.get("start") or {}).get("dateTime"),
+        "attendees": [(a.get("emailAddress") or {}).get("address")
+                      for a in (data.get("attendees") or [])],
+    }

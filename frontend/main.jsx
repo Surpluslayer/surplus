@@ -44,7 +44,13 @@ idle(() => import("./lib/analytics.js").then((m) => m.initAnalytics()).catch(() 
 // The www host (index.html) serves ONLY the desktop pipeline App. The book and
 // in-person surfaces live on event.surpluslayer.com (the inperson.html entry),
 // so this entry no longer routes /book, /inperson, or ?surface= overrides.
-const load = () => import("./App.jsx");
+// One exception: the password-reset page is a standalone surface (the target of the
+// reset email link), independent of the main app's auth state.
+const load = () => (
+  window.location.pathname === "/reset-password"
+    ? import("./components/ResetPasswordPage.jsx")
+    : import("./App.jsx")
+);
 
 load().then(({ default: Root }) => {
   ReactDOM.createRoot(document.getElementById("root")).render(

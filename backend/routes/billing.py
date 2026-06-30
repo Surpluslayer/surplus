@@ -218,7 +218,7 @@ def create_checkout_session(
     url = build_checkout_url(request, db, user)
     resp = JSONResponse({"url": url})
     if new_session_token:
-        set_session_cookie(resp, new_session_token)
+        set_session_cookie(resp, new_session_token, host=request.headers.get("host"))
     return resp
 
 

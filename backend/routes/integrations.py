@@ -18,6 +18,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -28,7 +29,7 @@ from .auth import _surplus_base_url
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
 
-_PROVIDERS = ["google", "microsoft", "calendly"]   # static-client OAuth providers
+_PROVIDERS = ["google", "microsoft", "calendly", "zoom"]   # static-client OAuth providers
 
 
 def _redirect_uri(request: Request, provider: str) -> str:
@@ -53,6 +54,148 @@ def list_integrations(
         "available": {**{name: oauth.configured(name) for name in _PROVIDERS},
                       "granola": True},
     }
+
+
+# ── Booking (Phase-2 WRITE action) — create a calendar meeting with a contact.
+# Declared BEFORE the /{provider} routes so the literal 'calendar' wins.
+class BookIn(BaseModel):
+    contact_id: Optional[int] = None        # resolve attendee email/name from a Contact
+    attendee_email: Optional[str] = None    # ...or pass them directly
+    attendee_name: Optional[str] = ""
+    title: str
+    start_iso: str                          # ISO 8601 w/ offset, e.g. 2026-07-01T15:00:00-07:00
+    duration_min: int = 30
+    tz: str = "UTC"
+    description: str = ""
+    add_video: bool = True                  # Google Meet / Teams link
+    with_zoom: bool = False                 # use a Zoom link instead (if Zoom connected)
+    notify: bool = True                     # email the attendee the invite
+    provider: Optional[str] = None          # force google|microsoft (else auto)
+
+
+@router.post("/calendar/book")
+def calendar_book(
+    body: BookIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Create a calendar event inviting a contact, with a native video link. Owner-scoped;
+    the explicit host action (no agent auto-call). 409 if no calendar connected, 400 on a
+    bad time / missing attendee email / upstream error."""
+    email = (body.attendee_email or "").strip()
+    name = body.attendee_name or ""
+    if body.contact_id and not email:
+        c = db.get(models.Contact, body.contact_id)
+        if c is None or c.user_id != user.id:
+            raise HTTPException(404, "contact not found")
+        email = (c.email or "").strip()
+        name = name or (c.name or "")
+    if not email:
+        raise HTTPException(400, "no attendee email (contact has none; pass attendee_email)")
+    from ..integrations.booking import book_meeting
+    try:
+        return book_meeting(
+            db, user, attendee_email=email, attendee_name=name, title=body.title,
+            start_iso=body.start_iso, duration_min=body.duration_min, tz=body.tz,
+            description=body.description, add_video=body.add_video,
+            with_zoom=body.with_zoom, notify=body.notify, provider=body.provider)
+    except ValueError as exc:
+        msg = str(exc)
+        code = 409 if ("connected" in msg or "reconnection" in msg) else 400
+        raise HTTPException(code, msg)
+
+
+# ── LinkedIn one-tap connect from a captured browser cookie (the plugin path).
+# Declared BEFORE the /{provider} routes so the literal 'linkedin' wins.
+class CookieConnectIn(BaseModel):
+    li_at: str               # the user's LinkedIn session cookie, captured by the plugin
+    user_agent: str = ""
+
+
+@router.get("/linkedin/status")
+def linkedin_status(user: models.User = Depends(current_user)):
+    """Whether THIS user has a live LinkedIn (Unipile) connection -- the plugin checks
+    this before offering to connect, so it never creates a duplicate."""
+    return {
+        "connected": bool(user.unipile_account_id) and user.linkedin_status == "active",
+        "account_id": user.unipile_account_id,
+        "status": user.linkedin_status,
+    }
+
+
+@router.post("/linkedin/connect-cookie")
+def linkedin_connect_cookie(
+    body: CookieConnectIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Connect LinkedIn from the plugin's captured cookie. Dedup guard (one User = one
+    Unipile account): if already actively connected, no-op and reuse -- never create a
+    second account. Otherwise hand the cookie to Unipile and bind the account to the user."""
+    if user.unipile_account_id and user.linkedin_status == "active":
+        return {"connected": True, "account_id": user.unipile_account_id, "reused": True}
+    from ..integrations import linkedin_cookie
+    try:
+        res = linkedin_cookie.connect_with_cookie(
+            li_at=body.li_at, user_agent=body.user_agent)
+    except ValueError as exc:
+        msg = str(exc)
+        raise HTTPException(409 if "not configured" in msg else 400, msg)
+
+    new_account_id = res["account_id"]
+
+    # Orphan-dedup, mirroring the hosted-auth flow (routes/auth.py): reconnecting
+    # with a DIFFERENT account_id must release the user's previous Unipile seat so
+    # we don't leak a billed account. Capture it for a best-effort delete after
+    # commit; a delete failure must never roll back the connect.
+    orphan_unipile_account_id: Optional[str] = None
+    if user.unipile_account_id and user.unipile_account_id != new_account_id:
+        orphan_unipile_account_id = user.unipile_account_id
+
+    # If this account_id already belongs to ANOTHER user, release it from them
+    # (same dedup the webhook/callback do) so one Unipile account maps to one User.
+    prior = (db.query(models.User)
+             .filter(models.User.unipile_account_id == new_account_id,
+                     models.User.id != user.id).first())
+    if prior is not None:
+        prior.unipile_account_id = None
+        prior.linkedin_status = "disconnected"
+
+    user.unipile_account_id = new_account_id
+    user.linkedin_status = "active"
+    db.commit()
+
+    # Fire-and-forget : drop the orphan Unipile account AFTER commit so a Unipile
+    # delete failure can't roll back the user-attachment. Best-effort.
+    if orphan_unipile_account_id:
+        linkedin_cookie.delete_account(orphan_unipile_account_id)
+
+    return {"connected": True, "account_id": new_account_id, "reused": False}
+
+
+# ── Calendly scheduling link (share / send as an invite). Before /{provider}.
+@router.get("/calendly/scheduling-link")
+def calendly_scheduling_link(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """The host's public Calendly link to share in a message. 409 if Calendly isn't
+    connected / can't refresh."""
+    acct = (db.query(models.ConnectedAccount)
+            .filter_by(user_id=user.id, provider="calendly", status="active").first())
+    if acct is None:
+        raise HTTPException(409, "no connected calendly account")
+    token = oauth.get_valid_access_token(db, acct)
+    if not token:
+        raise HTTPException(409, "calendly needs reconnection")
+    from ..integrations.calendly_client import scheduling_url
+    try:
+        url = scheduling_url(token)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "calendly error")
+    if not url:
+        raise HTTPException(404, "no scheduling link on this calendly account")
+    return {"scheduling_url": url}
 
 
 # ── Granola (MCP: DCR + PKCE) — its own connect/callback, NOT the generic OAuth one.

@@ -52,7 +52,8 @@ from ..auth import (
 from .. import billing_plans as bp
 from ..db import get_db
 from ..hosts import is_first_party, is_inperson_host, request_browser_host
-from ..models import AuthState, Session, User
+from ..models import (AuthState, ConnectedAccount, Session, User,
+                      list_email_accounts, upsert_email_account)
 from ..rate_limit import per_ip_rate_limit
 
 
@@ -1020,31 +1021,23 @@ async def email_webhook(payload: dict,
         db.commit()
         return JSONResponse({"ok": True, "ignored": "no user"})
 
-    # If this mailbox account_id is already attached to a DIFFERENT user
-    # (re-connect from another row), release it there first — the unique
-    # index would reject the second attach otherwise.
-    other = (db.query(User)
-             .filter(User.unipile_email_account_id == account_id,
-                     User.id != user.id).first())
-    if other is not None:
-        print(f"  [auth.email] moving email account {account_id} from "
-              f"user.id={other.id} to user.id={user.id}")
-        other.unipile_email_account_id = None
-        other.email_status = "disconnected"
-
     now = _utcnow()
-    user.unipile_email_account_id = account_id
-    user.email_status = "active"
-    user.email_connected_at = now
 
     # Best-effort mailbox address for the Integrations tile ("Connected as
     # daniel@gmail.com"). Never fails the connect.
     dsn, api_key = _unipile_dsn(), _unipile_api_key()
+    addr = None
     if dsn and api_key:
         account_data = await _fetch_unipile_profile(account_id, dsn, api_key)
         addr = _extract_mailbox_address(account_data)
-        if addr:
-            user.email_account_address = addr
+
+    # Find-or-create an EmailAccount for this mailbox and attach it to the
+    # user. This creates an ADDITIONAL row for a second connect rather than
+    # overwriting, handles the cross-user re-connect release/dedup at the
+    # EmailAccount level, and keeps the legacy User.* fields mirrored to the
+    # user's primary mailbox (so every existing read site keeps working).
+    upsert_email_account(db, user=user, unipile_account_id=account_id,
+                         address=addr, status="active")
 
     auth_state.status = "webhook_done"
     auth_state.completed_at = now
@@ -1111,7 +1104,8 @@ async def email_callback(
 
 @router.post("/triage/quick-start",
              dependencies=[Depends(_rl_triage_signup)])
-def triage_quick_start(db: DbSession = Depends(get_db)) -> JSONResponse:
+def triage_quick_start(db: DbSession = Depends(get_db),
+                       request: Request = None) -> JSONResponse:
     """Create an anonymous User row + session cookie. Caller reloads and
     lands in TriageApp (App.jsx routes there for users with no
     unipile_account_id)."""
@@ -1128,7 +1122,8 @@ def triage_quick_start(db: DbSession = Depends(get_db)) -> JSONResponse:
     db.refresh(user)
     sess = create_session(db, user)
     resp = JSONResponse({"ok": True, "user_id": user.id, "mode": "triage_only"})
-    set_session_cookie(resp, sess.session_token)
+    set_session_cookie(resp, sess.session_token,
+                       host=request.headers.get("host") if request else None)
     return resp
 
 
@@ -1186,6 +1181,7 @@ class TriageSignupBody(BaseModel):
 def triage_signup(
     body: TriageSignupBody,
     db: DbSession = Depends(get_db),
+    request: Request = None,
 ) -> JSONResponse:
     """Create a User row + session for someone who only wants triage.
 
@@ -1232,14 +1228,37 @@ def triage_signup(
         "email": user.email,
         "mode": "triage_only",
     })
-    set_session_cookie(resp, sess.session_token)
+    set_session_cookie(resp, sess.session_token,
+                       host=request.headers.get("host") if request else None)
     return resp
 
 
 # ─── 4. /me: who is signed in? ────────────────────────────────────
 
 @router.get("/me")
-def me(user: User = Depends(current_user)) -> JSONResponse:
+def me(user: User = Depends(current_user),
+       db: DbSession = Depends(get_db)) -> JSONResponse:
+    # All connected mailboxes (primary first). The legacy single-mailbox keys
+    # below (email_status / email_account_address / unipile_email_account_id)
+    # are kept for compatibility and always reflect the PRIMARY account.
+    # db may be the unresolved Depends() sentinel for direct unit-test callers
+    # (me(user)) -- fall back to the user's bound session so the mailbox list
+    # still resolves. At runtime FastAPI always injects a real Session.
+    from sqlalchemy.orm import Session as _Session, object_session
+    if not isinstance(db, _Session):
+        db = object_session(user)
+    email_accounts = [
+        {"address": a.address, "status": a.status, "provider": a.provider,
+         "is_primary": a.is_primary, "unipile_account_id": a.unipile_account_id}
+        for a in list_email_accounts(db, user)
+    ] if db is not None else []
+    # Google Calendar/Contacts (OAuth ConnectedAccount). Returned here so the
+    # Connections screen renders that row INSTANTLY from /me, with no separate
+    # per-open listIntegrations fetch (which caused the load-on-click lag).
+    google_connected = bool(
+        db is not None and db.query(ConnectedAccount)
+        .filter_by(user_id=user.id, provider="google", status="active").first()
+    )
     return JSONResponse({
         "id": user.id,
         "name": user.name,
@@ -1255,6 +1274,12 @@ def me(user: User = Depends(current_user)) -> JSONResponse:
         "email_status": getattr(user, "email_status", "disconnected") or "disconnected",
         "email_account_address": getattr(user, "email_account_address", None),
         "unipile_email_account_id": getattr(user, "unipile_email_account_id", None),
+        # All connected mailboxes (Gmail/Outlook). Empty for users with no
+        # email connected. The Connections screen renders one row per entry.
+        "email_accounts": email_accounts,
+        # Google Calendar/Contacts connection -- lets the Connections row show
+        # instant on/off from /me (no separate fetch).
+        "google_connected": google_connected,
         # True for sessions that entered via the hidden demo link. The SPA
         # uses this to hide demo-only surfaces (e.g. the ROI ledger stage).
         "is_demo": is_demo_user(user),

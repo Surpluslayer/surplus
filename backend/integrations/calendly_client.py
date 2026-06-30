@@ -23,6 +23,11 @@ def current_user_uri(token: str) -> str:
     return ((_get(token, f"{_API}/users/me").get("resource") or {}).get("uri") or "")
 
 
+def scheduling_url(token: str) -> str:
+    """The host's public Calendly scheduling link (to share / send as an invite)."""
+    return ((_get(token, f"{_API}/users/me").get("resource") or {}).get("scheduling_url") or "")
+
+
 def fetch_scheduled_meetings(token: str, *, user_uri: str, time_min_iso: str,
                              time_max_iso: str, max_results: int = 50) -> list:
     """Active scheduled events in the window, each enriched with its invitee emails,

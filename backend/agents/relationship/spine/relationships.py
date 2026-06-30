@@ -54,13 +54,7 @@ _FAR_FUTURE = datetime.max.replace(tzinfo=timezone.utc)
 
 # Channel inferred from a stored interaction's source_type when it doesn't carry
 # one explicitly. Keeps the timeline item shape uniform across derived + stored.
-_CHANNEL_BY_SOURCE = {
-    "manual_note": "manual",
-    "email_interaction": "email",
-    "calendar_meeting": "calendar",
-    "relationship_interaction": "manual",
-    "draft_generated": "manual",
-}
+from ..channels import CHANNEL_BY_SOURCE as _CHANNEL_BY_SOURCE
 
 
 def _as_aware(dt: Optional[datetime]) -> Optional[datetime]:

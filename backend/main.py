@@ -24,9 +24,10 @@ from fastapi.staticfiles import StaticFiles
 from .db import ENGINE, init_db
 from .routes import (
     # shared
-    auth, billing, demo, webhooks, admin,
+    auth, google_login, microsoft_login, password_auth, account_email,
+    billing, demo, webhooks, admin,
     # relationship side (the phone-first "book" / CRM)
-    book, relationships, inperson, followups, integrations,
+    book, relationships, inperson, followups, integrations, messages,
     # events side (the desktop event-ROI pipeline)
     events, pipeline, matching, roi, triage, curation, jobs,
 )
@@ -114,6 +115,10 @@ async def no_store_for_api(request: Request, call_next):
 
 # ── SHARED (auth, payments, demo entry, inbound webhooks, ops) ───────────────
 app.include_router(auth.router)
+app.include_router(google_login.router)    # Sign in with Google (decoupled login)
+app.include_router(microsoft_login.router) # Sign in with Microsoft (Outlook / 365)
+app.include_router(password_auth.router)   # email + password signup / sign-in
+app.include_router(account_email.router)    # email verification + password reset
 app.include_router(billing.router)
 app.include_router(demo.router)
 app.include_router(webhooks.router)
@@ -123,6 +128,7 @@ app.include_router(admin.router)
 app.include_router(book.router)            # Today feed, drafts, ask-agent
 app.include_router(relationships.router)   # contact spine, star/VIP, imports, updates
 app.include_router(inperson.router)        # phone capture (QR / paste / manual)
+app.include_router(messages.router)        # message capture (context in) + send queue
 app.include_router(followups.router)       # scheduled follow-up queue
 app.include_router(integrations.router)    # OAuth source connectors (Google ...)
 

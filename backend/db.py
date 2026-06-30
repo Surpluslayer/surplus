@@ -138,6 +138,7 @@ def init_db() -> None:
         _migrate_user_onboarding,
         _migrate_prospect_vip,
         _migrate_user_email_account,
+        _migrate_email_accounts,
         _migrate_prospect_email,
         _migrate_contact_email_thread,
         _migrate_followup_channel,
@@ -145,6 +146,14 @@ def init_db() -> None:
         _migrate_contact_profile_baselined,
         _migrate_contact_preferred_channel,
         _migrate_user_is_demo,
+        _migrate_user_google_sub,
+        _migrate_user_microsoft_sub,
+        _migrate_user_password_hash,
+        _migrate_user_email_verified,
+        _migrate_user_verify_code,
+        _migrate_session_client,
+        _migrate_contact_phone,
+        _migrate_contact_identities,
     ]
     for migration in migrations:
         try:
@@ -173,6 +182,211 @@ def init_db() -> None:
         _ensure_operator_user_and_backfill()
     except Exception as exc:  # noqa: BLE001
         print(f"  [init_db] operator backfill failed: {type(exc).__name__}: {exc}")
+
+
+def _migrate_user_google_sub() -> None:
+    """Add users.google_sub (VARCHAR(80), NULL) + its unique index for Sign in with
+    Google. Existing users are all NULL (LinkedIn-first); a Google login links to them
+    by email or creates a new row. NULLs don't collide in a unique index on PG/SQLite."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "google_sub" not in cols:
+        with ENGINE.begin() as conn:
+            conn.execute(text("ALTER TABLE users ADD COLUMN google_sub VARCHAR(80)"))
+    with ENGINE.begin() as conn:
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_sub "
+                          "ON users (google_sub)"))
+
+
+def _migrate_user_microsoft_sub() -> None:
+    """Add users.microsoft_sub (VARCHAR(80), NULL) + its unique index for Sign in with
+    Microsoft. Mirrors google_sub: existing users NULL, NULLs don't collide on PG/SQLite."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "microsoft_sub" not in cols:
+        with ENGINE.begin() as conn:
+            conn.execute(text("ALTER TABLE users ADD COLUMN microsoft_sub VARCHAR(80)"))
+    with ENGINE.begin() as conn:
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_microsoft_sub "
+                          "ON users (microsoft_sub)"))
+
+
+def _migrate_user_password_hash() -> None:
+    """Add users.password_hash (VARCHAR(200), NULL) for email+password signup. Existing
+    users (OAuth/LinkedIn) stay NULL; no index (we look up by email)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "password_hash" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(200)"))
+
+
+def _migrate_contact_phone() -> None:
+    """Add contacts.phone (VARCHAR(40), NULL) for the actual number (SMS/iMessage/
+    WhatsApp). The hashed ph: key dedupes; this stores the raw value."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "contacts" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("contacts")}
+    if "phone" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text("ALTER TABLE contacts ADD COLUMN phone VARCHAR(40)"))
+
+
+def _migrate_contact_identities() -> None:
+    """Create the contact_identities table (the identity-resolution spine : one
+    STRONG identity -> one Contact) + its indexes + the (user_id, kind, value)
+    dedup unique, then BACKFILL one row per identity-bearing field on each existing
+    Contact (email -> kind=email, phone -> kind=phone, linkedin id -> kind=linkedin),
+    with is_primary aligned to the contact's primary_identity_key, source='backfill'
+    and confidence=1.0. Cross-dialect-safe (SQLite + Postgres). Idempotent :
+    CREATE TABLE IF NOT EXISTS + the unique index makes the backfill INSERTs skip
+    rows that already exist."""
+    from datetime import datetime, timezone
+    from sqlalchemy import inspect, text
+    from .agents.relationship.identity import (
+        normalize_email, normalize_phone, normalize_linkedin,
+    )
+    insp = inspect(ENGINE)
+    is_pg = ENGINE.dialect.name == "postgresql"
+    if "contact_identities" not in insp.get_table_names():
+        pk = ("id SERIAL PRIMARY KEY" if is_pg
+              else "id INTEGER PRIMARY KEY AUTOINCREMENT")
+        with ENGINE.begin() as conn:
+            conn.execute(text(
+                f"CREATE TABLE IF NOT EXISTS contact_identities ("
+                f"{pk}, "
+                "contact_id INTEGER NOT NULL REFERENCES contacts(id), "
+                "user_id INTEGER NOT NULL REFERENCES users(id), "
+                "kind VARCHAR(20) NOT NULL, "
+                "value VARCHAR(200) NOT NULL, "
+                f"is_primary BOOLEAN DEFAULT {'FALSE' if is_pg else '0'}, "
+                "source VARCHAR(30) DEFAULT 'manual', "
+                "confidence FLOAT DEFAULT 1.0, "
+                "created_at TIMESTAMP"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_contact_identities_contact_id "
+                "ON contact_identities (contact_id)"))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_contact_identities_user_id "
+                "ON contact_identities (user_id)"))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_contact_identities_kind "
+                "ON contact_identities (kind)"))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_contact_identities_value "
+                "ON contact_identities (value)"))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_contact_identity_value "
+                "ON contact_identities (user_id, kind, value)"))
+
+    # ── Backfill : one identity row per identity field on each Contact ─────────
+    if "contacts" not in insp.get_table_names():
+        return
+    with ENGINE.begin() as conn:
+        rows = conn.execute(text(
+            "SELECT id, user_id, primary_identity_key, email, phone, "
+            "linkedin_public_id, linkedin_url FROM contacts"
+        )).fetchall()
+        # provider_id column may not exist on the contacts table; tolerate that.
+        contact_cols = {c["name"] for c in insp.get_columns("contacts")}
+        has_provider = "linkedin_provider_id" in contact_cols
+
+        def _emit(cid, uid, kind, value, is_primary):
+            if not value:
+                return
+            exists = conn.execute(text(
+                "SELECT 1 FROM contact_identities "
+                "WHERE user_id = :u AND kind = :k AND value = :v"
+            ), {"u": uid, "k": kind, "v": value}).first()
+            if exists:
+                return
+            conn.execute(text(
+                "INSERT INTO contact_identities "
+                "(contact_id, user_id, kind, value, is_primary, source, "
+                " confidence, created_at) "
+                "VALUES (:cid, :uid, :kind, :val, :prim, 'backfill', 1.0, :now)"
+            ), {"cid": cid, "uid": uid, "kind": kind, "val": value,
+                "prim": bool(is_primary),
+                "now": datetime.now(timezone.utc)})
+
+        for r in rows:
+            cid, uid, prim_key = r[0], r[1], (r[2] or "")
+            email, phone = r[3], r[4]
+            li_public, li_url = r[5], r[6]
+            li_provider = ""
+            if has_provider:
+                pr = conn.execute(text(
+                    "SELECT linkedin_provider_id FROM contacts WHERE id = :i"
+                ), {"i": cid}).first()
+                li_provider = (pr[0] if pr else "") or ""
+            em = normalize_email(email)
+            ph = normalize_phone(phone)
+            li = normalize_linkedin(public_id=li_public or "",
+                                    provider_id=li_provider,
+                                    url=li_url or "")
+            _emit(cid, uid, "email", em, prim_key.startswith("em:"))
+            _emit(cid, uid, "phone", ph, prim_key.startswith("ph:"))
+            _emit(cid, uid, "linkedin", li, prim_key.startswith("li:"))
+
+
+def _migrate_user_email_verified() -> None:
+    """Add users.email_verified (BOOLEAN, default 0/false). Existing users default to
+    not-verified; OAuth/LinkedIn users are unaffected (we don't gate on it)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "email_verified" in cols:
+        return
+    is_pg = ENGINE.dialect.name == "postgresql"
+    bool_default = "FALSE" if is_pg else "0"
+    with ENGINE.begin() as conn:
+        conn.execute(text(f"ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT {bool_default}"))
+
+
+def _migrate_user_verify_code() -> None:
+    """Add users.email_verify_code_hash (VARCHAR(200)) + email_verify_code_expires
+    (DATETIME) for the PIN/OTP email-confirmation code. Both NULL by default."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    with ENGINE.begin() as conn:
+        if "email_verify_code_hash" not in cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN email_verify_code_hash VARCHAR(200)"))
+        if "email_verify_code_expires" not in cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN email_verify_code_expires TIMESTAMP"))
+
+
+def _migrate_session_client() -> None:
+    """Add sessions.client (VARCHAR(20), default 'web'). Existing sessions become 'web'
+    (the cookie flow), so multi-client (ios/plugin Bearer) is purely additive."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "sessions" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("sessions")}
+    if "client" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text("ALTER TABLE sessions ADD COLUMN client VARCHAR(20) DEFAULT 'web'"))
 
 
 def _migrate_event_event_name() -> None:
@@ -978,6 +1192,77 @@ def _migrate_user_email_account() -> None:
             conn.execute(text(
                 f"ALTER TABLE users ADD COLUMN {ine}email_connected_at TIMESTAMP"
             ))
+
+
+def _migrate_email_accounts() -> None:
+    """Create the email_accounts table (one row per connected mailbox) and
+    BACKFILL a primary row for every user that has a legacy single-mailbox
+    set on the users row. Cross-dialect-safe : SQLite + Postgres.
+
+    Backward compatibility : the legacy User.* email fields stay as a MIRROR
+    of the user's primary mailbox, so this migration never removes anything --
+    it just lifts the existing single account into the new multi-account table.
+    Idempotent : CREATE TABLE IF NOT EXISTS + skip users that already have a
+    matching row."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    is_pg = ENGINE.dialect.name == "postgresql"
+    if "email_accounts" not in insp.get_table_names():
+        pk = ("id SERIAL PRIMARY KEY" if is_pg
+              else "id INTEGER PRIMARY KEY AUTOINCREMENT")
+        ts = "TIMESTAMP" if is_pg else "TIMESTAMP"
+        boolt = "BOOLEAN" if is_pg else "BOOLEAN"
+        with ENGINE.begin() as conn:
+            conn.execute(text(
+                f"CREATE TABLE IF NOT EXISTS email_accounts ("
+                f"{pk}, "
+                "user_id INTEGER NOT NULL REFERENCES users(id), "
+                "provider VARCHAR(40) DEFAULT '', "
+                "address VARCHAR(200), "
+                "unipile_account_id VARCHAR(80) NOT NULL, "
+                "status VARCHAR(20) DEFAULT 'active', "
+                f"is_primary {boolt} DEFAULT FALSE, "
+                f"connected_at {ts}, "
+                f"last_synced_at {ts}"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ix_email_accounts_unipile_account_id "
+                "ON email_accounts (unipile_account_id)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_email_accounts_user_id "
+                "ON email_accounts (user_id)"
+            ))
+
+    # ── Backfill : lift each user's legacy single mailbox into a primary row.
+    if "users" not in insp.get_table_names():
+        return
+    user_cols = {c["name"] for c in insp.get_columns("users")}
+    if "unipile_email_account_id" not in user_cols:
+        return  # legacy email columns not present yet : nothing to backfill
+    with ENGINE.begin() as conn:
+        rows = conn.execute(text(
+            "SELECT id, unipile_email_account_id, email_account_address, "
+            "email_status, email_connected_at FROM users "
+            "WHERE unipile_email_account_id IS NOT NULL"
+        )).fetchall()
+        for r in rows:
+            uid, acct_id, addr, status, connected_at = r
+            exists = conn.execute(text(
+                "SELECT 1 FROM email_accounts WHERE unipile_account_id = :a"
+            ), {"a": acct_id}).first()
+            if exists:
+                continue
+            conn.execute(text(
+                "INSERT INTO email_accounts "
+                "(user_id, provider, address, unipile_account_id, status, "
+                " is_primary, connected_at, last_synced_at) "
+                "VALUES (:uid, '', :addr, :acct, :status, :prim, :conn, NULL)"
+            ), {"uid": uid, "addr": addr, "acct": acct_id,
+                "status": status or "active", "prim": True,
+                "conn": connected_at})
 
 
 def _ensure_operator_user_and_backfill() -> None:

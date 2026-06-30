@@ -16,7 +16,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Cookie, Depends, HTTPException, Response, status
+from fastapi import Cookie, Depends, Header, HTTPException, Response, status
 from sqlalchemy.orm import Session as DbSession
 
 from .db import get_db
@@ -25,6 +25,15 @@ from .models import Session, User
 
 SESSION_COOKIE = "surplus_session"
 SESSION_TTL_DAYS = 30
+
+# Valid session clients (one independent, separately-revocable session per surface).
+CLIENTS = ("web", "ios", "plugin")
+
+
+def normalize_client(value: str) -> str:
+    """Coerce a client tag to a known one, defaulting to 'web'."""
+    v = (value or "").strip().lower()
+    return v if v in CLIENTS else "web"
 
 # Identity of demo users minted by the hidden demo link (routes/demo.py).
 # Kept here so both demo.py and /me reference one source of truth without a
@@ -112,16 +121,79 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def hash_password(password: str) -> str:
+    """bcrypt hash of a password. We SHA-256 + base64 first so passwords longer than
+    bcrypt's 72-byte limit aren't silently truncated/rejected (the standard bcrypt
+    pre-hash). Returns the hash string to store in User.password_hash."""
+    import base64
+    import hashlib
+    import bcrypt
+    pre = base64.b64encode(hashlib.sha256((password or "").encode()).digest())
+    return bcrypt.hashpw(pre, bcrypt.gensalt()).decode()
+
+
+def verify_password(password: str, hashed: Optional[str]) -> bool:
+    """Constant-time check of a password against a stored bcrypt hash. False (never
+    raises) on a missing/garbage hash -- e.g. an OAuth-only user with no password."""
+    if not hashed:
+        return False
+    import base64
+    import hashlib
+    import bcrypt
+    pre = base64.b64encode(hashlib.sha256((password or "").encode()).digest())
+    try:
+        return bcrypt.checkpw(pre, hashed.encode())
+    except (ValueError, TypeError):
+        return False
+
+
+_OAUTH_SUB_FIELD = {"google": "google_sub", "microsoft": "microsoft_sub"}
+
+
+def find_or_create_oauth_user(db: DbSession, *, provider: str, sub: str,
+                              email: str, name: str) -> User:
+    """One User per person across every OAuth login provider. Match on the provider's
+    stable sub (google_sub / microsoft_sub); else LINK to an existing same-email
+    (non-demo) user -- so signing in with Google AND Microsoft on the same address,
+    or a LinkedIn-first user adding either, all resolve to ONE User; else create.
+    Provider emails are verified, so the email link is safe."""
+    field = _OAUTH_SUB_FIELD[provider]
+    u = None
+    if sub:
+        u = db.query(User).filter(getattr(User, field) == sub).first()
+    if u is None and email:
+        u = (db.query(User)
+             .filter(User.email == email, User.is_demo.is_(False)).first())
+        if u is not None and not getattr(u, field):
+            setattr(u, field, sub or None)
+    if u is None:
+        u = User(email=email or None, name=name or "")
+        setattr(u, field, sub or None)
+        db.add(u)
+    else:
+        if email and not u.email:
+            u.email = email
+        if name and not u.name:
+            u.name = name
+    u.last_login_at = _utcnow()
+    db.commit()
+    db.refresh(u)
+    return u
+
+
 def _new_session_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def create_session(db: DbSession, user: User) -> Session:
-    """Create + persist a session for `user`. Caller is responsible for
-    setting the cookie via set_session_cookie()."""
+def create_session(db: DbSession, user: User, *, client: str = "web") -> Session:
+    """Create + persist a session for `user`. `client` ("web"|"ios"|"plugin") tags
+    which device this session is for, so a user has one independent, separately
+    revocable session per client. Web callers set the cookie via set_session_cookie();
+    ios/plugin callers return sess.session_token as a Bearer token."""
     sess = Session(
         session_token=_new_session_token(),
         user_id=user.id,
+        client=(client or "web").strip().lower()[:20] or "web",
         expires_at=_utcnow() + timedelta(days=SESSION_TTL_DAYS),
     )
     db.add(sess)
@@ -251,12 +323,27 @@ def _load_user_by_session(db: DbSession, token: Optional[str]) -> Optional[User]
     return db.query(User).filter(User.id == sess.user_id).first()
 
 
+def _bearer_token(authorization: Optional[str]) -> Optional[str]:
+    """Extract the token from an 'Authorization: Bearer <token>' header, else None."""
+    if not authorization:
+        return None
+    parts = authorization.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1].strip() or None
+    return None
+
+
 def current_user(
     db: DbSession = Depends(get_db),
     surplus_session: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE),
+    authorization: Optional[str] = Header(default=None),
 ) -> User:
-    """Returns the signed-in User, or raises 401. Use for protected routes."""
-    user = _load_user_by_session(db, surplus_session)
+    """Returns the signed-in User, or raises 401. Accepts EITHER transport against the
+    one Session table: the web cookie OR an 'Authorization: Bearer <token>' header
+    (ios / plugin). The Bearer header wins when both are present (a native client that
+    also happens to carry a cookie should use its own token)."""
+    token = _bearer_token(authorization) or surplus_session
+    user = _load_user_by_session(db, token)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

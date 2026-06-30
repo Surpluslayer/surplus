@@ -173,12 +173,19 @@ export default function BookApp() {
     <div className="bk-root">
       <style>{BOOK_CSS}</style>
       <div className="bk-frame">
-        {user?.is_demo && (
+        {user?.is_demo ? (
           <div className="bk-demobar">
             <span><b>Demo</b> · sample data. Sign in to use it for real, or skip the tour.</span>
             <button className="bk-demobar-cta" data-onb="signin" onClick={() => signInWithLinkedIn("banner")}>Sign in</button>
           </div>
-        )}
+        ) : !(user?.unipile_account_id && user?.linkedin_status === "active") ? (
+          // Real user without LinkedIn connected: nudge them into the connectors
+          // screen (the one place connect lives) instead of a standalone CTA.
+          <div className="bk-demobar">
+            <span><b>Connect LinkedIn</b> to enrich your book and catch job changes.</span>
+            <button className="bk-demobar-cta" onClick={() => setRoute({ name: "connections" })}>Connect</button>
+          </div>
+        ) : null}
         {screen}
         <nav className="bk-nav">
           <button className={"bk-nav-item" + (activeNav === "today" ? " on" : "")}
@@ -627,7 +634,6 @@ function DraftPanel({ detail, isDemo = false }) {
 
 function AccountScreen({ user, onBack, onConnections }) {
   const initials = _initials(user?.name);
-  const calendarOff = true; // No calendar backend yet — surfaced as the hint.
   const plan = user?.billing?.plan_label || (user?.paid_at ? "Pro" : "Individual");
 
   const signOut = async () => {
@@ -654,7 +660,6 @@ function AccountScreen({ user, onBack, onConnections }) {
         <button className="bk-set-row" onClick={onConnections}>
           <span className="bk-set-lead"><Plug size={19} /><span className="bk-set-lbl">Connections</span></span>
           <span className="bk-set-right">
-            {calendarOff && <Health status="warm" word="Calendar off" />}
             <ChevronRight size={17} className="bk-chev" />
           </span>
         </button>
@@ -677,8 +682,55 @@ function AccountScreen({ user, onBack, onConnections }) {
 
 function ConnectionsScreen({ user, onBack }) {
   const [note, setNote] = useState("");
-  const liOn = user?.linkedin_status === "active";
-  const emailOn = user?.email_status === "active";
+  // A FRESH /me snapshot, refetched on mount + window focus + tab-visible, so the
+  // rows update after the user connects something elsewhere (e.g. LinkedIn via the
+  // extension's connect-cookie, or Gmail/Google in the hosted-auth tab) without a
+  // full app reload. The BookApp-level `user` prop is loaded once at app start and
+  // would otherwise keep showing "Connect". Falls back to the prop until the first
+  // fetch resolves so there's no flicker.
+  const [me, setMe] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      api.me()
+         .then((d) => { if (!cancelled && d) setMe(d); })
+         .catch(() => {});
+    };
+    refresh();
+    const onFocus = () => refresh();
+    const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+  // Prefer the freshly-fetched /me; fall back to the (stale) prop until it lands.
+  const u = me || user;
+  // LinkedIn is connected only when an actual Unipile account is tied -- linkedin_status
+  // defaults to "active" even with none, so check unipile_account_id too.
+  const liOn = !!u?.unipile_account_id && u?.linkedin_status === "active";
+  const emailOn = u?.email_status === "active";
+  // All connected mailboxes. Falls back to the legacy single-account view when
+  // the API doesn't return the array (older session / pre-feature backend).
+  const emailAccounts = Array.isArray(u?.email_accounts)
+    ? u.email_accounts : null;
+  // Prefer the stored provider; fall back to the address domain (webhook rows
+  // don't carry a provider) so a connected mailbox reads "Gmail"/"Outlook", not
+  // a bare "Mailbox".
+  const providerLabel = (acct) => {
+    const p = acct?.provider;
+    if (p === "outlook") return "Outlook";
+    if (p === "google") return "Gmail";
+    const dom = (acct?.address || "").split("@")[1]?.toLowerCase() || "";
+    if (/gmail|googlemail/.test(dom)) return "Gmail";
+    if (/outlook|hotmail|live|microsoft|office365/.test(dom)) return "Outlook";
+    return "Mailbox";
+  };
+  // Google (calendar + contacts) -- from /me (instant on/off, no separate fetch).
+  const googleOn = !!u?.google_connected;
 
   const connect = async (starter, label) => {
     try {
@@ -701,16 +753,38 @@ function ConnectionsScreen({ user, onBack }) {
                  sub="Enrichment & job-change updates"
                  connected={liOn}
                  onConnect={() => connect(api.startLinkedinAuth, "LinkedIn")} />
-        <ConnRow icon={<Mail size={21} />} name="Gmail"
-                 sub={emailOn && user?.email_account_address
-                   ? `Connected as ${user.email_account_address}`
-                   : "Tracks replies, sends your drafts"}
-                 connected={emailOn}
-                 onConnect={() => connect(api.startEmailAuth, "Gmail")} />
-        <ConnRow icon={<Calendar size={21} />} name="Google Calendar"
-                 sub="Logs meetings, books reviews"
-                 connected={false}
-                 onConnect={() => setNote("Calendar sync is coming soon.")} />
+        {emailAccounts && emailAccounts.length > 0 ? (
+          // One row per connected mailbox (personal Gmail + work Outlook ...),
+          // plus an "Add another email" row to connect one more.
+          <React.Fragment>
+            {emailAccounts.map((acct) => (
+              <ConnRow key={acct.unipile_account_id}
+                       icon={<Mail size={21} />}
+                       name={providerLabel(acct)}
+                       sub={acct.address
+                         ? `Connected as ${acct.address}`
+                         : "Connected"}
+                       connected={acct.status === "active"}
+                       onConnect={() => connect(api.startEmailAuth, "email")} />
+            ))}
+            <ConnRow icon={<Mail size={21} />} name="Add another email"
+                     sub="Gmail or Outlook"
+                     connected={false}
+                     onConnect={() => connect(api.startEmailAuth, "email")} />
+          </React.Fragment>
+        ) : (
+          // Legacy / no-mailbox fallback : the original single Gmail row.
+          <ConnRow icon={<Mail size={21} />} name="Gmail"
+                   sub={emailOn && user?.email_account_address
+                     ? `Connected as ${user.email_account_address}`
+                     : "Tracks replies, sends your drafts"}
+                   connected={emailOn}
+                   onConnect={() => connect(api.startEmailAuth, "Gmail")} />
+        )}
+        <ConnRow icon={<Calendar size={21} />} name="Google Calendar & Contacts"
+                 sub={googleOn ? "Connected" : "Logs meetings, syncs contacts"}
+                 connected={googleOn}
+                 onConnect={() => connect(api.connectGoogle, "Google")} />
       </div>
 
       {note && <p className="bk-note bk-note--warn">{note}</p>}
@@ -719,7 +793,7 @@ function ConnectionsScreen({ user, onBack }) {
   );
 }
 
-function ConnRow({ icon, name, sub, connected, onConnect }) {
+function ConnRow({ icon, name, sub, connected, loading, onConnect }) {
   return (
     <div className="bk-conn-row">
       <span className="bk-tile">{icon}</span>
@@ -727,7 +801,11 @@ function ConnRow({ icon, name, sub, connected, onConnect }) {
         <p className="bk-name">{name}</p>
         <p className="bk-sub">{sub}</p>
       </div>
-      {connected ? (
+      {loading ? (
+        // Status not yet known -- show a neutral placeholder, NOT "Connect"
+        // (defaulting to Connect makes a connected account flicker Connect->Connected).
+        <span className="bk-conn-status" style={{ opacity: 0.4 }}>…</span>
+      ) : connected ? (
         <span className="bk-conn-status"><CheckCircle2 size={14} />Connected</span>
       ) : (
         <button className="bk-btn bk-btn--primary" onClick={onConnect}>Connect</button>

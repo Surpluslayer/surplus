@@ -613,6 +613,34 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name, email }),
     }),
+  // Email + password account system (works for any email). Sets the session
+  // cookie on success (web); the caller reloads / routes into the app.
+  signup: ({ name, email, password }) =>
+    request("/api/auth/signup", {
+      method: "POST",
+      body: JSON.stringify({ name, email, password }),
+    }),
+  login: ({ email, password }) =>
+    request("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  // One-tap OAuth: fetch the consent URL, then top-level navigate to it (the
+  // session cookie is set on the callback redirect, not a fetch).
+  startGoogleAuth: () => request("/api/auth/google/login"),
+  startMicrosoftAuth: () => request("/api/auth/microsoft/login"),
+  // Connected OAuth sources (Google/Microsoft/Calendly/Zoom) for the signed-in user.
+  listIntegrations: () => request("/api/integrations"),
+  connectGoogle: () => request("/api/integrations/google/connect"),
+  // Password reset (always 200 on forgot, no enumeration).
+  forgotPassword: (email) =>
+    request("/api/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) }),
+  // Email verification PIN (authenticated; after signup).
+  sendCode: () => request("/api/auth/send-code", { method: "POST" }),
+  verifyCode: (code) =>
+    request("/api/auth/verify-code", { method: "POST", body: JSON.stringify({ code }) }),
+  resetPassword: ({ token, password }) =>
+    request("/api/auth/reset-password", { method: "POST", body: JSON.stringify({ token, password }) }),
   // Zero-friction triage entry : creates an anonymous User row + session
   // so 'Triage mode' button can route straight into the flow with no form.
   triageQuickStart: () => request("/api/auth/triage/quick-start", { method: "POST" }),

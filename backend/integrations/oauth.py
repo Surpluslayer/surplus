@@ -94,26 +94,31 @@ def authorize_url(provider: str, *, redirect_uri: str, user_id: int) -> str:
     return p.auth_url + "?" + urllib.parse.urlencode(params)
 
 
-def exchange_code(provider: str, *, code: str, redirect_uri: str) -> dict:
-    p = get_provider(provider)
+def _token_request(p, data: dict) -> dict:
+    """POST to a provider's token endpoint, honoring token_auth: 'basic' sends the
+    client creds as an HTTP Basic header (Zoom); 'body' puts them in the form."""
     cid, secret = _creds(p)
-    r = httpx.post(p.token_url, data={
-        "code": code, "client_id": cid, "client_secret": secret,
-        "redirect_uri": redirect_uri, "grant_type": "authorization_code",
-    }, timeout=20)
+    if getattr(p, "token_auth", "body") == "basic":
+        import base64
+        basic = base64.b64encode(f"{cid}:{secret}".encode()).decode()
+        r = httpx.post(p.token_url, data=data,
+                       headers={"Authorization": f"Basic {basic}"}, timeout=20)
+    else:
+        r = httpx.post(p.token_url, data={**data, "client_id": cid,
+                                          "client_secret": secret}, timeout=20)
     r.raise_for_status()
     return r.json()
+
+
+def exchange_code(provider: str, *, code: str, redirect_uri: str) -> dict:
+    return _token_request(get_provider(provider), {
+        "code": code, "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code"})
 
 
 def refresh_access_token(provider: str, *, refresh_token: str) -> dict:
-    p = get_provider(provider)
-    cid, secret = _creds(p)
-    r = httpx.post(p.token_url, data={
-        "refresh_token": refresh_token, "client_id": cid, "client_secret": secret,
-        "grant_type": "refresh_token",
-    }, timeout=20)
-    r.raise_for_status()
-    return r.json()
+    return _token_request(get_provider(provider), {
+        "refresh_token": refresh_token, "grant_type": "refresh_token"})
 
 
 def fetch_account_email(provider: str, access_token: str) -> str:

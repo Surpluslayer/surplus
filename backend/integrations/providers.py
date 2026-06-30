@@ -22,6 +22,9 @@ class ProviderConfig:
     # return a refresh_token (without them you only get a short-lived access token).
     extra_auth_params: dict = field(default_factory=dict)
     userinfo_url: str = ""        # to fetch the connected account's email/label
+    # Token-endpoint auth style: "body" (creds in the POST body, the default) or
+    # "basic" (HTTP Basic header) -- Zoom requires Basic.
+    token_auth: str = "body"
 
 
 GOOGLE = ProviderConfig(
@@ -30,8 +33,14 @@ GOOGLE = ProviderConfig(
     token_url="https://oauth2.googleapis.com/token",
     scopes=(
         "openid", "email",
-        "https://www.googleapis.com/auth/gmail.readonly",
-        "https://www.googleapis.com/auth/calendar.readonly",
+        # NOTE: NO gmail scope on purpose -- gmail.readonly is a RESTRICTED scope that
+        # triggers Google's CASA security assessment. Gmail context comes via Unipile
+        # (we inherit their verification), so direct Google stays on SENSITIVE-only
+        # scopes (calendar/contacts), which need brand verification but no CASA.
+        # calendar.events grants create/update (booking) AND read of events.
+        "https://www.googleapis.com/auth/calendar.events",
+        # contacts.readonly -> import the phone address book (People API) into the spine.
+        "https://www.googleapis.com/auth/contacts.readonly",
     ),
     client_id_env="GOOGLE_CLIENT_ID",
     client_secret_env="GOOGLE_CLIENT_SECRET",
@@ -47,7 +56,9 @@ MICROSOFT = ProviderConfig(
     scopes=(
         "openid", "email", "offline_access",   # offline_access = the refresh token
         "https://graph.microsoft.com/Mail.Read",
-        "https://graph.microsoft.com/Calendars.Read",
+        # Calendars.ReadWrite grants create (booking) and read, so the read sync
+        # keeps working off the same scope.
+        "https://graph.microsoft.com/Calendars.ReadWrite",
     ),
     client_id_env="MICROSOFT_CLIENT_ID",
     client_secret_env="MICROSOFT_CLIENT_SECRET",
@@ -66,8 +77,20 @@ CALENDLY = ProviderConfig(
     userinfo_url="https://api.calendly.com/users/me",   # email nested under .resource
 )
 
+ZOOM = ProviderConfig(
+    name="zoom",
+    auth_url="https://zoom.us/oauth/authorize",
+    token_url="https://zoom.us/oauth/token",
+    scopes=("meeting:write",),       # create meetings on the user's behalf
+    client_id_env="ZOOM_CLIENT_ID",
+    client_secret_env="ZOOM_CLIENT_SECRET",
+    extra_auth_params={},
+    userinfo_url="https://api.zoom.us/v2/users/me",   # email under .email
+    token_auth="basic",              # Zoom requires HTTP Basic on the token endpoint
+)
+
 PROVIDERS: dict = {GOOGLE.name: GOOGLE, MICROSOFT.name: MICROSOFT,
-                   CALENDLY.name: CALENDLY}
+                   CALENDLY.name: CALENDLY, ZOOM.name: ZOOM}
 
 
 def get_provider(name: str) -> Optional[ProviderConfig]:
