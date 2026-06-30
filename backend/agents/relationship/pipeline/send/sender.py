@@ -212,12 +212,12 @@ def send_followup_email(db, prospect, text: str):
     thread_id = getattr(contact, "email_thread_id", None) if contact else None
     if thread_id and not provider.dry_run:
         try:
-            import os
             from ...email_sync import thread_messages
-            dsn = (os.environ.get("UNIPILE_DSN", "") or "").strip().rstrip("/")
-            if dsn and not dsn.startswith(("http://", "https://")):
-                dsn = f"https://{dsn}"
-            key = (os.environ.get("UNIPILE_API_KEY", "") or "").strip()
+            from .....integrations.unipile_config import unipile_creds
+            creds = unipile_creds()
+            if not creds:
+                raise RuntimeError("unipile not configured")
+            dsn, key = creds
             msgs = thread_messages(
                 dsn=dsn, api_key=key, account_id=acct, thread_id=thread_id,
                 own_address=getattr(owner, "email_account_address", "") or "")

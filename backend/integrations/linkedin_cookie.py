@@ -12,21 +12,15 @@ any error raises ValueError with a short reason the route maps to a 4xx.
 """
 from __future__ import annotations
 
-import os
 from typing import Optional
 
 import httpx
 
-
-def _dsn() -> str:
-    dsn = (os.environ.get("UNIPILE_DSN") or "").strip().rstrip("/")
-    if dsn and not dsn.startswith(("http://", "https://")):
-        dsn = f"https://{dsn}"
-    return dsn
+from .unipile_config import unipile_creds
 
 
 def configured() -> bool:
-    return bool(_dsn() and (os.environ.get("UNIPILE_API_KEY") or "").strip())
+    return unipile_creds() is not None
 
 
 def connect_with_cookie(*, li_at: str, user_agent: str = "") -> dict:
@@ -34,10 +28,10 @@ def connect_with_cookie(*, li_at: str, user_agent: str = "") -> dict:
     Returns {"account_id": <id>, "raw": <response>}; raises ValueError on failure.
     Dedup (one User = one account) is enforced by the CALLER, which no-ops when the user
     is already actively connected, so this only runs for a new/broken connection."""
-    dsn = _dsn()
-    api_key = (os.environ.get("UNIPILE_API_KEY") or "").strip()
-    if not dsn or not api_key:
+    creds = unipile_creds()
+    if not creds:
         raise ValueError("Unipile not configured")
+    dsn, api_key = creds
     if not (li_at or "").strip():
         raise ValueError("missing LinkedIn cookie")
 
@@ -69,10 +63,10 @@ def delete_account(account_id: str) -> bool:
     cookie-connect route (which is a sync handler). Never raises : a failure
     just leaves the orphan in Unipile's dashboard for manual cleanup, it must
     not break or roll back the connect."""
-    dsn = _dsn()
-    api_key = (os.environ.get("UNIPILE_API_KEY") or "").strip()
-    if not (account_id and dsn and api_key):
+    creds = unipile_creds()
+    if not (account_id and creds):
         return False
+    dsn, api_key = creds
     try:
         with httpx.Client(timeout=20.0) as client:
             r = client.delete(

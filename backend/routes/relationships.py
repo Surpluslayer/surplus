@@ -24,6 +24,7 @@ from .. import models
 from ..agents.relationship.spine import relationships
 from ..auth import current_user
 from ..db import SessionLocal, get_db
+from ..integrations.unipile_config import unipile_creds
 
 router = APIRouter(prefix="/api/relationships", tags=["relationships"])
 
@@ -200,16 +201,10 @@ def sync_email(
     a few Unipile pages — so the Integrations tile can await real counts.
     409 until a mailbox is connected. Also auto-kicked once by the email
     connect webhook, so most users never need to call this by hand."""
-    import os
     if not getattr(user, "unipile_email_account_id", None):
         raise HTTPException(409, "no email account connected")
     from ..agents.relationship.email_sync import sync_email_contacts
-    dsn = (os.environ.get("UNIPILE_DSN", "") or "").strip().rstrip("/")
-    if dsn and not dsn.startswith(("http://", "https://")):
-        dsn = f"https://{dsn}"
-    api_key = (os.environ.get("UNIPILE_API_KEY", "") or "").strip()
-    if not (dsn and api_key):
-        raise HTTPException(503, "Unipile not configured")
+    dsn, api_key = _unipile_cfg()
     stats = sync_email_contacts(db, user, dsn=dsn, api_key=api_key)
     return {"ok": stats.get("error") is None, **stats}
 
@@ -322,14 +317,10 @@ def send_contact_email(
 
 
 def _unipile_cfg() -> tuple[str, str]:
-    import os
-    dsn = (os.environ.get("UNIPILE_DSN", "") or "").strip().rstrip("/")
-    if dsn and not dsn.startswith(("http://", "https://")):
-        dsn = f"https://{dsn}"
-    api_key = (os.environ.get("UNIPILE_API_KEY", "") or "").strip()
-    if not (dsn and api_key):
+    creds = unipile_creds()
+    if not creds:
         raise HTTPException(503, "Unipile not configured")
-    return dsn, api_key
+    return creds
 
 
 def _email_channel_ready(user) -> str:

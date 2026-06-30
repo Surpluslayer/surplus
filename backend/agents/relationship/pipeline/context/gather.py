@@ -5,13 +5,13 @@ views instead of building parallel, diverging context dicts.
 """
 from __future__ import annotations
 
-import os
 from typing import Any, Optional
 
 from ...spine import relationships
 from .reconcile import DEFAULT_RECENT_MESSAGES, apply_to_facts
 from .summary import window_and_summarize
 from .... import voice
+from .....integrations.unipile_config import unipile_creds
 
 # Timeline rows that carry host<->contact conversation (not system/metadata).
 from ...channels import MESSAGE_SOURCE_TYPES as _MESSAGE_SOURCE_TYPES
@@ -99,12 +99,10 @@ def _email_prior(db, user_id: int, contact, *, full_lookup: bool = False) -> lis
         account_id = getattr(user, "unipile_email_account_id", None)
         own = (getattr(user, "email_account_address", None) or "").strip().lower()
         addr = (getattr(contact, "email", None) or "").strip().lower()
-        dsn = (os.environ.get("UNIPILE_DSN") or "").strip().rstrip("/")
-        if dsn and not dsn.startswith(("http://", "https://")):
-            dsn = f"https://{dsn}"
-        api_key = (os.environ.get("UNIPILE_API_KEY") or "").strip()
-        if not (account_id and dsn and api_key):
+        creds = unipile_creds()
+        if not (account_id and creds):
             return []
+        dsn, api_key = creds
         thread_id = getattr(contact, "email_thread_id", None)
         if not thread_id and full_lookup and addr:
             threads = email_sync.list_threads_for_address(

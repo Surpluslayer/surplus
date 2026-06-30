@@ -52,6 +52,7 @@ from ..auth import (
 from .. import billing_plans as bp
 from ..db import get_db
 from ..hosts import is_first_party, is_inperson_host, request_browser_host
+from ..integrations.unipile_config import normalize_unipile_dsn
 from ..models import (AuthState, ConnectedAccount, Session, User,
                       list_email_accounts, upsert_email_account)
 from ..rate_limit import per_ip_rate_limit
@@ -128,12 +129,7 @@ def _utcnow() -> datetime:
 
 
 def _unipile_dsn() -> Optional[str]:
-    raw = (os.environ.get("UNIPILE_DSN", "") or "").strip().rstrip("/")
-    if not raw:
-        return None
-    if not raw.startswith(("http://", "https://")):
-        raw = f"https://{raw}"
-    return raw
+    return normalize_unipile_dsn(os.environ.get("UNIPILE_DSN")) or None
 
 
 def _unipile_api_key() -> Optional[str]:
