@@ -6,6 +6,16 @@
 // prospecting pipeline.) Override via chrome.storage if needed later.
 const BOOK_URL = 'https://event.surpluslayer.com';
 
+// Tell the embedded web app it's running inside the extension panel so its
+// PostHog analytics can tag events `platform=extension` (the JS SDK's $lib is
+// always "web", so the web/ios/extension surfaces are otherwise
+// indistinguishable). The web app reads this param in lib/analytics.js and
+// persists it in sessionStorage for the life of the iframe session.
+function bookUrlWithPlatform(base) {
+  const sep = base.includes('?') ? '&' : '?';
+  return `${base}${sep}surplus_platform=extension`;
+}
+
 const book = document.getElementById('book');
 const loading = document.getElementById('loading');
 const ctx = document.getElementById('context');
@@ -36,11 +46,13 @@ book.addEventListener('load', () => {
 
 function loadBook() {
   loading.style.display = 'flex';
-  book.src = BOOK_URL;
+  book.src = bookUrlWithPlatform(BOOK_URL);
   bookLoaded = true;
-  // Now that we know the user is signed into surplus, surface the LinkedIn
-  // connect affordance (it hides itself if LinkedIn is already connected).
-  refreshLinkedInConnect();
+  // LinkedIn connect now lives in the book's Connections (connectors) screen,
+  // which renders inside this iframe and shows its own "Connect LinkedIn" banner
+  // when not connected. The standalone v4 one-tap cookie affordance is kept in
+  // the code (background.js handlers) but no longer surfaced here.
+  liConnect.classList.remove('show');
 }
 
 // --- LinkedIn connect-cookie (v4) ----------------------------------------
