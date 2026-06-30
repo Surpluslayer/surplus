@@ -278,14 +278,6 @@ class RelationshipAgentResult:
         }
 
 
-# Timeline source_types that carry actual host<->contact conversation (the
-# thread a follow-up should continue), in contrast to derived/system rows
-# (conversion, next_step, profile updates). Implemented in contact_context;
-# kept here as an alias so existing imports keep working.
-_MESSAGE_SOURCE_TYPES = {"in_person_capture", "manual_note", "linkedin_outreach",
-                         "email"}
-
-
 def _thread_from_timeline(timeline: list[dict]) -> list[dict]:
     return thread_from_timeline(timeline)
 
