@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session as DbSession
 
-from ..auth import (create_session, current_user, hash_password,
+from ..auth import (create_session, hash_password,
                     normalize_client, set_session_cookie, verify_password)
 from ..db import get_db
 from ..models import User
@@ -44,10 +44,6 @@ class LoginBody(BaseModel):
     email: str
     password: str
     client: str = "web"
-
-
-class SetPasswordBody(BaseModel):
-    password: str
 
 
 def _session_response(db: DbSession, user: User, client: str, body: dict,
@@ -114,17 +110,3 @@ def login(body: LoginBody, request: Request, db: DbSession = Depends(get_db)) ->
     return _session_response(db, user, normalize_client(body.client), {
         "ok": True, "user_id": user.id, "name": user.name, "email": user.email},
         host=request.headers.get("host"))
-
-
-@router.post("/set-password")
-def set_password(body: SetPasswordBody, db: DbSession = Depends(get_db),
-                 user: User = Depends(current_user)) -> JSONResponse:
-    """Add or change the password on the CURRENT signed-in account -- lets an
-    OAuth/LinkedIn-first user add email+password login without creating a duplicate.
-    Authenticated (cookie or Bearer); no email/identity check needed."""
-    pw = body.password or ""
-    if not (_MIN_PW <= len(pw) <= _MAX_PW):
-        raise HTTPException(400, f"password must be {_MIN_PW}-{_MAX_PW} characters")
-    user.password_hash = hash_password(pw)
-    db.commit()
-    return JSONResponse({"ok": True})

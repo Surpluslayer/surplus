@@ -632,11 +632,6 @@ export const api = {
   // Connected OAuth sources (Google/Microsoft/Calendly/Zoom) for the signed-in user.
   listIntegrations: () => request("/api/integrations"),
   connectGoogle: () => request("/api/integrations/google/connect"),
-  // Link a provider to the CURRENT signed-in account (safe migration).
-  linkGoogle: () => request("/api/auth/google/link"),
-  linkMicrosoft: () => request("/api/auth/microsoft/link"),
-  setPassword: (password) =>
-    request("/api/auth/set-password", { method: "POST", body: JSON.stringify({ password }) }),
   // Password reset (always 200 on forgot, no enumeration).
   forgotPassword: (email) =>
     request("/api/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) }),

@@ -1,8 +1,8 @@
 """routes/_oauth_login.py : shared OAuth-login flow for the per-provider login routes.
 
 google_login and microsoft_login were ~95% identical. This holds the common logic --
-consent-URL start, link-while-logged-in start, and the callback (verify state, exchange,
-fetch identity, link-or-create, mint session, web-cookie vs native-Bearer) -- parametrized
+consent-URL start and the callback (verify state, exchange, fetch identity,
+find-or-create, mint session, web-cookie vs native-Bearer) -- parametrized
 by a small `login_mod` (integrations.google_login / .microsoft_login) that supplies the
 provider name + authorize_url/verify_state/exchange_code/fetch_identity.
 """
@@ -11,9 +11,8 @@ from __future__ import annotations
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from .. import models
 from ..auth import (create_session, find_or_create_oauth_user,
-                    link_oauth_identity, normalize_client, set_session_cookie)
+                    normalize_client, set_session_cookie)
 from ..integrations import oauth
 from .auth import _surplus_base_url
 
@@ -45,17 +44,8 @@ def login_url(login_mod, request: Request, *, client: str, redirect: int):
     return {"url": url}
 
 
-def link_url(login_mod, request: Request, user: models.User):
-    """Consent URL to LINK this provider to the signed-in user (safe migration)."""
-    if not login_mod.configured():
-        raise HTTPException(409, f"{login_mod.PROVIDER} sign-in is not configured on this server")
-    url = login_mod.authorize_url(
-        redirect_uri=_redirect_uri(request, login_mod.PROVIDER), intent="link", user_id=user.id)
-    return {"url": url}
-
-
 def callback(login_mod, request: Request, db, *, code, state, error):
-    """OAuth redirect target: link-or-create the user and mint a session."""
+    """OAuth redirect target: find-or-create the user and mint a session."""
     provider = login_mod.PROVIDER
     base = _surplus_base_url(request)
     if error or not code:
@@ -69,18 +59,6 @@ def callback(login_mod, request: Request, db, *, code, state, error):
     ident = login_mod.fetch_identity(tokens.get("access_token", ""))
     if not ident.get("sub"):
         raise HTTPException(400, f"{provider.capitalize()} did not return an identity")
-
-    # Link intent: attach to the already-signed-in user from the state (no new account).
-    if payload.get("intent") == "link" and payload.get("uid"):
-        target = db.get(models.User, int(payload["uid"]))
-        if target is None:
-            raise HTTPException(400, "unknown user for this link")
-        ok = link_oauth_identity(db, target, provider=provider, sub=ident["sub"])
-        if ok:
-            _auto_connect(db, user_id=target.id, provider=provider,
-                          email=ident["email"], tokens=tokens)
-        status = "linked" if ok else "link_conflict"
-        return RedirectResponse(f"{base}/?link={provider}&status={status}", status_code=302)
 
     user = find_or_create_oauth_user(
         db, provider=provider, sub=ident["sub"], email=ident["email"], name=ident["name"])
