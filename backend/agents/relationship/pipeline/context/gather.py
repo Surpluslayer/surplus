@@ -28,6 +28,11 @@ def thread_from_timeline(timeline: list[dict]) -> list[dict]:
         text = (it.get("summary") or "").strip()
         if not text:
             continue
+        # Unipile returns a placeholder for media/voice/etc. it can't render as
+        # text (e.g. "Unipile cannot display this type of message yet"). That is
+        # noise in the drafter's context, not real conversation, so skip it.
+        if "unipile cannot display" in text.lower():
+            continue
         direction = it.get("direction") or "none"
         who = ("host" if direction == "outbound"
                else "them" if direction == "inbound"
