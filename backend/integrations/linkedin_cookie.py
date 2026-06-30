@@ -61,3 +61,31 @@ def connect_with_cookie(*, li_at: str, user_agent: str = "") -> dict:
     if not acct:
         raise ValueError("Unipile did not return an account id")
     return {"account_id": str(acct), "raw": data}
+
+
+def delete_account(account_id: str) -> bool:
+    """Best-effort remove an orphan Unipile account (a duplicate seat the dedup
+    logic detected). Sync sibling of auth._delete_unipile_account, used by the
+    cookie-connect route (which is a sync handler). Never raises : a failure
+    just leaves the orphan in Unipile's dashboard for manual cleanup, it must
+    not break or roll back the connect."""
+    dsn = _dsn()
+    api_key = (os.environ.get("UNIPILE_API_KEY") or "").strip()
+    if not (account_id and dsn and api_key):
+        return False
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            r = client.delete(
+                f"{dsn}/api/v1/accounts/{account_id}",
+                headers={"X-API-KEY": api_key, "accept": "application/json"})
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [linkedin_cookie.dedup.delete] account={account_id} "
+              f"transport_error={type(exc).__name__}: {exc}")
+        return False
+    if r.status_code >= 400:
+        print(f"  [linkedin_cookie.dedup.delete] account={account_id} "
+              f"HTTP {r.status_code} body={r.text[:160]}")
+        return False
+    print(f"  [linkedin_cookie.dedup.delete] account={account_id} "
+          f"deleted from Unipile")
+    return True

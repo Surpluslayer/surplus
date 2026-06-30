@@ -683,21 +683,44 @@ function AccountScreen({ user, onBack, onConnections }) {
 function ConnectionsScreen({ user, onBack }) {
   const [note, setNote] = useState("");
   const [integrations, setIntegrations] = useState(null);
+  // A FRESH /me snapshot, refetched on mount + window focus + tab-visible, so the
+  // rows update after the user connects something elsewhere (e.g. LinkedIn via the
+  // extension's connect-cookie, or Gmail/Google in the hosted-auth tab) without a
+  // full app reload. The BookApp-level `user` prop is loaded once at app start and
+  // would otherwise keep showing "Connect". Falls back to the prop until the first
+  // fetch resolves so there's no flicker.
+  const [me, setMe] = useState(null);
   useEffect(() => {
     let cancelled = false;
-    api.listIntegrations()
-       .then((d) => { if (!cancelled) setIntegrations(d || { connected: [] }); })
-       .catch(() => { if (!cancelled) setIntegrations({ connected: [] }); });
-    return () => { cancelled = true; };
+    const refresh = () => {
+      api.me()
+         .then((d) => { if (!cancelled && d) setMe(d); })
+         .catch(() => {});
+      api.listIntegrations()
+         .then((d) => { if (!cancelled) setIntegrations(d || { connected: [] }); })
+         .catch(() => { if (!cancelled) setIntegrations({ connected: [] }); });
+    };
+    refresh();
+    const onFocus = () => refresh();
+    const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
+  // Prefer the freshly-fetched /me; fall back to the (stale) prop until it lands.
+  const u = me || user;
   // LinkedIn is connected only when an actual Unipile account is tied -- linkedin_status
   // defaults to "active" even with none, so check unipile_account_id too.
-  const liOn = !!user?.unipile_account_id && user?.linkedin_status === "active";
-  const emailOn = user?.email_status === "active";
+  const liOn = !!u?.unipile_account_id && u?.linkedin_status === "active";
+  const emailOn = u?.email_status === "active";
   // All connected mailboxes. Falls back to the legacy single-account view when
   // the API doesn't return the array (older session / pre-feature backend).
-  const emailAccounts = Array.isArray(user?.email_accounts)
-    ? user.email_accounts : null;
+  const emailAccounts = Array.isArray(u?.email_accounts)
+    ? u.email_accounts : null;
   // Prefer the stored provider; fall back to the address domain (webhook rows
   // don't carry a provider) so a connected mailbox reads "Gmail"/"Outlook", not
   // a bare "Mailbox".

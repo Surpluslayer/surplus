@@ -132,3 +132,64 @@ def test_connect_cookie_connects_when_not_connected(client, monkeypatch):
     u = s.query(models.User).filter_by(unipile_account_id="NEW1").one()
     assert u.linkedin_status == "active"
     s.close()
+
+
+# ── orphan-dedup on reconnect / cross-user reassign ───────────────────────────
+def test_reconnect_different_account_releases_and_deletes_orphan(client, monkeypatch):
+    """Reconnecting (not active, so the no-op guard doesn't fire) with a NEW
+    account_id must release the old seat and best-effort delete it from Unipile."""
+    c, Session = client
+    # User holds a stale account but is NOT active -> connect proceeds.
+    tok = _user_with_session(Session, unipile_account_id="OLD1",
+                             linkedin_status="disconnected")
+    c.cookies.set("surplus_session", tok)
+    monkeypatch.setattr(
+        "backend.integrations.linkedin_cookie.connect_with_cookie",
+        lambda **k: {"account_id": "NEW2"})
+    deleted = []
+    monkeypatch.setattr(
+        "backend.integrations.linkedin_cookie.delete_account",
+        lambda acct: deleted.append(acct) or True)
+    r = c.post("/api/integrations/linkedin/connect-cookie",
+               json={"li_at": "li_at_value"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["account_id"] == "NEW2" and body["reused"] is False
+    assert deleted == ["OLD1"]                      # orphan deleted after commit
+    s = Session()
+    u = s.query(models.User).filter_by(unipile_account_id="NEW2").one()
+    assert u.linkedin_status == "active"
+    s.close()
+
+
+def test_connect_account_already_on_another_user_reassigns(client, monkeypatch):
+    """If the new account_id is already bound to a DIFFERENT user, release it
+    from them (unipile_account_id=None, status disconnected) and bind to us."""
+    c, Session = client
+    # Pre-existing other user owning SHARED1.
+    s = Session()
+    other = models.User(name="Other", unipile_account_id="SHARED1",
+                        linkedin_status="active")
+    s.add(other); s.commit()
+    other_id = other.id
+    s.close()
+    tok = _user_with_session(Session)              # connecting user, no account yet
+    c.cookies.set("surplus_session", tok)
+    monkeypatch.setattr(
+        "backend.integrations.linkedin_cookie.connect_with_cookie",
+        lambda **k: {"account_id": "SHARED1"})
+    monkeypatch.setattr(
+        "backend.integrations.linkedin_cookie.delete_account",
+        lambda acct: (_ for _ in ()).throw(
+            AssertionError("no orphan delete when caller had no prior account")))
+    r = c.post("/api/integrations/linkedin/connect-cookie",
+               json={"li_at": "li_at_value"})
+    assert r.status_code == 200 and r.json()["account_id"] == "SHARED1"
+    s = Session()
+    released = s.query(models.User).filter_by(id=other_id).one()
+    assert released.unipile_account_id is None
+    assert released.linkedin_status == "disconnected"
+    # Exactly one user now owns SHARED1.
+    owners = s.query(models.User).filter_by(unipile_account_id="SHARED1").all()
+    assert len(owners) == 1 and owners[0].id != other_id
+    s.close()

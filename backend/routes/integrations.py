@@ -134,16 +134,43 @@ def linkedin_connect_cookie(
     second account. Otherwise hand the cookie to Unipile and bind the account to the user."""
     if user.unipile_account_id and user.linkedin_status == "active":
         return {"connected": True, "account_id": user.unipile_account_id, "reused": True}
-    from ..integrations.linkedin_cookie import connect_with_cookie
+    from ..integrations import linkedin_cookie
     try:
-        res = connect_with_cookie(li_at=body.li_at, user_agent=body.user_agent)
+        res = linkedin_cookie.connect_with_cookie(
+            li_at=body.li_at, user_agent=body.user_agent)
     except ValueError as exc:
         msg = str(exc)
         raise HTTPException(409 if "not configured" in msg else 400, msg)
-    user.unipile_account_id = res["account_id"]
+
+    new_account_id = res["account_id"]
+
+    # Orphan-dedup, mirroring the hosted-auth flow (routes/auth.py): reconnecting
+    # with a DIFFERENT account_id must release the user's previous Unipile seat so
+    # we don't leak a billed account. Capture it for a best-effort delete after
+    # commit; a delete failure must never roll back the connect.
+    orphan_unipile_account_id: Optional[str] = None
+    if user.unipile_account_id and user.unipile_account_id != new_account_id:
+        orphan_unipile_account_id = user.unipile_account_id
+
+    # If this account_id already belongs to ANOTHER user, release it from them
+    # (same dedup the webhook/callback do) so one Unipile account maps to one User.
+    prior = (db.query(models.User)
+             .filter(models.User.unipile_account_id == new_account_id,
+                     models.User.id != user.id).first())
+    if prior is not None:
+        prior.unipile_account_id = None
+        prior.linkedin_status = "disconnected"
+
+    user.unipile_account_id = new_account_id
     user.linkedin_status = "active"
     db.commit()
-    return {"connected": True, "account_id": res["account_id"], "reused": False}
+
+    # Fire-and-forget : drop the orphan Unipile account AFTER commit so a Unipile
+    # delete failure can't roll back the user-attachment. Best-effort.
+    if orphan_unipile_account_id:
+        linkedin_cookie.delete_account(orphan_unipile_account_id)
+
+    return {"connected": True, "account_id": new_account_id, "reused": False}
 
 
 # ── Calendly scheduling link (share / send as an invite). Before /{provider}.
