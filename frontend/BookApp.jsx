@@ -29,6 +29,7 @@ import {
 } from "./CaptureShared.jsx";
 import { StageChip } from "./components/ContactsPage.jsx";
 import AuthOptions from "./components/AuthOptions.jsx";
+import LinkedInMark from "./components/LinkedInMark.jsx";
 
 // Demo → real conversion: send the visitor into the connect-first LinkedIn
 // flow (same entry the send-gate uses). The callback returns them to the real
@@ -874,7 +875,7 @@ function ConnectionsScreen({ user, onBack }) {
       <div className="bk-subhead"><p className="bk-display">Connections</p></div>
 
       <div className="bk-set-group">
-        <ConnRow icon={<LinkedinGlyph size={21} />} name="LinkedIn"
+        <ConnRow icon={<LinkedInMark size={21} />} name="LinkedIn"
                  sub="Enrichment & job-change updates"
                  connected={liOn}
                  onConnect={() => connect(api.startLinkedinAuth, "LinkedIn")} />
@@ -1380,16 +1381,6 @@ function DraftLink({ onClick }) {
 }
 
 function Empty({ text }) { return <div className="bk-empty">{text}</div>; }
-
-// lucide dropped brand icons — render the LinkedIn mark inline so the tile
-// matches the design's ti-brand-linkedin.
-function LinkedinGlyph({ size = 21 }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-      <path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.13 1.45-2.13 2.94v5.67H9.35V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.45v6.29zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zM7.12 20.45H3.56V9h3.56v11.45zM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.22.79 24 1.77 24h20.45c.98 0 1.78-.78 1.78-1.73V1.73C24 .77 23.2 0 22.22 0z"/>
-    </svg>
-  );
-}
 
 // ── helpers ─────────────────────────────────────────────────────────────────────
 
