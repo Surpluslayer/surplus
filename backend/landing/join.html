@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Surplus · AI-powered events</title>
+<title>Surplus · Your AI relationship agent</title>
+<meta name="description" content="Your CRM reminds you to manage relationships. Surplus does it for you. An AI agent that keeps your professional relationships warm across your network and inbox." />
 <link rel="icon" href="/landing-assets/surplus-logo.png?v=b568b42c" type="image/png" sizes="any" />
 <link rel="apple-touch-icon" href="/landing-assets/surplus-logo.png?v=b568b42c" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -64,7 +65,7 @@
       radial-gradient(ellipse 50% 40% at 50% 100%, rgba(91, 46, 255, 0.05), transparent 45%),
       linear-gradient(180deg, #ffffff 0%, #f4f2fb 100%);
   }
-  /* Soft node grid — reads as “network” without pulling focus */
+  /* Soft node grid - reads as “network” without pulling focus */
   .page-bg::before {
     content: "";
     position: absolute;
@@ -292,7 +293,7 @@
     to { transform: translate(-2%, 1%) scale(1.03); }
   }
 
-  /* Animated node links (canvas) — sits under copy, above mesh */
+  /* Animated node links (canvas) - sits under copy, above mesh */
   .node-canvas {
     position: absolute;
     inset: 0;
@@ -372,104 +373,38 @@
     justify-content: center;
   }
 
-  .hero-email-slot {
-    display: inline-flex;
-    align-items: stretch;
-    width: min(100%, 340px);
-    border: 2px solid var(--violet-a);
-    border-radius: var(--r-btn);
-    background: #fff;
-    overflow: hidden;
-    box-shadow: 0 1px 0 rgba(91, 46, 255, 0.06);
-  }
-  .hero-email-slot:focus-within {
-    box-shadow: 0 0 0 3px rgba(91, 46, 255, 0.18);
-  }
-  .hero-email-slot input {
-    flex: 1;
-    min-width: 0;
-    border: none;
-    padding: 12px 14px;
-    font-size: 15px;
-    font-family: inherit;
-    color: var(--navy);
-    background: transparent;
-    outline: none;
-  }
-  .hero-email-slot input::placeholder {
-    color: var(--faint);
-  }
-  .hero-email-slot button {
-    flex-shrink: 0;
-    border: none;
-    padding: 0 16px;
-    font-size: 14px;
-    font-weight: 600;
-    font-family: inherit;
-    color: #fff;
-    background: var(--gradient-purple);
-    cursor: pointer;
-    transition: filter 0.15s ease;
-  }
-  .hero-email-slot button:hover {
-    filter: brightness(1.05);
-  }
 
-  /* "Sign in with LinkedIn" CTA — replaces the email-capture form */
+  /* Primary CTA: a single "Try now" button (brand-styled) that drops the
+     visitor into the app sign-in screen. */
   .hero-ctas {
     flex-direction: column;
   }
-  .hero-linkedin-cta {
+  .hero-try-cta {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 10px;
     padding: 14px 28px;
     border-radius: var(--r-btn);
-    background: #0a66c2;             /* LinkedIn brand blue */
+    background: var(--gradient-purple);
     color: #fff;
     font-family: inherit;
     font-weight: 600;
     font-size: 15.5px;
     text-decoration: none;
-    box-shadow: 0 4px 14px rgba(10, 102, 194, 0.28);
-    transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: 0 4px 14px rgba(91, 46, 255, 0.28);
+    transition: filter 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
     cursor: pointer;
     width: min(100%, 340px);
   }
-  .hero-linkedin-cta:hover {
-    background: #084e96;
+  .hero-try-cta:hover {
+    filter: brightness(1.05);
     transform: translateY(-1px);
-    box-shadow: 0 6px 18px rgba(10, 102, 194, 0.36);
+    box-shadow: 0 6px 18px rgba(91, 46, 255, 0.36);
   }
-  .hero-linkedin-cta:active {
+  .hero-try-cta:active {
     transform: translateY(0);
   }
-  .hero-linkedin-mark {
-    flex-shrink: 0;
-  }
-  /* Shown only when a click outraces the prefetch (see CTA prefetch script). */
-  [data-linkedin-cta].is-connecting {
-    opacity: 0.75;
-    cursor: progress;
-    pointer-events: none;
-  }
-  [data-linkedin-cta].is-connecting::after {
-    content: "";
-    width: 13px;
-    height: 13px;
-    margin-left: 8px;
-    border: 2px solid currentColor;
-    border-right-color: transparent;
-    border-radius: 50%;
-    display: inline-block;
-    vertical-align: middle;
-    animation: linkedin-cta-spin 0.6s linear infinite;
-  }
-  @keyframes linkedin-cta-spin {
-    to { transform: rotate(360deg); }
-  }
-  .hero-linkedin-note {
+  .hero-cta-note {
     margin: 0;
     max-width: 520px;
     font-size: 12.5px;
@@ -528,7 +463,7 @@
     .hero-cards-main { grid-template-columns: 1fr; }
   }
 
-  /* Capability pipeline — left column, no emoji tiles */
+  /* Capability pipeline - left column, no emoji tiles */
   .hero-capabilities {
     background: rgba(255, 255, 255, 0.96);
     backdrop-filter: blur(12px);
@@ -1416,7 +1351,7 @@
     </a>
     <div class="site-header__right">
     <nav class="nav-wrap" id="mainNav" aria-label="Primary">
-      <a href="/api/auth/linkedin/start-redirect" rel="noopener" data-linkedin-cta>Try now with LinkedIn</a>
+      <a href="https://event.surpluslayer.com/" rel="noopener">Try now</a>
     </nav>
     <div class="site-header__tools">
       <button type="button" class="nav-toggle" id="navToggle" aria-expanded="false" aria-controls="mainNav">Menu</button>
@@ -1452,23 +1387,18 @@
     <canvas id="nodeCanvas" class="node-canvas" aria-hidden="true"></canvas>
 
     <div class="hero-left">
-      <span class="hero-pill">AI-powered events</span>
+      <span class="hero-pill">Your AI relationship agent</span>
       <h1 class="hero-title">
-        <span class="grad">Meet the Right People.</span>
-        <span class="line1">Maximize ROI.</span>
+        <span class="grad">Your CRM reminds you to manage relationships.</span>
+        <span class="line1">Surplus does it for you.</span>
       </h1>
       <p class="hero-sub">
-        AI outreach and matching that invites your ICP, closes deals, and drives measurable ROI for every event.
+        Surplus is an AI agent that keeps your professional relationships warm for you. It remembers the context on every connection, drafts the right follow-up, nudges you at the right time, and surfaces warm intros across your network and inbox.
       </p>
       <div class="hero-ctas">
-        <a class="hero-linkedin-cta" href="/api/auth/linkedin/start-redirect" rel="noopener" data-linkedin-cta>
-          <svg class="hero-linkedin-mark" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d="M20.45 20.45h-3.55v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.13 1.45-2.13 2.94v5.67H9.37V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.38-1.85 3.61 0 4.28 2.38 4.28 5.47v6.27ZM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13ZM7.12 20.45H3.56V9h3.56v11.45ZM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0Z"/>
-          </svg>
-          <span>Try now with LinkedIn</span>
-        </a>
-        <p class="hero-linkedin-note">
-          Surplus runs on the connections you already have. Sign in once with LinkedIn — handled by Unipile, 2FA + captcha supported. Your credentials never touch us.
+        <a class="hero-try-cta" href="https://event.surpluslayer.com/" rel="noopener">Try now</a>
+        <p class="hero-cta-note">
+          Sign in with email, Google, or Microsoft. No setup required.
         </p>
       </div>
     </div>
@@ -1479,37 +1409,37 @@
           <li>
             <span class="cap-idx" aria-hidden="true">01</span>
             <div class="cap-body">
-              <span class="cap-title">AI prospecting</span>
-              <span class="cap-desc">Find the right people before you arrive.</span>
+              <span class="cap-title">Remembers context</span>
+              <span class="cap-desc">Every connection, where you met, what you said you would do.</span>
             </div>
           </li>
           <li>
             <span class="cap-idx" aria-hidden="true">02</span>
             <div class="cap-body">
-              <span class="cap-title">Personalized outreach</span>
-              <span class="cap-desc">Automated sequences that still feel one-to-one.</span>
+              <span class="cap-title">Drafts the follow-up</span>
+              <span class="cap-desc">The right message, in your voice, ready to send.</span>
             </div>
           </li>
           <li>
             <span class="cap-idx" aria-hidden="true">03</span>
             <div class="cap-body">
-              <span class="cap-title">AI matching</span>
-              <span class="cap-desc">Surface the best-fit attendees for your goals.</span>
+              <span class="cap-title">Nudges at the right time</span>
+              <span class="cap-desc">Reaches out before a relationship goes cold.</span>
             </div>
           </li>
           <li>
             <span class="cap-idx" aria-hidden="true">04</span>
             <div class="cap-body">
-              <span class="cap-title">ROI measurement</span>
-              <span class="cap-desc">See return for every event, not just attendance.</span>
+              <span class="cap-title">Surfaces warm intros</span>
+              <span class="cap-desc">The connections worth making, from people you already know.</span>
             </div>
           </li>
         </ol>
       </aside>
 
       <div class="hero-cards-main">
-      <article class="hcard hcard--guest" id="cardGuest" aria-label="Curate Attendees to Your ICP">
-        <div class="hc-label">Curate Attendees to Your ICP</div>
+      <article class="hcard hcard--guest" id="cardGuest" aria-label="Connections Surplus is keeping warm">
+        <div class="hc-label">Connections kept warm</div>
         <div class="guest-list-wrap" id="guestListWrap">
         <ul class="guest-list" id="guestList">
           <li class="guest-row guest-row--fixed" data-icp-anchor>
@@ -1518,10 +1448,10 @@
             </span>
             <div class="guest-meta">
               <span class="guest-name">Morgan Lee</span>
-              <span class="guest-fit">VP partnerships &amp; warm enterprise intros · <strong>Matches ICP</strong></span>
+              <span class="guest-fit">Met at NYC Tech Week, promised an intro · <strong>Follow-up drafted</strong></span>
             </div>
-            <span class="guest-potential">$26,400</span>
-            <span class="guest-mark guest-mark--ok" aria-label="Matches ICP">
+            <span class="guest-potential">Ready</span>
+            <span class="guest-mark guest-mark--ok" aria-label="Follow-up drafted">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 12l4 4 8-8"/></svg>
             </span>
           </li>
@@ -1531,10 +1461,10 @@
             </span>
             <div class="guest-meta">
               <span class="guest-name">Priya Shah</span>
-              <span class="guest-fit">Technical buyer in your target stack · <strong>Matches ICP</strong></span>
+              <span class="guest-fit">Just changed roles, good time to reconnect · <strong>Follow-up drafted</strong></span>
             </div>
-            <span class="guest-potential">$31,200</span>
-            <span class="guest-mark guest-mark--ok" aria-label="Matches ICP">
+            <span class="guest-potential">Ready</span>
+            <span class="guest-mark guest-mark--ok" aria-label="Follow-up drafted">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 12l4 4 8-8"/></svg>
             </span>
           </li>
@@ -1544,10 +1474,10 @@
             </span>
             <div class="guest-meta">
               <span class="guest-name">Alex Kim</span>
-              <span class="guest-fit">RevOps lead with CRM + ABM context · <strong>Matches ICP</strong></span>
+              <span class="guest-fit">Shipped a launch you should congratulate · <strong>Follow-up drafted</strong></span>
             </div>
-            <span class="guest-potential">$22,800</span>
-            <span class="guest-mark guest-mark--ok" aria-label="Matches ICP">
+            <span class="guest-potential">Ready</span>
+            <span class="guest-mark guest-mark--ok" aria-label="Follow-up drafted">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 12l4 4 8-8"/></svg>
             </span>
           </li>
@@ -1557,10 +1487,10 @@
             </span>
             <div class="guest-meta">
               <span class="guest-name">Jordan Park</span>
-              <span class="guest-fit">Badge-only scan, no buying role · <span class="icp-no">Outside ICP</span></span>
+              <span class="guest-fit">No contact in 3 months · <span class="icp-no">Going cold</span></span>
             </div>
-            <span class="guest-potential">$2,040</span>
-            <span class="guest-mark guest-mark--warn" aria-label="Outside ICP">
+            <span class="guest-potential guest-potential--pending">Cold</span>
+            <span class="guest-mark guest-mark--warn" aria-label="Going cold">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>
             </span>
           </li>
@@ -1568,12 +1498,12 @@
         </div>
       </article>
 
-      <article class="hcard hcard--roi" id="cardRoi" aria-label="Event ROI preview">
-        <div class="hc-label">Event ROI</div>
-        <div class="hc-dollar hc-dollar--lead"><span class="sym">$</span><span id="roiDollar">30,100</span></div>
-        <p class="roi-hint" id="roiHint" hidden>Above ~$35k per event is uncommon — treat big numbers skeptically.</p>
+      <article class="hcard hcard--roi" id="cardRoi" aria-label="Relationships kept warm">
+        <div class="hc-label">Relationships kept warm</div>
+        <div class="hc-dollar hc-dollar--lead"><span id="roiDollar">30,100</span></div>
+        <p class="roi-hint" id="roiHint" hidden>Surplus keeps every connection from going cold, so none slip through.</p>
         <div class="hc-graph">
-          <span class="graph-badge" id="graphEndLabel">$30,128</span>
+          <span class="graph-badge" id="graphEndLabel">30,128</span>
           <svg class="graph-line" viewBox="0 0 160 70" aria-hidden="true">
             <defs>
               <linearGradient id="lineGrad" x1="0" y1="0" x2="160" y2="0" gradientUnits="userSpaceOnUse">
@@ -1598,9 +1528,9 @@
     <div class="founder-card" data-reveal>
       <div class="founder-left">
         <p class="founder-press-top">
-          <span class="founder-press-by">Events covered by</span>
+          <span class="founder-press-by">As seen in</span>
         </p>
-        <ul class="founder-press-logos" aria-label="Outlets where events were covered">
+        <ul class="founder-press-logos" aria-label="Press coverage">
           <li>
             <a class="founder-press-link-nyt" href="https://www.nytimes.com/" target="_blank" rel="noopener noreferrer">
               <img src="/landing-assets/press/nyt.png" alt="The New York Times" width="280" height="56" loading="lazy" decoding="async" />
@@ -1630,16 +1560,16 @@
       </div>
       <div class="founder-photos" role="group" aria-label="Team photos">
         <div class="founder-photo-frame">
-          <img src="/landing-assets/how-team.png" alt="Team at an event booth" loading="lazy" width="320" height="240" decoding="async" />
+          <img src="/landing-assets/how-team.png" alt="The Surplus team" loading="lazy" width="320" height="240" decoding="async" />
         </div>
         <div class="founder-photo-frame">
-          <img src="/landing-assets/how-team-hackathon.png" alt="Team collaborating at a hackathon" loading="lazy" width="320" height="240" decoding="async" />
+          <img src="/landing-assets/how-team-hackathon.png" alt="The Surplus team building" loading="lazy" width="320" height="240" decoding="async" />
         </div>
       </div>
       <div class="founder-right">
-        <p>Trusted by devrel teams, hackathons serving over <strong>500k+</strong> member communities.<span class="founder-right-p-tail">Wondering where Surplus fits your events?</span></p>
+        <p>Built by founders who live on their network. Proven with real traction at <strong>NYC Tech Week</strong>.<span class="founder-right-p-tail">Your relationships are your most valuable asset. Surplus makes sure none of them slip.</span></p>
         <div class="founder-right-lede-wrap">
-          <h3 class="founder-right-lede"><span class="lede-role">Organizers</span> save bandwidth.<br /><span class="lede-role">Sponsors</span> get qualified leads.<br /><span class="lede-role">Attendees</span> get a sharper experience.</h3>
+          <h3 class="founder-right-lede"><span class="lede-role">Remembers</span> every connection.<br /><span class="lede-role">Drafts</span> the right follow-up.<br /><span class="lede-role">Acts</span> at the right time.</h3>
         </div>
       </div>
     </div>
@@ -1947,7 +1877,7 @@
   }, { threshold: 0.25 });
   if (cardRoi) ioHero.observe(cardRoi);
 
-  /* Curate ICP: finite demo — ends at 5 rows (3 fixed + 2 matches); several outside-ICP rows exit */
+  /* Connections demo: finite list - ends at 5 rows (3 fixed + 2 warm); several going-cold rows exit */
   (function guestBottomSlotDemo() {
     var card = document.getElementById("cardGuest");
     var list = document.getElementById("guestList");
@@ -1971,7 +1901,7 @@
         '<span class="guest-potential">' +
         entry.amt +
         '</span>' +
-        '<span class="guest-mark guest-mark--ok" aria-label="Matches ICP">' +
+        '<span class="guest-mark guest-mark--ok" aria-label="Follow-up drafted">' +
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 12l4 4 8-8"/></svg></span>'
       );
     }
@@ -1986,10 +1916,10 @@
         '</span><span class="guest-fit">' +
         entry.fit +
         '</span></div>' +
-        '<span class="guest-potential">' +
+        '<span class="guest-potential guest-potential--pending">' +
         entry.amt +
         '</span>' +
-        '<span class="guest-mark guest-mark--warn" aria-label="Outside ICP">' +
+        '<span class="guest-mark guest-mark--warn" aria-label="Going cold">' +
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></span>'
       );
     }
@@ -2090,15 +2020,15 @@
     }
 
     var weaks = [
-      { name: "Jordan Park", src: "https://randomuser.me/api/portraits/thumb/men/14.jpg", fit: "Badge-only scan, no buying role · <span class=\"icp-no\">Outside ICP</span>", amt: "$2,040" },
-      { name: "Blake Moss", src: "https://randomuser.me/api/portraits/thumb/men/19.jpg", fit: "Untitled traffic · <span class=\"icp-no\">Outside ICP</span>", amt: "$1,580" },
-      { name: "Skyler Voss", src: "https://randomuser.me/api/portraits/thumb/women/41.jpg", fit: "No fit tags · <span class=\"icp-no\">Outside ICP</span>", amt: "$1,920" },
-      { name: "Taylor Reed", src: "https://randomuser.me/api/portraits/thumb/women/58.jpg", fit: "Student pass, no org email · <span class=\"icp-no\">Outside ICP</span>", amt: "$1,240" }
+      { name: "Jordan Park", src: "https://randomuser.me/api/portraits/thumb/men/14.jpg", fit: "No contact in 3 months · <span class=\"icp-no\">Going cold</span>", amt: "Cold" },
+      { name: "Blake Moss", src: "https://randomuser.me/api/portraits/thumb/men/19.jpg", fit: "Said let's reconnect, never did · <span class=\"icp-no\">Going cold</span>", amt: "Cold" },
+      { name: "Skyler Voss", src: "https://randomuser.me/api/portraits/thumb/women/41.jpg", fit: "Met once, no thread since · <span class=\"icp-no\">Going cold</span>", amt: "Cold" },
+      { name: "Taylor Reed", src: "https://randomuser.me/api/portraits/thumb/women/58.jpg", fit: "Last reply left hanging · <span class=\"icp-no\">Going cold</span>", amt: "Cold" }
     ];
 
     var goods = [
-      { name: "Elena Ruiz", src: "https://randomuser.me/api/portraits/thumb/women/22.jpg", fit: "Paths into named target accounts · <strong>Matches ICP</strong>", amt: "$28,900" },
-      { name: "Casey Nguyen", src: "https://randomuser.me/api/portraits/thumb/women/67.jpg", fit: "Economic buyer in target regions · <strong>Matches ICP</strong>", amt: "$24,100" }
+      { name: "Elena Ruiz", src: "https://randomuser.me/api/portraits/thumb/women/22.jpg", fit: "Posted about a new round, worth a note · <strong>Follow-up drafted</strong>", amt: "Ready" },
+      { name: "Casey Nguyen", src: "https://randomuser.me/api/portraits/thumb/women/67.jpg", fit: "Intro you offered is ready to send · <strong>Follow-up drafted</strong>", amt: "Ready" }
     ];
 
     function runFiniteGuestDemo() {
@@ -2157,9 +2087,9 @@
   /* Occasional toast */
   var toast = document.getElementById("liveToast");
   var msgs = [
-    "+ ROI opportunity identified",
-    "New high-value match in queue",
-    "Pipeline signal synced"
+    "Follow-up drafted for you",
+    "A connection was about to go cold",
+    "Warm intro surfaced"
   ];
   function showToast() {
     if (!toast) return;
@@ -2171,75 +2101,7 @@
     if (Math.random() > 0.72) showToast();
   }, 22000);
 
-  /* Hero email → POST /api/join/demo-request (stored in join_demo_leads) */
-  var heroEmailForm = document.getElementById("heroEmailForm");
-  var heroEmail = document.getElementById("heroEmail");
-  var heroDemoBtn = heroEmailForm ? heroEmailForm.querySelector('button[type="submit"]') : null;
-  if (heroEmailForm && heroEmail) {
-    heroEmailForm.addEventListener("submit", function (e) {
-      e.preventDefault();
-      var v = (heroEmail.value || "").trim();
-      if (!v) {
-        heroEmail.focus();
-        heroEmail.reportValidity();
-        return;
-      }
-      if (!heroEmail.checkValidity()) {
-        heroEmail.focus();
-        heroEmail.reportValidity();
-        return;
-      }
-      var btn = heroDemoBtn;
-      var orig = btn ? btn.textContent : "";
-      if (btn) {
-        btn.disabled = true;
-        btn.textContent = "Sending…";
-      }
-      fetch("/api/join/demo-request", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: v })
-      })
-        .then(function (r) {
-          if (!r.ok) {
-            return r.json().catch(function () {
-              return {};
-            }).then(function (j) {
-              var msg = (j && j.detail) ? (typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail)) : "";
-              throw new Error(msg || "HTTP " + r.status);
-            });
-          }
-          return r.json();
-        })
-        .then(function () {
-          heroEmail.value = "";
-          if (toast) {
-            toast.textContent = "Thanks — we received your request.";
-            toast.classList.add("is-on");
-            setTimeout(function () { toast.classList.remove("is-on"); }, 4000);
-          }
-        })
-        .catch(function (err) {
-          if (toast) {
-            var m = err && err.message ? err.message : "";
-            toast.textContent =
-              m && m.length > 12
-                ? m
-                : "Something went wrong. Try again or use Contact below.";
-            toast.classList.add("is-on");
-            setTimeout(function () { toast.classList.remove("is-on"); }, 7000);
-          }
-        })
-        .finally(function () {
-          if (btn) {
-            btn.disabled = false;
-            btn.textContent = orig;
-          }
-        });
-    });
-  }
-
-  /* Footer Contact — explicit mailto (some clients / embedded views drop plain anchors) */
+  /* Footer Contact - explicit mailto (some clients / embedded views drop plain anchors) */
   var footerContact = document.getElementById("footerContact");
   if (footerContact) {
     footerContact.addEventListener("click", function (e) {
@@ -2326,87 +2188,6 @@
       founderEmailDialogMailto.setAttribute("href", founderMailto);
     }
   }
-})();
-</script>
-<script>
-/* LinkedIn CTA prefetch ───────────────────────────────────────────
-   The CTA points at .../linkedin/start-redirect, which makes a ~1s
-   Unipile round-trip server-side before redirecting. We run that work
-   ahead of the click: on first hover/focus/touch we fetch the JSON
-   sibling (.../linkedin/start-url), cache the hosted-auth URL, and on
-   click navigate straight to it — instant. If the click beats the
-   prefetch, we show a "Connecting…" state and fall through to the
-   original href (or the resolved URL once it arrives). */
-(function () {
-  var ORIGIN = "";
-  var URL_ENDPOINT = ORIGIN + "/api/auth/linkedin/start-url";
-  var ctas = document.querySelectorAll("[data-linkedin-cta]");
-  if (!ctas.length) return;
-
-  var linkPromise = null;   // single in-flight/cached mint per page load
-  var resolvedUrl = null;
-
-  function prefetch() {
-    if (linkPromise) return linkPromise;
-    linkPromise = fetch(URL_ENDPOINT, {
-      method: "GET",
-      // Anonymous connect-first flow; CORS is open without credentials.
-      credentials: "omit",
-      cache: "no-store",
-    })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (data) {
-        resolvedUrl = (data && data.url) || null;
-        return resolvedUrl;
-      })
-      .catch(function () {
-        // Reset so a later hover/click can retry; click still has href.
-        linkPromise = null;
-        resolvedUrl = null;
-        return null;
-      });
-    return linkPromise;
-  }
-
-  ctas.forEach(function (a) {
-    var armed = false;
-    function arm() { if (!armed) { armed = true; prefetch(); } }
-    a.addEventListener("mouseenter", arm);
-    a.addEventListener("focus", arm);
-    a.addEventListener("touchstart", arm, { passive: true });
-
-    a.addEventListener("click", function (e) {
-      // Already have the URL → go straight there (skip the server round-trip).
-      if (resolvedUrl) { a.setAttribute("href", resolvedUrl); return; }
-
-      // Prefetch in flight → wait for it instead of doing the slow nav.
-      if (linkPromise) {
-        e.preventDefault();
-        a.classList.add("is-connecting");
-        var prev = a.getAttribute("aria-busy");
-        a.setAttribute("aria-busy", "true");
-        linkPromise.then(function (url) {
-          window.location.assign(url || a.getAttribute("href"));
-        }).catch(function () {
-          window.location.assign(a.getAttribute("href"));
-        }).finally(function () {
-          if (prev === null) a.removeAttribute("aria-busy");
-        });
-        return;
-      }
-
-      // No prefetch happened (e.g. fast click before any intent) → kick one
-      // off and wait, rather than eating the full slow redirect with no UI.
-      e.preventDefault();
-      a.classList.add("is-connecting");
-      a.setAttribute("aria-busy", "true");
-      prefetch().then(function (url) {
-        window.location.assign(url || a.getAttribute("href"));
-      }).catch(function () {
-        window.location.assign(a.getAttribute("href"));
-      });
-    });
-  });
 })();
 </script>
 </body>
