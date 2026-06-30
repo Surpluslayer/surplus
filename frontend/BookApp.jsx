@@ -699,6 +699,26 @@ function AccountScreen({ user, onBack, onConnections }) {
     window.location.reload();
   };
 
+  // Autopilot: per-user automation toggle (auto_followups_enabled). On = the agent
+  // drafts + sends + books follow-ups on its own; off = it drafts and waits for you.
+  const [autoOn, setAutoOn] = useState(null);   // null while loading
+  const [autoBusy, setAutoBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api.getFollowupSettings()
+       .then((d) => { if (alive && d) setAutoOn(!!d.auto_followups_enabled); })
+       .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  const toggleAuto = async () => {
+    if (autoBusy || autoOn === null) return;
+    const next = !autoOn;
+    setAutoBusy(true); setAutoOn(next);
+    try { await api.setFollowupSettings(next); }
+    catch { setAutoOn(!next); }
+    finally { setAutoBusy(false); }
+  };
+
   return (
     <div className="bk-scroll">
       <div className="bk-detail-head">
@@ -725,6 +745,27 @@ function AccountScreen({ user, onBack, onConnections }) {
           <span className="bk-set-lead"><CreditCard size={19} /><span className="bk-set-lbl">Plan</span></span>
           <span className="bk-set-right"><span className="bk-set-val">{plan}</span><ChevronRight size={17} className="bk-chev" /></span>
         </div>
+      </div>
+
+      <div className="bk-set-group">
+        <div className="bk-set-row">
+          <span className="bk-set-lead"><Sparkles size={19} /><span className="bk-set-lbl">Autopilot</span></span>
+          <button type="button" role="switch" aria-checked={autoOn === true}
+                  aria-label="Autopilot" onClick={toggleAuto}
+                  disabled={autoBusy || autoOn === null}
+                  style={{ width: 44, height: 26, borderRadius: 13, border: 0, flex: "0 0 auto",
+                           background: autoOn ? "#4f46e5" : "#d1d5db",
+                           position: "relative",
+                           cursor: (autoBusy || autoOn === null) ? "default" : "pointer",
+                           transition: "background .15s", opacity: autoOn === null ? 0.5 : 1 }}>
+            <span style={{ position: "absolute", top: 3, left: autoOn ? 21 : 3, width: 20, height: 20,
+                           borderRadius: "50%", background: "#fff", transition: "left .15s",
+                           boxShadow: "0 1px 2px rgba(0,0,0,.2)" }} />
+          </button>
+        </div>
+        <p style={{ padding: "2px 16px 12px", color: "#99a0a8", fontSize: 13, lineHeight: 1.45 }}>
+          When on, surplus drafts, sends, and books follow-ups on its own based on context and next steps. When off, it drafts them and waits for you to send.
+        </p>
       </div>
 
       <div className="bk-set-group">
