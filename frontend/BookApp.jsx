@@ -682,7 +682,6 @@ function AccountScreen({ user, onBack, onConnections }) {
 
 function ConnectionsScreen({ user, onBack }) {
   const [note, setNote] = useState("");
-  const [integrations, setIntegrations] = useState(null);
   // A FRESH /me snapshot, refetched on mount + window focus + tab-visible, so the
   // rows update after the user connects something elsewhere (e.g. LinkedIn via the
   // extension's connect-cookie, or Gmail/Google in the hosted-auth tab) without a
@@ -696,9 +695,6 @@ function ConnectionsScreen({ user, onBack }) {
       api.me()
          .then((d) => { if (!cancelled && d) setMe(d); })
          .catch(() => {});
-      api.listIntegrations()
-         .then((d) => { if (!cancelled) setIntegrations(d || { connected: [] }); })
-         .catch(() => { if (!cancelled) setIntegrations({ connected: [] }); });
     };
     refresh();
     const onFocus = () => refresh();
@@ -733,9 +729,8 @@ function ConnectionsScreen({ user, onBack }) {
     if (/outlook|hotmail|live|microsoft|office365/.test(dom)) return "Outlook";
     return "Mailbox";
   };
-  // Google (calendar + contacts) -- read the real ConnectedAccount list.
-  const googleOn = !!(integrations?.connected || []).some(
-    (a) => a.provider === "google" && a.status === "active");
+  // Google (calendar + contacts) -- from /me (instant on/off, no separate fetch).
+  const googleOn = !!u?.google_connected;
 
   const connect = async (starter, label) => {
     try {
@@ -789,7 +784,6 @@ function ConnectionsScreen({ user, onBack }) {
         <ConnRow icon={<Calendar size={21} />} name="Google Calendar & Contacts"
                  sub={googleOn ? "Connected" : "Logs meetings, syncs contacts"}
                  connected={googleOn}
-                 loading={integrations === null}
                  onConnect={() => connect(api.connectGoogle, "Google")} />
       </div>
 

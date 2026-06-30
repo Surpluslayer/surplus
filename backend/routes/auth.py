@@ -52,8 +52,8 @@ from ..auth import (
 from .. import billing_plans as bp
 from ..db import get_db
 from ..hosts import is_first_party, is_inperson_host, request_browser_host
-from ..models import (AuthState, Session, User, list_email_accounts,
-                      upsert_email_account)
+from ..models import (AuthState, ConnectedAccount, Session, User,
+                      list_email_accounts, upsert_email_account)
 from ..rate_limit import per_ip_rate_limit
 
 
@@ -1252,6 +1252,13 @@ def me(user: User = Depends(current_user),
          "is_primary": a.is_primary, "unipile_account_id": a.unipile_account_id}
         for a in list_email_accounts(db, user)
     ] if db is not None else []
+    # Google Calendar/Contacts (OAuth ConnectedAccount). Returned here so the
+    # Connections screen renders that row INSTANTLY from /me, with no separate
+    # per-open listIntegrations fetch (which caused the load-on-click lag).
+    google_connected = bool(
+        db is not None and db.query(ConnectedAccount)
+        .filter_by(user_id=user.id, provider="google", status="active").first()
+    )
     return JSONResponse({
         "id": user.id,
         "name": user.name,
@@ -1270,6 +1277,9 @@ def me(user: User = Depends(current_user),
         # All connected mailboxes (Gmail/Outlook). Empty for users with no
         # email connected. The Connections screen renders one row per entry.
         "email_accounts": email_accounts,
+        # Google Calendar/Contacts connection -- lets the Connections row show
+        # instant on/off from /me (no separate fetch).
+        "google_connected": google_connected,
         # True for sessions that entered via the hidden demo link. The SPA
         # uses this to hide demo-only surfaces (e.g. the ROI ledger stage).
         "is_demo": is_demo_user(user),

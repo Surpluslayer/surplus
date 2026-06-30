@@ -152,11 +152,9 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
           {oauthBusy === "google" ? <Loader2 className="spin" size={16} /> : <GoogleMark />}
           <span>Continue with Google</span>
         </button>
-        <button type="button" className="authopts-oauth-btn"
-                onClick={startOAuth("microsoft", api.startMicrosoftAuth)} disabled={!!oauthBusy || busy}>
-          {oauthBusy === "microsoft" ? <Loader2 className="spin" size={16} /> : <MicrosoftMark />}
-          <span>Continue with Microsoft</span>
-        </button>
+        {/* Microsoft sign-in is built + provider-agnostic, but hidden until MS OAuth
+            creds exist (no Azure app yet) -- showing it would 409 on click. Re-enable
+            by restoring this button once MICROSOFT_CLIENT_ID/SECRET are set. */}
       </div>
 
       <div className="authopts-divider"><span>or use email</span></div>
