@@ -20,7 +20,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Sparkles, ArrowUp, ArrowRight, Star, LayoutDashboard, Plus, BookText, Loader2, X,
   ChevronLeft, ChevronRight, ChevronDown, MapPin, QrCode, Link2, Search, Send,
-  Mail, Calendar, Plug, CreditCard, LogOut, CheckCircle2, Mic,
+  Mail, Calendar, Plug, CreditCard, LogOut, CheckCircle2, Mic, Video,
 } from "lucide-react";
 import { api } from "./lib/api.js";
 import {
@@ -747,11 +747,15 @@ function ConnectionsScreen({ user, onBack }) {
   // would otherwise keep showing "Connect". Falls back to the prop until the first
   // fetch resolves so there's no flicker.
   const [me, setMe] = useState(null);
+  const [integrations, setIntegrations] = useState(null);
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
       api.me()
          .then((d) => { if (!cancelled && d) setMe(d); })
+         .catch(() => {});
+      api.listIntegrations()
+         .then((d) => { if (!cancelled && d) setIntegrations(d); })
          .catch(() => {});
     };
     refresh();
@@ -789,12 +793,17 @@ function ConnectionsScreen({ user, onBack }) {
   };
   // Google (calendar + contacts) -- from /me (instant on/off, no separate fetch).
   const googleOn = !!u?.google_connected;
+  // Zoom -- shown only when the server has Zoom creds (available.zoom), connected
+  // when an active zoom account is tied. From the /api/integrations list.
+  const zoomAvail = !!integrations?.available?.zoom;
+  const zoomOn = Array.isArray(integrations?.connected)
+    && integrations.connected.some((a) => a.provider === "zoom" && a.status === "active");
 
   const connect = async (starter, label) => {
     try {
       const { url } = await starter();
       if (url) window.location.assign(url);
-      else setNote(`Couldn't start ${label} — try again.`);
+      else setNote(`Couldn't start ${label}. Try again.`);
     } catch (e) { setNote(e.message || `Couldn't start ${label}.`); }
   };
 
@@ -843,10 +852,16 @@ function ConnectionsScreen({ user, onBack }) {
                  sub={googleOn ? "Connected" : "Logs meetings, syncs contacts"}
                  connected={googleOn}
                  onConnect={() => connect(api.connectGoogle, "Google")} />
+        {zoomAvail && (
+          <ConnRow icon={<Video size={21} />} name="Zoom"
+                   sub={zoomOn ? "Connected" : "Add Zoom links to your bookings"}
+                   connected={zoomOn}
+                   onConnect={() => connect(api.connectZoom, "Zoom")} />
+        )}
       </div>
 
       {note && <p className="bk-note bk-note--warn">{note}</p>}
-      <p className="bk-note">Surplus reads these to keep your book current — it never posts or emails without you.</p>
+      <p className="bk-note">Surplus reads these to keep your book current. It never posts or emails without you.</p>
     </div>
   );
 }

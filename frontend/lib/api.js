@@ -632,6 +632,7 @@ export const api = {
   // Connected OAuth sources (Google/Microsoft/Calendly/Zoom) for the signed-in user.
   listIntegrations: () => request("/api/integrations"),
   connectGoogle: () => request("/api/integrations/google/connect"),
+  connectZoom: () => request("/api/integrations/zoom/connect"),
   // Password reset (always 200 on forgot, no enumeration).
   forgotPassword: (email) =>
     request("/api/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) }),
