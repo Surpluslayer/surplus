@@ -21,6 +21,97 @@ function _friendly(status, text) {
   return `${status} : ${(text || "").slice(0, 240)}`;
 }
 
+// Build an Error from a non-2xx Response: friendly message (HTML/transient
+// aware), `.status` so callers can branch on 401/402/404/409, and `.body` parsed
+// from a JSON error envelope (the 402 paywall ships { code, message }) or null
+// for non-JSON bodies. Reads the response text exactly once.
+async function errorFromResponse(res) {
+  const text = await res.text().catch(() => "");
+  const err = new Error(_friendly(res.status, text));
+  err.status = res.status;
+  try { err.body = JSON.parse(text); } catch { err.body = null; }
+  return err;
+}
+
+// Shared Server-Sent-Events consumer for the streaming POST endpoints
+// (relationship chat, book draft, book ask). POSTs `body` as JSON, then reads
+// the SSE stream and routes each frame to handlers[eventName](payload).
+//
+// Stall watchdog: every healthy stream emits a keepalive comment every ~10s, so
+// it is never silent for long. If NOTHING arrives for stallMs (default 45s, 4+
+// missed heartbeats) the connection is treated as black-holed (proxy died, wifi
+// dropped without a reset) and aborted, so the caller gets a clean error instead
+// of an infinite spinner. Resolves when the stream closes.
+async function consumeSSE(path, body, { handlers = {}, stallMs = 45000 } = {}) {
+  const controller = new AbortController();
+  let stalled = false;
+  let stallTimer = null;
+  const armWatchdog = () => {
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => { stalled = true; controller.abort(); }, stallMs);
+  };
+  const stallError = () =>
+    new Error("the connection went quiet and was closed — try asking again");
+
+  armWatchdog();
+  try {
+    let res;
+    try {
+      res = await fetch(path, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      throw stalled ? stallError() : e;
+    }
+    // Mirror request(): surface .status + parsed .body so callers can branch on
+    // the 402 relationship-quota paywall instead of just a raw error string.
+    if (!res.ok || !res.body) throw await errorFromResponse(res);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    // SSE frames are separated by a blank line; each frame has an `event:` and a
+    // `data:` line. Buffer across chunks since a frame can split mid-read.
+    const dispatch = (frame) => {
+      let ev = "message", data = "";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event:")) ev = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (!data) return;  // keepalive / open comment has no data: line
+      let payload;
+      try { payload = JSON.parse(data); } catch { return; }
+      handlers[ev]?.(payload);
+    };
+    for (;;) {
+      let chunk;
+      try {
+        chunk = await reader.read();
+      } catch (e) {
+        // A mid-stream network failure rejects read(); surface it cleanly (the
+        // keepalive watchdog maps to its own message).
+        throw stalled ? stallError() : e;
+      }
+      armWatchdog(); // any bytes (frames OR keepalives) prove liveness
+      const { value, done } = chunk;
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) !== -1) {
+        dispatch(buf.slice(0, i));
+        buf = buf.slice(i + 2);
+      }
+    }
+    if (buf.trim()) dispatch(buf);
+  } finally {
+    clearTimeout(stallTimer);
+  }
+}
+
 async function request(path, opts = {}) {
   const method = (opts.method || "GET").toUpperCase();
   const tries = method === "GET" ? 2 : 1; // reads retry once; writes never auto-repeat
@@ -300,90 +391,15 @@ export const api = {
   // moment the agent stages it. Callbacks: onMeta({auto_send_enabled}),
   // onProposal(proposal), onDone({summary, auto_send_enabled}), onError({message}).
   // Resolves when the stream closes. Nothing is sent — proposals are staged only.
-  relationshipChatStream: async (message, { onMeta, onProposal, onDone, onError } = {}) => {
-    // Stall watchdog. The server emits a keepalive comment every ~10s even
-    // while the agent is mid-think, so a healthy stream is never silent for
-    // long. If NOTHING arrives for STALL_MS (4+ missed heartbeats) the
-    // connection is black-holed (proxy died, wifi dropped without a reset) —
-    // abort so the caller gets a clean error instead of an infinite spinner.
-    const STALL_MS = 45000;
-    const controller = new AbortController();
-    let stalled = false;
-    let stallTimer = null;
-    const armWatchdog = () => {
-      clearTimeout(stallTimer);
-      stallTimer = setTimeout(() => { stalled = true; controller.abort(); }, STALL_MS);
-    };
-    const stallError = () =>
-      new Error("the connection went quiet and was closed — try asking again");
-
-    armWatchdog();
-    try {
-      let res;
-      try {
-        res = await fetch("/api/relationships/chat/stream", {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ message }),
-          signal: controller.signal,
-        });
-      } catch (e) {
-        throw stalled ? stallError() : e;
-      }
-      if (!res.ok || !res.body) {
-        const text = await res.text().catch(() => "");
-        const err = new Error(`${res.status} ${res.statusText} : ${text.slice(0, 240)}`);
-        // Mirror request(): surface status + parsed body so the caller can
-        // branch on the 402 relationship-quota paywall (LIMIT_REACHED /
-        // CONTACT_LIMIT_REACHED) instead of just showing a raw error string.
-        err.status = res.status;
-        try { err.body = JSON.parse(text); } catch { err.body = null; }
-        throw err;
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      // SSE frames are separated by a blank line; each frame has an `event:` and
-      // a `data:` line. Buffer across chunks since a frame can split mid-read.
-      const dispatch = (frame) => {
-        let ev = "message", data = "";
-        for (const line of frame.split("\n")) {
-          if (line.startsWith("event:")) ev = line.slice(6).trim();
-          else if (line.startsWith("data:")) data += line.slice(5).trim();
-        }
-        if (!data) return;
-        let payload;
-        try { payload = JSON.parse(data); } catch { return; }
-        if (ev === "meta") onMeta?.(payload);
-        else if (ev === "proposal") onProposal?.(payload);
-        else if (ev === "done") onDone?.(payload);
-        else if (ev === "error") onError?.(payload);
-      };
-      for (;;) {
-        let chunk;
-        try {
-          chunk = await reader.read();
-        } catch (e) {
-          // A mid-stream network failure rejects read(); surface it as a
-          // clean error (the keepalive watchdog maps to its own message).
-          throw stalled ? stallError() : e;
-        }
-        armWatchdog(); // any bytes (frames OR keepalives) prove liveness
-        const { value, done } = chunk;
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let i;
-        while ((i = buf.indexOf("\n\n")) !== -1) {
-          dispatch(buf.slice(0, i));
-          buf = buf.slice(i + 2);
-        }
-      }
-      if (buf.trim()) dispatch(buf);
-    } finally {
-      clearTimeout(stallTimer);
-    }
-  },
+  relationshipChatStream: (message, { onMeta, onProposal, onDone, onError } = {}) =>
+    consumeSSE("/api/relationships/chat/stream", { message }, {
+      handlers: {
+        meta: (p) => onMeta?.(p),
+        proposal: (p) => onProposal?.(p),
+        done: (p) => onDone?.(p),
+        error: (p) => onError?.(p),
+      },
+    }),
   // Approve one drafted follow-up for a contact. Honors the host's auto-send
   // toggle server-side: returns { status: "sent" | "drafted", ... }.
   sendContactFollowup: (contactId, message, channel = "linkedin") =>
@@ -477,47 +493,17 @@ export const api = {
   // Token-level streamed draft: types the message out word-by-word (like Claude).
   // Callbacks: onToken(text) append to the draft, onDone({total_s}), onError({detail}).
   // Tokens are JSON-wrapped so their leading/trailing spaces survive SSE framing.
-  bookDraftStream: async (body, { onToken, onDone, onError } = {}) => {
-    const res = await fetch("/api/book/draft/stream", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok || !res.body) {
-      const text = await res.text().catch(() => "");
-      const err = new Error(`${res.status} ${res.statusText} : ${text.slice(0, 240)}`);
-      err.status = res.status;
-      throw err;
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    const dispatch = (frame) => {
-      let ev = "message", data = "";
-      for (const line of frame.split("\n")) {
-        if (line.startsWith("event:")) ev = line.slice(6).trim();
-        else if (line.startsWith("data:")) data += line.slice(5).trim();
-      }
-      if (!data) return;  // keepalive / open comment
-      let payload;
-      try { payload = JSON.parse(data); } catch { return; }
-      if (ev === "token") onToken?.(payload.t || "");
-      else if (ev === "done") onDone?.(payload);
-      else if (ev === "error") onError?.(payload);
-    };
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let i;
-      while ((i = buf.indexOf("\n\n")) !== -1) {
-        dispatch(buf.slice(0, i));
-        buf = buf.slice(i + 2);
-      }
-    }
-    if (buf.trim()) dispatch(buf);
-  },
+  // Uses the shared consumeSSE, which gives this path the same 45s stall
+  // watchdog the chat/ask streams have: a stalled draft now errors cleanly
+  // instead of hanging the spinner forever.
+  bookDraftStream: (body, { onToken, onDone, onError } = {}) =>
+    consumeSSE("/api/book/draft/stream", body, {
+      handlers: {
+        token: (p) => onToken?.(p.t || ""),
+        done: (p) => onDone?.(p),
+        error: (p) => onError?.(p),
+      },
+    }),
   // The agent ask bar + chips. { query } -> { answer, people:[{name,reason,draft}] }.
   bookAsk: (query) =>
     request("/api/book/ask", { method: "POST", body: JSON.stringify({ query }) }),
@@ -527,76 +513,17 @@ export const api = {
   // fire. Callbacks: onStatus({phase,name}), onPeople({people,answer}),
   // onPerson({index,contact_id,name,draft}), onDone({total_s,count}),
   // onError({detail}). Resolves when the stream closes.
-  bookAskStream: async (query, { onStatus, onPeople, onToken, onPerson, onDone, onError } = {}) => {
-    const STALL_MS = 45000;
-    const controller = new AbortController();
-    let stalled = false;
-    let stallTimer = null;
-    const armWatchdog = () => {
-      clearTimeout(stallTimer);
-      stallTimer = setTimeout(() => { stalled = true; controller.abort(); }, STALL_MS);
-    };
-    const stallError = () =>
-      new Error("the connection went quiet and was closed — try asking again");
-    armWatchdog();
-    try {
-      let res;
-      try {
-        res = await fetch("/api/book/ask/stream", {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ query }),
-          signal: controller.signal,
-        });
-      } catch (e) {
-        throw stalled ? stallError() : e;
-      }
-      if (!res.ok || !res.body) {
-        const text = await res.text().catch(() => "");
-        const err = new Error(`${res.status} ${res.statusText} : ${text.slice(0, 240)}`);
-        err.status = res.status;
-        try { err.body = JSON.parse(text); } catch { err.body = null; }
-        throw err;
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      const dispatch = (frame) => {
-        let ev = "message", data = "";
-        for (const line of frame.split("\n")) {
-          if (line.startsWith("event:")) ev = line.slice(6).trim();
-          else if (line.startsWith("data:")) data += line.slice(5).trim();
-        }
-        if (!data) return;  // keepalive comment (": ...") has no data: line
-        let payload;
-        try { payload = JSON.parse(data); } catch { return; }
-        if (ev === "status") onStatus?.(payload);
-        else if (ev === "people") onPeople?.(payload);
-        else if (ev === "token") onToken?.(payload);     // {index, t} : append
-        else if (ev === "person") onPerson?.(payload);   // {index} : that card done
-        else if (ev === "done") onDone?.(payload);
-        else if (ev === "error") onError?.(payload);
-      };
-      for (;;) {
-        let chunk;
-        try { chunk = await reader.read(); }
-        catch (e) { throw stalled ? stallError() : e; }
-        armWatchdog();
-        const { value, done } = chunk;
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let i;
-        while ((i = buf.indexOf("\n\n")) !== -1) {
-          dispatch(buf.slice(0, i));
-          buf = buf.slice(i + 2);
-        }
-      }
-      if (buf.trim()) dispatch(buf);
-    } finally {
-      clearTimeout(stallTimer);
-    }
-  },
+  bookAskStream: (query, { onStatus, onPeople, onToken, onPerson, onDone, onError } = {}) =>
+    consumeSSE("/api/book/ask/stream", { query }, {
+      handlers: {
+        status: (p) => onStatus?.(p),
+        people: (p) => onPeople?.(p),
+        token: (p) => onToken?.(p),     // {index, t} : append
+        person: (p) => onPerson?.(p),   // {index} : that card done
+        done: (p) => onDone?.(p),
+        error: (p) => onError?.(p),
+      },
+    }),
 
   // in-person guest : mint a LinkedIn-less anonymous session so the capture
   // flow works on event.surpluslayer.com without signing in (real sends stay
