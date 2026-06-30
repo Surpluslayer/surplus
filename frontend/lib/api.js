@@ -136,16 +136,10 @@ async function request(path, opts = {}) {
       continue;
     }
     if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      const err = new Error(_friendly(res.status, text));
-      // Surface the status so callers can branch on 404 (event wiped by a
-      // backend redeploy) vs 409 (precondition not met) vs 5xx (server error)
-      // without parsing the message string.
-      err.status = res.status;
-      // 402 paywall responses ship a structured body { code, message } the
-      // SPA branches on (payment_required vs linkedin_send_locked). Try
-      // parsing JSON and attach to the error; non-JSON bodies leave .body null.
-      try { err.body = JSON.parse(text); } catch { err.body = null; }
+      // errorFromResponse() builds the friendly message and surfaces .status
+      // (callers branch on 404/409/5xx) and .body (the 402 paywall envelope
+      // { code, message }) without re-parsing the message string here.
+      const err = await errorFromResponse(res);
       if (TRANSIENT.has(res.status)) { lastErr = err; continue; }
       throw err;
     }
@@ -323,12 +317,7 @@ export const api = {
     const res = await fetch(`/events/${id}/triage/upload`, {
       method: "POST", credentials: "same-origin", body: form,
     });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      const err = new Error(`${res.status} ${res.statusText} — ${text.slice(0, 240)}`);
-      err.status = res.status;
-      throw err;
-    }
+    if (!res.ok) throw await errorFromResponse(res);
     return res.json();
   },
   listTriageApplicants: (id) => request(`/events/${id}/triage/applicants`),
