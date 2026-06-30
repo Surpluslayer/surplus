@@ -1,0 +1,34 @@
+/* Shared design tokens lifted from event-v1's event-match: Inter + Instrument
+   Serif, indigo accent, dotted-grid background. Standalone pages that don't
+   mount the Apollo shell (index.html, customers.html, scanner.html, join.html,
+   sponsor_brief.html, sponsor_matrix.html) link this so the whole product
+   shares one visual language. */
+
+@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&display=swap");
+
+:root {
+  --accent-indigo:     #6366F1;
+  --accent-indigo-h:   #4F46E5;
+  --accent-indigo-soft:#EEF0FF;
+  --accent-indigo-soft-2:#E0E4FF;
+  --serif: "Instrument Serif", "Tiempos", Georgia, serif;
+}
+
+html, body {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+body {
+  background-color: #FAFAFC;
+  background-image: radial-gradient(circle at 1px 1px, rgba(99, 102, 241, 0.06) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+/* Serif-italic display helper: <h1>The room <em>you want</em></h1>.
+   Also applies via the `.serif` class. */
+h1 em, .serif {
+  font-family: var(--serif);
+  font-style: italic;
+  color: var(--accent-indigo);
+  font-weight: 400;
+}

@@ -20,6 +20,18 @@ Two product surfaces share the codebase:
 Host header picks the shell: `event.*` → `inperson.html` → `main-inperson.jsx` →
 **BookApp**; apex → `index.html` → `main.jsx` → **App**.
 
+- **Marketing landing** (`join.surpluslayer.com`) - the public "Try now with
+  LinkedIn" page. Ported in-app from the old standalone `roi-engine` FastAPI
+  service (which 502'd whenever its Postgres blipped at startup). It is a
+  self-contained static `backend/landing/join.html` plus assets served at
+  `/landing-assets/*`, with **zero DB dependency** (pure file serve). Host
+  routing: any `join.*` host serves the landing instead of the React SPA;
+  `event.*` and `www`/apex are unchanged. A host-independent preview lives at
+  `/landing` (alias `/join`) for staging verification. The hero CTA points at
+  the existing relative `/api/auth/linkedin/start-redirect`; the secondary
+  email-capture posts to a DB-free `/api/join/demo-request` (validate + log,
+  no persistence). See `main.py` `_is_landing_host` / `_landing_response`.
+
 ## 1b. The two sides (read this to know which half a file belongs to)
 
 The codebase is two product lines sharing infra. Every backend file belongs to
