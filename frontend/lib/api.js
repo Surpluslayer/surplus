@@ -230,7 +230,9 @@ export const api = {
 
   // 03 outreach (provider-backed; DRY_RUN by default)
   previewOutreach: (id) => request(`/events/${id}/outreach/preview`),
+  // unused by this UI; kept for extension/mobile/test
   runOutreach: (id) => request(`/events/${id}/outreach`, { method: "POST" }),
+  // unused by this UI; kept for extension/mobile/test
   getOutreachLog: (id) => request(`/events/${id}/outreach/log`),
 
   // per-prospect, one-at-a-time. Safer than the batch /outreach for live.
@@ -244,6 +246,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(override),
     }),
+  // unused by this UI; kept for extension/mobile/test
   sendDirectMessage: (eid, pid, override = {}) =>
     request(`/events/${eid}/prospects/${pid}/dm`, {
       method: "POST",
@@ -256,6 +259,7 @@ export const api = {
     request(`/events/${eid}/check-connections`, { method: "POST" }),
 
   // convenience : full pipeline in one call (BLOCKED in live without confirm)
+  // unused by this UI; kept for extension/mobile/test
   runPipeline: (id) => request(`/events/${id}/run`, { method: "POST" }),
 
   // 04 matching
@@ -370,6 +374,7 @@ export const api = {
   getContact: (contactId) => request(`/api/relationships/contacts/${contactId}`),
   // Follow-up chat : send the host's ask to the same propose-only agent and get
   // back { summary, proposals[], auto_send_enabled }. No sends here.
+  // unused by this UI (superseded by relationshipChatStream); kept for extension/mobile/test
   relationshipChat: (message) =>
     request("/api/relationships/chat", {
       method: "POST",
@@ -494,6 +499,7 @@ export const api = {
       },
     }),
   // The agent ask bar + chips. { query } -> { answer, people:[{name,reason,draft}] }.
+  // unused by this UI (superseded by bookAskStream); kept for extension/mobile/test
   bookAsk: (query) =>
     request("/api/book/ask", { method: "POST", body: JSON.stringify({ query }) }),
   // Streaming twin of bookAsk: emits the ranked people the instant selection
@@ -549,6 +555,7 @@ export const api = {
   // One-tap OAuth: fetch the consent URL, then top-level navigate to it (the
   // session cookie is set on the callback redirect, not a fetch).
   startGoogleAuth: () => request("/api/auth/google/login"),
+  // unused by this UI; kept for extension/mobile/test
   startMicrosoftAuth: () => request("/api/auth/microsoft/login"),
   // Connected OAuth sources (Google/Microsoft/Calendly/Zoom) for the signed-in user.
   listIntegrations: () => request("/api/integrations"),
