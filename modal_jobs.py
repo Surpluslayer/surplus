@@ -388,6 +388,30 @@ def run_whatsapp_first_sync(user_id: int) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# 5c) DETACHED JOB : the durable home for the generic fire-and-forget seeds
+#    (connect-time conversation autoimport + voice sync, email first-sync). The
+#    web app would otherwise run these in a throwaway daemon thread that dies if
+#    the worker recycles mid-deploy, dropping the seed. run_detached(prefer_modal
+#    =True) spawns THIS so the seed survives the ack, autoscales, and retries
+#    once. The body lives in backend/jobs.py::execute_detached (shared with the
+#    local-thread fallback) -- thin shell here. The seed fns are idempotent.
+# --------------------------------------------------------------------------- #
+@app.function(
+    image=image,
+    secrets=[secret],
+    timeout=_CRM_TIMEOUT,
+    retries=1,
+)
+def run_detached_job(fn_path: str, args: list, kwargs: dict) -> None:
+    """Run a detached job body (fn imported from fn_path) on its own DB session."""
+    from backend.db import init_db
+    from backend.jobs import execute_detached
+
+    init_db()
+    execute_detached(fn_path, *(args or []), **(kwargs or {}))
+
+
+# --------------------------------------------------------------------------- #
 # 6) UPDATES SWEEP — the tiered "what's new" sweep (job changes + milestone
 #    posts) for the Book contact spine. Primary scheduler. Bright Data scrapes
 #    on its own infra and delivers to the Railway webhook; this function just

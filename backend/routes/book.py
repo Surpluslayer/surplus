@@ -679,6 +679,15 @@ def _require_admin_token(x_admin_token: Optional[str] = Header(default=None)) ->
         raise HTTPException(status_code=403, detail="forbidden")
 
 
+def _run_updates_sweep(db, user_id: Optional[int], limit: int) -> None:
+    """Detached "what's new" sweep body (run via jobs.run_detached). Top-level so
+    it stays importable; `db` is the run_detached-owned session. user_id=None
+    sweeps all users."""
+    from ..agents.relationship.updates_engine import run_sweep
+    res = run_sweep(db, user_id=user_id, limit=limit)
+    print(f"[updates] sweep {res}", flush=True)
+
+
 @router.post("/run-updates", status_code=202)
 def run_updates_endpoint(user_id: Optional[int] = None, limit: int = 40,
                          _: None = Depends(_require_admin_token)):
@@ -688,20 +697,10 @@ def run_updates_endpoint(user_id: Optional[int] = None, limit: int = 40,
     on its own infra, delivered via /webhooks/brightdata) when configured, else
     account-safe Exa web search. Tiered by the vip ⭐ flag so paid scraping spend
     tracks the contacts that matter. `limit` caps contacts per run — pass a small
-    value (e.g. ?limit=2) for a cheap validation batch. Runs in a background
-    thread with its own session so the request returns immediately."""
-    def _worker():
-        from ..db import SessionLocal
-        from ..agents.relationship.updates_engine import run_sweep
-        db = SessionLocal()
-        try:
-            res = run_sweep(db, user_id=user_id, limit=max(1, min(limit, 200)))
-            print(f"[updates] sweep {res}", flush=True)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[updates] run failed: {type(exc).__name__}: {exc}", flush=True)
-        finally:
-            db.close()
-    threading.Thread(target=_worker, daemon=True).start()
+    value (e.g. ?limit=2) for a cheap validation batch. Runs detached with its
+    own session so the request returns immediately."""
+    from ..jobs import run_detached
+    run_detached(_run_updates_sweep, user_id, max(1, min(limit, 200)))
     return {"status": "started", "scope": user_id if user_id is not None else "all",
             "limit": max(1, min(limit, 200))}
 

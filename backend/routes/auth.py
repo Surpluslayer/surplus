@@ -77,42 +77,60 @@ def _arm_onboarding_if_first_connect(user: User) -> None:
         user.onboarding_step = 0
 
 
+def _seed_conversations_and_voice(db, user_id: int) -> None:
+    """Detached seed body (run via jobs.run_detached): import the user's genuine
+    LinkedIn DM conversations into the Book, then learn their voice. Top-level so
+    the Modal durable path can resolve it. `db` is the run_detached-owned session
+    used for the import; the voice sync opens its OWN second session (the import
+    may have committed/closed work on `db`). Idempotent + best-effort."""
+    from ..agents.relationship.spine.relationships import import_conversation_contacts
+    from ..models import User as _User
+    try:
+        u = db.get(_User, user_id)
+        if u is not None:
+            res = import_conversation_contacts(db, u, want=15)
+            print(f"[autoimport] user={user_id} {res}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[autoimport] user={user_id} failed: {type(exc).__name__}: {exc}",
+              flush=True)
+    # Learn the host's voice from their own sent messages, in its own session.
+    # Same ban-safe own-account read surface; idempotent; never blocks the connect.
+    from ..db import SessionLocal
+    vdb = SessionLocal()
+    try:
+        from ..agents.live_enrich import sync_host_voice_on_connect
+        vres = sync_host_voice_on_connect(vdb, user_id)
+        print(f"[voicesync] user={user_id} {vres}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[voicesync] user={user_id} failed: {type(exc).__name__}: {exc}",
+              flush=True)
+    finally:
+        vdb.close()
+
+
 def _autoimport_conversations(user_id: int) -> None:
     """Background: seed the Book from the user's genuine LinkedIn DM conversations
-    right after they connect, so the spine isn't empty. Idempotent + best-effort
-    (its own session; never blocks or fails the auth response)."""
-    import threading
+    right after they connect, so the spine isn't empty. DURABLE (prefer_modal) so
+    a deploy mid-seed doesn't drop it. Idempotent + best-effort; never blocks or
+    fails the auth response."""
+    from ..jobs import run_detached
+    run_detached(_seed_conversations_and_voice, user_id, prefer_modal=True)
 
-    def _worker():
-        from ..db import SessionLocal
-        from ..agents.relationship.spine.relationships import import_conversation_contacts
-        from ..models import User as _User
-        db = SessionLocal()
-        try:
-            u = db.get(_User, user_id)
-            if u is not None:
-                res = import_conversation_contacts(db, u, want=15)
-                print(f"[autoimport] user={user_id} {res}", flush=True)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[autoimport] user={user_id} failed: {type(exc).__name__}: {exc}",
-                  flush=True)
-        finally:
-            db.close()
-        # Learn the host's voice from their own sent messages, in its own session
-        # (the import above may have committed/closed work on `db`). Same ban-safe
-        # own-account read surface; idempotent; never blocks or fails the connect.
-        vdb = SessionLocal()
-        try:
-            from ..agents.live_enrich import sync_host_voice_on_connect
-            vres = sync_host_voice_on_connect(vdb, user_id)
-            print(f"[voicesync] user={user_id} {vres}", flush=True)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[voicesync] user={user_id} failed: {type(exc).__name__}: {exc}",
-                  flush=True)
-        finally:
-            vdb.close()
 
-    threading.Thread(target=_worker, name=f"autoimport-{user_id}", daemon=True).start()
+def _email_first_sync(db, user_id: int) -> None:
+    """Detached email first-sync body (run via jobs.run_detached). Top-level so
+    the Modal durable path can resolve it; `db` is the run_detached-owned session.
+    Re-derives Unipile creds from env (the durable Modal worker has its own env).
+    Best-effort; idempotent (sync skips by message id)."""
+    from ..agents.relationship.email_sync import sync_email_contacts
+    dsn, api_key = _unipile_dsn(), _unipile_api_key()
+    if not (dsn and api_key):
+        print(f"  [auth.email] first sync user.id={user_id}: unipile not configured")
+        return
+    u = db.query(User).filter(User.id == user_id).first()
+    if u is not None:
+        stats = sync_email_contacts(db, u, dsn=dsn, api_key=api_key)
+        print(f"  [auth.email] first sync user.id={user_id}: {stats}")
 
 # Anonymous user-creation rate limit : ~5/min per IP. A real Tech Week
 # demo viewer clicking around does ~1/min ; a bot trying to fill up the
@@ -1042,29 +1060,14 @@ async def email_webhook(payload: dict,
           f"user.id={user.id} ({user.email_account_address or 'address n/a'})")
 
     # The magic moment: connect → the book fills itself. Kick the first
-    # mailbox sync in the background (own thread + own DB session — this
-    # webhook must ack fast or Unipile retries). Best-effort by design;
-    # the manual /api/relationships/email/sync route covers any failure.
+    # mailbox sync off the request lifecycle (own DB session, this webhook
+    # must ack fast or Unipile retries). DURABLE (prefer_modal) so a deploy
+    # mid-sync doesn't drop it. Best-effort by design; the manual
+    # /api/relationships/email/sync route covers any failure.
     user_id = user.id
     if dsn and api_key:
-        import threading
-
-        def _first_sync():
-            from ..db import SessionLocal
-            from ..agents.relationship.email_sync import sync_email_contacts
-            sdb = SessionLocal()
-            try:
-                u = sdb.query(User).filter(User.id == user_id).first()
-                if u is not None:
-                    stats = sync_email_contacts(sdb, u, dsn=dsn, api_key=api_key)
-                    print(f"  [auth.email] first sync user.id={user_id}: {stats}")
-            except Exception as exc:  # noqa: BLE001
-                print(f"  [auth.email] first sync failed: "
-                      f"{type(exc).__name__}: {exc}")
-            finally:
-                sdb.close()
-
-        threading.Thread(target=_first_sync, daemon=True).start()
+        from ..jobs import run_detached
+        run_detached(_email_first_sync, user_id, prefer_modal=True)
 
     return JSONResponse({"ok": True, "user_id": user.id})
 

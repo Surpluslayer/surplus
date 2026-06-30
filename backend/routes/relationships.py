@@ -425,6 +425,17 @@ def set_contact_channel(
     return {"contact_id": contact_id, "preferred_channel": ch}
 
 
+def _kick_vip_scrape(db, contact_id: int) -> None:
+    """Detached one-off scrape for a just-starred contact (run via
+    jobs.run_detached). Top-level so it stays importable; `db` is the
+    run_detached-owned session. Best-effort."""
+    from ..agents.relationship.updates_engine import scrape_contact
+    c = db.get(models.Contact, contact_id)
+    if c is not None:
+        print(f"[star] kicked scrape for contact={contact_id}: "
+              f"{scrape_contact(db, c)}", flush=True)
+
+
 @router.post("/contacts/{contact_id}/star")
 def set_contact_star(
     contact_id: int,
@@ -441,23 +452,8 @@ def set_contact_star(
     # close-monitoring starts now instead of waiting for the next sweep. Best
     # effort, its own session; never blocks or fails the toggle.
     if contact.vip and (contact.linkedin_url or "").strip():
-        import threading
-
-        def _kick(cid: int):
-            from ..db import SessionLocal
-            from ..agents.relationship.updates_engine import scrape_contact
-            sdb = SessionLocal()
-            try:
-                c = sdb.get(models.Contact, cid)
-                if c is not None:
-                    print(f"[star] kicked scrape for contact={cid}: "
-                          f"{scrape_contact(sdb, c)}", flush=True)
-            except Exception as exc:  # noqa: BLE001
-                print(f"[star] kick failed contact={cid}: {exc}", flush=True)
-            finally:
-                sdb.close()
-
-        threading.Thread(target=_kick, args=(contact_id,), daemon=True).start()
+        from ..jobs import run_detached
+        run_detached(_kick_vip_scrape, contact_id)
     return {"contact_id": contact_id, "vip": contact.vip}
 
 
