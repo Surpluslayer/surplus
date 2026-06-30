@@ -1,0 +1,2413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Surplus · AI-powered events</title>
+<link rel="icon" href="/landing-assets/surplus-logo.png?v=b568b42c" type="image/png" sizes="any" />
+<link rel="apple-touch-icon" href="/landing-assets/surplus-logo.png?v=b568b42c" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:ital,wght@0,600;0,700;1,600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --violet-a: #5b2eff;
+    --violet-b: #7b61ff;
+    --gradient-purple: linear-gradient(135deg, var(--violet-a) 0%, var(--violet-b) 100%);
+    --gradient-purple-h: linear-gradient(135deg, #4d26d9 0%, #6a52e8 100%);
+    --navy: #111827;
+    --ink: #0f172a;
+    --muted: #4b5563;
+    --faint: #9ca3af;
+    --pill-bg: #ede9fe;
+    --pill-text: #5b2eff;
+    --bg: #fafafa;
+    --bg-card: #ffffff;
+    --border-light: rgba(91, 46, 255, 0.1);
+    --shadow-soft: 0 10px 30px rgba(91, 46, 255, 0.08);
+    --shadow-card: 0 16px 48px rgba(91, 46, 255, 0.1);
+    --shadow-cta-glow: 0 8px 28px rgba(91, 46, 255, 0.35);
+    --r-btn: 14px;
+    --r-card-sm: 18px;
+    --r-card-lg: 28px;
+    --max: 1280px;
+    --space-8: 8px;
+    --section-y: 120px;
+    --font-sans: "Inter", system-ui, sans-serif;
+    --font-serif: "Playfair Display", Georgia, "Times New Roman", serif;
+    --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.5;
+    color: var(--ink);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; text-decoration: none; }
+
+  /* Ambient background + grain */
+  .page-bg {
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse 70% 50% at 10% -10%, rgba(91, 46, 255, 0.09), transparent 55%),
+      radial-gradient(ellipse 55% 45% at 95% 15%, rgba(123, 97, 255, 0.08), transparent 50%),
+      radial-gradient(ellipse 50% 40% at 50% 100%, rgba(91, 46, 255, 0.05), transparent 45%),
+      linear-gradient(180deg, #ffffff 0%, #f4f2fb 100%);
+  }
+  /* Soft node grid — reads as “network” without pulling focus */
+  .page-bg::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.16;
+    background-image:
+      radial-gradient(circle at center, rgba(91, 46, 255, 0.28) 0.85px, transparent 1px),
+      radial-gradient(circle at center, rgba(123, 97, 255, 0.18) 0.55px, transparent 0.75px);
+    background-size: 20px 20px, 20px 20px;
+    background-position: 0 0, 10px 10px;
+  }
+  .page-bg::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    mix-blend-mode: multiply;
+  }
+
+  /* ----- Nav ----- */
+  .site-header {
+    position: sticky;
+    top: 0;
+    z-index: 200;
+    min-height: 88px;
+    display: flex;
+    align-items: center;
+    background: rgba(255, 255, 255, 0.78);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    border-bottom: 1px solid var(--border-light);
+  }
+  .site-header__inner {
+    width: 100%;
+    max-width: var(--max);
+    margin: 0 auto;
+    padding: 24px 48px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+  }
+  @media (min-width: 1024px) {
+    .site-header__inner {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      align-items: center;
+    }
+    .brand {
+      justify-self: start;
+    }
+    .site-header__right {
+      justify-self: end;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 36px;
+    }
+  }
+  .site-header__right {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 20px;
+  }
+  .nav-wrap {
+    display: flex;
+    align-items: center;
+    gap: 40px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .brand__icon {
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+    border-radius: 12px;
+    object-fit: contain;
+    display: block;
+  }
+  .brand__word {
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: var(--navy);
+    line-height: 1;
+  }
+  @media (max-width: 640px) {
+    .brand__word { font-size: 24px; }
+  }
+  @media (max-width: 1023px) {
+    .site-header__inner { padding: 16px 24px; }
+    .nav-wrap {
+      display: none;
+    }
+    .nav-wrap.is-open {
+      display: flex;
+      position: fixed;
+      left: 16px;
+      right: 16px;
+      top: 96px;
+      flex-direction: column;
+      align-items: stretch;
+      background: #fff;
+      padding: 24px;
+      border-radius: var(--r-card-sm);
+      box-shadow: var(--shadow-card);
+      z-index: 199;
+      gap: 16px;
+    }
+  }
+  .nav-wrap a {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--muted);
+    transition: color 0.2s var(--ease-out);
+  }
+  .nav-wrap a:hover { color: var(--violet-a); }
+  .nav-toggle {
+    display: none;
+    padding: 10px 14px;
+    border-radius: var(--r-btn);
+    border: 1px solid var(--border-light);
+    background: #fff;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  @media (max-width: 1023px) {
+    .nav-toggle { display: inline-flex; }
+  }
+  .site-header__tools {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .btn-cta {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px 22px;
+    border-radius: var(--r-btn);
+    border: none;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--gradient-purple);
+    cursor: pointer;
+    box-shadow: var(--shadow-cta-glow);
+    transition: transform 0.22s var(--ease-spring), box-shadow 0.25s ease, filter 0.2s ease;
+  }
+  .btn-cta:hover {
+    transform: scale(1.02);
+    filter: brightness(1.05);
+    box-shadow: 0 12px 40px rgba(91, 46, 255, 0.45);
+  }
+  .btn-cta--white {
+    background: #fff;
+    color: var(--violet-a);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  }
+  .btn-cta--white:hover {
+    box-shadow: 0 12px 40px rgba(255, 255, 255, 0.35);
+  }
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 22px;
+    border-radius: var(--r-btn);
+    border: 2px solid var(--violet-a);
+    background: #fff;
+    color: var(--violet-a);
+    font-size: 15px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+  .btn-secondary:hover { background: #f5f3ff; }
+  .btn-secondary .arrow {
+    transition: transform 0.25s var(--ease-out);
+  }
+  .btn-secondary:hover .arrow { transform: translateX(4px); }
+
+  /* ----- Hero ----- */
+  .hero {
+    position: relative;
+    max-width: var(--max);
+    margin: 0 auto;
+    /* ~pt-[6.5rem] / md:pb-24 / pb-[4.5rem] rhythm (docs-style vertical cadence) */
+    padding: clamp(52px, 6.5vw, 104px) clamp(24px, 4vw, 48px) clamp(72px, 10vw, 96px);
+    display: flex;
+    flex-direction: column;
+    gap: clamp(32px, 4.5vw, 48px);
+  }
+  @media (max-width: 640px) {
+    .hero { padding: clamp(40px, 10vw, 72px) 24px clamp(64px, 12vw, 72px); }
+  }
+
+  .hero-mesh {
+    position: absolute;
+    inset: 0;
+    top: -40px;
+    height: 120%;
+    z-index: 0;
+    opacity: 0.18;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  .hero-mesh svg {
+    width: 100%;
+    height: 100%;
+    animation: meshDrift 28s ease-in-out infinite alternate;
+  }
+  @keyframes meshDrift {
+    from { transform: translate(0, 0) scale(1); }
+    to { transform: translate(-2%, 1%) scale(1.03); }
+  }
+
+  /* Animated node links (canvas) — sits under copy, above mesh */
+  .node-canvas {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.78;
+  }
+
+  .hero-left {
+    position: relative;
+    z-index: 2;
+    width: 100%;
+    max-width: 44rem;
+    margin-left: auto;
+    margin-right: auto;
+    text-align: center;
+  }
+
+  .hero-pill {
+    display: inline-block;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: var(--pill-bg);
+    color: var(--pill-text);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+  }
+
+  .hero-title {
+    margin: 0;
+    font-family: var(--font-serif);
+    font-weight: 600;
+    font-size: clamp(2rem, 3.5vw + 0.75rem, 3.35rem);
+    line-height: 1.15;
+    letter-spacing: -0.03em;
+    text-wrap: balance;
+  }
+  .hero-title .line1 {
+    display: block;
+    color: var(--navy);
+  }
+  .hero-title .grad {
+    display: block;
+    background: linear-gradient(110deg, var(--violet-a), var(--violet-b), #a78bfa, var(--violet-a));
+    background-size: 200% 200%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: gradientShift 8s ease infinite;
+  }
+  @keyframes gradientShift {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+  }
+
+  .hero-sub {
+    margin: 24px auto 0;
+    max-width: 32rem;
+    font-size: 17px;
+    line-height: 1.5;
+    color: var(--muted);
+    font-weight: 400;
+  }
+  @media (min-width: 768px) {
+    .hero-sub { font-size: 19px; max-width: 34rem; }
+  }
+
+  .hero-ctas {
+    margin-top: 32px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .hero-email-slot {
+    display: inline-flex;
+    align-items: stretch;
+    width: min(100%, 340px);
+    border: 2px solid var(--violet-a);
+    border-radius: var(--r-btn);
+    background: #fff;
+    overflow: hidden;
+    box-shadow: 0 1px 0 rgba(91, 46, 255, 0.06);
+  }
+  .hero-email-slot:focus-within {
+    box-shadow: 0 0 0 3px rgba(91, 46, 255, 0.18);
+  }
+  .hero-email-slot input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    padding: 12px 14px;
+    font-size: 15px;
+    font-family: inherit;
+    color: var(--navy);
+    background: transparent;
+    outline: none;
+  }
+  .hero-email-slot input::placeholder {
+    color: var(--faint);
+  }
+  .hero-email-slot button {
+    flex-shrink: 0;
+    border: none;
+    padding: 0 16px;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: inherit;
+    color: #fff;
+    background: var(--gradient-purple);
+    cursor: pointer;
+    transition: filter 0.15s ease;
+  }
+  .hero-email-slot button:hover {
+    filter: brightness(1.05);
+  }
+
+  /* "Sign in with LinkedIn" CTA — replaces the email-capture form */
+  .hero-ctas {
+    flex-direction: column;
+  }
+  .hero-linkedin-cta {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 14px 28px;
+    border-radius: var(--r-btn);
+    background: #0a66c2;             /* LinkedIn brand blue */
+    color: #fff;
+    font-family: inherit;
+    font-weight: 600;
+    font-size: 15.5px;
+    text-decoration: none;
+    box-shadow: 0 4px 14px rgba(10, 102, 194, 0.28);
+    transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+    cursor: pointer;
+    width: min(100%, 340px);
+  }
+  .hero-linkedin-cta:hover {
+    background: #084e96;
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(10, 102, 194, 0.36);
+  }
+  .hero-linkedin-cta:active {
+    transform: translateY(0);
+  }
+  .hero-linkedin-mark {
+    flex-shrink: 0;
+  }
+  /* Shown only when a click outraces the prefetch (see CTA prefetch script). */
+  [data-linkedin-cta].is-connecting {
+    opacity: 0.75;
+    cursor: progress;
+    pointer-events: none;
+  }
+  [data-linkedin-cta].is-connecting::after {
+    content: "";
+    width: 13px;
+    height: 13px;
+    margin-left: 8px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    display: inline-block;
+    vertical-align: middle;
+    animation: linkedin-cta-spin 0.6s linear infinite;
+  }
+  @keyframes linkedin-cta-spin {
+    to { transform: rotate(360deg); }
+  }
+  .hero-linkedin-note {
+    margin: 0;
+    max-width: 520px;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--faint);
+    text-align: center;
+  }
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  /* Cards block = hero “product shot” (replaces a separate hero image) */
+  .hero-cards-row {
+    position: relative;
+    z-index: 2;
+    width: 100%;
+    max-width: 1080px;
+    margin-left: auto;
+    margin-right: auto;
+    display: grid;
+    gap: 12px;
+    align-items: stretch;
+    grid-template-columns: 1fr;
+    padding: clamp(10px, 1.5vw, 14px);
+    border-radius: clamp(10px, 1.2vw, 24px) clamp(10px, 1.2vw, 24px) 0 0;
+    border: 2px solid rgba(255, 255, 255, 0.95);
+    border-bottom: none;
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow: 0 18px 50px rgba(91, 46, 255, 0.07);
+    overflow: hidden;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+  @media (min-width: 900px) {
+    .hero-cards-row {
+      grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+      align-items: stretch;
+    }
+  }
+  .hero-cards-main {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+    min-height: 0;
+    align-self: stretch;
+  }
+  @media (max-width: 520px) {
+    .hero-cards-main { grid-template-columns: 1fr; }
+  }
+
+  /* Capability pipeline — left column, no emoji tiles */
+  .hero-capabilities {
+    background: rgba(255, 255, 255, 0.96);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.9);
+    border-radius: var(--r-card-sm);
+    box-shadow: var(--shadow-soft);
+    padding: 14px 16px 12px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    align-self: stretch;
+  }
+  .cap-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  .cap-list li {
+    display: grid;
+    grid-template-columns: 2.5rem 1fr;
+    gap: 4px 14px;
+    padding: 12px 0;
+    border-bottom: 1px solid rgba(17, 24, 39, 0.06);
+    align-items: start;
+  }
+  .cap-list li:last-child {
+    border-bottom: none;
+    padding-bottom: 2px;
+  }
+  .cap-idx {
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    color: var(--violet-a);
+    line-height: 1.35;
+    font-variant-numeric: tabular-nums;
+  }
+  .cap-title {
+    display: block;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--navy);
+    line-height: 1.3;
+    letter-spacing: -0.01em;
+  }
+  .cap-desc {
+    display: block;
+    margin-top: 0;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+  .cap-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .hcard {
+    background: rgba(255, 255, 255, 0.96);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.9);
+    border-radius: var(--r-card-sm);
+    box-shadow: var(--shadow-soft);
+    padding: 12px 10px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    transition: box-shadow 0.25s ease;
+  }
+  .hero-cards-main > .hcard {
+    padding: 16px 14px;
+    min-height: 0;
+    height: 100%;
+    align-self: stretch;
+  }
+  .hcard:hover { box-shadow: var(--shadow-card); }
+
+  .hcard .hc-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--faint);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+  }
+  .hero-cards-main > .hcard .hc-label {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    margin-bottom: 8px;
+  }
+  .hcard--guest > .hc-label {
+    text-transform: none;
+    font-size: clamp(11px, 2.9vw, 13px);
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    line-height: 1.3;
+    color: var(--navy);
+    margin-bottom: 6px;
+  }
+
+  /* Guest */
+  .hcard--guest {
+    opacity: 0;
+    filter: blur(6px);
+    transform: scale(0.98);
+    transform-origin: center top;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+  }
+  .hcard--guest.is-in {
+    animation: guestIn 0.65s var(--ease-out) forwards;
+  }
+  @keyframes guestIn {
+    to { opacity: 1; filter: blur(0); transform: scale(1); }
+  }
+  .guest-list-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    margin-top: 4px;
+    padding: 0 2px 0 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(91, 46, 255, 0.28) transparent;
+    display: flex;
+    flex-direction: column;
+    min-height: 248px;
+    max-height: min(272px, 52vh);
+    mask-image: none;
+  }
+  .guest-list-wrap::-webkit-scrollbar {
+    width: 6px;
+  }
+  .guest-list-wrap::-webkit-scrollbar-thumb {
+    background: rgba(91, 46, 255, 0.22);
+    border-radius: 99px;
+  }
+  .guest-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 11px;
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    justify-content: flex-start;
+  }
+  #guestBottomSlot {
+    min-height: 52px;
+  }
+  .guest-row {
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr) minmax(4.75rem, max-content) 24px;
+    gap: 8px 12px;
+    align-items: start;
+    padding: 8px 0;
+    min-height: 48px;
+    max-height: none;
+    overflow: visible;
+    box-sizing: border-box;
+    transition: opacity 0.34s ease, transform 0.34s ease, max-height 0.34s ease, padding 0.34s ease, margin 0.34s ease;
+  }
+  .guest-row.is-leaving,
+  .guest-row--trim-out {
+    opacity: 0;
+    transform: translateY(8px);
+    max-height: 0 !important;
+    min-height: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+    pointer-events: none;
+    transition: opacity 0.32s ease, transform 0.32s ease, max-height 0.34s ease, padding 0.34s ease, margin 0.34s ease, min-height 0.34s ease;
+  }
+  .guest-row--pending {
+    opacity: 0.92;
+  }
+  .guest-row--pending .guest-pic {
+    border-style: dashed;
+    border-color: rgba(91, 46, 255, 0.2);
+    background: linear-gradient(110deg, #ececf0 0%, #f7f7f8 45%, #ececf0 90%);
+    background-size: 180% 100%;
+    animation: guestPicShimmer 1.35s ease-in-out infinite;
+  }
+  .guest-row--pending .guest-pic img {
+    display: none;
+  }
+  @keyframes guestPicShimmer {
+    0% { background-position: 0% 0; }
+    100% { background-position: 100% 0; }
+  }
+  .guest-name--pending {
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .hcard--guest.is-in .guest-row--pending .guest-mark {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+  }
+  .guest-mark--pending {
+    opacity: 1;
+    color: var(--violet-a);
+    animation: none !important;
+    transform: none;
+  }
+  .guest-mark--pending svg {
+    animation: guestMarkSpin 0.9s linear infinite;
+  }
+  @keyframes guestMarkSpin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  .hcard--guest.is-live .guest-row--pending .guest-mark--pending svg {
+    animation: guestMarkSpin 0.9s linear infinite;
+  }
+  .guest-row:last-child {
+    padding-bottom: 0;
+  }
+  .guest-row--weak .guest-potential {
+    font-size: 11px;
+    font-weight: 800;
+    color: #b45309;
+    letter-spacing: -0.02em;
+  }
+  .guest-pic {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    overflow: hidden;
+    flex-shrink: 0;
+    border: 1px solid rgba(91, 46, 255, 0.12);
+    background: #f4f4f5;
+  }
+  .guest-face {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .guest-meta {
+    min-width: 0;
+    overflow: hidden;
+  }
+  .guest-name {
+    display: block;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--navy);
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+  }
+  .guest-fit {
+    display: block;
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 3px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .guest-fit strong {
+    font-weight: 700;
+    color: var(--violet-a);
+  }
+  .guest-fit .icp-no {
+    color: #b45309;
+  }
+  .guest-potential {
+    font-size: 12px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    color: var(--navy);
+    text-align: right;
+    justify-self: end;
+    white-space: nowrap;
+    min-width: 4.75rem;
+  }
+  .guest-potential--pending {
+    font-weight: 700;
+    color: var(--faint);
+  }
+  .guest-mark {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 22px;
+    opacity: 0;
+    flex-shrink: 0;
+    justify-self: end;
+    margin-top: 2px;
+  }
+  .guest-mark svg {
+    width: 20px;
+    height: 20px;
+    display: block;
+  }
+  .guest-mark--ok {
+    color: #059669;
+  }
+  .guest-mark--warn {
+    color: #c2410c;
+  }
+  @keyframes icpCheckLive {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.72; }
+  }
+  @keyframes guestMarkWarnLive {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.78; }
+  }
+  .hcard--guest.is-live .guest-row:not(.guest-row--pending) .guest-mark--ok svg {
+    animation: icpCheckLive 4.4s ease-in-out infinite;
+  }
+  .hcard--guest.is-live .guest-row:not(.guest-row--pending) .guest-mark--warn svg {
+    animation: guestMarkWarnLive 4.8s ease-in-out infinite;
+  }
+  .hcard--guest.is-live .guest-row:nth-child(1) .guest-mark--ok svg { animation-delay: 0s; }
+  .hcard--guest.is-live .guest-row:nth-child(2) .guest-mark--ok svg { animation-delay: 0.35s; }
+  .hcard--guest.is-live .guest-row:nth-child(3) .guest-mark--ok svg { animation-delay: 0.7s; }
+  .hcard--guest.is-live .guest-row:nth-child(4) .guest-mark--ok svg { animation-delay: 0.2s; }
+  .hcard--guest.is-live .guest-row:nth-child(5) .guest-mark--ok svg { animation-delay: 0.45s; }
+  .hcard--guest.is-live .guest-row:nth-child(4) .guest-mark--warn svg { animation-delay: 0.15s; }
+  .hcard--guest.is-in .guest-mark {
+    animation: markFadeIn 0.48s ease forwards;
+  }
+  .hcard--guest.is-in .guest-row:nth-child(1) .guest-mark { animation-delay: 0.06s; }
+  .hcard--guest.is-in .guest-row:nth-child(2) .guest-mark { animation-delay: 0.14s; }
+  .hcard--guest.is-in .guest-row:nth-child(3) .guest-mark { animation-delay: 0.22s; }
+  .hcard--guest.is-in .guest-row:nth-child(4) .guest-mark { animation-delay: 0.3s; }
+  .hcard--guest.is-in .guest-row:nth-child(5) .guest-mark { animation-delay: 0.38s; }
+  @keyframes markFadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .hcard--roi {
+    min-height: 0;
+  }
+  .hcard--roi .hc-dollar--lead {
+    font-size: 1.85rem;
+    font-weight: 800;
+    line-height: 1.1;
+    margin-top: 4px;
+    margin-bottom: 0;
+    background: var(--gradient-purple);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .hcard--roi .hc-dollar--lead .sym {
+    font-size: 0.55em;
+    font-weight: 800;
+    margin-right: 1px;
+  }
+  .hcard--roi .roi-hint {
+    margin: 8px 0 0;
+    font-size: 11px;
+    line-height: 1.35;
+    color: #b45309;
+    min-height: 2.6em;
+  }
+  .hcard--roi.is-skeptical .hc-dollar--lead {
+    filter: saturate(0.85) opacity(0.92);
+  }
+  .hcard--roi .hc-graph {
+    margin-top: 4px;
+    padding-top: 2px;
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 84px;
+    height: 88px;
+    flex-shrink: 0;
+  }
+  .hcard--roi .graph-badge {
+    position: absolute;
+    right: 0;
+    top: 0;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--violet-a);
+    background: var(--pill-bg);
+    padding: 3px 6px;
+    border-radius: 6px;
+    opacity: 0;
+    transition: opacity 0.4s ease 8.5s;
+    z-index: 1;
+  }
+  .hcard--roi.is-drawn .graph-badge { opacity: 1; }
+  .hcard--roi svg.graph-line {
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+    transform: scaleY(1.04);
+    transform-origin: 50% 100%;
+  }
+  .hcard--roi .graph-line path {
+    fill: none;
+    stroke: url(#lineGrad);
+    stroke-width: 1.85;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .hcard--roi.is-drawn .graph-line path {
+    animation: drawLine 2.45s var(--ease-out) forwards;
+  }
+  @keyframes drawLine {
+    to { stroke-dashoffset: 0; }
+  }
+  .graph-dot { opacity: 0; }
+  .hcard--roi.is-drawn .graph-dot {
+    animation: popDot 0.32s var(--ease-spring) forwards;
+  }
+  .hcard--roi.is-drawn .graph-dot.d1 { animation-delay: 0.18s; }
+  .hcard--roi.is-drawn .graph-dot.d2 { animation-delay: 0.3s; }
+  .hcard--roi.is-drawn .graph-dot.d3 { animation-delay: 0.42s; }
+  .hcard--roi.is-drawn .graph-dot.d4 { animation-delay: 0.54s; }
+  .hcard--roi.is-drawn .graph-dot.d5 { animation-delay: 0.66s; }
+  .hcard--roi.is-drawn .graph-dot.d6 { animation-delay: 0.78s; }
+  @keyframes popDot {
+    from { opacity: 0; transform: scale(0); }
+    to { opacity: 1; transform: scale(1); }
+  }
+
+  /* ----- Founder ----- */
+  .founder {
+    max-width: var(--max);
+    margin: 0 auto;
+    padding: 0 48px var(--section-y);
+  }
+  .founder-card {
+    min-height: 320px;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 20px;
+    padding: 32px 28px;
+    background: var(--bg-card);
+    border-radius: var(--r-card-lg);
+    border: 1px solid var(--border-light);
+    box-shadow: var(--shadow-soft);
+    overflow: hidden;
+    justify-items: center;
+  }
+  .founder-card > .founder-left,
+  .founder-card > .founder-photos,
+  .founder-card > .founder-right {
+    width: min(100%, 34rem);
+  }
+  @media (min-width: 900px) {
+    .founder-card {
+      --how-photo-w: min(320px, max(200px, calc((100vw - 200px) * 0.285)));
+      grid-template-columns: 1.1fr 0.9fr 1.1fr;
+      align-items: stretch;
+      gap: 22px 24px;
+      justify-items: stretch;
+      padding: 36px 40px;
+    }
+    .founder-card > .founder-left,
+    .founder-card > .founder-photos,
+    .founder-card > .founder-right {
+      width: auto;
+    }
+    .founder-right {
+      align-self: stretch;
+      padding-top: 12px;
+      padding-bottom: 12px;
+      min-height: 0;
+    }
+    .founder-right .founder-cta-stat {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 52px;
+      box-sizing: border-box;
+    }
+  }
+  .founder-left {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    text-align: center;
+    gap: 12px;
+    min-width: 0;
+  }
+  .founder-press-top {
+    margin: 12px 0 0;
+    width: 100%;
+    font-size: 14px;
+    line-height: 1.35;
+    color: var(--navy);
+  }
+  .founder-press-by {
+    display: inline-block;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  .founder-press-logos {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    width: 100%;
+  }
+  .founder-press-logos li {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    display: flex;
+    justify-content: center;
+  }
+  .founder-press-logos a {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: min(100%, 22rem);
+    max-width: 22rem;
+    margin-inline: auto;
+    min-height: 52px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    transition: opacity 0.2s ease, background 0.2s ease;
+  }
+  .founder-press-logos a:hover {
+    background: rgba(91, 46, 255, 0.06);
+    opacity: 0.92;
+  }
+  .founder-press-logos img {
+    display: block;
+    height: 42px;
+    width: auto;
+    max-width: min(300px, 100%);
+    object-fit: contain;
+    object-position: center;
+  }
+  .founder-press-link-nyt {
+    min-height: 76px;
+    max-width: 24rem;
+    width: min(100%, 24rem);
+    margin-inline: auto;
+  }
+  .founder-press-link-nyt img {
+    height: 64px;
+    max-width: min(320px, 100%);
+  }
+  .founder-press-logos a[href*="sfstandard"] img {
+    height: 34px;
+    max-width: min(220px, 100%);
+  }
+  .founder-press-logos a[href*="sfgate"] img {
+    height: 28px;
+    max-width: min(120px, 100%);
+  }
+  .founder-press-logos a[href*="tbpn"] img,
+  .founder-press-logos a[href*="TBPN"] img {
+    height: 42px;
+    max-width: min(120px, 100%);
+  }
+  .founder-photos {
+    display: grid;
+    grid-template-rows: auto auto;
+    gap: 8px;
+    justify-self: center;
+    align-self: start;
+    width: min(100%, 320px);
+    margin-inline: auto;
+  }
+  @media (min-width: 900px) {
+    .founder-photos {
+      width: var(--how-photo-w, 320px);
+      max-width: 100%;
+      justify-self: center;
+      margin-inline: 0;
+    }
+  }
+  .founder-photo-frame {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    border-radius: var(--r-card-sm);
+    overflow: hidden;
+    box-shadow: var(--shadow-soft);
+  }
+  .founder-photo-frame img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center;
+    transition: transform 0.6s var(--ease-out);
+  }
+  .founder-photo-frame:hover img { transform: translateY(-6px) scale(1.03); }
+  .founder-right {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 16px;
+  }
+  @media (min-width: 900px) {
+    .founder-card > .founder-left {
+      align-self: stretch;
+    }
+    .founder-left {
+      justify-content: space-evenly;
+      gap: 0;
+    }
+    .founder-press-top {
+      margin: 0;
+    }
+    .founder-press-logos {
+      display: contents;
+    }
+    .founder-right {
+      justify-content: space-evenly;
+      gap: 0;
+    }
+  }
+  .founder-right > p .founder-right-p-tail {
+    display: block;
+    margin-top: 0.45rem;
+  }
+  .founder-right-lede-wrap {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    width: 100%;
+    min-height: 0;
+  }
+  .founder-right h3.founder-right-lede {
+    margin: 0;
+    max-width: 22rem;
+    font-family: var(--font-sans);
+    font-size: clamp(1.15rem, 3.2vw, 1.5rem);
+    font-weight: 600;
+    line-height: 1.58;
+    letter-spacing: -0.015em;
+    color: #111827;
+    text-wrap: balance;
+  }
+  .founder-right-lede .lede-role {
+    font-weight: 800;
+    color: #020617;
+    text-decoration: underline;
+    text-decoration-color: var(--violet-a);
+    text-decoration-thickness: 2px;
+    text-underline-offset: 0.2em;
+    text-decoration-skip-ink: auto;
+  }
+  .founder-right > p {
+    margin: 0;
+    flex-shrink: 0;
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--muted);
+    max-width: 22rem;
+  }
+  .metrics {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    width: 100%;
+    max-width: 22rem;
+    margin: 0;
+    flex-shrink: 0;
+    justify-items: center;
+    text-align: center;
+  }
+  .founder-cta-stat {
+    display: inline-block;
+    text-decoration: none;
+    cursor: pointer;
+    border-radius: 10px;
+    padding: 6px 10px;
+    margin: -6px -10px;
+    transition: opacity 0.2s ease, transform 0.2s var(--ease-out);
+  }
+  .founder-cta-stat:hover {
+    opacity: 0.9;
+    transform: translateY(-2px);
+  }
+  .founder-cta-stat:focus-visible {
+    outline: 2px solid var(--violet-a);
+    outline-offset: 3px;
+  }
+  .founder-cta-stat strong {
+    display: block;
+    font-size: clamp(1.35rem, 3.8vw, 1.9rem);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    background: var(--gradient-purple);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    pointer-events: none;
+  }
+
+  .founder-email-dialog {
+    position: relative;
+    max-width: min(22rem, calc(100vw - 2rem));
+    padding: 1.35rem 1.25rem 1.15rem;
+    border: none;
+    border-radius: var(--r-card-lg);
+    box-shadow: var(--shadow-card);
+    font-family: var(--font-sans);
+    color: var(--navy);
+  }
+  .founder-email-dialog::backdrop {
+    background: rgba(15, 23, 42, 0.5);
+    backdrop-filter: blur(3px);
+  }
+  .founder-email-dialog h2 {
+    margin: 0 2rem 0.4rem 0;
+    font-size: 1.2rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .founder-email-dialog p {
+    margin: 0 0 1rem;
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--muted);
+  }
+  .founder-email-dialog .founder-email-dialog-to {
+    margin: 0 0 1rem;
+    font-size: 15px;
+    word-break: break-all;
+  }
+  .founder-email-dialog-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .founder-email-dialog .founder-email-dialog-mailto {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 12px 16px;
+    border-radius: var(--r-btn);
+    background: var(--gradient-purple);
+    color: #fff !important;
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 15px;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .founder-email-dialog .founder-email-dialog-mailto:hover {
+    opacity: 0.95;
+    filter: brightness(1.02);
+  }
+  .founder-email-dialog .founder-email-dialog-copy {
+    width: 100%;
+    padding: 10px 14px;
+    border-radius: var(--r-btn);
+    border: 1px solid var(--border-light);
+    background: #fff;
+    color: var(--navy);
+    font-size: 14px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .founder-email-dialog .founder-email-dialog-copy:hover {
+    border-color: rgba(91, 46, 255, 0.35);
+    color: var(--violet-a);
+  }
+  .founder-email-dialog-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .founder-email-dialog-close:hover {
+    background: rgba(91, 46, 255, 0.08);
+    color: var(--violet-a);
+  }
+
+  .site-footer {
+    max-width: var(--max);
+    margin: 0 auto;
+    padding: 32px 48px 48px;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 16px;
+    font-size: 13px;
+    color: var(--faint);
+    border-top: 1px solid var(--border-light);
+  }
+  .site-footer a:hover { color: var(--violet-a); }
+
+  /* Live toast */
+  .live-toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 300;
+    padding: 12px 18px;
+    border-radius: 12px;
+    background: rgba(17, 24, 39, 0.92);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 500;
+    box-shadow: var(--shadow-card);
+    opacity: 0;
+    transform: translateY(12px);
+    pointer-events: none;
+    transition: opacity 0.4s ease, transform 0.45s var(--ease-out);
+  }
+  .live-toast.is-on {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hcard--guest.is-live .guest-mark--ok svg,
+    .hcard--guest.is-live .guest-mark--warn svg {
+      animation: none !important;
+    }
+  }
+
+  /* Cursor spotlight (hero only) */
+  .hero-spotlight {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0;
+    background: radial-gradient(400px circle at var(--sx, 50%) var(--sy, 40%), rgba(91, 46, 255, 0.06), transparent 55%);
+    transition: opacity 0.3s ease;
+  }
+  .hero:hover .hero-spotlight { opacity: 1; }
+
+</style>
+<link rel="stylesheet" href="/landing-assets/design-tokens.css" />
+</head>
+<body>
+<div class="page-bg" aria-hidden="true"></div>
+
+<header class="site-header">
+  <div class="site-header__inner">
+    <a href="/join" class="brand" aria-label="Surplus home">
+      <img class="brand__icon" src="/landing-assets/surplus-logo.png?v=b568b42c" width="44" height="44" alt="" decoding="async" />
+      <span class="brand__word">surplus</span>
+    </a>
+    <div class="site-header__right">
+    <nav class="nav-wrap" id="mainNav" aria-label="Primary">
+      <a href="/api/auth/linkedin/start-redirect" rel="noopener" data-linkedin-cta>Try now with LinkedIn</a>
+    </nav>
+    <div class="site-header__tools">
+      <button type="button" class="nav-toggle" id="navToggle" aria-expanded="false" aria-controls="mainNav">Menu</button>
+    </div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="hero" id="top">
+    <div class="hero-spotlight" id="heroSpot" aria-hidden="true"></div>
+    <div class="hero-mesh" aria-hidden="true">
+      <svg xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice">
+        <defs>
+          <linearGradient id="meshGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#5B2EFF;stop-opacity:0.35" />
+            <stop offset="100%" style="stop-color:#7B61FF;stop-opacity:0.2" />
+          </linearGradient>
+        </defs>
+        <g stroke="url(#meshGrad)" stroke-width="0.6" fill="none" opacity="0.6">
+          <path d="M0,80 Q120,40 240,90 T480,70" />
+          <path d="M40,200 Q180,120 320,180 T600,140" />
+          <path d="M-20,300 Q100,260 280,320 T520,280" />
+        </g>
+        <g fill="#5B2EFF" opacity="0.25">
+          <circle cx="12%" cy="25%" r="2"><animate attributeName="cy" values="25%;28%;25%" dur="14s" repeatCount="indefinite"/></circle>
+          <circle cx="78%" cy="40%" r="1.5"><animate attributeName="cx" values="78%;82%;78%" dur="18s" repeatCount="indefinite"/></circle>
+          <circle cx="55%" cy="70%" r="2"><animate attributeName="r" values="2;3;2" dur="10s" repeatCount="indefinite"/></circle>
+        </g>
+      </svg>
+    </div>
+
+    <canvas id="nodeCanvas" class="node-canvas" aria-hidden="true"></canvas>
+
+    <div class="hero-left">
+      <span class="hero-pill">AI-powered events</span>
+      <h1 class="hero-title">
+        <span class="grad">Meet the Right People.</span>
+        <span class="line1">Maximize ROI.</span>
+      </h1>
+      <p class="hero-sub">
+        AI outreach and matching that invites your ICP, closes deals, and drives measurable ROI for every event.
+      </p>
+      <div class="hero-ctas">
+        <a class="hero-linkedin-cta" href="/api/auth/linkedin/start-redirect" rel="noopener" data-linkedin-cta>
+          <svg class="hero-linkedin-mark" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M20.45 20.45h-3.55v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.13 1.45-2.13 2.94v5.67H9.37V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.38-1.85 3.61 0 4.28 2.38 4.28 5.47v6.27ZM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13ZM7.12 20.45H3.56V9h3.56v11.45ZM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0Z"/>
+          </svg>
+          <span>Try now with LinkedIn</span>
+        </a>
+        <p class="hero-linkedin-note">
+          Surplus runs on the connections you already have. Sign in once with LinkedIn — handled by Unipile, 2FA + captcha supported. Your credentials never touch us.
+        </p>
+      </div>
+    </div>
+
+    <div class="hero-cards-row" id="heroParallax">
+      <aside class="hero-capabilities" aria-label="What Surplus does">
+        <ol class="cap-list">
+          <li>
+            <span class="cap-idx" aria-hidden="true">01</span>
+            <div class="cap-body">
+              <span class="cap-title">AI prospecting</span>
+              <span class="cap-desc">Find the right people before you arrive.</span>
+            </div>
+          </li>
+          <li>
+            <span class="cap-idx" aria-hidden="true">02</span>
+            <div class="cap-body">
+              <span class="cap-title">Personalized outreach</span>
+              <span class="cap-desc">Automated sequences that still feel one-to-one.</span>
+            </div>
+          </li>
+          <li>
+            <span class="cap-idx" aria-hidden="true">03</span>
+            <div class="cap-body">
+              <span class="cap-title">AI matching</span>
+              <span class="cap-desc">Surface the best-fit attendees for your goals.</span>
+            </div>
+          </li>
+          <li>
+            <span class="cap-idx" aria-hidden="true">04</span>
+            <div class="cap-body">
+              <span class="cap-title">ROI measurement</span>
+              <span class="cap-desc">See return for every event, not just attendance.</span>
+            </div>
+          </li>
+        </ol>
+      </aside>
+
+      <div class="hero-cards-main">
+      <article class="hcard hcard--guest" id="cardGuest" aria-label="Curate Attendees to Your ICP">
+        <div class="hc-label">Curate Attendees to Your ICP</div>
+        <div class="guest-list-wrap" id="guestListWrap">
+        <ul class="guest-list" id="guestList">
+          <li class="guest-row guest-row--fixed" data-icp-anchor>
+            <span class="guest-pic" aria-hidden="true">
+              <img class="guest-face" src="https://randomuser.me/api/portraits/thumb/men/11.jpg" width="36" height="36" alt="" loading="eager" decoding="async" referrerpolicy="no-referrer" />
+            </span>
+            <div class="guest-meta">
+              <span class="guest-name">Morgan Lee</span>
+              <span class="guest-fit">VP partnerships &amp; warm enterprise intros · <strong>Matches ICP</strong></span>
+            </div>
+            <span class="guest-potential">$26,400</span>
+            <span class="guest-mark guest-mark--ok" aria-label="Matches ICP">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 12l4 4 8-8"/></svg>
+            </span>
+          </li>
+          <li class="guest-row guest-row--fixed" data-icp-anchor>
+            <span class="guest-pic" aria-hidden="true">
+              <img class="guest-face" src="https://randomuser.me/api/portraits/thumb/women/26.jpg" width="36" height="36" alt="" loading="eager" decoding="async" referrerpolicy="no-referrer" />
+            </span>
+            <div class="guest-meta">
+              <span class="guest-name">Priya Shah</span>
+              <span class="guest-fit">Technical buyer in your target stack · <strong>Matches ICP</strong></span>
+            </div>
+            <span class="guest-potential">$31,200</span>
+            <span class="guest-mark guest-mark--ok" aria-label="Matches ICP">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 12l4 4 8-8"/></svg>
+            </span>
+          </li>
+          <li class="guest-row guest-row--fixed" data-icp-anchor>
+            <span class="guest-pic" aria-hidden="true">
+              <img class="guest-face" src="https://randomuser.me/api/portraits/thumb/men/33.jpg" width="36" height="36" alt="" loading="eager" decoding="async" referrerpolicy="no-referrer" />
+            </span>
+            <div class="guest-meta">
+              <span class="guest-name">Alex Kim</span>
+              <span class="guest-fit">RevOps lead with CRM + ABM context · <strong>Matches ICP</strong></span>
+            </div>
+            <span class="guest-potential">$22,800</span>
+            <span class="guest-mark guest-mark--ok" aria-label="Matches ICP">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 12l4 4 8-8"/></svg>
+            </span>
+          </li>
+          <li id="guestBottomSlot" class="guest-row guest-row--weak">
+            <span class="guest-pic" aria-hidden="true">
+              <img class="guest-face" src="https://randomuser.me/api/portraits/thumb/men/14.jpg" width="36" height="36" alt="" loading="eager" decoding="async" referrerpolicy="no-referrer" />
+            </span>
+            <div class="guest-meta">
+              <span class="guest-name">Jordan Park</span>
+              <span class="guest-fit">Badge-only scan, no buying role · <span class="icp-no">Outside ICP</span></span>
+            </div>
+            <span class="guest-potential">$2,040</span>
+            <span class="guest-mark guest-mark--warn" aria-label="Outside ICP">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>
+            </span>
+          </li>
+        </ul>
+        </div>
+      </article>
+
+      <article class="hcard hcard--roi" id="cardRoi" aria-label="Event ROI preview">
+        <div class="hc-label">Event ROI</div>
+        <div class="hc-dollar hc-dollar--lead"><span class="sym">$</span><span id="roiDollar">30,100</span></div>
+        <p class="roi-hint" id="roiHint" hidden>Above ~$35k per event is uncommon — treat big numbers skeptically.</p>
+        <div class="hc-graph">
+          <span class="graph-badge" id="graphEndLabel">$30,128</span>
+          <svg class="graph-line" viewBox="0 0 160 70" aria-hidden="true">
+            <defs>
+              <linearGradient id="lineGrad" x1="0" y1="0" x2="160" y2="0" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#5B2EFF"/><stop offset="1" stop-color="#7B61FF"/>
+              </linearGradient>
+            </defs>
+            <path id="roiPath" d="M4,56 L32,45 L58,47 L86,34 L112,24 L138,12 L156,7" />
+            <circle class="graph-dot d1" cx="4" cy="56" r="2.75" fill="#5B2EFF"/>
+            <circle class="graph-dot d2" cx="32" cy="45" r="2.75" fill="#5B2EFF"/>
+            <circle class="graph-dot d3" cx="58" cy="47" r="2.75" fill="#5B2EFF"/>
+            <circle class="graph-dot d4" cx="86" cy="34" r="2.75" fill="#5B2EFF"/>
+            <circle class="graph-dot d5" cx="112" cy="24" r="3.1" fill="#5B2EFF" stroke="#fff" stroke-width="1.25"/>
+            <circle class="graph-dot d6" cx="138" cy="12" r="3.25" fill="#7B61FF" stroke="#fff" stroke-width="1.35"/>
+          </svg>
+        </div>
+      </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="founder" id="how">
+    <div class="founder-card" data-reveal>
+      <div class="founder-left">
+        <p class="founder-press-top">
+          <span class="founder-press-by">Events covered by</span>
+        </p>
+        <ul class="founder-press-logos" aria-label="Outlets where events were covered">
+          <li>
+            <a class="founder-press-link-nyt" href="https://www.nytimes.com/" target="_blank" rel="noopener noreferrer">
+              <img src="/landing-assets/press/nyt.png" alt="The New York Times" width="280" height="56" loading="lazy" decoding="async" />
+            </a>
+          </li>
+          <li>
+            <a href="https://www.sfchronicle.com/" target="_blank" rel="noopener noreferrer">
+              <img src="/landing-assets/press/sf-chronicle.png" alt="San Francisco Chronicle" width="180" height="36" loading="lazy" decoding="async" />
+            </a>
+          </li>
+          <li>
+            <a href="https://sfstandard.com/" target="_blank" rel="noopener noreferrer">
+              <img src="/landing-assets/press/sf-standard.png" alt="The San Francisco Standard" width="200" height="36" loading="lazy" decoding="async" />
+            </a>
+          </li>
+          <li>
+            <a href="https://www.sfgate.com/" target="_blank" rel="noopener noreferrer">
+              <img src="/landing-assets/press/sfgate.png" alt="SFGATE" width="100" height="28" loading="lazy" decoding="async" />
+            </a>
+          </li>
+          <li>
+            <a href="https://www.tbpn.com/" target="_blank" rel="noopener noreferrer">
+              <img src="/landing-assets/press/tbpn.png" alt="TBPN" width="80" height="36" loading="lazy" decoding="async" />
+            </a>
+          </li>
+        </ul>
+      </div>
+      <div class="founder-photos" role="group" aria-label="Team photos">
+        <div class="founder-photo-frame">
+          <img src="/landing-assets/how-team.png" alt="Team at an event booth" loading="lazy" width="320" height="240" decoding="async" />
+        </div>
+        <div class="founder-photo-frame">
+          <img src="/landing-assets/how-team-hackathon.png" alt="Team collaborating at a hackathon" loading="lazy" width="320" height="240" decoding="async" />
+        </div>
+      </div>
+      <div class="founder-right">
+        <p>Trusted by devrel teams, hackathons serving over <strong>500k+</strong> member communities.<span class="founder-right-p-tail">Wondering where Surplus fits your events?</span></p>
+        <div class="founder-right-lede-wrap">
+          <h3 class="founder-right-lede"><span class="lede-role">Organizers</span> save bandwidth.<br /><span class="lede-role">Sponsors</span> get qualified leads.<br /><span class="lede-role">Attendees</span> get a sharper experience.</h3>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer" id="footer">
+  <span>© 2026 Surplus</span>
+  <div class="footer-actions" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+    <a id="footerContact" href="mailto:jia@surpluslayer.com?subject=Surplus%20contact&amp;body=Hi%20Jia%2C%0A%0A" data-spa="off">Contact</a>
+    <span class="footer-email-hint" style="color:var(--muted);font-size:13px;">jia@surpluslayer.com</span>
+  </div>
+</footer>
+
+<div class="live-toast" id="liveToast" role="status" aria-live="polite"></div>
+
+<dialog id="founderEmailDialog" class="founder-email-dialog" aria-labelledby="founderEmailDialogTitle">
+  <button type="button" class="founder-email-dialog-close" aria-label="Close email dialog">&times;</button>
+  <h2 id="founderEmailDialogTitle">Email Surplus</h2>
+  <p>We will open your default email app. If nothing appears, use the button below (some browsers need a second tap).</p>
+  <p class="founder-email-dialog-to"><strong>jia@surpluslayer.com</strong></p>
+  <div class="founder-email-dialog-actions">
+    <a class="founder-email-dialog-mailto" id="founderEmailDialogMailto" href="mailto:jia@surpluslayer.com?subject=Surplus%20join%20page&amp;body=Hi%20Jia%2C%0A%0A" data-spa="off">Open in email app</a>
+    <button type="button" class="founder-email-dialog-copy" id="founderEmailDialogCopy">Copy email address</button>
+  </div>
+</dialog>
+
+<script>
+(function () {
+  var navToggle = document.getElementById("navToggle");
+  var mainNav = document.getElementById("mainNav");
+  if (navToggle && mainNav) {
+    navToggle.addEventListener("click", function () {
+      var open = mainNav.classList.toggle("is-open");
+      navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    mainNav.querySelectorAll("a").forEach(function (a) {
+      a.addEventListener("click", function () {
+        mainNav.classList.remove("is-open");
+        navToggle.setAttribute("aria-expanded", "false");
+      });
+    });
+  }
+
+  /* Cursor spotlight (follows mouse over hero) */
+  var heroSection = document.getElementById("top");
+  var spot = document.getElementById("heroSpot");
+  if (heroSection && spot) {
+    heroSection.addEventListener("mousemove", function (e) {
+      var r = heroSection.getBoundingClientRect();
+      spot.style.setProperty("--sx", e.clientX - r.left + "px");
+      spot.style.setProperty("--sy", e.clientY - r.top + "px");
+    });
+  }
+
+  /* Hero: magnetic node field + connections (canvas, scroll-aware) */
+  (function heroNexus() {
+    var hero = document.getElementById("top");
+    var canvas = document.getElementById("nodeCanvas");
+    if (!hero || !canvas || typeof canvas.getContext !== "function") return;
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      canvas.style.display = "none";
+      return;
+    }
+    var ctx = canvas.getContext("2d");
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var W = 0, H = 0;
+    var parts = [];
+    var vis = 1;
+    var scrollY = window.scrollY;
+    var attractor = null;
+
+    window.addEventListener("scroll", function () { scrollY = window.scrollY; }, { passive: true });
+
+    function threshList() {
+      var a = [];
+      for (var i = 0; i <= 20; i++) a.push(i * 0.05);
+      return a;
+    }
+    new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { vis = e.intersectionRatio; });
+    }, { threshold: threshList() }).observe(hero);
+
+    function measureAttractor() {
+      var hr = hero.getBoundingClientRect();
+      var grads = hero.querySelectorAll(".hero-title .grad");
+      if (!grads.length) {
+        attractor = null;
+        return;
+      }
+      var minL = 1e9, minT = 1e9, maxR = -1e9, maxB = -1e9;
+      grads.forEach(function (g) {
+        var r = g.getBoundingClientRect();
+        minL = Math.min(minL, r.left - hr.left);
+        minT = Math.min(minT, r.top - hr.top);
+        maxR = Math.max(maxR, r.right - hr.left);
+        maxB = Math.max(maxB, r.bottom - hr.top);
+      });
+      var pad = 36;
+      attractor = {
+        x: minL - pad,
+        y: minT - pad,
+        w: maxR - minL + pad * 2,
+        h: maxB - minT + pad * 2,
+        cx: (minL + maxR) * 0.5,
+        cy: (minT + maxB) * 0.5
+      };
+    }
+
+    function seed() {
+      parts.length = 0;
+      measureAttractor();
+      if (W < 16 || H < 16) return;
+      var sparse = W < 640 ? 34 : 50;
+      var dense = W < 640 ? 78 : 128;
+      var i;
+      for (i = 0; i < sparse; i++) {
+        parts.push({
+          x: Math.random() * W,
+          y: Math.random() * H,
+          vx: 0,
+          vy: 0,
+          mag: false,
+          seed: Math.random() * Math.PI * 2
+        });
+      }
+      if (attractor) {
+        for (i = 0; i < dense; i++) {
+          parts.push({
+            x: attractor.x + Math.random() * attractor.w,
+            y: attractor.y + Math.random() * attractor.h,
+            vx: (Math.random() - 0.5) * 0.55,
+            vy: (Math.random() - 0.5) * 0.55,
+            mag: true,
+            seed: Math.random() * Math.PI * 2
+          });
+        }
+      }
+    }
+
+    function resize() {
+      measureAttractor();
+      W = hero.clientWidth | 0;
+      H = hero.clientHeight | 0;
+      if (W < 16 || H < 16) return;
+      canvas.width = Math.floor(W * dpr);
+      canvas.height = Math.floor(H * dpr);
+      canvas.style.width = W + "px";
+      canvas.style.height = H + "px";
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      seed();
+    }
+
+    if (typeof ResizeObserver !== "undefined") {
+      new ResizeObserver(resize).observe(hero);
+    }
+    window.addEventListener("resize", resize);
+    requestAnimationFrame(resize);
+
+    var t0 = performance.now();
+    function loop(now) {
+      measureAttractor();
+      if (W < 16) {
+        requestAnimationFrame(loop);
+        return;
+      }
+      if (vis < 0.03) {
+        ctx.clearRect(0, 0, W, H);
+        requestAnimationFrame(loop);
+        return;
+      }
+
+      var t = (now - t0) * 0.001;
+      var heroTop = hero.offsetTop;
+      var scrollE = Math.max(0, Math.min(1,
+        (scrollY + window.innerHeight * 0.35 - heroTop) / (H + window.innerHeight * 0.42)
+      ));
+      var flow = 0.55 + 0.45 * Math.sin(t * 1.22);
+
+      var i, j, lim, pa, pb, lx, ly, d2, d, al;
+      for (i = 0; i < parts.length; i++) {
+        pa = parts[i];
+        if (pa.mag && attractor) {
+          var dx = attractor.cx - pa.x;
+          var dy = attractor.cy - pa.y;
+          var dist = Math.sqrt(dx * dx + dy * dy) + 1e-4;
+          var pull = 0.022 * (1 + scrollE * 0.5);
+          pa.vx += (dx / dist) * pull + Math.sin(t * 1.55 + pa.seed) * 0.095;
+          pa.vy += (dy / dist) * pull + Math.cos(t * 1.38 + pa.seed) * 0.095;
+          var curl = 0.015 * Math.sin(t * 0.95 + scrollE * 2.2);
+          pa.vx += (-dy / dist) * curl;
+          pa.vy += (dx / dist) * curl;
+          pa.vx += scrollE * 0.02 * Math.sin(scrollY * 0.0018 + pa.seed);
+          pa.vx *= 0.91;
+          pa.vy *= 0.91;
+        } else {
+          pa.vx += Math.sin(t * 0.82 + pa.seed) * 0.015;
+          pa.vy += Math.cos(t * 0.76 + pa.seed) * 0.015;
+          pa.vx *= 0.964;
+          pa.vy *= 0.964;
+        }
+        pa.x += pa.vx;
+        pa.y += pa.vy;
+        if (pa.x < 3) { pa.x = 3; pa.vx *= -0.35; }
+        else if (pa.x > W - 3) { pa.x = W - 3; pa.vx *= -0.35; }
+        if (pa.y < 3) { pa.y = 3; pa.vy *= -0.35; }
+        else if (pa.y > H - 3) { pa.y = H - 3; pa.vy *= -0.35; }
+        if (pa.mag && attractor) {
+          var mx = attractor.cx, my = attractor.cy;
+          var rx = pa.x - mx, ry = pa.y - my;
+          var gw = attractor.w * 0.58, gh = attractor.h * 0.58;
+          if (Math.abs(rx) > gw) pa.vx -= Math.sign(rx) * 0.058;
+          if (Math.abs(ry) > gh) pa.vy -= Math.sign(ry) * 0.058;
+        }
+      }
+
+      ctx.clearRect(0, 0, W, H);
+      var baseA = 0.042 * vis * (1 - scrollE * 0.38);
+      var maxD = W < 640 ? 52 : 74;
+      var maxD2 = maxD * maxD;
+      var lim = 0;
+      for (i = 0; i < parts.length; i++) {
+        for (j = i + 1; j < parts.length; j++) {
+          pa = parts[i];
+          pb = parts[j];
+          if (!pa.mag && !pb.mag) continue;
+          lx = pa.x - pb.x;
+          ly = pa.y - pb.y;
+          d2 = lx * lx + ly * ly;
+          if (d2 > maxD2) continue;
+          lim++;
+          if (lim > 340) break;
+          d = Math.sqrt(d2);
+          al = baseA * (1 - d / maxD) * (0.52 + 0.48 * flow);
+          if (!pa.mag || !pb.mag) al *= 0.48;
+          ctx.strokeStyle = "rgba(91,46,255," + al + ")";
+          ctx.lineWidth = pa.mag && pb.mag ? 1.35 : 0.72;
+          ctx.beginPath();
+          ctx.moveTo(pa.x, pa.y);
+          ctx.lineTo(pb.x, pb.y);
+          ctx.stroke();
+        }
+        if (lim > 340) break;
+      }
+
+      var dotA = 0.12 * vis;
+      for (i = 0; i < parts.length; i++) {
+        pa = parts[i];
+        if (pa.mag) {
+          ctx.fillStyle = "rgba(91,46,255," + (dotA * 1.22 * (0.82 + 0.18 * flow)) + ")";
+          ctx.beginPath();
+          ctx.arc(pa.x, pa.y, 1.65 + 0.52 * flow, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          ctx.fillStyle = "rgba(91,46,255," + (dotA * 0.5) + ")";
+          ctx.beginPath();
+          ctx.arc(pa.x, pa.y, 1.35, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  })();
+
+  /* ROI card: draw + count */
+  var cardRoi = document.getElementById("cardRoi");
+  var roiDollar = document.getElementById("roiDollar");
+  function runRoiAnim() {
+    if (!cardRoi || !roiDollar) return;
+    var p = document.getElementById("roiPath");
+    if (p && typeof p.getTotalLength === "function") {
+      var L = p.getTotalLength();
+      p.style.strokeDasharray = String(L);
+      p.style.strokeDashoffset = String(L);
+    } else if (p) {
+      p.style.strokeDasharray = "240";
+      p.style.strokeDashoffset = "240";
+    }
+    cardRoi.classList.add("is-drawn");
+    var target = 30128;
+    var startVal = 30100;
+    var t0 = performance.now();
+    var dur = 10000;
+    function tick(now) {
+      var pr = Math.min(1, (now - t0) / dur);
+      var v = Math.round(startVal + (target - startVal) * pr);
+      if (pr >= 1) v = target;
+      roiDollar.textContent = v.toLocaleString("en-US");
+      if (pr < 1) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }
+  var ioHero = new IntersectionObserver(function (ents) {
+    ents.forEach(function (en) {
+      if (en.isIntersecting) {
+        runRoiAnim();
+        var cg = document.getElementById("cardGuest");
+        if (cg) cg.classList.add("is-in");
+        ioHero.disconnect();
+      }
+    });
+  }, { threshold: 0.25 });
+  if (cardRoi) ioHero.observe(cardRoi);
+
+  /* Curate ICP: finite demo — ends at 5 rows (3 fixed + 2 matches); several outside-ICP rows exit */
+  (function guestBottomSlotDemo() {
+    var card = document.getElementById("cardGuest");
+    var list = document.getElementById("guestList");
+    var wrap = document.getElementById("guestListWrap");
+    if (!card || !list || !wrap) return;
+
+    var PRUNE_MS = 340;
+    var MAX_LIST_CHILDREN = 5;
+    var demoDone = false;
+
+    function buildOkInner(entry) {
+      return (
+        '<span class="guest-pic" aria-hidden="true"><img class="guest-face" src="' +
+        entry.src +
+        '" alt="" width="36" height="36" loading="eager" decoding="async" referrerpolicy="no-referrer" /></span>' +
+        '<div class="guest-meta"><span class="guest-name">' +
+        entry.name +
+        '</span><span class="guest-fit">' +
+        entry.fit +
+        '</span></div>' +
+        '<span class="guest-potential">' +
+        entry.amt +
+        '</span>' +
+        '<span class="guest-mark guest-mark--ok" aria-label="Matches ICP">' +
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 12l4 4 8-8"/></svg></span>'
+      );
+    }
+
+    function buildWeakInner(entry) {
+      return (
+        '<span class="guest-pic" aria-hidden="true"><img class="guest-face" src="' +
+        entry.src +
+        '" alt="" width="36" height="36" loading="eager" decoding="async" referrerpolicy="no-referrer" /></span>' +
+        '<div class="guest-meta"><span class="guest-name">' +
+        entry.name +
+        '</span><span class="guest-fit">' +
+        entry.fit +
+        '</span></div>' +
+        '<span class="guest-potential">' +
+        entry.amt +
+        '</span>' +
+        '<span class="guest-mark guest-mark--warn" aria-label="Outside ICP">' +
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></span>'
+      );
+    }
+
+    function maybeTrimThenRun(run) {
+      if (list.children.length < MAX_LIST_CHILDREN) {
+        run();
+        return;
+      }
+      var victim = null;
+      for (var i = 0; i < list.children.length; i++) {
+        var li = list.children[i];
+        if (li.classList.contains("guest-row--fixed")) continue;
+        if (li.id === "guestBottomSlot") continue;
+        if (!li.querySelector(".guest-mark--ok")) continue;
+        victim = li;
+        break;
+      }
+      if (!victim) {
+        run();
+        return;
+      }
+      victim.classList.add("guest-row--trim-out");
+      setTimeout(function () {
+        if (victim.parentNode) victim.parentNode.removeChild(victim);
+        smoothScrollBottom();
+        run();
+      }, 340);
+    }
+
+    function appendGoodRow(entry) {
+      maybeTrimThenRun(function () {
+        var li = document.createElement("li");
+        li.className = "guest-row";
+        li.innerHTML = buildOkInner(entry);
+        var slot = document.getElementById("guestBottomSlot");
+        if (slot && slot.parentNode === list) {
+          slot.insertAdjacentElement("afterend", li);
+        } else {
+          list.appendChild(li);
+        }
+        smoothScrollBottom();
+      });
+    }
+
+    function appendWeakSlot(entry) {
+      var li = document.createElement("li");
+      li.id = "guestBottomSlot";
+      li.className = "guest-row guest-row--weak";
+      li.innerHTML = buildWeakInner(entry);
+      list.appendChild(li);
+      smoothScrollBottom();
+    }
+
+    function smoothScrollBottom() {
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          var max = Math.max(0, wrap.scrollHeight - wrap.clientHeight);
+          wrap.scrollTo({ top: max, behavior: "smooth" });
+        });
+      });
+    }
+
+    function scrollRowIntoWrap(li) {
+      if (!li || !wrap) return;
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          var pad = 10;
+          var rowTop = li.getBoundingClientRect().top;
+          var wrapTop = wrap.getBoundingClientRect().top;
+          var rel = rowTop - wrapTop + wrap.scrollTop - pad;
+          var maxScroll = Math.max(0, wrap.scrollHeight - wrap.clientHeight);
+          wrap.scrollTo({ top: Math.min(maxScroll, Math.max(0, rel)), behavior: "smooth" });
+        });
+      });
+    }
+
+    function scrollToLastGoodMatch() {
+      var rows = list.querySelectorAll("li.guest-row .guest-mark--ok");
+      if (!rows.length) return;
+      var last = rows[rows.length - 1];
+      var li = last.closest("li");
+      scrollRowIntoWrap(li);
+    }
+
+    function removeWeakSlot(done) {
+      var slot = document.getElementById("guestBottomSlot");
+      if (!slot) {
+        if (done) done();
+        return;
+      }
+      slot.classList.add("is-leaving");
+      setTimeout(function () {
+        if (slot.parentNode) slot.parentNode.removeChild(slot);
+        scrollToLastGoodMatch();
+        if (done) done();
+      }, PRUNE_MS);
+    }
+
+    var weaks = [
+      { name: "Jordan Park", src: "https://randomuser.me/api/portraits/thumb/men/14.jpg", fit: "Badge-only scan, no buying role · <span class=\"icp-no\">Outside ICP</span>", amt: "$2,040" },
+      { name: "Blake Moss", src: "https://randomuser.me/api/portraits/thumb/men/19.jpg", fit: "Untitled traffic · <span class=\"icp-no\">Outside ICP</span>", amt: "$1,580" },
+      { name: "Skyler Voss", src: "https://randomuser.me/api/portraits/thumb/women/41.jpg", fit: "No fit tags · <span class=\"icp-no\">Outside ICP</span>", amt: "$1,920" },
+      { name: "Taylor Reed", src: "https://randomuser.me/api/portraits/thumb/women/58.jpg", fit: "Student pass, no org email · <span class=\"icp-no\">Outside ICP</span>", amt: "$1,240" }
+    ];
+
+    var goods = [
+      { name: "Elena Ruiz", src: "https://randomuser.me/api/portraits/thumb/women/22.jpg", fit: "Paths into named target accounts · <strong>Matches ICP</strong>", amt: "$28,900" },
+      { name: "Casey Nguyen", src: "https://randomuser.me/api/portraits/thumb/women/67.jpg", fit: "Economic buyer in target regions · <strong>Matches ICP</strong>", amt: "$24,100" }
+    ];
+
+    function runFiniteGuestDemo() {
+      if (demoDone) return;
+      demoDone = true;
+      setTimeout(function () {
+        appendGoodRow(goods[0]);
+        card.classList.add("is-live");
+        setTimeout(function () {
+          removeWeakSlot(function () {
+            appendWeakSlot(weaks[1]);
+            setTimeout(smoothScrollBottom, 200);
+            setTimeout(function () {
+              removeWeakSlot(function () {
+                appendWeakSlot(weaks[2]);
+                setTimeout(smoothScrollBottom, 200);
+                setTimeout(function () {
+                  removeWeakSlot(function () {
+                    appendWeakSlot(weaks[3]);
+                    setTimeout(smoothScrollBottom, 200);
+                    setTimeout(function () {
+                      removeWeakSlot(function () {
+                        setTimeout(function () {
+                          appendGoodRow(goods[1]);
+                          setTimeout(smoothScrollBottom, 400);
+                        }, 220);
+                      });
+                    }, 2000);
+                  });
+                }, 2000);
+              });
+            }, 2000);
+          });
+        }, 220);
+      }, 720);
+    }
+
+    card.addEventListener("animationend", function (e) {
+      if (e.animationName !== "guestIn" || e.target !== card) return;
+      runFiniteGuestDemo();
+    });
+  })();
+
+  /* Scroll reveals */
+  document.querySelectorAll("[data-reveal]").forEach(function (el) {
+    var o = new IntersectionObserver(function (ents) {
+      ents.forEach(function (e) {
+        if (e.isIntersecting) {
+          e.target.classList.add("is-visible");
+        }
+      });
+    }, { threshold: 0.15, rootMargin: "0px 0px -40px" });
+    o.observe(el);
+  });
+
+  /* Occasional toast */
+  var toast = document.getElementById("liveToast");
+  var msgs = [
+    "+ ROI opportunity identified",
+    "New high-value match in queue",
+    "Pipeline signal synced"
+  ];
+  function showToast() {
+    if (!toast) return;
+    toast.textContent = msgs[Math.floor(Math.random() * msgs.length)];
+    toast.classList.add("is-on");
+    setTimeout(function () { toast.classList.remove("is-on"); }, 3200);
+  }
+  setInterval(function () {
+    if (Math.random() > 0.72) showToast();
+  }, 22000);
+
+  /* Hero email → POST /api/join/demo-request (stored in join_demo_leads) */
+  var heroEmailForm = document.getElementById("heroEmailForm");
+  var heroEmail = document.getElementById("heroEmail");
+  var heroDemoBtn = heroEmailForm ? heroEmailForm.querySelector('button[type="submit"]') : null;
+  if (heroEmailForm && heroEmail) {
+    heroEmailForm.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var v = (heroEmail.value || "").trim();
+      if (!v) {
+        heroEmail.focus();
+        heroEmail.reportValidity();
+        return;
+      }
+      if (!heroEmail.checkValidity()) {
+        heroEmail.focus();
+        heroEmail.reportValidity();
+        return;
+      }
+      var btn = heroDemoBtn;
+      var orig = btn ? btn.textContent : "";
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Sending…";
+      }
+      fetch("/api/join/demo-request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: v })
+      })
+        .then(function (r) {
+          if (!r.ok) {
+            return r.json().catch(function () {
+              return {};
+            }).then(function (j) {
+              var msg = (j && j.detail) ? (typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail)) : "";
+              throw new Error(msg || "HTTP " + r.status);
+            });
+          }
+          return r.json();
+        })
+        .then(function () {
+          heroEmail.value = "";
+          if (toast) {
+            toast.textContent = "Thanks — we received your request.";
+            toast.classList.add("is-on");
+            setTimeout(function () { toast.classList.remove("is-on"); }, 4000);
+          }
+        })
+        .catch(function (err) {
+          if (toast) {
+            var m = err && err.message ? err.message : "";
+            toast.textContent =
+              m && m.length > 12
+                ? m
+                : "Something went wrong. Try again or use Contact below.";
+            toast.classList.add("is-on");
+            setTimeout(function () { toast.classList.remove("is-on"); }, 7000);
+          }
+        })
+        .finally(function () {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = orig;
+          }
+        });
+    });
+  }
+
+  /* Footer Contact — explicit mailto (some clients / embedded views drop plain anchors) */
+  var footerContact = document.getElementById("footerContact");
+  if (footerContact) {
+    footerContact.addEventListener("click", function (e) {
+      e.preventDefault();
+      var u =
+        "mailto:jia@surpluslayer.com?subject=" +
+        encodeURIComponent("Surplus contact") +
+        "&body=" +
+        encodeURIComponent("Hi Jia,\n\n");
+      window.location.assign(u);
+    });
+  }
+
+  var founderContactCta = document.getElementById("founderContactCta");
+  var founderEmailDialog = document.getElementById("founderEmailDialog");
+  var founderMailto =
+    "mailto:jia@surpluslayer.com?subject=" +
+    encodeURIComponent("Surplus join page") +
+    "&body=" +
+    encodeURIComponent("Hi Jia,\n\n");
+
+  function openFounderMailto() {
+    try {
+      window.location.assign(founderMailto);
+    } catch (e1) {}
+  }
+
+  if (founderContactCta && founderEmailDialog) {
+    var founderEmailDialogMailto = document.getElementById("founderEmailDialogMailto");
+    var founderEmailDialogCopy = document.getElementById("founderEmailDialogCopy");
+    var founderEmailDialogClose = founderEmailDialog.querySelector(".founder-email-dialog-close");
+
+    founderContactCta.addEventListener("click", function (e) {
+      e.preventDefault();
+      if (typeof founderEmailDialog.showModal === "function") {
+        founderEmailDialog.showModal();
+      } else {
+        founderEmailDialog.setAttribute("open", "");
+      }
+      openFounderMailto();
+      if (founderEmailDialogMailto) {
+        setTimeout(function () {
+          try {
+            founderEmailDialogMailto.focus();
+          } catch (err) {}
+        }, 0);
+      }
+    });
+
+    if (founderEmailDialogClose) {
+      founderEmailDialogClose.addEventListener("click", function () {
+        if (typeof founderEmailDialog.close === "function") founderEmailDialog.close();
+        else founderEmailDialog.removeAttribute("open");
+      });
+    }
+    founderEmailDialog.addEventListener("click", function (e) {
+      if (e.target === founderEmailDialog) {
+        if (typeof founderEmailDialog.close === "function") founderEmailDialog.close();
+        else founderEmailDialog.removeAttribute("open");
+      }
+    });
+
+    if (founderEmailDialogCopy) {
+      founderEmailDialogCopy.addEventListener("click", function () {
+        var addr = "jia@surpluslayer.com";
+        function copied() {
+          if (toast) {
+            toast.textContent = "Copied " + addr;
+            toast.classList.add("is-on");
+            setTimeout(function () { toast.classList.remove("is-on"); }, 2800);
+          }
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(addr).then(copied).catch(function () {
+            window.prompt("Copy address:", addr);
+          });
+        } else {
+          window.prompt("Copy address:", addr);
+        }
+      });
+    }
+
+    if (founderEmailDialogMailto) {
+      founderEmailDialogMailto.setAttribute("href", founderMailto);
+    }
+  }
+})();
+</script>
+<script>
+/* LinkedIn CTA prefetch ───────────────────────────────────────────
+   The CTA points at .../linkedin/start-redirect, which makes a ~1s
+   Unipile round-trip server-side before redirecting. We run that work
+   ahead of the click: on first hover/focus/touch we fetch the JSON
+   sibling (.../linkedin/start-url), cache the hosted-auth URL, and on
+   click navigate straight to it — instant. If the click beats the
+   prefetch, we show a "Connecting…" state and fall through to the
+   original href (or the resolved URL once it arrives). */
+(function () {
+  var ORIGIN = "";
+  var URL_ENDPOINT = ORIGIN + "/api/auth/linkedin/start-url";
+  var ctas = document.querySelectorAll("[data-linkedin-cta]");
+  if (!ctas.length) return;
+
+  var linkPromise = null;   // single in-flight/cached mint per page load
+  var resolvedUrl = null;
+
+  function prefetch() {
+    if (linkPromise) return linkPromise;
+    linkPromise = fetch(URL_ENDPOINT, {
+      method: "GET",
+      // Anonymous connect-first flow; CORS is open without credentials.
+      credentials: "omit",
+      cache: "no-store",
+    })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        resolvedUrl = (data && data.url) || null;
+        return resolvedUrl;
+      })
+      .catch(function () {
+        // Reset so a later hover/click can retry; click still has href.
+        linkPromise = null;
+        resolvedUrl = null;
+        return null;
+      });
+    return linkPromise;
+  }
+
+  ctas.forEach(function (a) {
+    var armed = false;
+    function arm() { if (!armed) { armed = true; prefetch(); } }
+    a.addEventListener("mouseenter", arm);
+    a.addEventListener("focus", arm);
+    a.addEventListener("touchstart", arm, { passive: true });
+
+    a.addEventListener("click", function (e) {
+      // Already have the URL → go straight there (skip the server round-trip).
+      if (resolvedUrl) { a.setAttribute("href", resolvedUrl); return; }
+
+      // Prefetch in flight → wait for it instead of doing the slow nav.
+      if (linkPromise) {
+        e.preventDefault();
+        a.classList.add("is-connecting");
+        var prev = a.getAttribute("aria-busy");
+        a.setAttribute("aria-busy", "true");
+        linkPromise.then(function (url) {
+          window.location.assign(url || a.getAttribute("href"));
+        }).catch(function () {
+          window.location.assign(a.getAttribute("href"));
+        }).finally(function () {
+          if (prev === null) a.removeAttribute("aria-busy");
+        });
+        return;
+      }
+
+      // No prefetch happened (e.g. fast click before any intent) → kick one
+      // off and wait, rather than eating the full slow redirect with no UI.
+      e.preventDefault();
+      a.classList.add("is-connecting");
+      a.setAttribute("aria-busy", "true");
+      prefetch().then(function (url) {
+        window.location.assign(url || a.getAttribute("href"));
+      }).catch(function () {
+        window.location.assign(a.getAttribute("href"));
+      });
+    });
+  });
+})();
+</script>
+</body>
+</html>

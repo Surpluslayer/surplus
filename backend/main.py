@@ -19,6 +19,8 @@ load_env()
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel as _PydBase
 
 from .db import ENGINE, init_db
 from .routes import (
@@ -172,6 +174,136 @@ def _frontend_fingerprint() -> dict:
         pass
     _FRONTEND_FP = info
     return info
+
+
+_EXTENSION_PRIVACY_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>surplus Chrome extension — Privacy Policy</title>
+<style>
+ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+ max-width:720px;margin:48px auto;padding:0 20px;color:#1b1e22;line-height:1.6}
+ h1{font-weight:800;letter-spacing:-.03em} h2{margin-top:28px;font-size:18px}
+ .upd{color:#99a0a8;font-size:14px} a{color:#2f6df6} code{background:#f1f3f6;padding:1px 5px;border-radius:5px}
+</style></head><body>
+<h1>surplus Chrome Extension — Privacy Policy</h1>
+<p class="upd">Last updated: June 28, 2026</p>
+<p>The surplus Chrome extension ("the extension") lets you view your surplus
+relationship book alongside your browser and capture LinkedIn profiles into your
+surplus account. This policy explains what data the extension handles.</p>
+<h2>What the extension accesses</h2>
+<ul>
+<li><b>LinkedIn profile information.</b> When you are viewing a LinkedIn profile
+page (<code>linkedin.com/in/...</code>), the extension reads the publicly
+displayed name, headline, and profile URL so it can show you who you are viewing
+and, if you choose, capture them into surplus.</li>
+<li><b>Your surplus session.</b> The extension loads your surplus book
+(<code>event.surpluslayer.com</code>) in a side panel using the session cookie
+already set when you signed in to surplus. The extension never sees or stores
+your password.</li>
+</ul>
+<h2>What the extension sends, and when</h2>
+<ul>
+<li>A LinkedIn profile is sent to surplus <b>only when you click "Capture to
+surplus."</b> At that point the name, headline, and URL are sent to your own
+surplus account to create a contact and draft a message.</li>
+<li>The extension does <b>not</b> continuously upload or track your browsing, and
+does <b>not</b> send data to any third party other than your surplus account.</li>
+</ul>
+<h2>Storage</h2>
+<p>The extension keeps only the most recently viewed profile in memory to
+populate the panel. Captured contacts live in your surplus account, governed by
+the surplus privacy policy.</p>
+<h2>Data sharing and sale</h2>
+<p>We do <b>not</b> sell your data or share it with advertisers or third parties.
+Captured data goes only to your surplus account.</p>
+<h2>Permissions, and why</h2>
+<ul>
+<li><b>linkedin.com</b> — read the profile you are viewing.</li>
+<li><b>event.surpluslayer.com</b> — display your book and capture profiles.</li>
+<li><b>side panel, tabs, scripting, storage</b> — show the panel, detect the
+active LinkedIn page, and inject the profile reader.</li>
+</ul>
+<h2>Contact</h2>
+<p>Questions: <a href="mailto:support@surpluslayer.com">support@surpluslayer.com</a></p>
+</body></html>"""
+
+
+@app.get("/extension-privacy", include_in_schema=False)
+def extension_privacy():
+    """Public privacy policy for the surplus Chrome extension (Web Store req)."""
+    return HTMLResponse(_EXTENSION_PRIVACY_HTML)
+
+
+# --- Marketing landing page (join.surpluslayer.com) -----------------------
+# Ported in-app from the old standalone roi-engine FastAPI service, whose
+# Postgres dependency at startup made the whole site 502 when the DB blipped.
+# The landing is a self-contained static HTML file plus a handful of assets,
+# so it has ZERO database dependency : it is a pure static serve.
+#
+# Host routing (see _shell_for_host below): join.* -> this landing;
+# event.*/INPERSON_HOSTS -> inperson shell; www / apex -> the React SPA.
+# A host-independent preview path (/landing, alias /join) is always available
+# so the page can be verified on staging before the join.* domain is moved.
+#
+# Assets live under backend/landing/ and are served at /landing-assets/* :
+# the copied join.html had its original `/static/...` references rewritten to
+# `/landing-assets/...` to match this mount.
+from starlette.responses import FileResponse as _FileResponse  # noqa: E402
+
+_LANDING_DIR = Path(__file__).resolve().parent / "landing"
+_LANDING_HTML = _LANDING_DIR / "join.html"
+
+
+def _landing_response():
+    """The marketing landing page. Pure file serve : no DB, no auth, no SPA."""
+    resp = _FileResponse(str(_LANDING_HTML), media_type="text/html")
+    # Shell-style no-store so a domain/content change is picked up immediately;
+    # the hashed-by-name assets under /landing-assets stay cacheable.
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
+if _LANDING_DIR.is_dir():
+    # Serve the landing's own assets (logo, design tokens, press logos, the
+    # how-team images). Mounted at /landing-assets to match the rewritten
+    # references inside the copied join.html.
+    app.mount(
+        "/landing-assets",
+        StaticFiles(directory=str(_LANDING_DIR)),
+        name="landing-assets",
+    )
+
+    @app.get("/landing", include_in_schema=False)
+    @app.get("/join", include_in_schema=False)
+    def landing_preview():
+        """Host-independent preview of the marketing landing. Lets you verify
+        the page (and its assets / CTA) on any host - e.g. staging - before
+        the join.surpluslayer.com custom domain is repointed at this service."""
+        return _landing_response()
+
+
+class _DemoRequest(_PydBase):
+    email: str
+
+
+@app.post("/api/join/demo-request", include_in_schema=False)
+def join_demo_request(payload: _DemoRequest):
+    """Secondary email-capture from the landing hero, DB-FREE by design.
+
+    The old roi-engine version persisted leads to Postgres and sent a notify
+    email; that DB write is exactly the startup fragility we are removing, so
+    the in-app landing must not touch the database. We validate + log the work
+    email (so it shows up in request logs) and return 200 so the hero form's
+    "Thanks" toast fires. The primary conversion path is the LinkedIn CTA,
+    which 303s straight into /api/auth/linkedin/start-redirect."""
+    email = (payload.email or "").strip().lower()
+    if not email or "@" not in email or len(email) > 320:
+        from fastapi import HTTPException
+        raise HTTPException(400, "A valid work email is required.")
+    print(f"  [landing] demo-request from {email}")
+    return {"ok": True}
 
 
 @app.get("/api/health", tags=["meta"])
@@ -588,6 +720,13 @@ if _FRONTEND_DIST.is_dir():
         # 3. Raw Host (may be the rewritten internal name).
         return headers.get("host") or ""
 
+    def _is_landing_host(host: str) -> bool:
+        """join.surpluslayer.com (and any join.* preview subdomain) serves the
+        marketing landing instead of the React SPA. Checked before the SPA
+        shell selection so the landing wins on those hosts."""
+        h = (host or "").split(":")[0].lower()
+        return h.startswith("join.")
+
     def _shell_for_host(host: str) -> str:
         h = (host or "").split(":")[0].lower()
         if _HAS_INPERSON_SHELL and (h in _INPERSON_HOSTS or h.startswith("event.")):
@@ -596,7 +735,16 @@ if _FRONTEND_DIST.is_dir():
 
     class SPAStaticFiles(StaticFiles):
         async def get_response(self, path: str, scope):
-            shell = _shell_for_host(_host_from_scope(scope))
+            host = _host_from_scope(scope)
+            # join.* hosts: serve the standalone marketing landing for the root
+            # / client-side routes. /landing-assets, /api, /events, etc. are
+            # mounted ABOVE this catch-all, so the landing's own assets + the
+            # LinkedIn CTA still resolve on the join.* host.
+            if _is_landing_host(host) and _LANDING_HTML.is_file() and (
+                path in ("", ".", "index.html")
+            ):
+                return _landing_response()
+            shell = _shell_for_host(host)
             # Serve the host's shell for the root AND for any client-side route
             # (StaticFiles maps "/" -> path "" with html=True; we override so
             # the app host gets inperson.html instead of index.html).
@@ -610,6 +758,10 @@ if _FRONTEND_DIST.is_dir():
                 # Only fall back for client-side routes (404 + non-API).
                 # Other status codes (405, etc.) bubble up unchanged.
                 if exc.status_code == 404 and not path.startswith("api/"):
+                    # On a join.* host, an unknown path falls back to the
+                    # landing (single-page) rather than the React shell.
+                    if _is_landing_host(host) and _LANDING_HTML.is_file():
+                        return _landing_response()
                     resp = FileResponse(str(_FRONTEND_DIST / shell))
                     _no_store(resp)
                     return resp
