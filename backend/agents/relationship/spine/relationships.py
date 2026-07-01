@@ -511,14 +511,20 @@ def link_contact(db, prospect, owner_user_id: int):
         return None
 
 
-def import_conversation_contacts(db, user, want: int = 15) -> dict:
+def import_conversation_contacts(db, user, want: int = 15,
+                                 on_progress=None) -> dict:
     """Seed the Book from the user's genuine LinkedIn DM conversations.
 
     Pulls the most-recent people the user is in a real two-way conversation with
     (they replied AND heard back -- not cold inbound/ads), via THEIR OWN connected
     Unipile account (never the host's, so it's ban-safe and it's their own data).
     Creates/dedupes Contact rows keyed on the LinkedIn slug. Idempotent: re-runs
-    only add genuinely new people. Returns a small status dict; never raises."""
+    only add genuinely new people. Returns a small status dict; never raises.
+
+    `on_progress(scanned, found)` (optional) is forwarded to the provider's
+    chat walk so a background Job can surface live progress while the slow
+    Unipile paging runs (this is the hot loop: up to scan_cap chats x 3
+    sequential HTTP calls each)."""
     import os
     from .... import models
     from ....providers.unipile import UnipileProvider
@@ -534,23 +540,38 @@ def import_conversation_contacts(db, user, want: int = 15) -> dict:
             account_id=acct,
             dry_run=True,  # read-only calls ignore dry_run; never sends
         )
-        people = prov.list_active_conversation_contacts(want=want)
+        people = prov.list_active_conversation_contacts(
+            want=want, on_progress=on_progress)
     except Exception as exc:  # noqa: BLE001
         return {"imported": 0, "considered": 0, "reason": f"{type(exc).__name__}: {exc}"}
 
-    imported = 0
+    # Batch the dedup lookups : ONE query covering every candidate identity
+    # key instead of a per-person round-trip. Dedup semantics are unchanged
+    # (same user_id + primary_identity_key match), and the local map also
+    # covers two batch rows resolving to the same key (autoflush is off, so
+    # the old per-row queries would have missed a just-staged sibling).
+    keyed: list[tuple[dict, str, str]] = []   # (person, url, primary_key)
     for p in people:
+        url = _clean(p.get("linkedin_url"))
+        if not url:
+            continue
+        keys = identity_keys(email="", linkedin_url=url)
+        if not keys:
+            continue
+        keyed.append((p, url, keys[0]))
+    existing: dict = {}
+    if keyed:
+        rows = (db.query(models.Contact)
+                .filter(models.Contact.user_id == user.id,
+                        models.Contact.primary_identity_key.in_(
+                            {k for _, _, k in keyed}))
+                .all())
+        existing = {c.primary_identity_key: c for c in rows}
+
+    imported = 0
+    for p, url, primary in keyed:
         try:
-            url = _clean(p.get("linkedin_url"))
-            if not url:
-                continue
-            keys = identity_keys(email="", linkedin_url=url)
-            if not keys:
-                continue
-            primary = keys[0]
-            contact = (db.query(models.Contact)
-                       .filter_by(user_id=user.id, primary_identity_key=primary)
-                       .first())
+            contact = existing.get(primary)
             if contact is None:
                 contact = models.Contact(
                     user_id=user.id,
@@ -561,6 +582,7 @@ def import_conversation_contacts(db, user, want: int = 15) -> dict:
                     headline=_clean(p.get("headline")),
                 )
                 db.add(contact)
+                existing[primary] = contact
                 imported += 1
             else:
                 # backfill thin fields on an existing contact

@@ -1210,12 +1210,15 @@ class Job(Base):
     # UUID hex string : generated app-side so the route can hand it back before
     # the worker has touched the DB. String PK keeps it dialect-portable.
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
-    event_id: Mapped[int] = mapped_column(ForeignKey("events.id"), index=True)
+    # Nullable : user-scoped jobs (e.g. import_conversations) have no event.
+    event_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("events.id"), default=None, index=True
+    )
     # Owner, for the poll-auth check. Nullable to tolerate operator/legacy paths.
     user_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("users.id"), default=None, index=True
     )
-    # "prospect" (search) | "match".
+    # "prospect" (search) | "match" | "import_conversations".
     kind: Mapped[str] = mapped_column(String(20))
     # queued -> running -> done | error.
     status: Mapped[str] = mapped_column(String(20), default="queued", index=True)

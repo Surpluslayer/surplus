@@ -461,8 +461,13 @@ export const api = {
     request(`/api/relationships/contacts/${id}/star`,
             { method: "POST", body: JSON.stringify({ vip }) }),
   // Seed the Book from the user's genuine LinkedIn DM conversations.
+  // Queues a background job -> { job_id, status: "queued" }; poll
+  // importConversationsStatus until status is "done" (result: {imported,
+  // considered, reason?}) or "error".
   importConversations: () =>
     request("/api/relationships/import-conversations", { method: "POST" }),
+  importConversationsStatus: (jobId) =>
+    request(`/api/relationships/import-conversations/${jobId}`),
 
   // Email channel on a contact (TEST surface; see EmailTestPanel)
   setContactEmail: (id, email) =>

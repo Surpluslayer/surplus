@@ -157,6 +157,7 @@ def init_db() -> None:
         _migrate_contact_phone,
         _migrate_contact_identities,
         _migrate_prospect_draft_fields,
+        _migrate_job_event_id_nullable,
     ]
     for migration in migrations:
         try:
@@ -1407,3 +1408,24 @@ def _migrate_prospect_draft_fields() -> None:
                 f"ALTER TABLE prospects ADD COLUMN {ine}draft_message TEXT"
             ))
 
+
+def _migrate_job_event_id_nullable() -> None:
+    """Drop the NOT NULL constraint on jobs.event_id so user-scoped jobs (the
+    LinkedIn conversation import has no event) can use the Job poll machinery.
+    Same posture as _migrate_user_unipile_account_id_nullable : SQLite already
+    allows NULL via the updated Mapped[] annotation at create_all time, so the
+    explicit ALTER is Postgres-only."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "jobs" not in insp.get_table_names():
+        return
+    if ENGINE.dialect.name != "postgresql":
+        return
+    cols = insp.get_columns("jobs")
+    target = next((c for c in cols if c["name"] == "event_id"), None)
+    if target is None or target.get("nullable") is True:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE jobs ALTER COLUMN event_id DROP NOT NULL"
+        ))

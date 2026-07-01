@@ -398,9 +398,51 @@ def import_conversations(
 ):
     """Seed the Book from the user's genuine LinkedIn DM conversations (people
     they actually replied to and had an active back-and-forth with). Idempotent
-    -- re-runs only add new people. Uses the user's OWN connected account."""
-    from ..agents.relationship.spine.relationships import import_conversation_contacts
-    return import_conversation_contacts(db, user, want=max(1, min(want, 30)))
+    -- re-runs only add new people. Uses the user's OWN connected account.
+
+    Used to run the whole import INLINE : up to 80 chats x 3 sequential
+    Unipile GETs each (12s timeout apiece) before this returned, so the button
+    could spin for minutes. Now it queues a Job and returns the id
+    immediately; the work runs detached (jobs.execute_import_conversations, on
+    its own DB session) and the frontend polls
+    GET /import-conversations/{job_id} for progress + the final stats."""
+    from .. import jobs as jobs_mod
+    job = jobs_mod.new_job(db, event_id=None, user_id=user.id,
+                           kind="import_conversations")
+    # prefer_modal : the walk can take minutes, so let it survive a web-worker
+    # recycle when USE_MODAL is on (local daemon thread otherwise).
+    runner = jobs_mod.run_detached(
+        jobs_mod.execute_import_conversations, job.id,
+        prefer_modal=True,
+        want=max(1, min(want, 30)))
+    return {"job_id": job.id, "status": "queued", "runner": runner}
+
+
+@router.get("/import-conversations/{job_id}")
+def import_conversations_status(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Poll one import job. Owner-scoped : 404 unless the job belongs to the
+    requesting user and is a conversation import. While running, `progress`
+    carries {scanned, found} beats from the chat walk; when done, `result`
+    carries the import stats ({imported, considered, reason?})."""
+    job = db.get(models.Job, job_id)
+    if (job is None or job.kind != "import_conversations"
+            or job.user_id != user.id):
+        raise HTTPException(404, "import job not found")
+    out: dict = {"job_id": job.id, "status": job.status}
+    if job.status == "done" and job.result_json:
+        out["result"] = json.loads(job.result_json)
+    elif job.status in ("queued", "running") and job.result_json:
+        try:
+            out["progress"] = json.loads(job.result_json)
+        except ValueError:
+            pass
+    if job.status == "error":
+        out["error"] = job.error
+    return out
 
 
 class ChannelIn(BaseModel):

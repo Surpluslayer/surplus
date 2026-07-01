@@ -404,15 +404,41 @@ function BookView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
   const roster = feed?.roster || [];
 
   const runImport = async () => {
+    // The import runs as a background job now (the chat walk is minutes of
+    // Unipile paging) : queue it, then poll for progress until it lands.
     setImporting(true); setImportNote("");
     try {
-      const res = await api.importConversations();
-      const n = res?.imported ?? 0;
-      setImportNote(n > 0 ? `Imported ${n} from your LinkedIn chats.`
-                          : "No new conversations to import yet.");
-      if (n > 0) onReload?.();
+      const start = await api.importConversations();
+      const jobId = start?.job_id;
+      if (!jobId) throw new Error("Couldn't start the import.");
+      const startedAt = Date.now();
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      for (;;) {
+        if (Date.now() - startedAt > 240000) {
+          setImportNote("Still importing in the background. Check back in a minute.");
+          return;
+        }
+        await sleep(2000);
+        let s;
+        try { s = await api.importConversationsStatus(jobId); }
+        catch { continue; }   // transient poll error : keep waiting
+        if (s.status === "done") {
+          const n = s.result?.imported ?? 0;
+          setImportNote(n > 0 ? `Imported ${n} from your LinkedIn chats.`
+                              : "No new conversations to import yet.");
+          if (n > 0) onReload?.();
+          return;
+        }
+        if (s.status === "error") {
+          throw new Error(s.error || "Import failed.");
+        }
+        if (s.progress) {
+          setImportNote(`Importing… checked ${s.progress.scanned} chats, `
+                        + `found ${s.progress.found} people.`);
+        }
+      }
     } catch (e) {
-      setImportNote(e?.message || "Couldn't import — try again.");
+      setImportNote(e?.message || "Couldn't import. Try again.");
     } finally {
       setImporting(false);
     }
