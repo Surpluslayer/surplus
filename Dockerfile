@@ -12,9 +12,15 @@ RUN npm ci --no-audit --no-fund
 #   - GitHub deploys: Railway injects RAILWAY_GIT_COMMIT_SHA at build, so this
 #     auto-busts on every commit with no extra flags.
 #   - railway up / docker build: pass `--build-arg GIT_SHA=$(git rev-parse --short HEAD)`.
+# 2026-07-01: OBSERVED the auto-bust NOT firing on a GitHub deploy (the React
+# fix commit d33c264 built SUCCESS but served the prior BookApp-*.js hash, i.e.
+# the frontend-build stage came from stale cache). RAILWAY_GIT_COMMIT_SHA is
+# apparently not reaching this ARG at build. Until that's configured, BUMP the
+# manual token below on any deploy that must ship a frontend change.
 ARG GIT_SHA=unknown
 ARG RAILWAY_GIT_COMMIT_SHA=
-RUN echo "frontend build for ${GIT_SHA} ${RAILWAY_GIT_COMMIT_SHA}" > /dev/null
+ARG FRONTEND_CACHE_BUST=2026-07-01-02-react-fragment-fix
+RUN echo "frontend build ${FRONTEND_CACHE_BUST} for ${GIT_SHA} ${RAILWAY_GIT_COMMIT_SHA}" > /dev/null
 COPY frontend/ ./
 RUN npm run build
 # output: /app/frontend/dist/
