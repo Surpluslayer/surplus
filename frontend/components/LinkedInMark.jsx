@@ -1,5 +1,13 @@
 // lucide dropped brand icons, so render the LinkedIn mark inline so tiles
 // match the design's ti-brand-linkedin. Shared across App / BookApp / TriageApp.
+//
+// REQUIRED import: this build uses esbuild's classic JSX transform (no react
+// plugin in vite.config), so JSX compiles to React.createElement and every
+// .jsx file must import React itself. Omitting it shipped "ReferenceError:
+// React is not defined" and error-boundaried every screen rendering this icon
+// (the Connections screen crash).
+import React from "react";
+
 export default function LinkedInMark({ size = 18 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
