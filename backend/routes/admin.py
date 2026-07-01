@@ -17,7 +17,7 @@ by the webhook. Sends go via the prospect's owning user's LinkedIn account
 from __future__ import annotations
 import hmac
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -33,6 +33,11 @@ from ..providers import (
     get_provider,
     get_provider_for_prospect,
 )
+
+# How long a due-but-unsent follow-up stays sendable. Past this, the dispatch
+# expires it (cancel_reason="stale") instead of firing a weeks-late nudge.
+# Env-tunable for ops; 7 days matches a reasonable "still natural" window.
+_FOLLOWUP_STALE_DAYS = int(os.environ.get("SURPLUS_FOLLOWUP_STALE_DAYS", "7"))
 
 
 class PendingReplyOut(BaseModel):
@@ -127,18 +132,15 @@ def _replied_since_staging(prospect: models.Prospect) -> bool:
 def _auto_send_enabled(prospect: models.Prospect, channel: str = "linkedin") -> bool:
     """Whether the cron should auto-send this prospect's follow-up on `channel`.
 
-    The follow-up is always drafted + staged; this decides if the cron sends it.
-    Off -> the row waits in the queue for a manual send-now (routes/followups).
-    On -> the cron dispatches it at send_at.
+    The first follow-up is a BUILT-IN feature (product decision 2026-07-01): it
+    fires for every host, no per-user opt-in. The only gate left is the ops kill
+    switch -- SURPLUS_AUTO_FOLLOWUPS + its channel allowlist (separate from the
+    general-send master, so follow-ups run while general agent-initiated sends
+    stay off / behind the ask-mode guardrail). A reply still cancels the row,
+    and stale rows expire instead of sending (see the dispatch loop).
     """
-    event = getattr(prospect, "event", None)
-    owner = getattr(event, "user", None) if event is not None else None
-    # Per-host toggle AND the follow-up-specific gate -- both required. Keyed to
-    # SURPLUS_AUTO_FOLLOWUPS (NOT the general-send master), so follow-ups can run
-    # while general agent-initiated sends stay off / behind the ask-mode guardrail.
     from ..agents.relationship.pipeline.send.sender import follow_up_send_enabled
-    return (bool(getattr(owner, "auto_followups_enabled", False))
-            and follow_up_send_enabled(channel))
+    return follow_up_send_enabled(channel)
 
 
 def _fire_followup_booking(db, prospect, booking_payload, text: str) -> None:
@@ -196,6 +198,20 @@ def run_followups(
             row.cancel_reason = "replied"
             row.updated_at = now
             cancelled.append({"followup_id": row.id, "prospect_id": prospect.id})
+            continue
+
+        # Staleness guard: a "just checking in" nudge fired way past its slot
+        # reads as broken automation, not attentiveness. If the row sat in the
+        # queue (kill switch off / cron down) long enough to go stale, expire
+        # it instead of sending. Guards the backlog the moment the built-in
+        # dispatch opens after an outage.
+        send_at = _as_aware_utc(row.send_at)
+        if send_at is not None and (now - send_at) > timedelta(days=_FOLLOWUP_STALE_DAYS):
+            row.status = "cancelled"
+            row.cancel_reason = "stale"
+            row.updated_at = now
+            cancelled.append({"followup_id": row.id, "prospect_id": prospect.id,
+                              "reason": "stale"})
             continue
 
         # Auto-send gate : the draft is staged regardless, but the cron only
