@@ -31,7 +31,6 @@ from ..agents.relationship.pipeline.send.sender import (
 )
 from ..providers import (
     get_provider,
-    get_provider_for_prospect,
     CanonicalEvent,
     LinkedInProvider,
 )
