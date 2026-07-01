@@ -668,6 +668,14 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
   const p = result.prospect || {};
   const [draftNote, setDraftNote] = useState(result.draft_note || "");
   const [draftMsg, setDraftMsg] = useState(result.draft_message || "");
+  // The scan answers fast and the draft composes in the background :
+  // "pending" -> poll /scan/{id}/draft; "ready" -> composed copy on screen;
+  // "failed"/"timeout" -> graceful fallback, the operator types their own.
+  const [draftStatus, setDraftStatus] = useState(result.draft_status || "ready");
+  // Enrichment can upgrade the bare handle to a real name while we poll.
+  const [personName, setPersonName] = useState(p.name || "");
+  const [personSub, setPersonSub] = useState(
+    [p.role, p.company].filter(Boolean).join(" · ") || p.linkedin_url);
   const [note, setNote] = useState(p.note || "");               // fun fact
   const [privateNote, setPrivateNote] = useState(p.private_note || "");
   const [contactType, setContactType] = useState(p.contact_type || "");
@@ -699,6 +707,42 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
   const stale = (note || "").trim() !== (draftFromNote || "").trim()
              || (nextStep || "").trim() !== (draftFromStep || "").trim();
 
+  // While the background draft is composing, poll /scan/{id}/draft every 1.5s
+  // (up to ~45s). Hand-edits always win : if the operator started typing their
+  // own copy, the polled draft never clobbers it. On timeout/failure the
+  // screen stays fully usable, the operator just types the message.
+  const draftEditedRef = useRef(draftEdited);
+  draftEditedRef.current = draftEdited;
+  useEffect(() => {
+    if (draftStatus !== "pending" || !p.prospect_id) return;
+    let stopped = false;
+    const startedAt = Date.now();
+    const tick = async () => {
+      if (stopped) return;
+      if (Date.now() - startedAt > 45000) { setDraftStatus("timeout"); return; }
+      try {
+        const r = await api.inpersonScanDraft(p.prospect_id);
+        if (stopped) return;
+        if (r.status === "ready") {
+          if (!draftEditedRef.current) {
+            setDraftNote(r.note || "");
+            setDraftMsg(r.message || "");
+          }
+          if (r.name) setPersonName(r.name);
+          const sub = [r.role, r.company].filter(Boolean).join(" · ");
+          if (sub) setPersonSub(sub);
+          setDraftStatus("ready");
+          return;
+        }
+        if (r.status === "failed") { setDraftStatus("failed"); return; }
+      } catch { /* transient poll error : keep trying until the deadline */ }
+      timer = setTimeout(tick, 1500);
+    };
+    let timer = setTimeout(tick, 1500);
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [draftStatus, p.prospect_id]);
+  const drafting = draftStatus === "pending";
+
   // Persist the fun fact + private note onto the capture and RE-COMPOSE the
   // draft from the just-saved fun fact. This is the fix for "the message won't
   // personalize" : the draft is only as personal as the note it was built from,
@@ -712,11 +756,17 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
         contact_type: contactType || undefined, next_step: nextStep || undefined,
         vip,
       });
-      setDraftNote(r.draft_note || "");
-      setDraftMsg(r.draft_message || "");
+      setDraftEdited(false);
+      if ((r.draft_status || "ready") === "pending") {
+        // The re-compose runs in the background : flip to pending and let the
+        // poll effect pull the fresh copy in.
+        setDraftStatus("pending");
+      } else {
+        setDraftNote(r.draft_note || "");
+        setDraftMsg(r.draft_message || "");
+      }
       setDraftFromNote(note || "");
       setDraftFromStep(nextStep || "");
-      setDraftEdited(false);
     } catch (e) { setErr(e.message || "Couldn’t personalize"); }
     finally { setBusy(""); }
   }, [event.event_id, p.linkedin_url, p.source, note, privateNote,
@@ -727,10 +777,12 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
   // the draft is untouched (draftEdited=false) so hand-edits are never lost, and
   // only when the note actually moved the draft out of sync (stale).
   useEffect(() => {
-    if (draftEdited || busy || !stale) return;
+    // `drafting` : a background compose is already in flight, so wait for it to
+    // land before kicking another (the poll ends in ready/failed/timeout).
+    if (draftEdited || busy || drafting || !stale) return;
     const t = setTimeout(() => { repersonalize(); }, 700);
     return () => clearTimeout(t);
-  }, [note, stale, draftEdited, busy, repersonalize]);
+  }, [note, stale, draftEdited, busy, drafting, repersonalize]);
 
   // Lightweight persist (fun fact + private note) without forcing a recompose,
   // for Save/Send when the operator already edited the draft by hand.
@@ -790,7 +842,7 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
 
       <div className="ip-person">
         <div className="ip-person-head">
-          <div className="ip-person-name">{p.name || "Unknown"}</div>
+          <div className="ip-person-name">{personName || "Unknown"}</div>
           <button type="button" data-onb="vip"
                   className={`ip-star${vip ? " on" : ""}`}
                   aria-pressed={vip}
@@ -801,7 +853,7 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
           </button>
         </div>
         <div className="ip-person-sub">
-          {[p.role, p.company].filter(Boolean).join(" · ") || p.linkedin_url}
+          {personSub}
         </div>
         {result.resolve_failed && (
           <div className="ip-warn"><AlertCircle size={13} /> Couldn’t resolve on
@@ -818,16 +870,20 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
           value={note} onChange={(e) => setNote(e.target.value)} />
         <MicButton value={note} onChange={setNote} title="Dictate the fun fact" />
       </div>
-      {busy === "personalize"
-        ? <div className="ip-dim ip-microw-hint"><Loader2 className="spin" size={13} /> Personalizing…</div>
-        : draftEdited
-          ? <button className="ip-linkbtn ip-microw-hint" onClick={repersonalize}
-                    disabled={!(note || "").trim()}>
-              <RefreshCw size={12} /> Re-personalize from the fun fact
-            </button>
-          : (draftFromNote || "").trim()
-            ? <div className="ip-dim ip-microw-hint"><Check size={13} /> Draft personalized</div>
-            : null}
+      {busy === "personalize" || drafting
+        ? <div className="ip-dim ip-microw-hint"><Loader2 className="spin" size={13} />
+            {drafting ? " Drafting your message…" : " Personalizing…"}</div>
+        : draftStatus === "failed" || draftStatus === "timeout"
+          ? <div className="ip-dim ip-microw-hint"><AlertCircle size={13} />
+              Couldn’t draft automatically. Write your own below, or just connect.</div>
+          : draftEdited
+            ? <button className="ip-linkbtn ip-microw-hint" onClick={repersonalize}
+                      disabled={!(note || "").trim()}>
+                <RefreshCw size={12} /> Re-personalize from the fun fact
+              </button>
+            : (draftFromNote || "").trim()
+              ? <div className="ip-dim ip-microw-hint"><Check size={13} /> Draft personalized</div>
+              : null}
 
       {/* Everything below is OPTIONAL at capture : the note auto-personalizes
           and the first message can be drafted later from People. Keep the
@@ -879,12 +935,14 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
           <label className="ip-lbl">Connection note
             <span className="ip-dim"> · optional, ≤300</span></label>
           <textarea className="ip-area" rows={3} maxLength={300}
+            placeholder={drafting ? "Drafting…" : ""}
             value={draftNote}
             onChange={(e) => { setDraftNote(e.target.value); setDraftEdited(true); }} />
 
           <label className="ip-lbl">First message
             <span className="ip-dim"> · sent after they accept</span></label>
           <textarea className="ip-area" rows={5}
+            placeholder={drafting ? "Drafting…" : ""}
             value={draftMsg}
             onChange={(e) => { setDraftMsg(e.target.value); setDraftEdited(true); }} />
 
@@ -902,12 +960,19 @@ export function ScanResult({ event, result, onDone, onCancel, canSend, savedLink
       {/* Connect is the one obvious action. "Save for later" and the bare-invite
           variant are secondary. The first message is drafted later in People. */}
       <div className="ip-actions">
+        {/* The with-note connect is the ONE action that needs the composed
+            text, so it alone waits on the background draft (unless the
+            operator already typed their own). Save + bare connect stay live. */}
         <button data-onb="send" className="ip-btn primary lg"
                 onClick={() => (canSend ? send(false) : setSigninPrompt(true))}
-                disabled={!!busy}
-                title={canSend ? "" : "Sign up to send"}>
+                disabled={!!busy || (drafting && !draftEdited)}
+                title={canSend
+                  ? (drafting && !draftEdited ? "Drafting your note…" : "")
+                  : "Sign up to send"}>
           {busy === "send" ? <Loader2 className="spin" size={18} />
-            : <><Send size={18} /> Connect on LinkedIn</>}
+            : (drafting && !draftEdited)
+              ? <><Loader2 className="spin" size={18} /> Drafting…</>
+              : <><Send size={18} /> Connect on LinkedIn</>}
         </button>
         <div className="ip-actions-row">
           <button className="ip-btn ghost sm" onClick={save} disabled={!!busy}>

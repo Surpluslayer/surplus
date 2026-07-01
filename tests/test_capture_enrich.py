@@ -44,13 +44,25 @@ def db(env):
 
 
 @pytest.fixture
-def user(db):
+def user(db, monkeypatch):
     u = models.User(
         name="Operator", email="op@example.com",
         unipile_account_id="user_acct", linkedin_status="active",
         paid_at=datetime.now(timezone.utc),
     )
     db.add(u); db.commit()
+
+    # /scan's slow half (resolve + LLM enrichment + compose) runs detached in
+    # prod; every scan-wiring test here goes through this fixture, so patch
+    # run_detached to run inline on the test session and keep the synchronous
+    # shape these assertions expect.
+    from backend.routes import inperson
+
+    def _inline(fn, *args, prefer_modal=False, **kwargs):
+        fn(db, *args, **kwargs)
+        return "local"
+
+    monkeypatch.setattr(inperson, "run_detached", _inline)
     return u
 
 

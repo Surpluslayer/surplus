@@ -156,6 +156,7 @@ def init_db() -> None:
         _migrate_session_client,
         _migrate_contact_phone,
         _migrate_contact_identities,
+        _migrate_prospect_draft_fields,
     ]
     for migration in migrations:
         try:
@@ -1379,3 +1380,30 @@ def reset_db() -> None:
     from . import models  # noqa: F401
     Base.metadata.drop_all(ENGINE)
     Base.metadata.create_all(ENGINE)
+
+
+def _migrate_prospect_draft_fields() -> None:
+    """Add prospects.draft_status / draft_note / draft_message : the persisted
+    in-person draft. /scan now returns fast and a detached worker composes the
+    note + DM off the request path, storing them here for the UI to poll.
+    All nullable, so existing rows are untouched (NULL = no stored draft)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "prospects" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("prospects")}
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        if "draft_status" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}draft_status VARCHAR(12)"
+            ))
+        if "draft_note" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}draft_note VARCHAR(400)"
+            ))
+        if "draft_message" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}draft_message TEXT"
+            ))
+

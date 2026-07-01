@@ -354,6 +354,11 @@ export const api = {
     request("/api/inperson/scan", {
       method: "POST", body: JSON.stringify(body),
     }),
+  // Poll the detached draft for one capture : /scan returns fast with
+  // draft_status "pending"; the composed note + first message land here.
+  // -> { status: "pending"|"ready"|"failed", note, message, name, ... }
+  inpersonScanDraft: (prospectId) =>
+    request(`/api/inperson/scan/${prospectId}/draft`),
   // CRM list of every capture on this in_person event.
   inpersonCaptures: (eventId) =>
     request(`/api/inperson/events/${eventId}/captures`),

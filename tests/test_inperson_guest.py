@@ -26,6 +26,15 @@ def _env(monkeypatch):
     monkeypatch.delenv("EXA_API_KEY", raising=False)
     from backend import rate_limit
     rate_limit._WINDOWS.clear()   # guest-mint quota must not leak across tests
+    # /scan's slow half runs detached in prod; run it inline (own session,
+    # same DB) so these TestClient flows stay synchronous + deterministic.
+    from backend import jobs
+    from backend.routes import inperson
+
+    def _inline(fn, *args, prefer_modal=False, **kwargs):
+        jobs.execute_detached(jobs._fn_path(fn), *args, **kwargs)
+        return "local"
+    monkeypatch.setattr(inperson, "run_detached", _inline)
     reset_db()
     yield
 
@@ -61,7 +70,14 @@ def test_guest_can_run_capture_flow():
                 json={"event_id": eid, "linkedin_url": url, "source": "scan", "name": "Maya"})
     assert sc.status_code == 200
     assert sc.json()["prospect"]["status"] == "pending"
-    assert sc.json()["draft_message"]
+    # The scan answers fast : the draft composes off the request path and
+    # lands on the poll endpoint (the worker ran inline via the fixture).
+    assert sc.json()["draft_status"] == "pending"
+    pid = sc.json()["prospect"]["prospect_id"]
+    d = c.get(f"/api/inperson/scan/{pid}/draft")
+    assert d.status_code == 200
+    assert d.json()["status"] == "ready"
+    assert d.json()["message"]
     caps = c.get(f"/api/inperson/events/{eid}/captures")
     assert caps.status_code == 200 and caps.json()["count"] == 1
 

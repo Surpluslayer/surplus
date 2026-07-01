@@ -43,6 +43,22 @@ def db(env):
         session.close()
 
 
+@pytest.fixture(autouse=True)
+def _inline_scan_worker(monkeypatch, db):
+    """/scan's slow half (resolve + enrich + compose) runs detached in prod
+    (jobs.run_detached -> finish_scan_capture on its own session). Run it
+    inline on the TEST session so scans stay synchronous + deterministic here;
+    the fast-path/pending contract itself is covered by
+    test_scan_returns_fast_with_pending_draft."""
+    from backend.routes import inperson
+
+    def _inline(fn, *args, prefer_modal=False, **kwargs):
+        fn(db, *args, **kwargs)
+        return "local"
+
+    monkeypatch.setattr(inperson, "run_detached", _inline)
+
+
 @pytest.fixture
 def user(db):
     """A fully connected + paid user so the send gate passes (incl. the per-host
@@ -231,11 +247,15 @@ def test_scan_resolve_failure_stores_pending_and_flags(db, user, monkeypatch):
                linkedin_url="https://www.linkedin.com/in/ghosted",
                source="scan"),
         db, user)
-    assert out["resolve_failed"] is True              # never 500
     p = db.query(models.Prospect).one()
     assert p.status == "pending"
-    assert p.linkedin_provider_id is None
+    assert p.linkedin_provider_id is None             # never 500, never resolved
+    # The row-level flag (provider id still missing after the detached worker
+    # ran) is the durable "retry resolve" signal.
     assert out["prospect"]["resolve_failed"] is True
+    # A resolve failure must NOT sink the draft : compose still ran.
+    assert p.draft_status == "ready"
+    assert p.draft_note and p.draft_message
 
 
 def test_scan_rejects_unowned_event(db, user):
@@ -819,3 +839,125 @@ def test_compose_inperson_carries_saved_send_link(db, user, monkeypatch):
     msg = compose(p, ip_event)
     assert "https://calendly.com/host/15min" in msg.message
     assert "calendly.com" not in (msg.note or "")
+
+# ── /scan fast path : pending draft + poll endpoint ─────────────────────────
+
+def test_scan_returns_fast_with_pending_draft(db, user, monkeypatch):
+    """The scan response must come back BEFORE the slow half runs : draft
+    fields pending, and the detached worker (run explicitly here, as the
+    thread would) flips the poll endpoint to ready with the composed copy."""
+    from backend.routes import inperson
+
+    dispatched = []
+    monkeypatch.setattr(
+        inperson, "run_detached",
+        lambda fn, *a, **k: (dispatched.append((fn, a)), "local")[1])
+
+    ev = _make_event(db, user)
+    out = inperson.scan_capture(
+        inperson.ScanIn(event_id=ev["event_id"],
+                        linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+                        source="scan", note="from Ottawa"),
+        db, user)
+    pid = out["prospect"]["prospect_id"]
+    assert out["draft_status"] == "pending"
+    assert out["draft_note"] == "" and out["draft_message"] == ""
+    # Nothing slow ran on the request path : no provider id yet.
+    p = db.get(models.Prospect, pid)
+    assert p.linkedin_provider_id is None
+    assert p.draft_status == "pending"
+    # The offline handle heuristic still names the person immediately.
+    assert out["prospect"]["name"] == "Maya Rodriguez"
+
+    poll = inperson.scan_draft(pid, db, user)
+    assert poll["status"] == "pending"
+    assert poll["note"] == "" and poll["message"] == ""
+
+    # Exactly one detached job was queued; run it like the worker would.
+    assert len(dispatched) == 1
+    fn, args = dispatched[0]
+    assert fn is inperson.finish_scan_capture and args == (pid,)
+    fn(db, *args)
+
+    poll = inperson.scan_draft(pid, db, user)
+    assert poll["status"] == "ready"
+    assert poll["note"] and poll["message"]
+    assert "Ottawa" in poll["note"]                    # composed FROM the fun fact
+    db.refresh(p)
+    assert p.linkedin_provider_id == "dry_li_maya-rodriguez"
+
+
+def test_scan_draft_poll_is_owner_scoped(db, user):
+    from fastapi import HTTPException
+    from backend.routes.inperson import scan_capture, scan_draft, ScanIn
+    ev = _make_event(db, user)
+    out = scan_capture(ScanIn(event_id=ev["event_id"],
+                              linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+                              source="scan"), db, user)
+    pid = out["prospect"]["prospect_id"]
+    other = models.User(name="Other", unipile_account_id="x")
+    db.add(other); db.commit()
+    with pytest.raises(HTTPException) as ei:
+        scan_draft(pid, db, other)
+    assert ei.value.status_code == 404
+    # The owner reads it fine (inline worker already composed it).
+    poll = scan_draft(pid, db, user)
+    assert poll["status"] == "ready" and poll["message"]
+
+
+def test_scan_draft_failed_when_worker_crashes(db, user, monkeypatch):
+    """A compose crash in the detached worker must flip draft_status to
+    'failed' (the UI falls back to hand-typed copy), never raise."""
+    from backend.routes import inperson
+
+    def _boom(*a, **k):
+        raise RuntimeError("llm exploded")
+    monkeypatch.setattr(inperson, "compose", _boom)
+
+    ev = _make_event(db, user)
+    out = inperson.scan_capture(
+        inperson.ScanIn(event_id=ev["event_id"],
+                        linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+                        source="scan"),
+        db, user)
+    pid = out["prospect"]["prospect_id"]
+    poll = inperson.scan_draft(pid, db, user)
+    assert poll["status"] == "failed"
+    assert poll["note"] == "" and poll["message"] == ""
+
+
+def test_send_skips_connection_refresh_when_fresh(db, user, monkeypatch):
+    """A connection status checked seconds ago must NOT trigger another live
+    Unipile relation check on send (the 10s GET was on every send's critical
+    path). A stale/unknown status still refreshes."""
+    from datetime import timedelta
+    from backend.routes.inperson import scan_capture, send_capture, ScanIn, SendIn
+    from backend.agents.relationship.pipeline.send import flow as send_flow
+
+    calls = []
+    real_refresh = send_flow._refresh_connection_status
+
+    def _spy(provider, prospect):
+        calls.append(prospect.id)
+        return real_refresh(provider, prospect)
+    monkeypatch.setattr(send_flow, "_refresh_connection_status", _spy)
+
+    ev = _make_event(db, user)
+    scan_capture(ScanIn(event_id=ev["event_id"],
+                        linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+                        source="scan", name="Maya"), db, user)
+    p = db.query(models.Prospect).one()
+
+    # Fresh check (just stamped) : the refresh is skipped.
+    p.connection_status = "not_connected"
+    p.connection_checked_at = datetime.now(timezone.utc)
+    db.commit()
+    out = send_capture(p.id, _req(), SendIn(note="hi"), db, user)
+    assert out["path_taken"] == "cold"
+    assert calls == []
+
+    # Stale check : the live refresh runs again.
+    p.connection_checked_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    db.commit()
+    send_capture(p.id, _req(), SendIn(note="hi again"), db, user)
+    assert calls == [p.id]

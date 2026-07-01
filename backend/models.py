@@ -198,6 +198,17 @@ class Prospect(Base):
     connection_status: Mapped[str] = mapped_column(String(20), default="unknown")
     connection_checked_at: Mapped[Optional[datetime]] = mapped_column(default=None)
 
+    # In-person draft state. /scan answers fast (one DB round-trip) and the
+    # slow half (resolve + enrichment + compose) runs detached, persisting the
+    # composed copy HERE so the phone UI can poll for it. NULL draft_status is
+    # the norm for web-discovered prospects (they compose at send time).
+    #   "pending" -> the detached worker is still drafting
+    #   "ready"   -> draft_note / draft_message hold the composed copy
+    #   "failed"  -> the worker errored; the operator types their own copy
+    draft_status: Mapped[Optional[str]] = mapped_column(String(12), default=None)
+    draft_note: Mapped[Optional[str]] = mapped_column(String(400), default=None)
+    draft_message: Mapped[Optional[str]] = mapped_column(Text, default=None)
+
     # Lazy link to the cross-event Contact spine (the relationship graph). NULL
     # is the norm and fully supported : a Prospect is the per-event record; the
     # Contact is the durable person across events. Set opportunistically when a

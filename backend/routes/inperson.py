@@ -15,7 +15,7 @@ only way a typed name becomes a Prospect is the operator CONFIRMING a candidate
 from /resolve and POSTing its linkedin_url to /scan. /resolve is resolve-only.
 """
 from __future__ import annotations
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -36,6 +36,7 @@ from ..auth import (
 )
 from ..db import get_db
 from ..hosts import is_first_party, is_inperson_host, request_browser_host
+from ..jobs import run_detached
 from ..providers import get_preview_provider, get_provider_for_user
 
 
@@ -235,11 +236,16 @@ def scan_capture(
     db: Session = Depends(get_db),
     user: models.User = Depends(current_user),
 ):
-    """Capture a now-known linkedin_url as a pending Prospect (UPSERT on
-    (event_id, linkedin_provider_id)) and return a warm draft. Never sends.
+    """Capture a now-known linkedin_url as a pending Prospect (UPSERT on the
+    canonical URL) and return FAST. Never sends.
 
-    Resolve failure is non-fatal : we still store the pending capture (so the
-    operator doesn't lose it) and flag resolve_failed so it can be retried.
+    The slow half (Unipile resolve + LLM enrichment + draft compose) used to
+    run inline here, holding the response for three sequential network calls
+    while the operator stood in front of the person. It now runs detached
+    (finish_scan_capture, on its own DB session) and the response comes back
+    with draft_status "pending"; the UI polls GET /scan/{id}/draft for the
+    composed copy. The provider resolve is deferred too : the send path
+    re-resolves lazily when linkedin_provider_id is missing.
     """
     ev = get_owned_event(body.event_id, user, db)
 
@@ -248,25 +254,12 @@ def scan_capture(
     if not canonical:
         raise HTTPException(422, "linkedin_url is required")
 
-    provider = get_preview_provider(user)
-    provider_id: Optional[str] = None
-    resolve_failed = False
-    try:
-        provider_id = provider.resolve_linkedin_user(canonical)
-    except Exception:  # noqa: BLE001 : never 500 on a flaky lookup
-        resolve_failed = True
-
-    # UPSERT : prefer matching on the resolved provider id, else on the URL so
-    # a re-scan of the same person doesn't create a duplicate.
-    p = None
-    if provider_id:
-        p = (db.query(models.Prospect)
-               .filter_by(event_id=ev.id, linkedin_provider_id=provider_id)
-               .first())
-    if p is None:
-        p = (db.query(models.Prospect)
-               .filter_by(event_id=ev.id, linkedin_url=canonical)
-               .first())
+    # UPSERT on the canonical URL so a re-scan of the same person doesn't
+    # create a duplicate. (The provider-id lookup happens in the detached
+    # worker now; normalize_linkedin_url keeps the URL key stable.)
+    p = (db.query(models.Prospect)
+           .filter_by(event_id=ev.id, linkedin_url=canonical)
+           .first())
 
     handle = _handle_from_url(canonical)
     if p is None:
@@ -280,8 +273,6 @@ def scan_capture(
         db.add(p)
 
     # Apply / refresh the capture fields on every scan.
-    if provider_id:
-        p.linkedin_provider_id = provider_id
     if body.name and body.name.strip():
         p.name = body.name.strip()
     if body.role and body.role.strip():
@@ -311,13 +302,19 @@ def scan_capture(
         if (user.saved_send_link or "") != link:
             user.saved_send_link = link
 
-    # Prompt-5 capture enrichment : turn the raw capture (handle + whatever the
-    # operator typed) into a real name / title / firm BEFORE the row is
-    # committed, linked to its Contact, or composed against — so neither the
-    # Book nor the draft ever sees "Unknown" / a bare handle. Fill-only (never
-    # overwrites operator input) and fail-soft (LLM when ANTHROPIC_API_KEY is
-    # set, a handle heuristic otherwise).
-    capture_enrich.enrich_capture(p, ev)
+    # Cheap, offline-only slice of enrichment : recover a display name from the
+    # vanity handle so the immediate response never shows a bare handle. The
+    # full LLM enrichment (title / firm / email) runs in the detached worker.
+    if capture_enrich._is_placeholder(p.name, handle):
+        quick_name = capture_enrich.name_from_handle(handle)
+        if quick_name:
+            p.name = quick_name
+
+    # Every scan (first capture or re-scan with a new fun fact) re-drafts, so
+    # flip the stored draft to pending; the detached worker flips it to ready.
+    p.draft_status = "pending"
+    p.draft_note = None
+    p.draft_message = None
 
     db.commit()
     db.refresh(p)
@@ -325,25 +322,110 @@ def scan_capture(
     # Spine: an in-person capture is a real "we met" touch, so link this person
     # to their durable Contact (idempotent, fail-soft, no-op without a strong
     # identity key) so they show up in the cross-event relationship graph.
-    contact = relationships.link_contact(db, p, user.id)
-    # A re-scan of someone first captured pre-enrichment : back-fill the
-    # Contact's placeholder name/company from the now-enriched row.
-    capture_enrich.refresh_contact(db, contact, p)
+    # DB-only, so it stays on the fast path; the enrichment back-fill of the
+    # Contact happens in the worker once real fields exist.
+    relationships.link_contact(db, p, user.id)
 
-    # ev.kind == "in_person", so compose() takes the warm "we just met" branch.
-    # p.note was just persisted, so the draft is composed FROM the fun fact :
-    # re-scanning with an updated note re-personalizes both halves. On a re-scan
-    # of someone with prior history, ground the draft in that history too (None
-    # on a first capture, so the common path is unchanged). Outbound-safe : the
-    # context block never carries the operator-only private_note.
-    rel_ctx = relationships.relationship_context(
-        p, relationships.fetch_interactions(db, p))
-    draft = compose(p, ev, relationship_ctx=rel_ctx)
+    # The slow half : Unipile resolve + LLM enrichment + draft compose, off the
+    # request lifecycle on its own DB session (jobs.run_detached).
+    run_detached(finish_scan_capture, p.id)
+
     return {
         "prospect": _capture_row(p),
-        "resolve_failed": resolve_failed,
-        "draft_note": draft.note,
-        "draft_message": draft.message,
+        # The lookup hasn't been attempted yet; the CRM row's own
+        # resolve_failed flag (provider id still missing) is the durable
+        # signal once the worker has run.
+        "resolve_failed": False,
+        "draft_status": p.draft_status or "pending",
+        "draft_note": p.draft_note or "",
+        "draft_message": p.draft_message or "",
+    }
+
+
+def finish_scan_capture(db: Session, prospect_id: int) -> None:
+    """The deferred half of /scan : everything that talks to the network.
+
+    Runs detached (own DB session via jobs.run_detached) so the scan response
+    isn't held hostage by Unipile or the LLM:
+      1. resolve the LinkedIn URL to the provider id (was a 15s-timeout GET),
+      2. prompt-5 enrichment (LLM) so the Book never shows a bare handle,
+      3. back-fill the linked Contact from the enriched row,
+      4. compose the connection note + first DM, persisted onto the row with
+         draft_status "ready" ("failed" on error) for GET /scan/{id}/draft.
+
+    Best-effort throughout : a resolve failure leaves linkedin_provider_id
+    NULL (the send path re-resolves lazily, and the CRM surfaces a retry
+    affordance via resolve_failed)."""
+    p = db.get(models.Prospect, prospect_id)
+    if p is None:
+        return
+    ev = p.event
+    if ev is None:
+        return
+    try:
+        owner = ev.user
+        if not p.linkedin_provider_id and owner is not None:
+            provider = get_preview_provider(owner)
+            try:
+                provider_id = provider.resolve_linkedin_user(p.linkedin_url or "")
+                if provider_id:
+                    p.linkedin_provider_id = provider_id
+            except Exception:  # noqa: BLE001 : flaky lookup must not kill the draft
+                pass
+
+        # Prompt-5 capture enrichment : real name / title / firm before the
+        # draft is composed. Fill-only + fail-soft (see capture_enrich).
+        capture_enrich.enrich_capture(p, ev)
+        db.commit()
+
+        # Back-fill the durable Contact's placeholder name/company now that
+        # the row is enriched (link_contact already ran on the fast path).
+        contact = relationships.link_contact(db, p, ev.user_id)
+        capture_enrich.refresh_contact(db, contact, p)
+
+        # ev.kind == "in_person", so compose() takes the warm "we just met"
+        # branch, grounded in the fun fact + any prior relationship history.
+        # Outbound-safe : the context never carries the private_note.
+        rel_ctx = relationships.relationship_context(
+            p, relationships.fetch_interactions(db, p))
+        draft = compose(p, ev, relationship_ctx=rel_ctx)
+        p.draft_note = (draft.note or "")[:400]
+        p.draft_message = draft.message or ""
+        p.draft_status = "ready"
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 : detached work is best-effort
+        db.rollback()
+        print(f"  [inperson.finish_scan] prospect={prospect_id} FAILED: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+        try:
+            p.draft_status = "failed"
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
+
+
+@router.get("/scan/{prospect_id}/draft")
+def scan_draft(
+    prospect_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Poll target for the detached draft : the UI renders the capture from
+    /scan's fast response, then polls HERE until the composed note + first
+    message land. Same auth as /scan (signed-in owner of the capture)."""
+    p = _owned_prospect(db, prospect_id, user)
+    status = p.draft_status or (
+        "ready" if (p.draft_note or p.draft_message) else "failed")
+    return {
+        "prospect_id": p.id,
+        "status": status,                       # "pending" | "ready" | "failed"
+        "note": p.draft_note or "",
+        "message": p.draft_message or "",
+        # Enrichment may have upgraded these while the worker ran.
+        "name": p.name,
+        "role": p.role,
+        "company": p.company,
+        "resolve_failed": p.linkedin_provider_id is None,
     }
 
 
@@ -448,10 +530,38 @@ def send_capture(
     # route_and_send treats note="" as an explicit empty note (vs None = use
     # the composed draft), so the invite goes out with no note attached.
     send_note = "" if body.no_note else (body.note or None)
+
+    # The detached scan worker already composed and persisted this capture's
+    # draft : hand it to route_and_send so a send with no operator override
+    # doesn't re-run the LLM inline (the old behavior when note/message came
+    # in empty).
+    stored_draft = None
+    if p.draft_status == "ready" and (p.draft_note or p.draft_message):
+        from ..agents.outreach import Message
+        stored_draft = Message(note=p.draft_note or "",
+                               message=p.draft_message or "")
+
+    # Cheap latency win : the live connection-status refresh is a ~10s Unipile
+    # GET on every send. Skip it when the row was checked in the last few
+    # minutes (bulk check-connections or a just-finished send stamped it);
+    # the webhook still flips status on acceptance, and _refresh_connection_
+    # status already tolerates stale values by design (it keeps the last known
+    # status on provider errors).
+    checked_at = p.connection_checked_at
+    if checked_at is not None and checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=timezone.utc)
+    status_is_fresh = (
+        p.connection_status in ("connected", "not_connected")
+        and checked_at is not None
+        and datetime.now(timezone.utc) - checked_at < timedelta(minutes=3)
+    )
+
     outcome = route_and_send(
         db, p, provider, p.event,
         note=send_note,
         message=body.message or None,
+        draft=stored_draft,
+        refresh_connection=not status_is_fresh,
     )
     res = outcome.res
     return {
