@@ -764,3 +764,35 @@ def sync_linkedin_chats_route(
         runner = dispatch_linkedin_chat_sync(u.id, incremental=body.incremental)
         dispatched.append({"user_id": u.id, "runner": runner})
     return {"dispatched": dispatched, "count": len(dispatched)}
+
+
+@router.post("/backfill-contact-links")
+def backfill_contact_links(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """Link every Prospect with contact_id NULL to its durable Contact via the
+    existing relationships.link_contact (idempotent + fail-soft), owned by the
+    prospect's event's user. Without the link, those prospects' conversations
+    are invisible to the relationship layer. Safe to re-run: already-linked
+    rows aren't selected, and link_contact never duplicates a Contact."""
+    from ..agents.relationship.spine.relationships import link_contact
+
+    rows = (db.query(models.Prospect)
+            .filter(models.Prospect.contact_id.is_(None))
+            .order_by(models.Prospect.id.asc())
+            .all())
+    linked = skipped = failed = 0
+    for p in rows:
+        owner_id = getattr(getattr(p, "event", None), "user_id", None)
+        if not owner_id:
+            skipped += 1  # ownerless event: nobody's book to link into
+            continue
+        contact = link_contact(db, p, owner_id)
+        if contact is not None:
+            linked += 1
+        else:
+            failed += 1  # no strong identity (or link error): stays contact-less
+    print(f"  [admin.backfill] contact links: linked={linked} "
+          f"skipped={skipped} failed={failed}", flush=True)
+    return {"linked": linked, "skipped": skipped, "failed": failed}
