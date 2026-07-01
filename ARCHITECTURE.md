@@ -77,6 +77,14 @@ split is visible at the entrypoint.
 - **Railway** runs the web service (`railway.json` → `Dockerfile`, multi-stage:
   build frontend with Node, serve via uvicorn). Env: `production` (branch `main`,
   `event.surpluslayer.com`) + `staging` (branch `demo`). 2 replicas. Cloudflare in front.
+  - **Deploy healthcheck posture**: Railway probes `/api/health` with a 600s
+    `healthcheckTimeout` window. The in-process scheduler threads sleep an
+    initial delay before their first claim (default 420s,
+    `UPDATES_SCHEDULER_INITIAL_DELAY_SECONDS`) so a fresh container is healthy
+    before it spends CPU on sweeps: a heavy first gathering pass during boot
+    starved `/api/health` on the single worker and failed deploy 247f9eb2
+    (2026-07-01). Steady-state cadence is unaffected (claims are shared, an
+    already-running replica keeps ticking).
 - **Modal** (`modal_jobs.py`, app `surplus-jobs`) runs off-box batch + scheduled
   jobs when `USE_MODAL=1` (triage scoring, prospecting, CRM refresh, the
   on-connect WhatsApp first sync, the hourly updates sweep). Secrets:
@@ -89,11 +97,11 @@ split is visible at the entrypoint.
 
 ## 3. Request lifecycle
 
-`main.py` (FastAPI app + lifespan) mounts 17 routers, CORS, request-log
+`main.py` (FastAPI app + lifespan) mounts the routers, CORS, request-log
 middleware, and serves the SPA. Auth is **session-cookie** based: LinkedIn via
 Unipile hosted-auth → `User` row → `current_user` dependency. No passwords.
-`lifespan` runs `init_db()` (migrations) and starts the in-process updates
-scheduler thread.
+`lifespan` runs `init_db()` (migrations) and starts the in-process scheduler
+threads (updates/gathering sweeps + the punctual follow-up dispatcher, §6c).
 
 ## 4. Subsystems (backend/)
 
@@ -119,7 +127,12 @@ scheduler thread.
 - `demo.py` — token-gated demo entry + public walkthrough.
 - `events.py` `pipeline.py` `matching.py` `roi.py` — the desktop event pipeline (intake → prospect/outreach → match → ROI).
 - `triage.py` `curation.py` — inbound applicant triage + event curation surfaces.
-- `inperson.py` — phone capture (QR/paste/manual). `jobs.py` — async job dispatch+poll.
+- `inperson.py` - phone capture (QR/paste/manual). **Scan fast-path**: `POST
+  /api/inperson/scan` does only the DB upsert and returns immediately with
+  `draft_status="pending"`; the slow half (Unipile resolve + enrichment + draft
+  compose, `finish_scan_capture`) runs detached on its own DB session
+  (`jobs.run_detached`) and the UI polls `GET /scan/{id}/draft` until
+  `ready`/`failed`. `jobs.py` - async job dispatch+poll.
 - `followups.py` — scheduled follow-up queue (Gmail-style). `billing.py` — Stripe. `admin.py` — token-gated ops. `webhooks.py` — Unipile / Bright Data / Stripe ingestion.
 
 ### Agents / logic (`backend/agents/`)
@@ -183,7 +196,60 @@ When a CALL is the natural next step, surplus can book the meeting itself. Booki
 - **Draft-time decision** (`booking.propose_meeting_slot`): Calendly connected -> put the self-serve link in the draft (the link IS the booking); else propose a concrete open slot in the draft text. The relationship agent (`pipeline/agent/run.py`) detects a meeting cue on a `draft_message`, precomputes the slot **on the main thread** (the fan-out can't touch the DB session), appends the link/time to the body, and attaches the payload to the staged `Proposal` (surfaced as `booking_payload`).
 - **Booking action** (`booking.agent_book_meeting`): picks/uses a slot, invites the **contact** at their email (`Contact.email` else a strong `ContactIdentity` of kind `email`), attaches a **Zoom** link when Zoom is connected (else native Meet/Teams), and records a `meeting_booked` `RelationshipInteraction`. **Idempotent** (a live future booking for that contact is returned, never duplicated) and **email-required** (no email -> raises, so the message still sends with just the text/link, no broken attendee-less event).
 - **Send fires it** (`pipeline/send/sender.fire_booking_on_send`): every send path (`/api/relationships/contacts/{id}/schedule` send-now, `/api/followups/{id}/send-now`, and the `run-followups` cron) calls this **after** a clean dispatch. A `propose_time` payload creates the event+invite; a `calendly` payload is a no-op (the link in the body is the booking). A booking miss never fails the message that already went out. The payload rides on `ScheduledFollowup.booking_payload` (new nullable column) for scheduled/cron sends.
-- **The gate** (reuses the auto-send flag, `SURPLUS_AUTOMATED_SENDS`, OFF by default; layered with `User.auto_followups_enabled`): **manual** (default) -> the agent drafts the message with the link/time and stages it; nothing books until the HOST approves/sends, at which point send fires the booking. **automatic** (flag on + auto-followups on) -> the cron auto-sends and auto-books, no approval. No surprise invites for anyone while the flag is off.
+- **The gate** (the general-send master `SURPLUS_AUTOMATED_SENDS`, OFF by default; see §6c): **manual** (default) -> the agent drafts the message with the link/time and stages it; nothing books until the HOST approves/sends, at which point send fires the booking. **automatic** (master on) -> the dispatcher auto-sends and auto-books, no approval. No surprise invites for anyone while the flag is off.
+
+## 6c. Send automation (who may send with no human, and how it dispatches)
+
+Three kinds of automated send, two env gates (both OFF by default in code;
+per-channel allowlist `SURPLUS_AUTOMATED_SEND_CHANNELS` applies to both):
+
+1. **Post-accept first follow-up** - BUILT-IN product behavior: when an invite
+   is accepted, `webhooks._trigger_auto_dm` sends the first DM. Pre-authorized
+   by the host's own action (they sent the invite), so it has its own master:
+   `SURPLUS_AUTO_FOLLOWUPS` (`sender.follow_up_send_enabled`). A clean send
+   auto-stages the later nudge (`followup_scheduler.stage_followup`).
+2. **The later nudge** ("checking in" after no reply) - agent autonomy, NOT a
+   built-in. Gated by the general-send master `SURPLUS_AUTOMATED_SENDS`
+   (`sender.automated_send_enabled`), shared with:
+3. **AI auto-reply** to an inbound DM - same general-send master.
+
+Manual UI sends (send-now, approve-a-draft) never pass through either gate.
+The per-user `users.auto_followups_enabled` column is LEGACY: it gates neither
+staging nor dispatch, its settings routes/UI toggle are gone, and only a few
+relationships.py approve/schedule paths still read it (False for new users).
+
+**Dispatch topology**: due `ScheduledFollowup` rows are sent by the in-process
+`followup-dispatch` daemon thread (`updates_scheduler`), which ticks every
+~60s, claim-guarded via `scheduler_claims`, and calls
+`admin.dispatch_due_followups` directly: punctual sends, no external
+dependency. The GitHub Actions `run-followups` cron (hits `POST
+/api/admin/run-followups`) is redundancy only. Idempotent either way: each row
+flips to sent/cancelled/failed the moment it's processed. Gate off -> due rows
+HOLD (stay `scheduled` for a manual send-now); a reply cancels; rows overdue
+past ~7 days expire as `stale`.
+
+## 6d. Gathering (conversation context the drafter reads)
+
+The per-contact message context is kept fresh by three entry points into the
+same idempotent syncs (`linkedin_chat_sync` + `email_sync`, both bounded and
+watermarked: LinkedIn by `users.linkedin_chat_synced_at`, dedup by Unipile
+message id):
+
+1. **On connect** (`auth._autoimport_conversations`): two durable background
+   passes the moment a LinkedIn seat connects: the conversation seed
+   (contacts + host voice from the most active chats) and the FULL LinkedIn
+   chat sync (message bodies into each contact's timeline). Same
+   magic-moment pattern as the WhatsApp first sync: connect -> the book fills
+   itself.
+2. **Gathering sweep** (`updates_scheduler.run_gathering_sweep`): every 6h
+   (`GATHERING_SWEEP_GAP_SECONDS`, claim-guarded, capped at
+   `GATHERING_SWEEP_USER_LIMIT` users/pass), runs the INCREMENTAL LinkedIn DM
+   sync + email correspondents re-sync for every user with an active seat.
+3. **Admin backfill** (`POST /api/admin/sync-linkedin-chats`): on-demand
+   dispatch for one user or all active seats; `incremental=false` forces a
+   full re-scan (write-idempotent). `POST /api/admin/backfill-contact-links`
+   links legacy contact-less prospects so their conversations become visible
+   to the relationship layer.
 
 ## 7. Conventions
 

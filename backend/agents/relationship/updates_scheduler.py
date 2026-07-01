@@ -261,9 +261,11 @@ def _run_once() -> dict:
 
 
 def _initial_delay_seconds() -> int:
-    """How long a FRESH container waits before its first tick. Must exceed the
-    Railway healthcheck retry window (300s in railway.json): the sweeps run in
-    this process, and a heavy pass (gathering: per-user LinkedIn + email sync)
+    """How long a FRESH container waits before its first tick, keeping the
+    boot healthcheck probes clear (railway.json healthcheckPath=/api/health,
+    healthcheckTimeout=600s; the probe passes on the first 200, normally well
+    inside this delay): the sweeps run in this process, and a heavy pass
+    (gathering: per-user LinkedIn + email sync)
     during boot starves /api/health on the single worker. That exact failure
     took down deploy 247f9eb2 on 2026-07-01 (4m51s of "service unavailable"
     while the first tick churned). Steady-state cadence is unaffected: claims
