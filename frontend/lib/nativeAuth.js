@@ -51,22 +51,21 @@ function waitForAuthDeepLink(timeoutMs = 180000) {
   });
 }
 
-// Run LinkedIn sign-in natively. Returns true if it handled the flow (native),
-// false on web (caller should fall back to the normal redirect).
-export async function nativeLinkedInLogin(api) {
-  if (!isNativeApp()) return false;
+// Core native OAuth runner: get a consent URL, open it in the SYSTEM browser,
+// await the surplus://auth?token deep link, and adopt the session into the
+// WebView. `getUrl` is a function returning a Promise<{url}>.
+async function runNativeOAuth(getUrl) {
   const Browser = plugin("Browser");
   if (!Browser) return false; // plugin missing: let caller fall back
 
-  // 1. Mint a mobile-flagged hosted-auth link.
-  const { url } = await api.startLinkedinAuthMobile();
+  const res = await getUrl();
+  const url = res?.url;
   if (!url) throw new Error("no auth url");
 
-  // 2. Start listening for the deep link, then open login in the system browser.
+  // Start listening BEFORE opening the browser so we can't miss the deep link.
   const tokenPromise = waitForAuthDeepLink();
   await Browser.open({ url });
 
-  // 3. Wait for the token, close the browser.
   const token = await tokenPromise;
   try {
     await Browser.close();
@@ -75,9 +74,23 @@ export async function nativeLinkedInLogin(api) {
   }
   if (!token) throw new Error("sign-in did not complete");
 
-  // 4. Adopt the session into the WebView (sets the cookie), then land in-app.
+  // Adopt the session into the WebView (sets the cookie), then land in-app.
   window.location.assign(
     `/api/auth/mobile-adopt?token=${encodeURIComponent(token)}`,
   );
   return true;
+}
+
+// LinkedIn native sign-in (Unipile hosted-auth via the mobile-flagged start).
+export async function nativeLinkedInLogin(api) {
+  if (!isNativeApp()) return false;
+  return runNativeOAuth(() => api.startLinkedinAuthMobile());
+}
+
+// Google / Microsoft native sign-in. `startFn(client)` is api.startGoogleAuth /
+// api.startMicrosoftAuth, called with client="ios" so the backend deep-links
+// the session token back instead of setting a web cookie.
+export async function nativeOAuthLogin(startFn) {
+  if (!isNativeApp()) return false;
+  return runNativeOAuth(() => startFn("ios"));
 }

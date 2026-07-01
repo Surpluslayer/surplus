@@ -69,5 +69,13 @@ def callback(login_mod, request: Request, db, *, code, state, error):
         resp = RedirectResponse(f"{base}/?login={provider}&status=ok", status_code=302)
         set_session_cookie(resp, sess.session_token, host=request.headers.get("host"))
         return resp
-    # Native (ios/plugin): hand back the Bearer token for the client to store.
-    return JSONResponse({"token": sess.session_token, "client": client})
+    # Native app (ios/plugin): Google/Microsoft block OAuth inside an embedded
+    # WebView, so the app runs sign-in in the SYSTEM browser and we hand the
+    # session token back via the surplus://auth deep link (the app then calls
+    # /api/auth/mobile-adopt to set the cookie in its WebView). Same mechanism
+    # the LinkedIn native flow uses. `plugin` callers that want raw JSON can pass
+    # response=json.
+    from urllib.parse import urlencode
+    from .auth import MOBILE_REDIRECT_URI
+    qs = urlencode({"token": sess.session_token})
+    return RedirectResponse(f"{MOBILE_REDIRECT_URI}?{qs}", status_code=302)

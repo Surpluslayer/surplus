@@ -631,8 +631,12 @@ export const api = {
     }),
   // One-tap OAuth: fetch the consent URL, then top-level navigate to it (the
   // session cookie is set on the callback redirect, not a fetch).
-  startGoogleAuth: () => request("/api/auth/google/login"),
-  startMicrosoftAuth: () => request("/api/auth/microsoft/login"),
+  // client="ios" makes the callback deep-link the session token back to the
+  // native app (see lib/nativeAuth.js); default web sets a cookie + redirects.
+  startGoogleAuth: (client) =>
+    request("/api/auth/google/login" + (client && client !== "web" ? `?client=${client}` : "")),
+  startMicrosoftAuth: (client) =>
+    request("/api/auth/microsoft/login" + (client && client !== "web" ? `?client=${client}` : "")),
   // Connected OAuth sources (Google/Microsoft/Calendly/Zoom) for the signed-in user.
   listIntegrations: () => request("/api/integrations"),
   connectGoogle: () => request("/api/integrations/google/connect"),

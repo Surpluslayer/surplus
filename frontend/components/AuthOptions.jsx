@@ -8,6 +8,7 @@
 import React, { useState } from "react";
 import { Loader2, ArrowRight, AlertCircle } from "lucide-react";
 import { api } from "../lib/api.js";
+import { isNativeApp, nativeOAuthLogin } from "../lib/nativeAuth.js";
 
 function GoogleMark({ size = 16 }) {
   return (
@@ -82,6 +83,12 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
     setError(null);
     setOauthBusy(provider);
     try {
+      // Native app: Google/Microsoft block OAuth in the embedded WebView, so
+      // run sign-in in the system browser and adopt the session via deep link.
+      if (isNativeApp()) {
+        await nativeOAuthLogin(fn);          // navigates to mobile-adopt on success
+        return;
+      }
       const r = await fn();
       if (!r?.url) throw new Error("Backend didn't return a sign-in URL");
       window.location.href = r.url;          // top-level nav; cookie set on callback
