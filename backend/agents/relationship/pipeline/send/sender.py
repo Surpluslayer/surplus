@@ -63,6 +63,31 @@ def automated_send_enabled(channel: str = "") -> bool:
     return (channel or "").strip().lower() in allow
 
 
+def _followups_master_on() -> bool:
+    """Env `SURPLUS_AUTO_FOLLOWUPS`, default FALSE. SEPARATE kill switch for the
+    automated FOLLOW-UP paths only (post-accept auto-DM + follow-up cron)."""
+    return (os.environ.get("SURPLUS_AUTO_FOLLOWUPS", "false").strip().lower()
+            in ("true", "1", "yes", "on"))
+
+
+def follow_up_send_enabled(channel: str = "") -> bool:
+    """Should an automated FOLLOW-UP on THIS channel fire?
+
+    DECOUPLED from the general-send master (`automated_send_enabled`): keyed to its
+    own `SURPLUS_AUTO_FOLLOWUPS` switch so the structured follow-up paths can run
+    while general agent-initiated sends stay off / behind the ask-mode guardrail.
+    Reuses the same channel allowlist. Still layered ABOVE the per-host
+    `auto_followups_enabled` toggle and (for post-accept) the provider's
+    `auto_dm_after_accept` gate -- an automated follow-up needs the master here AND
+    the per-host toggle. MANUAL UI sends never pass through here."""
+    if not _followups_master_on():
+        return False
+    allow = _automated_channels()
+    if allow is None:
+        return True
+    return (channel or "").strip().lower() in allow
+
+
 def fire_booking_on_send(db, user, contact, booking_payload, *, topic: str = "") -> dict:
     """Fire the actual calendar booking that a SENT meeting-proposal draft carried.
 

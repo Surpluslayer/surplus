@@ -133,10 +133,12 @@ def _auto_send_enabled(prospect: models.Prospect, channel: str = "linkedin") -> 
     """
     event = getattr(prospect, "event", None)
     owner = getattr(event, "user", None) if event is not None else None
-    # Per-host toggle AND the channel-aware automation gate -- both required.
-    from ..agents.relationship.pipeline.send.sender import automated_send_enabled
+    # Per-host toggle AND the follow-up-specific gate -- both required. Keyed to
+    # SURPLUS_AUTO_FOLLOWUPS (NOT the general-send master), so follow-ups can run
+    # while general agent-initiated sends stay off / behind the ask-mode guardrail.
+    from ..agents.relationship.pipeline.send.sender import follow_up_send_enabled
     return (bool(getattr(owner, "auto_followups_enabled", False))
-            and automated_send_enabled(channel))
+            and follow_up_send_enabled(channel))
 
 
 def _fire_followup_booking(db, prospect, booking_payload, text: str) -> None:

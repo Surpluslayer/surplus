@@ -311,7 +311,12 @@ def _force_prospect_status(pid: int, status: str) -> None:
 
 def test_webhook_new_relation_triggers_auto_dm(client, monkeypatch):
     """The big one: new_relation webhook -> we auto-fire send_message."""
-    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")   # automation opt-in
+    monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "true")   # follow-up gate opt-in
+    # The post-accept auto-DM also needs the owning host's per-user toggle on.
+    with SessionLocal() as _s:
+        for _u in _s.query(models.User).all():
+            _u.auto_followups_enabled = True
+        _s.commit()
     eid = _create_event_and_prospect(client)
     client.post(f"/events/{eid}/outreach")
     pid, li_id = _outreached_prospect(eid)
