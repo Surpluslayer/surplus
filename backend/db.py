@@ -159,6 +159,7 @@ def init_db() -> None:
         _migrate_prospect_draft_fields,
         _migrate_job_event_id_nullable,
         _migrate_user_linkedin_chat_synced_at,
+        _migrate_user_autonomy_mode,
     ]
     for migration in migrations:
         try:
@@ -249,6 +250,23 @@ def _migrate_user_linkedin_chat_synced_at() -> None:
     with ENGINE.begin() as conn:
         conn.execute(text(
             "ALTER TABLE users ADD COLUMN linkedin_chat_synced_at TIMESTAMP"))
+
+
+def _migrate_user_autonomy_mode() -> None:
+    """Add users.autonomy_mode (VARCHAR(8), default 'off') -- the per-user
+    autonomy control over agent-initiated sends: 'off' | 'ask' | 'auto'.
+    Existing rows default to 'off' (agent drafts; nothing agent-initiated
+    sends), matching the safe product default for new users."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "autonomy_mode" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE users ADD COLUMN autonomy_mode VARCHAR(8) DEFAULT 'off'"))
 
 
 def _migrate_contact_phone() -> None:

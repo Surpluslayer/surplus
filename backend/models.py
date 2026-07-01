@@ -610,6 +610,19 @@ class User(Base):
     # ones. Kept in the users table (the demo runs on the real auth/book stack),
     # but cleanly separated by this flag rather than the email-domain convention.
     is_demo: Mapped[bool] = mapped_column(default=False, index=True)
+    # Per-user AUTONOMY CONTROL over AGENT-INITIATED sends (the due-nudge
+    # dispatch + the AI auto-reply). One of 'off' | 'ask' | 'auto':
+    #   off  = agent drafts; nothing agent-initiated sends (nudges hold in
+    #          the queue, replies stage as PendingReply).
+    #   ask  = same holding mechanics as off; the Today surface lists what is
+    #          waiting for a one-tap confirm (the difference is the surface,
+    #          not the gate).
+    #   auto = agent-initiated sends fire unattended, still under the env
+    #          master (SURPLUS_AUTOMATED_SENDS) as the ops kill switch.
+    # Manual sends (send-now / schedule / approve) never consult this. The
+    # built-in post-accept first follow-up has its own master
+    # (SURPLUS_AUTO_FOLLOWUPS) and does not consult this either.
+    autonomy_mode: Mapped[str] = mapped_column(String(8), default="off")
 
     # ─── Email channel (Unipile GOOGLE / MICROSOFT account) ─────────────
     # A SECOND Unipile account on the same workspace, pointing at the user's

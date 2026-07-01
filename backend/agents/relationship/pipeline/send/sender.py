@@ -64,6 +64,22 @@ def automated_send_enabled(channel: str = "") -> bool:
     return (channel or "").strip().lower() in allow
 
 
+AUTONOMY_MODES = ("off", "ask", "auto")
+
+
+def owner_autonomy_mode(user) -> str:
+    """The owning user's per-user autonomy mode: 'off' | 'ask' | 'auto'.
+
+    Normalizes anything unexpected (a missing user, NULL, legacy junk in the
+    column) to 'off', the safe default: only an explicit 'auto' ever unlocks
+    an unattended agent-initiated send. 'ask' holds exactly like 'off' at the
+    gate level; the difference is the Today surface that lists what is
+    waiting for a one-tap confirm. Layered UNDER the env master
+    (`automated_send_enabled(channel)`): an unattended send needs BOTH."""
+    mode = (getattr(user, "autonomy_mode", "") or "").strip().lower()
+    return mode if mode in AUTONOMY_MODES else "off"
+
+
 def _followups_master_on() -> bool:
     """Env `SURPLUS_AUTO_FOLLOWUPS`, default FALSE. Kill switch for the ONE
     built-in automated send: the post-accept first follow-up (the DM that fires

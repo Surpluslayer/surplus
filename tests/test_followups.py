@@ -254,8 +254,10 @@ def test_cancel_pending_followups_marks_cancelled(db):
 # ── dispatch (run_followups) ─────────────────────────────────────────────
 
 def test_run_followups_sends_due_row(db, monkeypatch):
-    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")   # autonomy gate opt-in
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")   # env master opt-in
     _u, _ev, p = _seed(db)
+    _u.autonomy_mode = "auto"                               # per-user opt-in
+    db.commit()
     row = _stage_due(db, p)
     result = run_followups(db=db, _=None)
     assert result["due"] == 1
@@ -271,11 +273,13 @@ def test_run_followups_sends_due_row(db, monkeypatch):
 
 def test_run_followups_sends_even_when_user_toggle_off(db, monkeypatch):
     """The legacy per-user auto_followups_enabled column does not gate the
-    dispatcher. With the autonomy gate on, a host with the old toggle off
-    still gets the nudge sent."""
+    dispatcher. With the env master on and the user's autonomy_mode 'auto',
+    a host with the old toggle off still gets the nudge sent."""
     monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")
     _u, _ev, p = _seed(db)
     assert _u.auto_followups_enabled is False  # legacy column, default off
+    _u.autonomy_mode = "auto"
+    db.commit()
     row = _stage_due(db, p)
     result = run_followups(db=db, _=None)
     assert result["due"] == 1
@@ -309,6 +313,8 @@ def test_run_followups_expires_stale_row(db, monkeypatch):
     the moment dispatch opens after an outage."""
     monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")
     _u, _ev, p = _seed(db)
+    _u.autonomy_mode = "auto"
+    db.commit()
     row = _stage_due(db, p, hours_ago=9 * 24)   # 9 days overdue > 7-day window
     result = run_followups(db=db, _=None)
     assert result["due"] == 1

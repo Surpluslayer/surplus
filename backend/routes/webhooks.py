@@ -27,7 +27,8 @@ from ..agents.relationship.reply_agent import (
     ReplyDecision, ThreadMessage, decide_reply, should_auto_send,
 )
 from ..agents.relationship.pipeline.send.sender import (
-    automated_send_enabled, follow_up_send_enabled, send_and_log,
+    automated_send_enabled, follow_up_send_enabled, owner_autonomy_mode,
+    send_and_log,
 )
 from ..providers import (
     get_provider,
@@ -314,7 +315,13 @@ def _handle_ai_reply(
 
     # AI auto-reply rides the inbound thread's transport (Unipile messaging =
     # LinkedIn today; WhatsApp/email set their own channel as they land).
-    if should_auto_send(decision, prior_auto) and automated_send_enabled("linkedin"):
+    # Unattended fire needs the FULL gate stack: the agent's own decision
+    # (should_auto_send), the env master (ops kill switch), AND the owning
+    # user's autonomy_mode == 'auto'. Any other mode keeps the existing
+    # behavior: the draft stages as a PendingReply for approval.
+    if (should_auto_send(decision, prior_auto)
+            and automated_send_enabled("linkedin")
+            and owner_autonomy_mode(host) == "auto"):
         print(f"  [ai_reply] gate PASS → auto-sending")
         return _auto_send_reply(db, provider, prospect, decision)
     print(f"  [ai_reply] gate BLOCK → queueing (class={decision.classification} "

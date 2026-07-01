@@ -133,15 +133,28 @@ def _auto_send_enabled(prospect: models.Prospect, channel: str = "linkedin") -> 
     """Whether the dispatcher should auto-send this prospect's NUDGE on `channel`.
 
     Product taxonomy (2026-07-01): the nudge ("checking in" after no reply) is
-    agent-initiated autonomy, NOT a built-in -- so it shares ONE gate with the
-    AI auto-reply: the general-send master (SURPLUS_AUTOMATED_SENDS + channel
-    allowlist), which the per-user autonomy control will hang off. Only the
-    post-accept FIRST follow-up stays built-in (SURPLUS_AUTO_FOLLOWUPS, in
-    webhooks._trigger_auto_dm). Gate off -> due nudges HOLD in the queue for a
-    manual send-now. A reply still cancels; stale rows expire (dispatch loop).
+    agent-initiated autonomy, NOT a built-in -- so it shares ONE gate stack with
+    the AI auto-reply. An unattended send needs BOTH layers:
+
+      1. the env master (SURPLUS_AUTOMATED_SENDS + channel allowlist), the
+         ops kill switch, AND
+      2. the OWNING USER's autonomy_mode == 'auto' (per-user opt-in; 'off'
+         and 'ask' both hold -- 'ask' just surfaces the held queue in the UI
+         for a one-tap confirm).
+
+    Only the post-accept FIRST follow-up stays built-in (SURPLUS_AUTO_FOLLOWUPS,
+    in webhooks._trigger_auto_dm). Gate closed -> due nudges HOLD in the queue
+    for a manual send-now. A reply still cancels; stale rows expire (dispatch
+    loop).
     """
-    from ..agents.relationship.pipeline.send.sender import automated_send_enabled
-    return automated_send_enabled(channel)
+    from ..agents.relationship.pipeline.send.sender import (
+        automated_send_enabled,
+        owner_autonomy_mode,
+    )
+    if not automated_send_enabled(channel):
+        return False
+    owner = getattr(getattr(prospect, "event", None), "user", None)
+    return owner_autonomy_mode(owner) == "auto"
 
 
 def _fire_followup_booking(db, prospect, booking_payload, text: str) -> None:
