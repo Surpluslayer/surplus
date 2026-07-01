@@ -882,7 +882,11 @@ function ConnectionsScreen({ user, onBack }) {
         {emailAccounts && emailAccounts.length > 0 ? (
           // One row per connected mailbox (personal Gmail + work Outlook ...),
           // plus an "Add another email" row to connect one more.
-          <React.Fragment>
+          // NOTE: fragment shorthand <>, NOT <React.Fragment> -- the `React`
+          // namespace binding is not present in this code-split chunk (Vite's
+          // automatic JSX runtime), so `React.Fragment` throws
+          // "React is not defined" at render for any user WITH email accounts.
+          <>
             {emailAccounts.map((acct) => (
               <ConnRow key={acct.unipile_account_id}
                        icon={<Mail size={21} />}
@@ -897,7 +901,7 @@ function ConnectionsScreen({ user, onBack }) {
                      sub="Gmail or Outlook"
                      connected={false}
                      onConnect={() => connect(api.startEmailAuth, "email")} />
-          </React.Fragment>
+          </>
         ) : (
           // Legacy / no-mailbox fallback : the original single Gmail row.
           <ConnRow icon={<Mail size={21} />} name="Gmail"
