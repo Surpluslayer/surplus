@@ -158,6 +158,7 @@ def init_db() -> None:
         _migrate_contact_identities,
         _migrate_prospect_draft_fields,
         _migrate_job_event_id_nullable,
+        _migrate_user_linkedin_chat_synced_at,
     ]
     for migration in migrations:
         try:
@@ -233,6 +234,21 @@ def _migrate_user_password_hash() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(200)"))
+
+
+def _migrate_user_linkedin_chat_synced_at() -> None:
+    """Add users.linkedin_chat_synced_at (TIMESTAMP, NULL) -- the incremental
+    watermark for the LinkedIn DM sync. NULL = never synced (full scan)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "linkedin_chat_synced_at" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE users ADD COLUMN linkedin_chat_synced_at TIMESTAMP"))
 
 
 def _migrate_contact_phone() -> None:

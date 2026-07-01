@@ -601,6 +601,10 @@ class User(Base):
     # Connection health : flipped to "disconnected" if Unipile webhook fires
     # CREDENTIALS / DISCONNECTED. Re-auth flips it back to "active".
     linkedin_status: Mapped[str] = mapped_column(String(20), default="active")
+    # Watermark for the incremental LinkedIn DM sync (linkedin_chat_sync):
+    # stamped to a sync's START time on a clean pass, so the next run only
+    # pulls chats/messages newer than it. NULL = never synced (full scan).
+    linkedin_chat_synced_at: Mapped[Optional[datetime]] = mapped_column(default=None)
     # True for throwaway /demo-link users (one minted per visit). Set at mint so
     # every real query can filter them out and the hourly cron can purge stale
     # ones. Kept in the users table (the demo runs on the real auth/book stack),

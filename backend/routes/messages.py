@@ -100,6 +100,37 @@ def _find_or_create_contact(db, user, handle: str, name: str):
     return contact, created
 
 
+def append_message_for_contact(db, user, contact, m, stats) -> None:
+    """Land ONE normalized message on a RESOLVED contact's timeline, idempotent
+    per (contact, external_id). The single home of the dedup + insert rules:
+    ingest_messages (phone/email-keyed sources) and the LinkedIn chat sync
+    (linkedin-url-keyed peers) both funnel through here, so a source message id
+    is skipped exactly the same way regardless of channel. Mutates `stats`
+    ("appended"/"skipped") in place; the caller owns the commit."""
+    # idempotency: skip if we already stored this source message id for this contact
+    if m.external_id:
+        marker = f'"ext": "{m.external_id}"'
+        dup = (db.query(models.RelationshipInteraction)
+               .filter(models.RelationshipInteraction.contact_id == contact.id,
+                       models.RelationshipInteraction.meta_json.like(f"%{marker}%"))
+               .first())
+        if dup is not None:
+            stats["skipped"] += 1
+            return
+    # Timeline convention is inbound/outbound (the thread builder maps these to
+    # them/host); the API takes the short in/out.
+    direction = "outbound" if m.direction == "out" else "inbound"
+    db.add(models.RelationshipInteraction(
+        actor_user_id=user.id, contact_id=contact.id,
+        source_type=(m.channel or "imessage"), interaction_type="message",
+        direction=direction, occurred_at=_parse_ts(m.ts),
+        title="", summary=(m.text or "")[:1000],
+        # NB: no "channel" key -- it collides with _item(channel=...) in the
+        # timeline assembler; the channel is carried by source_type above.
+        meta_json=json.dumps({"ext": m.external_id or ""})))
+    stats["appended"] += 1
+
+
 def ingest_messages(db, user, messages) -> dict:
     """Land a batch of normalized messages in the relationship timeline, keyed
     by phone/email, idempotent per (contact, external_id). The SHARED message
@@ -118,28 +149,7 @@ def ingest_messages(db, user, messages) -> dict:
             continue
         if created:
             stats["contacts_created"] += 1
-        # idempotency: skip if we already stored this source message id for this contact
-        if m.external_id:
-            marker = f'"ext": "{m.external_id}"'
-            dup = (db.query(models.RelationshipInteraction)
-                   .filter(models.RelationshipInteraction.contact_id == contact.id,
-                           models.RelationshipInteraction.meta_json.like(f"%{marker}%"))
-                   .first())
-            if dup is not None:
-                stats["skipped"] += 1
-                continue
-        # Timeline convention is inbound/outbound (the thread builder maps these to
-        # them/host); the API takes the short in/out.
-        direction = "outbound" if m.direction == "out" else "inbound"
-        db.add(models.RelationshipInteraction(
-            actor_user_id=user.id, contact_id=contact.id,
-            source_type=(m.channel or "imessage"), interaction_type="message",
-            direction=direction, occurred_at=_parse_ts(m.ts),
-            title="", summary=(m.text or "")[:1000],
-            # NB: no "channel" key -- it collides with _item(channel=...) in the
-            # timeline assembler; the channel is carried by source_type above.
-            meta_json=json.dumps({"ext": m.external_id or ""})))
-        stats["appended"] += 1
+        append_message_for_contact(db, user, contact, m, stats)
     db.commit()
     return stats
 

@@ -723,3 +723,44 @@ def merge_users(
         "keys_backfilled": keys_to_backfill,
         "survivor": _user_summary(db, dst),
     }
+
+
+# ── Gathering : LinkedIn chat sync trigger + prospect->contact backfill ──
+
+
+class LinkedInSyncBody(BaseModel):
+    """Omit user_id to dispatch for EVERY user with an active LinkedIn seat.
+    incremental=False forces a full re-scan (dedup makes it write-idempotent)."""
+    user_id: Optional[int] = None
+    incremental: bool = True
+
+
+@router.post("/sync-linkedin-chats")
+def sync_linkedin_chats_route(
+    body: Optional[LinkedInSyncBody] = None,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """On-demand LinkedIn DM sync. Dispatches DURABLY (jobs.run_detached: Modal
+    run_detached_job when USE_MODAL, else a local daemon thread that owns its
+    session) -- never inside this request's lifecycle. Idempotent by Unipile
+    message id, incremental by users.linkedin_chat_synced_at."""
+    from ..agents.relationship.linkedin_chat_sync import dispatch_linkedin_chat_sync
+
+    body = body or LinkedInSyncBody()
+    if body.user_id is not None:
+        user = db.get(models.User, body.user_id)
+        if user is None:
+            raise HTTPException(404, "Not Found")
+        users = [user]
+    else:
+        users = (db.query(models.User)
+                 .filter(models.User.unipile_account_id.isnot(None),
+                         models.User.linkedin_status == "active")
+                 .order_by(models.User.id.asc())
+                 .all())
+    dispatched = []
+    for u in users:
+        runner = dispatch_linkedin_chat_sync(u.id, incremental=body.incremental)
+        dispatched.append({"user_id": u.id, "runner": runner})
+    return {"dispatched": dispatched, "count": len(dispatched)}
