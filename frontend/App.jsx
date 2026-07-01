@@ -2205,54 +2205,6 @@ function ROI({ profile, eventId, onRestart }) {
 }
 
 // ---- root ---------------------------------------------------
-// Per-user opt-in for auto-staged follow-ups. Self-fetches its state on mount
-// (the dropdown only renders it when open) so it never drifts from the server.
-// Optimistic flip with rollback on error : the PUT is the source of truth.
-function FollowupToggle() {
-  const [enabled, setEnabled] = useState(null);  // null = loading
-  const [saving, setSaving] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    api.getFollowupSettings()
-      .then((s) => { if (!cancelled) setEnabled(!!s.auto_followups_enabled); })
-      .catch(() => { if (!cancelled) setEnabled(false); });
-    return () => { cancelled = true; };
-  }, []);
-  const toggle = async () => {
-    if (enabled === null || saving) return;
-    const next = !enabled;
-    setEnabled(next);          // optimistic
-    setSaving(true);
-    try {
-      const s = await api.setFollowupSettings(next);
-      setEnabled(!!s.auto_followups_enabled);
-    } catch {
-      setEnabled(!next);       // rollback
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <div className="user-dropdown-toggle">
-      <span className="toggle-label">
-        <span>Auto follow-ups</span>
-        <span className="toggle-sub">Send drafted follow-ups automatically</span>
-      </span>
-      <button
-        type="button"
-        className="switch"
-        role="switch"
-        aria-checked={enabled === true}
-        aria-label="Toggle auto follow-ups"
-        disabled={enabled === null || saving}
-        onClick={toggle}
-      >
-        <span className="knob" />
-      </button>
-    </div>
-  );
-}
-
 function UserMenu({ user, onLogout }) {
   const [open, setOpen] = useState(false);
   const handleLogout = async () => {
@@ -2286,7 +2238,6 @@ function UserMenu({ user, onLogout }) {
               LinkedIn {user?.linkedin_status === "active" ? "connected" : "disconnected"}
             </div>
           </div>
-          <FollowupToggle />
           <button className="user-dropdown-action" onClick={handleLogout} role="menuitem">
             <LogOut size={14} />
             <span>Sign out</span>

@@ -54,15 +54,6 @@ class FollowupPatch(BaseModel):
     send_at: Optional[datetime] = None
 
 
-class FollowupSettings(BaseModel):
-    """The host's auto-follow-up preference."""
-    auto_followups_enabled: bool
-
-
-class FollowupSettingsPatch(BaseModel):
-    enabled: bool
-
-
 def _as_aware(dt: datetime) -> datetime:
     """Treat any naive datetime as UTC : the whole app stores UTC."""
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
@@ -97,32 +88,6 @@ def _owned_followup(db: Session, followup_id: int,
     if event is None or getattr(event, "user_id", None) != user.id:
         raise HTTPException(404, "follow-up not found")
     return row
-
-
-@router.get("/settings", response_model=FollowupSettings)
-def get_followup_settings(
-    user: models.User = Depends(current_user),
-):
-    """Whether this host has the auto-schedule-follow-up feature turned on."""
-    return FollowupSettings(
-        auto_followups_enabled=bool(getattr(user, "auto_followups_enabled", False)))
-
-
-@router.put("/settings", response_model=FollowupSettings)
-def set_followup_settings(
-    patch: FollowupSettingsPatch,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(current_user),
-):
-    """Turn auto-SEND of follow-ups on or off for this host. Off by default.
-
-    Follow-up drafts are always staged when a first DM goes out regardless of
-    this flag : it only controls whether the dispatch cron sends them. Off ->
-    drafts wait in the queue for a manual send-now; on -> they send at send_at.
-    Turning it off does NOT cancel anything already queued."""
-    user.auto_followups_enabled = bool(patch.enabled)
-    db.commit()
-    return FollowupSettings(auto_followups_enabled=user.auto_followups_enabled)
 
 
 @router.get("", response_model=list[FollowupOut])

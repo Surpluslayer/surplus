@@ -664,11 +664,12 @@ class User(Base):
     # lets us invalidate the cache when voice_examples change.
     voice_profile: Mapped[str] = mapped_column(Text, default="")
 
-    # Opt-in toggle for the "Gmail Schedule Send" auto follow-up feature. When
-    # False (the default), sending a first DM does NOT auto-stage a scheduled
-    # follow-up : the host has not asked us to. Flipped via the followups
-    # settings route. Gated in agents/followup_scheduler.stage_followup so the
-    # whole feature is off for a user until they explicitly turn it on.
+    # LEGACY / ungated: superseded by the env-level send-automation gates
+    # (SURPLUS_AUTO_FOLLOWUPS for the built-in post-accept follow-up,
+    # SURPLUS_AUTOMATED_SENDS for nudge + AI auto-reply). Its settings routes
+    # and UI toggle are gone, so nothing writes it anymore. Kept to avoid
+    # schema churn; a few relationships.py approve/schedule paths still read
+    # it (always False for new users).
     auto_followups_enabled: Mapped[bool] = mapped_column(default=False)
 
     # ─── First-time-user onboarding (in-person coachmark tour) ──────────

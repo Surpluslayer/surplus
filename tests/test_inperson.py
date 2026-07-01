@@ -61,13 +61,12 @@ def _inline_scan_worker(monkeypatch, db):
 
 @pytest.fixture
 def user(db):
-    """A fully connected + paid user so the send gate passes (incl. the per-host
-    follow-up toggle, now part of the auto-DM / follow-up gate)."""
+    """A fully connected + paid user so the send gate passes. (The legacy
+    per-user auto_followups_enabled column no longer gates sends.)"""
     u = models.User(
         name="Operator", email="op@example.com",
         unipile_account_id="user_acct", linkedin_status="active",
         paid_at=datetime.now(timezone.utc),
-        auto_followups_enabled=True,
     )
     db.add(u); db.commit()
     return u

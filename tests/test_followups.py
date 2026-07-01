@@ -68,14 +68,12 @@ def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
-def _seed(db, *, replied: bool = False, status: str = "contacted",
-          auto_followups: bool = True):
+def _seed(db, *, replied: bool = False, status: str = "contacted"):
     """A user + event + prospect with a first DM already sent.
 
-    `auto_followups` defaults True so staging tests work; the gate is exercised
-    explicitly by tests that pass auto_followups=False."""
-    user = models.User(email="host@example.com",
-                       auto_followups_enabled=auto_followups)
+    The legacy per-user auto_followups_enabled column is left at its default
+    (False): neither staging nor dispatch reads it anymore."""
+    user = models.User(email="host@example.com")
     db.add(user); db.flush()
     ev = models.Event(
         user_id=user.id,
@@ -219,10 +217,11 @@ def test_user_message_includes_prior_message_section():
 
 
 def test_stage_followup_drafts_even_when_auto_send_off(db):
-    """The draft is always created : auto_followups_enabled gates SENDING at
-    dispatch, not whether a follow-up gets staged. A host with the toggle off
-    still gets a staged draft they can manually send."""
-    _u, _ev, p = _seed(db, auto_followups=False)
+    """The draft is always created regardless of any send gate: SENDING is
+    gated at dispatch by the general-send master (SURPLUS_AUTOMATED_SENDS),
+    never at staging. A host with automation off still gets a staged draft
+    they can manually send."""
+    _u, _ev, p = _seed(db)
     row = stage_followup(db, p)
     assert row is not None
     assert row.status == "scheduled"
@@ -275,7 +274,8 @@ def test_run_followups_sends_even_when_user_toggle_off(db, monkeypatch):
     dispatcher. With the autonomy gate on, a host with the old toggle off
     still gets the nudge sent."""
     monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")
-    _u, _ev, p = _seed(db, auto_followups=False)
+    _u, _ev, p = _seed(db)
+    assert _u.auto_followups_enabled is False  # legacy column, default off
     row = _stage_due(db, p)
     result = run_followups(db=db, _=None)
     assert result["due"] == 1
@@ -402,22 +402,6 @@ def test_send_now_dispatches_immediately(db):
     assert out.sent_at is not None
     states = [o.state for o in db.get(models.Prospect, p.id).outreach]
     assert "follow_up_sent" in states
-
-
-def test_settings_default_off_and_toggle(db):
-    user = models.User(email="settings@example.com")
-    db.add(user); db.commit()
-    # Default off.
-    assert followups_route.get_followup_settings(user=user).auto_followups_enabled is False
-    # Turn on.
-    out = followups_route.set_followup_settings(
-        followups_route.FollowupSettingsPatch(enabled=True), db=db, user=user)
-    assert out.auto_followups_enabled is True
-    assert db.get(models.User, user.id).auto_followups_enabled is True
-    # Turn off.
-    out = followups_route.set_followup_settings(
-        followups_route.FollowupSettingsPatch(enabled=False), db=db, user=user)
-    assert out.auto_followups_enabled is False
 
 
 def test_routes_404_on_not_owned(db):
