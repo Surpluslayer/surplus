@@ -170,10 +170,20 @@ def run_followups(
 ) -> dict:
     """Dispatch every scheduled follow-up whose send time has arrived.
 
-    Designed for frequent cron (e.g. every 5-15 min) : sends are idempotent
-    because each row flips to `sent`/`cancelled`/`failed` the moment it's
-    processed, so a row is never sent twice even if two runs overlap.
+    Thin admin-token wrapper around dispatch_due_followups so an external
+    cron (GitHub Actions) can still fire it; the PRIMARY dispatcher is the
+    in-process scheduler thread (updates_scheduler), which calls the core
+    directly every minute for punctual sends. Idempotent either way: each
+    row flips to `sent`/`cancelled`/`failed` the moment it's processed, so
+    overlapping runs never double-send.
     """
+    return dispatch_due_followups(db)
+
+
+def dispatch_due_followups(db: Session) -> dict:
+    """Core dispatch pass: send every scheduled follow-up whose send_at has
+    arrived. Callable from the route (external cron) AND the in-process
+    scheduler thread. Sends are idempotent (status flips per row)."""
     fallback_provider = get_provider()
     due = _due_followups(db)
     now = datetime.now(timezone.utc)

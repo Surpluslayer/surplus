@@ -288,9 +288,46 @@ def _loop() -> None:
         time.sleep(_tick_seconds())
 
 
+def _followup_tick_seconds() -> int:
+    """Cadence of the PUNCTUAL follow-up dispatcher (default 60s). The pass is
+    one cheap indexed query when nothing is due, so a tight tick is fine; the
+    payoff is that a staged follow-up fires within a minute of its send_at
+    instead of whenever GitHub's hourly cron deigns to run."""
+    raw = (os.environ.get("FOLLOWUP_DISPATCH_TICK_SECONDS") or "").strip()
+    try:
+        return max(15, int(raw)) if raw else 60
+    except ValueError:
+        return 60
+
+
+def _followup_loop() -> None:
+    # Same boot etiquette as the main loop: stay quiet through the deploy
+    # healthcheck window before the first claim.
+    time.sleep(_initial_delay_seconds())
+    from ...db import SessionLocal
+    while True:
+        try:
+            tick = _followup_tick_seconds()
+            if _claim("followup_dispatch", max(15, tick - 5)):
+                from ...routes.admin import dispatch_due_followups
+                db = SessionLocal()
+                try:
+                    res = dispatch_due_followups(db)
+                    if res.get("due"):
+                        print(f"[followup.dispatch] {res}", flush=True)
+                finally:
+                    db.close()
+        except Exception as exc:  # noqa: BLE001 : a bad pass must never kill the loop
+            print(f"[followup.dispatch] error: {type(exc).__name__}: {exc}", flush=True)
+        time.sleep(_followup_tick_seconds())
+
+
+_FOLLOWUP_THREAD: threading.Thread | None = None
+
+
 def start() -> None:
-    """Launch the daemon thread once. No-op if disabled or already running."""
-    global _THREAD, _STARTED
+    """Launch the daemon threads once. No-op if disabled or already running."""
+    global _THREAD, _FOLLOWUP_THREAD, _STARTED
     if _STARTED:
         return
     if not _enabled():
@@ -299,5 +336,12 @@ def start() -> None:
     _STARTED = True
     _THREAD = threading.Thread(target=_loop, name="updates-scheduler", daemon=True)
     _THREAD.start()
+    # Punctual follow-up dispatcher on its own thread + claim, so a due
+    # follow-up sends within ~a minute of its send_at (the external GitHub
+    # cron stays as redundancy; claims + per-row status flips dedupe).
+    _FOLLOWUP_THREAD = threading.Thread(
+        target=_followup_loop, name="followup-dispatch", daemon=True)
+    _FOLLOWUP_THREAD.start()
     print(f"[updates.scheduler] started: tick={_tick_seconds()}s "
-          f"gap={_gap_seconds()}s limit={_limit()}", flush=True)
+          f"gap={_gap_seconds()}s limit={_limit()} "
+          f"followup_tick={_followup_tick_seconds()}s", flush=True)
