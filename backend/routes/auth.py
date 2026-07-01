@@ -112,9 +112,24 @@ def _autoimport_conversations(user_id: int) -> None:
     """Background: seed the Book from the user's genuine LinkedIn DM conversations
     right after they connect, so the spine isn't empty. DURABLE (prefer_modal) so
     a deploy mid-seed doesn't drop it. Idempotent + best-effort; never blocks or
-    fails the auth response."""
+    fails the auth response.
+
+    Two complementary passes, both idempotent:
+      1. the conversation seed (contacts + voice from the most active chats), and
+      2. the FULL LinkedIn chat sync (message bodies into each contact's
+         timeline, the context the drafter reads) -- same magic-moment pattern
+         as the WhatsApp first sync: connect -> the book fills itself, no
+         waiting for the 6h gathering sweep."""
     from ..jobs import run_detached
     run_detached(_seed_conversations_and_voice, user_id, prefer_modal=True)
+    try:
+        from ..agents.relationship.linkedin_chat_sync import dispatch_linkedin_chat_sync
+        runner = dispatch_linkedin_chat_sync(user_id, incremental=False)
+        print(f"  [auth.linkedin] dispatched first chat sync user.id={user_id} "
+              f"runner={runner}")
+    except Exception as exc:  # noqa: BLE001 -- seeding must never fail the connect
+        print(f"  [auth.linkedin] first chat sync dispatch failed "
+              f"user.id={user_id}: {type(exc).__name__}: {exc}")
 
 
 def _email_first_sync(db, user_id: int) -> None:
@@ -908,6 +923,11 @@ async def linkedin_callback(
         auth_state.user_id = user.id
         auth_state.status = "callback_upserted"
         db.commit()
+
+        # This branch means the WEBHOOK no-op'd (no `name` echo), so the seed
+        # never ran: fire it from here instead. Idempotent, so the rare case
+        # where both paths dispatch is safe (skip-by-message-id).
+        _autoimport_conversations(user.id)
 
         # Fire-and-forget : delete the orphan Unipile account that the
         # dedup migrated AWAY from. Done after commit so a Unipile delete
