@@ -1498,6 +1498,13 @@ def triage_signup(
 
 # ─── 4. /me: who is signed in? ────────────────────────────────────
 
+def _autonomy_mode(user) -> str:
+    """The user's normalized autonomy mode for the /me payload. Thin local
+    wrapper so /me does not import the send pipeline at module load."""
+    from ..agents.relationship.pipeline.send.sender import owner_autonomy_mode
+    return owner_autonomy_mode(user)
+
+
 @router.get("/me")
 def me(user: User = Depends(current_user),
        db: DbSession = Depends(get_db)) -> JSONResponse:
@@ -1572,6 +1579,10 @@ def me(user: User = Depends(current_user),
         "onboarding_status": getattr(user, "onboarding_status", "") or "",
         "onboarding_step": getattr(user, "onboarding_step", 0) or 0,
         "saved_send_link": getattr(user, "saved_send_link", None),
+        # Per-user autonomy control ('off' | 'ask' | 'auto', normalized). The
+        # SPA reads this to render the Account setting and, in 'ask' mode, the
+        # Today "Waiting for your OK" queue. Written via PUT /api/settings.
+        "autonomy_mode": _autonomy_mode(user),
     })
 
 

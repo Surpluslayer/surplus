@@ -7,9 +7,15 @@ drafted body + a suggested send time. These routes let the host review that
 queue and decide what actually happens:
 
     GET   /api/followups              list the host's follow-ups
+    GET   /api/followups/pending      the "waiting for your OK" queue: rows
+                                      that are DUE but held by the autonomy
+                                      gate (mode != 'auto' or env master off)
     PATCH /api/followups/{id}         edit the body and/or reschedule send_at
     POST  /api/followups/{id}/cancel  cancel a pending follow-up
-    POST  /api/followups/{id}/send-now  dispatch immediately
+    POST  /api/followups/{id}/skip    cancel with reason "skipped" (the ask
+                                      mode decline, paired with send-now)
+    POST  /api/followups/{id}/send-now  dispatch immediately (the ask mode
+                                      one-tap confirm reuses this)
 
 Every route is owner-scoped through the follow-up's prospect -> event -> user,
 so one host can never see or touch another host's queue (404 on not-owned,
@@ -112,6 +118,53 @@ def list_followups(
     return [_to_out(r) for r in rows]
 
 
+class PendingOut(BaseModel):
+    """One row of the ask-mode "Waiting for your OK" queue."""
+    id: int
+    prospect_id: int
+    name: str
+    message: str
+    send_at: datetime
+    channel: str
+
+
+@router.get("/pending", response_model=list[PendingOut])
+def list_pending_followups(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """The signed-in user's due-but-held follow-ups: rows still `scheduled`
+    whose send_at has passed, i.e. what the dispatcher held because the
+    autonomy gate is closed (mode 'off'/'ask', or the env master off). The
+    ask-mode Today surface renders these for a one-tap Send / Skip.
+
+    Follow-ups only: pending AGENT REPLIES (PendingReply) have no user-scoped
+    read today (the approve flow is admin-only in routes/admin.py), so they
+    are deliberately not exposed here."""
+    now = datetime.now(timezone.utc)
+    rows = (db.query(models.ScheduledFollowup)
+              .join(models.Prospect,
+                    models.ScheduledFollowup.prospect_id == models.Prospect.id)
+              .join(models.Event, models.Prospect.event_id == models.Event.id)
+              .filter(models.Event.user_id == user.id,
+                      models.ScheduledFollowup.status == "scheduled")
+              .order_by(models.ScheduledFollowup.send_at.asc())
+              .all())
+    out: list[PendingOut] = []
+    for r in rows:
+        if _as_aware(r.send_at) > now:
+            continue
+        out.append(PendingOut(
+            id=r.id,
+            prospect_id=r.prospect_id,
+            name=getattr(r.prospect, "name", "") or "",
+            message=r.body,
+            send_at=r.send_at,
+            channel=(getattr(r, "channel", "") or "linkedin"),
+        ))
+    return out
+
+
 @router.patch("/{followup_id}", response_model=FollowupOut)
 def update_followup(
     followup_id: int,
@@ -150,6 +203,26 @@ def cancel_followup(
         raise HTTPException(409, f"follow-up is {row.status}, cannot cancel")
     row.status = "cancelled"
     row.cancel_reason = "user"
+    row.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(row)
+    return _to_out(row)
+
+
+@router.post("/{followup_id}/skip", response_model=FollowupOut)
+def skip_followup(
+    followup_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """The ask-mode decline: cancel a held follow-up so it never sends,
+    recorded distinctly (reason "skipped") from a queue-screen cancel
+    (reason "user"). Owner-scoped 404 like every other route here."""
+    row = _owned_followup(db, followup_id, user)
+    if row.status != "scheduled":
+        raise HTTPException(409, f"follow-up is {row.status}, cannot skip")
+    row.status = "cancelled"
+    row.cancel_reason = "skipped"
     row.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(row)
