@@ -54,7 +54,7 @@ GROUND RULES
   - Warm, direct, human. No buzzwords, no "just circling back" cliche openers unless they fit naturally, no "I wanted to follow up" filler stacked on filler.
   - Reference ONE real, specific thing about the recipient (their role, company, or what they work on) so it doesn't read like a generic blast. Only use facts given in the input : never invent a project, talk, or detail.
   - Give an explicit, low-pressure off-ramp ("no worries if the timing's off, just let me know" / "happy to close the loop if it's not a fit"). The nudge should feel respectful of their silence, not pushy.
-  - The ask is always about the EVENT (sharing details / coming along) or staying in touch. NEVER propose a call, Zoom, phone, or any live meeting.
+  - If the input includes a HOST SCHEDULING LINK, include that link verbatim (never altered) as the low-pressure ask, e.g. "here is a link to grab a time if useful". Otherwise the ask is about the EVENT (sharing details / coming along) or staying in touch; never propose a call, Zoom, phone, or any live meeting.
   - Don't use em-dashes. Don't say "as an AI". Don't apologize for reaching out.
 
 OUTPUT FORMAT
@@ -76,7 +76,8 @@ def _client():
     return _CLIENT
 
 
-def _user_message(prospect, event, prior_message: Optional[str] = None) -> str:
+def _user_message(prospect, event, prior_message: Optional[str] = None,
+                  send_link: Optional[str] = None) -> str:
     parts = ["EVENT",
              f"Format: {getattr(event, 'format', '') or 'event'}",
              f"City: {getattr(event, 'city', '') or ''}"]
@@ -98,12 +99,16 @@ def _user_message(prospect, event, prior_message: Optional[str] = None) -> str:
                   prior,
                   "Write the nudge as a continuation of THIS message : reference "
                   "what you already said, do not repeat it or re-pitch from scratch."]
+    if (send_link or "").strip():
+        parts += ["", f"HOST SCHEDULING LINK (include verbatim as the ask): {send_link.strip()}"]
+
     parts += ["", "Write the JSON follow-up now."]
     return "\n".join(parts)
 
 
 def _compose_via_claude(prospect, event,
-                        prior_message: Optional[str] = None) -> Optional[str]:
+                        prior_message: Optional[str] = None,
+                        send_link: Optional[str] = None) -> Optional[str]:
     """One Haiku call. Returns the follow-up text or None on any failure."""
     if not (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
         return None
@@ -116,7 +121,8 @@ def _compose_via_claude(prospect, event,
                      "cache_control": {"type": "ephemeral"}}],
             messages=[
                 {"role": "user",
-                 "content": _user_message(prospect, event, prior_message)},
+                 "content": _user_message(prospect, event, prior_message,
+                                          send_link=send_link)},
                 {"role": "assistant", "content": "{"},
             ],
         )
@@ -144,15 +150,26 @@ def compose_followup_text(prospect, event,
     Set FOLLOWUP_COMPOSE_DISABLE=1 to always use the deterministic template
     (escape hatch for cost spikes / model issues), matching outreach.compose.
     """
+    # The scheduling / demo link this nudge should carry (next_step URL, else
+    # the host's reusable saved_send_link). The LLM is asked to weave it in;
+    # ensure_send_link below is the deterministic guarantee -- prompt rules
+    # alone are exactly how links used to go missing.
+    from ..outreach import ensure_send_link, resolve_send_link
+    send_link = resolve_send_link(prospect, event)
+
     disabled = (os.environ.get("FOLLOWUP_COMPOSE_DISABLE") or "").strip().lower()
     if disabled not in ("", "0", "false", "no"):
         text = _template_followup(prospect, event, prior_message)
     else:
-        text = (_compose_via_claude(prospect, event, prior_message)
+        text = (_compose_via_claude(prospect, event, prior_message,
+                                    send_link=send_link)
                 or _template_followup(prospect, event, prior_message))
     # Same outbound hygiene the send-gate applies, so the staged preview ==
-    # what gets transmitted: strip call asks + dashes LinkedIn mangles.
-    return (strip_call_asks(strip_em_dashes(text)) or "").strip()
+    # what gets transmitted: strip call asks + dashes LinkedIn mangles. The
+    # link append comes AFTER the strips (URL clauses also survive the
+    # send-gate strip via its URL exemption).
+    cleaned = (strip_call_asks(strip_em_dashes(text)) or "").strip()
+    return ensure_send_link(cleaned, send_link)
 
 
 # ── send-time suggestion ───────────────────────────────────────────────────

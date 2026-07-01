@@ -799,3 +799,23 @@ def test_linkedin_start_no_longer_requires_payment(db, monkeypatch):
     import json
     payload = json.loads(bytes(resp.body))
     assert payload["url"] == "https://unipile.test/hosted/abc"
+
+
+def test_compose_inperson_carries_saved_send_link(db, user, monkeypatch):
+    """Deterministic demo-link wiring: an in-person compose always carries the
+    host's reusable saved_send_link in the DM (template path included). The
+    connect note stays tight (300 cap): the link belongs in the DM only."""
+    monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")
+    from backend.agents.outreach import compose
+    user.saved_send_link = "https://calendly.com/host/15min"
+    db.commit()
+    ip_event = db.get(models.Event, _make_event(db, user)["event_id"])
+    p = models.Prospect(
+        event_id=ip_event.id, identity="maya-w", name="Maya Rodriguez",
+        role="Staff Engineer", company="Acme",
+        linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+        note="the latency demo")
+    db.add(p); db.commit()
+    msg = compose(p, ip_event)
+    assert "https://calendly.com/host/15min" in msg.message
+    assert "calendly.com" not in (msg.note or "")

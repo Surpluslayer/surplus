@@ -428,3 +428,45 @@ def test_routes_404_on_not_owned(db):
     with pytest.raises(HTTPException) as exc:
         followups_route.cancel_followup(row.id, db=db, user=stranger)
     assert exc.value.status_code == 404
+
+
+# ── send-link wiring (demo / scheduling link) ─────────────────────────────
+
+def test_strip_call_asks_keeps_url_clauses():
+    """The no-call hygiene must never eat an attached link: \\bzoom\\b used to
+    strip whole clauses containing Zoom meeting URLs from booking drafts."""
+    from backend.providers.base import strip_call_asks
+    msg = ("Great meeting you! Here is the Zoom link for Tuesday: "
+           "https://zoom.us/j/123?pwd=abc. Looking forward to it.")
+    assert strip_call_asks(msg) == msg
+    # ...while prose call asks are still stripped.
+    prose = ("Would love to hop on a quick call next week. "
+             "Also, congrats on the launch.")
+    out = strip_call_asks(prose)
+    assert "call" not in out
+    assert "congrats on the launch" in out
+
+
+def test_followup_body_carries_saved_send_link(db, monkeypatch):
+    """Deterministic link guarantee: with the host's reusable saved_send_link
+    set, the staged follow-up body always contains it, template path included
+    (the LLM weave is best-effort; ensure_send_link is the guarantee)."""
+    monkeypatch.setenv("FOLLOWUP_COMPOSE_DISABLE", "1")
+    u, _ev, p = _seed(db)
+    u.saved_send_link = "https://calendly.com/host/15min"
+    db.commit()
+    row = stage_followup(db, p)
+    assert row is not None
+    assert "https://calendly.com/host/15min" in row.body
+
+
+def test_followup_next_step_url_beats_saved_link(db, monkeypatch):
+    """A URL captured in the prospect's next_step wins over the reusable link."""
+    monkeypatch.setenv("FOLLOWUP_COMPOSE_DISABLE", "1")
+    u, _ev, p = _seed(db)
+    u.saved_send_link = "https://calendly.com/host/15min"
+    p.next_step = "book a time: https://calendly.com/host/demo-30"
+    db.commit()
+    row = stage_followup(db, p)
+    assert "https://calendly.com/host/demo-30" in row.body
+    assert "https://calendly.com/host/15min" not in row.body
