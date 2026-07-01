@@ -89,9 +89,11 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
     try {
       // Native app: Google/Microsoft block OAuth in the embedded WebView, so
       // run sign-in in the system browser and adopt the session via deep link.
+      // Returns false on an OLD app build without the Browser plugin — fall
+      // through to the web redirect so the button never dead-ends.
       if (isNativeApp()) {
-        await nativeOAuthLogin(fn);          // navigates to mobile-adopt on success
-        return;
+        const handled = await nativeOAuthLogin(fn); // navigates to mobile-adopt on success
+        if (handled) return;
       }
       const r = await fn();
       if (!r?.url) throw new Error("Backend didn't return a sign-in URL");
