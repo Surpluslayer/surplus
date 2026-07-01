@@ -300,6 +300,74 @@ function Avatar({ user, feed, onAccount }) {
   );
 }
 
+// Ask-mode queue: when the user's autonomy mode is "ask", surface the
+// due-but-held follow-ups above Updates for a one-tap Send / Skip. Mode is
+// read fresh on mount (the user prop's /me snapshot can be stale after a
+// visit to Account); any other mode, or an empty queue, renders nothing.
+function WaitingForOk({ user }) {
+  const [mode, setMode] = useState(user?.autonomy_mode || "off");
+  const [items, setItems] = useState([]);
+  const [busyId, setBusyId] = useState(null);
+  const [note, setNote] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getSettings()
+       .then((d) => { if (!cancelled && d?.autonomy_mode) setMode(d.autonomy_mode); })
+       .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (mode !== "ask") return;
+    let cancelled = false;
+    api.pendingFollowups()
+       .then((d) => { if (!cancelled) setItems(Array.isArray(d) ? d : []); })
+       .catch(() => {});
+    return () => { cancelled = true; };
+  }, [mode]);
+
+  if (mode !== "ask" || items.length === 0) return null;
+
+  const resolve = async (item, action) => {
+    setBusyId(item.id); setNote("");
+    try {
+      if (action === "send") await api.sendFollowupNow(item.id);
+      else await api.skipFollowup(item.id);
+      setItems((prev) => prev.filter((x) => x.id !== item.id));
+    } catch (e) {
+      setNote(e.message || "That didn't go through. Try again.");
+    } finally { setBusyId(null); }
+  };
+
+  return (
+    <>
+      <SectionHead label="Waiting for your OK" count={items.length} />
+      <div className="bk-group">
+        {items.map((item) => (
+          <div key={item.id} className="bk-upd">
+            <div className="bk-row" style={{ alignItems: "flex-start" }}>
+              <div className="bk-main">
+                <p className="bk-name">{item.name}</p>
+                <p className="bk-sub">{item.message}</p>
+              </div>
+              <div className="bk-aside" style={{ display: "flex", gap: 6 }}>
+                <button className="bk-btn bk-btn--primary" disabled={busyId === item.id}
+                        onClick={() => resolve(item, "send")}>
+                  {busyId === item.id ? "…" : "Send"}
+                </button>
+                <button className="bk-btn" disabled={busyId === item.id}
+                        onClick={() => resolve(item, "skip")}>Skip</button>
+              </div>
+            </div>
+          </div>
+        ))}
+        {note && <p className="bk-note bk-note--warn" style={{ margin: "8px 14px" }}>{note}</p>}
+      </div>
+    </>
+  );
+}
+
 function TodayView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
   const updates = feed?.updates || [];
   const needs = feed?.needs_outreach || [];
@@ -335,6 +403,8 @@ function TodayView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
 
       {feed && (
         <>
+          <WaitingForOk user={user} />
+
           <SectionHead label="Updates" count={updates.length} />
           <div className="bk-group">
             {updates.map((u, i) => (
@@ -770,6 +840,8 @@ function AccountScreen({ user, onBack, onConnections }) {
         </div>
       </div>
 
+      <AutonomySection user={user} />
+
       <PasswordSection user={user} />
 
       <div className="bk-set-group">
@@ -777,6 +849,92 @@ function AccountScreen({ user, onBack, onConnections }) {
           <span className="bk-set-lead"><LogOut size={19} /><span className="bk-set-lbl">Sign out</span></span>
         </button>
       </div>
+    </div>
+  );
+}
+
+// Autonomy: how much the agent may send on its own. Three modes, saved via
+// PUT /api/settings. "Full auto" gets an inline confirm step before commit
+// (a send-without-asking grant should never be one accidental tap).
+const AUTONOMY_OPTIONS = [
+  { key: "off", label: "Off", hint: "surplus drafts, you send" },
+  { key: "ask", label: "Ask first", hint: "surplus lines up sends and asks you" },
+  { key: "auto", label: "Full auto", hint: "surplus sends on its own" },
+];
+
+function AutonomySection({ user }) {
+  const [mode, setMode] = useState(user?.autonomy_mode || "off");
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  // Fresh read on mount: the BookApp-level user prop is a one-shot /me from
+  // app start and may be stale if the mode changed in another tab.
+  useEffect(() => {
+    let cancelled = false;
+    api.getSettings()
+       .then((d) => { if (!cancelled && d?.autonomy_mode) setMode(d.autonomy_mode); })
+       .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const commit = async (m) => {
+    setBusy(true); setErr("");
+    try {
+      const d = await api.setAutonomyMode(m);
+      setMode(d?.autonomy_mode || m);
+      setConfirming(false);
+    } catch (e) {
+      setErr(e.message || "Couldn't save that.");
+    } finally { setBusy(false); }
+  };
+
+  const pick = (m) => {
+    if (busy || m === mode) { setConfirming(false); return; }
+    if (m === "auto") { setConfirming(true); setErr(""); return; }
+    setConfirming(false);
+    commit(m);
+  };
+
+  return (
+    <div className="bk-set-group">
+      <div className="bk-set-row" style={{ borderBottom: 0 }}>
+        <span className="bk-set-lead"><Sparkles size={19} />
+          <span className="bk-set-lbl">Autonomy</span></span>
+      </div>
+      {AUTONOMY_OPTIONS.map((opt) => (
+        <button key={opt.key} className="bk-set-row" disabled={busy}
+                onClick={() => pick(opt.key)} aria-pressed={mode === opt.key}>
+          <span className="bk-set-lead">
+            <span className={"bk-radio" + (mode === opt.key ? " on" : "")} aria-hidden="true" />
+            <span>
+              <span className="bk-set-lbl">{opt.label}</span>
+              <span className="bk-set-hint">{opt.hint}</span>
+            </span>
+          </span>
+          {mode === opt.key && <CheckCircle2 size={17} className="bk-chev" />}
+        </button>
+      ))}
+      {confirming && (
+        <div className="bk-set-row" style={{ display: "block" }}>
+          <p style={{ fontSize: 13, margin: "0 0 9px", color: "var(--ink)", lineHeight: 1.45 }}>
+            Surplus will send messages without asking. Confirm?
+          </p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="bk-btn bk-btn--primary" disabled={busy}
+                    onClick={() => commit("auto")}>
+              {busy ? "Saving…" : "Turn on"}
+            </button>
+            <button className="bk-btn" disabled={busy}
+                    onClick={() => setConfirming(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {err && (
+        <div className="bk-set-row" style={{ display: "block" }}>
+          <p style={{ fontSize: 12.5, margin: 0, color: "#c0433d" }}>{err}</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -1958,6 +2116,11 @@ const BOOK_CSS = `
 .bk-set-val{font-size:12px; color:var(--faint);}
 .bk-chev{color:var(--faint);}
 .bk-set-row--danger .bk-set-lead svg, .bk-set-row--danger .bk-set-lbl{color:var(--danger);}
+/* autonomy setting rows */
+.bk-set-hint{display:block; font-size:11.5px; color:var(--faint); margin-top:1px;}
+.bk-radio{width:16px; height:16px; border-radius:50%; border:1.5px solid var(--line-2);
+  flex:none; display:inline-block;}
+.bk-radio.on{border-color:var(--accent); box-shadow:inset 0 0 0 4px var(--accent);}
 
 /* connections */
 .bk-conn-row{display:flex; align-items:center; gap:12px; padding:13px 14px;}

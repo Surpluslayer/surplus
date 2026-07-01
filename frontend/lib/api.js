@@ -416,6 +416,24 @@ export const api = {
       body: JSON.stringify({ message, send_at: sendAt }),
     }),
 
+  // Per-user settings. Autonomy mode governs agent-initiated sends:
+  // "off" (surplus drafts, you send), "ask" (surplus lines up sends and asks
+  // you), "auto" (surplus sends on its own, under the ops master switch).
+  getSettings: () => request("/api/settings"),
+  setAutonomyMode: (mode) =>
+    request("/api/settings", {
+      method: "PUT",
+      body: JSON.stringify({ autonomy_mode: mode }),
+    }),
+  // Ask-mode queue: the signed-in user's due-but-held follow-ups, waiting for
+  // a one-tap confirm on Today. Send = the existing send-now endpoint; Skip
+  // cancels the row with reason "skipped".
+  pendingFollowups: () => request("/api/followups/pending"),
+  sendFollowupNow: (id) =>
+    request(`/api/followups/${id}/send-now`, { method: "POST" }),
+  skipFollowup: (id) =>
+    request(`/api/followups/${id}/skip`, { method: "POST" }),
+
   // meta
   health: () => request("/api/health"),
 
