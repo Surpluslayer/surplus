@@ -932,16 +932,12 @@ def send_contact_followup(
     db: Session = Depends(get_db),
     user: models.User = Depends(current_user),
 ):
-    """Act on an approved follow-up draft for one owned contact.
+    """Send an approved follow-up draft for one owned contact, immediately.
 
-    Behavior is gated by the LEGACY per-user column User.auto_followups_enabled
-    (its settings routes + UI toggle are gone, so it is OFF for everyone unless
-    set directly in the DB):
-      ON  -> send immediately through the contact's most-recent prospect via the
-             shared send_and_log path (DRY_RUN / paywall enforced inside the
-             provider, exactly like the follow-up cron). Returns status='sent'.
-      OFF -> stage the draft as a private note on the timeline and return
-             status='drafted'; nothing leaves the system.
+    Approve = send: this is a manual, user-initiated action, so it bypasses the
+    autonomy gates (which only govern unattended sends) and goes out through the
+    shared send path (DRY_RUN / paywall enforced inside the provider, exactly
+    like the dispatcher). Returns status='sent'.
 
     Owner-scoped (404 on not-owned contact). The contact is resolved to a
     sendable Prospect by picking its most-recently captured linked prospect."""
@@ -960,17 +956,10 @@ def send_contact_followup(
 
     prospect = _sendable_prospect(contact)
 
-    auto_send = bool(getattr(user, "auto_followups_enabled", False))
-    if not auto_send:
-        # Toggle off: stage the draft as a private note so it shows on the
-        # timeline; the host can send it later from the follow-up queue.
-        relationships.add_note(
-            db, prospect, user.id, text,
-            title="Follow-up draft", visibility="private")
-        return {"status": "drafted", "contact_id": contact_id,
-                "prospect_id": prospect.id, "message": text}
-
-    # Toggle on: send through the same path the follow-up cron uses.
+    # Approving a specific message IS the user deciding: a manual send, so it
+    # always sends (the autonomy gates only govern UNATTENDED sends). The old
+    # legacy-column branch quietly staged a private note instead -- an approve
+    # button that does not send. Flipped 2026-07-01 per Daniel.
     from ..agents.relationship.pipeline.send.sender import send_followup
     try:
         res = send_followup(db, prospect, text, channel="linkedin")
