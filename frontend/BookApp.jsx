@@ -23,6 +23,7 @@ import {
   Mail, Calendar, Plug, CreditCard, LogOut, CheckCircle2, Mic,
 } from "lucide-react";
 import { api } from "./lib/api.js";
+import { isNativeApp, nativeLinkedInLogin } from "./lib/nativeAuth.js";
 import {
   CaptureScreen, ScanResult, SignInBounce, IP_CSS,
   loadActiveEvent, saveActiveEvent, loadRecentLabels, pushRecentLabel,
@@ -46,6 +47,16 @@ function signInWithLinkedIn(source) {
   // tour_skip / draft_send / ...). When called as a bare onClick handler the
   // arg is a DOM event, so only strings count.
   track("demo_signin_click", { source: typeof source === "string" ? source : "unknown" });
+  // In the native app, run sign-in in the system browser and adopt the session
+  // via deep link (embedded-WebView login can't set a usable cookie). Falls
+  // back to the normal redirect on web or if the native flow errors.
+  if (isNativeApp()) {
+    nativeLinkedInLogin(api).catch((err) => {
+      console.error("[surplus] native login failed, falling back", err);
+      window.location.href = "/api/auth/linkedin/start-redirect";
+    });
+    return;
+  }
   window.location.href = "/api/auth/linkedin/start-redirect";
 }
 
@@ -1079,8 +1090,9 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
     } catch (e) {
       const code = e?.body?.detail?.code || e?.body?.code;
       if (e?.status === 402 || code === "linkedin_send_locked" || code === "payment_required") {
-        // Sending is gated for demo / not-signed-in users : take them to sign in.
-        window.location.href = "/api/auth/linkedin/start-redirect"; return;
+        // Sending is gated for demo / not-signed-in users : take them to sign in
+        // (native-aware: uses the system-browser flow in the app).
+        signInWithLinkedIn("draft_send"); return;
       }
       setErr(e.message || "Couldn't send");
     }

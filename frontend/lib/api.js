@@ -419,6 +419,10 @@ export const api = {
   me: () => request("/api/auth/me"),
   // returns { url } : frontend sets window.location = url to begin the flow
   startLinkedinAuth: () => request("/api/auth/linkedin/start", { method: "POST" }),
+  // Native app variant: callback deep-links the session token back to the app
+  // (see lib/nativeAuth.js) instead of redirecting the web SPA.
+  startLinkedinAuthMobile: () =>
+    request("/api/auth/linkedin/start?mobile=1", { method: "POST" }),
   // Connect the signed-in user's mailbox (Gmail/Outlook) as a second Unipile
   // seat. Returns { url } — redirect the browser there; the hosted page does
   // the OAuth and bounces back with the Integrations tile flipped.

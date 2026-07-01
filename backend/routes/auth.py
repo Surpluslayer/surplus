@@ -306,14 +306,65 @@ async def _post_hosted_link(dsn: str, api_key: str, body: dict) -> tuple[int, di
     return r.status_code, data
 
 
+# ─── Native app (iOS Capacitor) sign-in support ─────────────────────
+# The iOS app is a WebView; LinkedIn login can't complete inside an embedded
+# WebView, and a cookie set during an external-browser login lands in the wrong
+# cookie jar. So the app runs sign-in in the SYSTEM browser and we hand the
+# session back via a deep link: the callback redirects to
+# surplus://auth?token=<session_token> instead of the web app. We flag the flow
+# by PREFIXING the state token (round-trips through AuthState/Unipile unchanged),
+# so no schema change is needed. The app then opens
+# /api/auth/mobile-adopt?token=... inside its WebView, which sets the
+# surplus_session cookie there — so the whole web app is authenticated.
+MOBILE_STATE_PREFIX = "m_"
+MOBILE_REDIRECT_URI = "surplus://auth"  # must match CFBundleURLSchemes in the app
+
+
+def _is_mobile_state(state_token: Optional[str]) -> bool:
+    return bool(state_token) and state_token.startswith(MOBILE_STATE_PREFIX)
+
+
+@router.get("/mobile-adopt", include_in_schema=False)
+def mobile_adopt(
+    request: Request,
+    token: str = Query(...),
+    db: DbSession = Depends(get_db),
+) -> RedirectResponse:
+    """Adopt a session token handed to the native app via the surplus://auth
+    deep link. Validates the token against a live session, then sets the
+    surplus_session cookie on THIS WebView navigation and redirects into the
+    app. Because the token IS the session secret, holding it already grants the
+    session — this just moves it into the WebView's cookie jar."""
+    tok = (token or "").strip()
+    _h = request_browser_host(request) or None
+    ok = False
+    if tok:
+        sess = db.query(Session).filter(Session.session_token == tok).first()
+        ok = bool(sess and sess.revoked_at is None)
+    if not ok:
+        return RedirectResponse("/signin?error=mobile_adopt_failed", status_code=303)
+    response = RedirectResponse("/", status_code=303)
+    set_session_cookie(response, tok, host=_h)
+    return response
+
+
 @router.post("/linkedin/start")
 async def linkedin_start(
     request: Request,
     db: DbSession = Depends(get_db),
+    mobile: bool = Query(
+        False,
+        description="Set by the native app so the callback deep-links the "
+        "session token back to the app instead of redirecting the web SPA.",
+    ),
 ) -> JSONResponse:
     dsn, api_key = _ensure_unipile_configured()
 
+    # Prefix the state token for the native app so the callback recognises the
+    # flow origin without a schema change (see MOBILE_STATE_PREFIX).
     state_token = secrets.token_urlsafe(32)
+    if mobile:
+        state_token = MOBILE_STATE_PREFIX + state_token
     auth_state = AuthState(state_token=state_token, status="pending")
     db.add(auth_state)
     db.flush()  # populate auth_state.id without committing yet
@@ -859,6 +910,16 @@ async def linkedin_callback(
     auth_state.status = "callback_done"
     auth_state.completed_at = _utcnow()
     db.commit()
+
+    # Native app flow: hand the session token back via the surplus://auth deep
+    # link (the app's system-browser login can't drop a usable cookie into the
+    # WebView). The app then calls /api/auth/mobile-adopt?token=... to set the
+    # cookie in its WebView. Skip the web Stripe redirect; the app reads billing
+    # state from /me. The session is real either way, like the in-person host.
+    if _is_mobile_state(auth_state.state_token):
+        from urllib.parse import urlencode
+        qs = urlencode({"token": sess.session_token})
+        return RedirectResponse(f"{MOBILE_REDIRECT_URI}?{qs}", status_code=303)
 
     # Pay-at-connect paywall, tied to the LinkedIn identity. By here `user`
     # is the DEDUPED row for this LinkedIn account (matched on provider_id /

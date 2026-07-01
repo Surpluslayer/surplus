@@ -20,6 +20,7 @@
   "private": "true",
   "dependencies": {
     "@capacitor/app": "^6.0.3",
+    "@capacitor/browser": "^6.0.6",
     "@capacitor/core": "^6.2.1",
     "@capacitor/ios": "^6.2.1",
     "@capacitor/splash-screen": "^6.0.4",
