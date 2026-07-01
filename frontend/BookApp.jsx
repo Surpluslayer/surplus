@@ -957,7 +957,15 @@ function ConnectionsScreen({ user, onBack }) {
                  sub={googleOn ? "Connected" : "Logs meetings, syncs contacts"}
                  connected={googleOn}
                  onConnect={() => connect(api.connectGoogle, "Google")} />
-        {zoomAvail && (
+        {integrations === null ? (
+          // /api/integrations hasn't resolved yet: render the row in its
+          // loading state instead of hiding it, so it doesn't pop into the
+          // list a few seconds after the screen opens (layout jump).
+          <ConnRow icon={<Video size={21} />} name="Zoom"
+                   sub="Add Zoom links to your bookings"
+                   loading
+                   onConnect={() => connect(api.connectZoom, "Zoom")} />
+        ) : zoomAvail && (
           <ConnRow icon={<Video size={21} />} name="Zoom"
                    sub={zoomOn ? "Connected" : "Add Zoom links to your bookings"}
                    connected={zoomOn}
