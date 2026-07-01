@@ -32,6 +32,8 @@ from .routes import (
     book, relationships, inperson, followups, integrations, messages, settings,
     # events side (the desktop event-ROI pipeline)
     events, pipeline, matching, roi, triage, curation, jobs,
+    # infra: token-gated Unipile pass-through for :443-only egress sandboxes
+    internal_relay,
 )
 
 
@@ -143,6 +145,7 @@ app.include_router(roi.router)             # 05 ROI ledger
 app.include_router(triage.router)          # inbound applicant triage
 app.include_router(curation.router)        # event attendee curation
 app.include_router(jobs.router)            # async job dispatch + poll
+app.include_router(internal_relay.router)  # token-gated Unipile relay (sandbox egress)
 
 
 # NB: previously had a verbose 500 exception handler here that leaked
