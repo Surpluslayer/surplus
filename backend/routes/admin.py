@@ -130,17 +130,18 @@ def _replied_since_staging(prospect: models.Prospect) -> bool:
 
 
 def _auto_send_enabled(prospect: models.Prospect, channel: str = "linkedin") -> bool:
-    """Whether the cron should auto-send this prospect's follow-up on `channel`.
+    """Whether the dispatcher should auto-send this prospect's NUDGE on `channel`.
 
-    The first follow-up is a BUILT-IN feature (product decision 2026-07-01): it
-    fires for every host, no per-user opt-in. The only gate left is the ops kill
-    switch -- SURPLUS_AUTO_FOLLOWUPS + its channel allowlist (separate from the
-    general-send master, so follow-ups run while general agent-initiated sends
-    stay off / behind the ask-mode guardrail). A reply still cancels the row,
-    and stale rows expire instead of sending (see the dispatch loop).
+    Product taxonomy (2026-07-01): the nudge ("checking in" after no reply) is
+    agent-initiated autonomy, NOT a built-in -- so it shares ONE gate with the
+    AI auto-reply: the general-send master (SURPLUS_AUTOMATED_SENDS + channel
+    allowlist), which the per-user autonomy control will hang off. Only the
+    post-accept FIRST follow-up stays built-in (SURPLUS_AUTO_FOLLOWUPS, in
+    webhooks._trigger_auto_dm). Gate off -> due nudges HOLD in the queue for a
+    manual send-now. A reply still cancels; stale rows expire (dispatch loop).
     """
-    from ..agents.relationship.pipeline.send.sender import follow_up_send_enabled
-    return follow_up_send_enabled(channel)
+    from ..agents.relationship.pipeline.send.sender import automated_send_enabled
+    return automated_send_enabled(channel)
 
 
 def _fire_followup_booking(db, prospect, booking_payload, text: str) -> None:

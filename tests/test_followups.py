@@ -255,7 +255,7 @@ def test_cancel_pending_followups_marks_cancelled(db):
 # ── dispatch (run_followups) ─────────────────────────────────────────────
 
 def test_run_followups_sends_due_row(db, monkeypatch):
-    monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "true")   # follow-up gate opt-in
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")   # autonomy gate opt-in
     _u, _ev, p = _seed(db)
     row = _stage_due(db, p)
     result = run_followups(db=db, _=None)
@@ -271,10 +271,10 @@ def test_run_followups_sends_due_row(db, monkeypatch):
 
 
 def test_run_followups_sends_even_when_user_toggle_off(db, monkeypatch):
-    """BUILT-IN first follow-up: the per-user auto_followups_enabled column no
-    longer gates dispatch. With the ops kill switch on, a host with the old
-    toggle off still gets the follow-up sent."""
-    monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "true")
+    """The legacy per-user auto_followups_enabled column does not gate the
+    dispatcher. With the autonomy gate on, a host with the old toggle off
+    still gets the nudge sent."""
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")
     _u, _ev, p = _seed(db, auto_followups=False)
     row = _stage_due(db, p)
     result = run_followups(db=db, _=None)
@@ -286,10 +286,10 @@ def test_run_followups_sends_even_when_user_toggle_off(db, monkeypatch):
 
 
 def test_run_followups_holds_when_kill_switch_off(db, monkeypatch):
-    """Ops kill switch (SURPLUS_AUTO_FOLLOWUPS) off : a due draft is HELD (left
-    scheduled), never sent or cancelled, so it can still be sent manually or
-    dispatched once the switch comes back on."""
-    monkeypatch.delenv("SURPLUS_AUTO_FOLLOWUPS", raising=False)
+    """Autonomy gate (SURPLUS_AUTOMATED_SENDS, shared with auto-reply) off : a
+    due nudge is HELD (left scheduled), never sent or cancelled, so it can
+    still be sent manually or dispatched once the user turns autonomy on."""
+    monkeypatch.delenv("SURPLUS_AUTOMATED_SENDS", raising=False)
     _u, _ev, p = _seed(db)
     row = _stage_due(db, p)
     result = run_followups(db=db, _=None)
@@ -307,7 +307,7 @@ def test_run_followups_expires_stale_row(db, monkeypatch):
     """A row overdue past the staleness window must EXPIRE (cancelled reason
     "stale"), not fire a weeks-late "just checking in" -- guards the backlog
     the moment dispatch opens after an outage."""
-    monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "true")
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")
     _u, _ev, p = _seed(db)
     row = _stage_due(db, p, hours_ago=9 * 24)   # 9 days overdue > 7-day window
     result = run_followups(db=db, _=None)

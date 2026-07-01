@@ -313,7 +313,11 @@ def _followup_loop() -> None:
                 db = SessionLocal()
                 try:
                     res = dispatch_due_followups(db)
-                    if res.get("due"):
+                    # Held rows sit in the queue for days by design (waiting on
+                    # the autonomy gate / manual send): only log a pass that
+                    # actually CHANGED something, or every minute is noise.
+                    if (res.get("sent") or res.get("failed")
+                            or res.get("cancelled")):
                         print(f"[followup.dispatch] {res}", flush=True)
                 finally:
                     db.close()

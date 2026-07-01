@@ -64,22 +64,23 @@ def automated_send_enabled(channel: str = "") -> bool:
 
 
 def _followups_master_on() -> bool:
-    """Env `SURPLUS_AUTO_FOLLOWUPS`, default FALSE. SEPARATE kill switch for the
-    automated FOLLOW-UP paths only (post-accept auto-DM + follow-up cron)."""
+    """Env `SURPLUS_AUTO_FOLLOWUPS`, default FALSE. Kill switch for the ONE
+    built-in automated send: the post-accept first follow-up (the DM that fires
+    when an invite is accepted). The later nudge is NOT gated here anymore --
+    it is agent autonomy and shares the general-send master with auto-reply."""
     return (os.environ.get("SURPLUS_AUTO_FOLLOWUPS", "false").strip().lower()
             in ("true", "1", "yes", "on"))
 
 
 def follow_up_send_enabled(channel: str = "") -> bool:
-    """Should an automated FOLLOW-UP on THIS channel fire?
+    """Should the BUILT-IN post-accept first follow-up fire on THIS channel?
 
-    DECOUPLED from the general-send master (`automated_send_enabled`): keyed to its
-    own `SURPLUS_AUTO_FOLLOWUPS` switch so the structured follow-up paths can run
-    while general agent-initiated sends stay off / behind the ask-mode guardrail.
-    Reuses the same channel allowlist. Still layered ABOVE the per-host
-    `auto_followups_enabled` toggle and (for post-accept) the provider's
-    `auto_dm_after_accept` gate -- an automated follow-up needs the master here AND
-    the per-host toggle. MANUAL UI sends never pass through here."""
+    Keyed to `SURPLUS_AUTO_FOLLOWUPS` (separate from the general-send master)
+    because this one send is pre-authorized by the host's own action (they sent
+    the invite) and is a built-in product behavior, on for everyone. The later
+    nudge does NOT pass through here -- it shares `automated_send_enabled` with
+    the AI auto-reply (agent autonomy, user-decided). Reuses the same channel
+    allowlist. MANUAL UI sends never pass through here."""
     if not _followups_master_on():
         return False
     allow = _automated_channels()
