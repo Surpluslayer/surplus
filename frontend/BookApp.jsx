@@ -20,7 +20,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Sparkles, ArrowUp, ArrowRight, Star, LayoutDashboard, Plus, BookText, Loader2, X,
   ChevronLeft, ChevronRight, ChevronDown, MapPin, QrCode, Link2, Search, Send,
-  Mail, Calendar, Plug, CreditCard, LogOut, CheckCircle2, Mic,
+  Mail, Calendar, Plug, CreditCard, LogOut, CheckCircle2, Mic, KeyRound,
 } from "lucide-react";
 import { api } from "./lib/api.js";
 import { isNativeApp, nativeLinkedInLogin } from "./lib/nativeAuth.js";
@@ -680,11 +680,85 @@ function AccountScreen({ user, onBack, onConnections }) {
         </div>
       </div>
 
+      <PasswordSection user={user} />
+
       <div className="bk-set-group">
         <button className="bk-set-row bk-set-row--danger" onClick={signOut}>
           <span className="bk-set-lead"><LogOut size={19} /><span className="bk-set-lbl">Sign out</span></span>
         </button>
       </div>
+    </div>
+  );
+}
+
+// Set or change the account password. For an OAuth-only account (Google/
+// LinkedIn) this adds email+password as an ALTERNATIVE sign-in method; for an
+// account that already has one it changes it (current password required).
+function PasswordSection({ user }) {
+  const has = !!user?.has_password;
+  const [open, setOpen] = useState(false);
+  const [cur, setCur] = useState("");
+  const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const save = async (e) => {
+    e.preventDefault();
+    setBusy(true); setMsg(null);
+    try {
+      await api.setPassword(pw, has ? cur : undefined);
+      setMsg({ ok: true, text: has
+        ? "Password changed."
+        : "Password set — you can now sign in with email + password too." });
+      setPw(""); setCur("");
+    } catch (err) {
+      setMsg({ ok: false, text: err.message || "Couldn't save password." });
+    } finally { setBusy(false); }
+  };
+
+  const inp = { font: "inherit", fontSize: 14, padding: "9px 11px", borderRadius: 10,
+    border: ".5px solid var(--line)", background: "var(--surface)", color: "var(--ink)" };
+
+  return (
+    <div className="bk-set-group">
+      {!open ? (
+        <button className="bk-set-row" onClick={() => setOpen(true)}>
+          <span className="bk-set-lead"><KeyRound size={19} />
+            <span className="bk-set-lbl">{has ? "Change password" : "Set a password"}</span></span>
+          <span className="bk-set-right"><ChevronRight size={17} className="bk-chev" /></span>
+        </button>
+      ) : (
+        <form onSubmit={save} style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 9 }}>
+          <span className="bk-set-lbl" style={{ fontWeight: 600 }}>{has ? "Change password" : "Set a password"}</span>
+          {!has && (
+            <p style={{ fontSize: 12.5, color: "var(--ink-dim)", margin: 0, lineHeight: 1.45 }}>
+              Add a password so you can sign in with email + password too — not just Google.
+            </p>
+          )}
+          {has && (
+            <input type="password" placeholder="Current password" value={cur}
+              onChange={(e) => setCur(e.target.value)} autoComplete="current-password" style={inp} />
+          )}
+          <input type="password" placeholder="New password (8+ characters)" value={pw}
+            onChange={(e) => setPw(e.target.value)} autoComplete="new-password" style={inp} />
+          {msg && (
+            <p style={{ fontSize: 12.5, margin: 0, color: msg.ok ? "#1f9d62" : "#c0433d" }}>{msg.text}</p>
+          )}
+          <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
+            <button type="button" onClick={() => { setOpen(false); setMsg(null); }}
+              style={{ font: "inherit", fontSize: 13, fontWeight: 600, border: ".5px solid var(--line)",
+                borderRadius: 999, padding: "8px 16px", background: "transparent", color: "var(--ink-dim)" }}>
+              Cancel
+            </button>
+            <button type="submit" disabled={busy || pw.length < 8}
+              style={{ font: "inherit", fontSize: 13, fontWeight: 600, border: 0, borderRadius: 999,
+                padding: "8px 16px", background: "#2f6df6", color: "#fff", flex: 1,
+                opacity: (busy || pw.length < 8) ? 0.6 : 1 }}>
+              {busy ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }

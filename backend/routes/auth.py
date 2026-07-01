@@ -1324,6 +1324,10 @@ def me(user: User = Depends(current_user),
         "id": user.id,
         "name": user.name,
         "email": user.email,
+        # Whether an email+password credential is set. False for OAuth-only
+        # accounts (Google/LinkedIn) — the account settings UI shows "Set a
+        # password" vs "Change password" off this.
+        "has_password": bool(getattr(user, "password_hash", None)),
         "headline": user.headline,
         "avatar_url": user.avatar_url,
         "linkedin_public_id": user.linkedin_public_id,

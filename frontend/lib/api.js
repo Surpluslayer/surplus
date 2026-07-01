@@ -417,6 +417,14 @@ export const api = {
   // auth : Sign in with LinkedIn (via Unipile hosted-auth)
   // me() returns the current user, or throws 401 (caller treats as signed-out)
   me: () => request("/api/auth/me"),
+  // Set (or change) a password on the signed-in account, so an OAuth account
+  // can also sign in with email + password. current_password required to change
+  // an existing one; omit it when setting the first password on an OAuth account.
+  setPassword: (password, current_password) =>
+    request("/api/auth/set-password", {
+      method: "POST",
+      body: JSON.stringify({ password, current_password }),
+    }),
   // returns { url } : frontend sets window.location = url to begin the flow
   startLinkedinAuth: () => request("/api/auth/linkedin/start", { method: "POST" }),
   // Native app variant: callback deep-links the session token back to the app

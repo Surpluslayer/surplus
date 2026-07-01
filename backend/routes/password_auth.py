@@ -12,12 +12,14 @@ Email verification + password reset live in routes/account_email (Resend-backed)
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session as DbSession
 
-from ..auth import (create_session, hash_password,
+from ..auth import (create_session, current_user, hash_password,
                     normalize_client, set_session_cookie, verify_password)
 from ..db import get_db
 from ..models import User
@@ -110,3 +112,30 @@ def login(body: LoginBody, request: Request, db: DbSession = Depends(get_db)) ->
     return _session_response(db, user, normalize_client(body.client), {
         "ok": True, "user_id": user.id, "name": user.name, "email": user.email},
         host=request.headers.get("host"))
+
+
+class SetPasswordBody(BaseModel):
+    password: str
+    current_password: Optional[str] = None
+
+
+@router.post("/set-password")
+def set_password(
+    body: SetPasswordBody,
+    db: DbSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> JSONResponse:
+    """Set (or change) the signed-in user's password, so a Google/LinkedIn
+    account can ALSO sign in with email + password. Safe because the caller is
+    already authenticated (this is the account-settings path, NOT signup —
+    which is exactly why we can add a password here without takeover risk).
+    If a password already exists, the current one is required to change it;
+    an OAuth-only account (no password yet) can set one directly."""
+    pw = body.password or ""
+    if not (_MIN_PW <= len(pw) <= _MAX_PW):
+        raise HTTPException(400, f"password must be {_MIN_PW}-{_MAX_PW} characters")
+    if user.password_hash and not verify_password(body.current_password or "", user.password_hash):
+        raise HTTPException(400, "current password is incorrect")
+    user.password_hash = hash_password(pw)
+    db.commit()
+    return JSONResponse({"ok": True})
