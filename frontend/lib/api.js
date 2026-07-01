@@ -408,8 +408,8 @@ export const api = {
     }),
   // Schedule a chat-drafted follow-up (Gmail-style). `sendAt` is an ISO string
   // for a future fire time, or null to send now. Returns { status: "sent" |
-  // "scheduled", send_at?, auto_send_enabled?, ... }. The auto-send toggle still
-  // gates whether a SCHEDULED row auto-fires; send-now always sends.
+  // "scheduled", send_at?, auto_send_enabled?, ... }. A SCHEDULED row only
+  // auto-fires when server-side send automation is on; send-now always sends.
   scheduleContactFollowup: (contactId, message, sendAt = null) =>
     request(`/api/relationships/contacts/${contactId}/schedule`, {
       method: "POST",

@@ -225,10 +225,11 @@ def dispatch_due_followups(db: Session) -> dict:
                               "reason": "stale"})
             continue
 
-        # Auto-send gate : the draft is staged regardless, but the cron only
-        # dispatches it when the host turned auto-send ON. Off -> leave it
-        # `scheduled` so it waits for a manual send-now. Don't cancel : the
-        # host may flip the toggle on, or send it themselves, later.
+        # Auto-send gate : the draft is staged regardless, but the dispatcher
+        # only fires it when the general-send master (SURPLUS_AUTOMATED_SENDS +
+        # channel allowlist) is on. Off -> leave it `scheduled` so it waits for
+        # a manual send-now. Don't cancel : automation may come on, or the host
+        # may send it themselves, later.
         if not _auto_send_enabled(prospect, (getattr(row, "channel", "") or "linkedin")):
             held.append({"followup_id": row.id, "prospect_id": prospect.id})
             continue

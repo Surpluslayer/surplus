@@ -236,9 +236,10 @@ def stage_followup(
     """Stage a context-drafted follow-up for `prospect` at a suggested time.
 
     Always drafts + stages (a follow-up is created for every first DM) : the
-    draft is the product. Whether it actually *sends* is the host's call,
-    gated at dispatch by User.auto_followups_enabled (off -> the row waits in
-    the queue for a manual send-now; on -> the cron sends it at send_at).
+    draft is the product. Whether it actually *sends* is gated at dispatch by
+    the general-send master (SURPLUS_AUTOMATED_SENDS + channel allowlist,
+    shared with the AI auto-reply): off -> the row waits in the queue for a
+    manual send-now; on -> the dispatcher sends it at send_at.
 
     Idempotent: returns the existing pending row untouched if one already
     exists (so re-sending a first DM, or a retried webhook, can't stack

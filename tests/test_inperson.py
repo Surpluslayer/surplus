@@ -521,8 +521,7 @@ def test_channel_allowlist_routes_auto_fire(monkeypatch):
 
 def test_master_flag_off_blocks_auto_dm(db, user, monkeypatch):
     """FOLLOW-UP kill switch: with SURPLUS_AUTO_FOLLOWUPS=false the post-accept
-    auto-DM does NOT fire, even though the provider's own gate + per-host toggle
-    are on."""
+    auto-DM does NOT fire, even though the provider's own gate is on."""
     monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")
     monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "false")
     from backend.providers.unipile import UnipileProvider

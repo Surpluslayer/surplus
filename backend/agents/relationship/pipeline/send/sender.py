@@ -50,10 +50,11 @@ def automated_send_enabled(channel: str = "") -> bool:
     Auto-fire is keyed to the TRANSPORT the message arrived/goes on (linkedin /
     email / whatsapp): the master switch must be on AND this channel must be in the
     auto-fire allowlist; channels not allowed STAGE a draft for review instead.
-    Allowlist unset -> all channels auto-fire when master is on. Gates every
-    fully-automated path (post-accept auto-DM, follow-up cron, AI auto-reply) and
-    is layered ABOVE the per-target gates (`auto_dm_after_accept`,
-    `auto_followups_enabled`) -- an automated send needs BOTH. MANUAL UI sends
+    Allowlist unset -> all channels auto-fire when master is on. Gates the
+    agent-autonomy sends (the later nudge, AI auto-reply); the post-accept first
+    follow-up has its own master (`follow_up_send_enabled`). Layered ABOVE the
+    provider's per-target gate (`auto_dm_after_accept`) where one applies --
+    an automated send needs BOTH. MANUAL UI sends
     (send-now, approve-a-draft) never pass through here, so they always work."""
     if not _automation_master_on():
         return False

@@ -778,17 +778,18 @@ def relationship_chat(
     The host types an ask; we steer the same auditable survey-and-propose loop
     with it and hand back (a) a one-paragraph natural-language reply and (b) the
     staged proposals (each a contact + drafted follow-up + rationale). NOTHING
-    is sent here — the host approves a draft separately via the followup route,
-    which is where the auto-send toggle is honored. Owner-scoped."""
+    is sent here: the host approves a draft separately via the followup route,
+    which is where the send-vs-draft decision is made. Owner-scoped."""
     _enforce_relationship_quota(db, user)
     from ..agents.relationship.pipeline.agent.run import (
         run_relationship_agent_concurrent as _run)
     res = _run(db, user.id, instruction=(body.message or "").strip())
     _record_relationship_usage(db, user, res)
     out = res.as_dict()
-    # Surface the host's auto-send preference so the chat can label the approve
+    # Surface the send-on-approve preference so the chat can label the approve
     # button correctly ("Send now" when on, "Save draft" when off) without a
-    # second round-trip.
+    # second round-trip. Reads the LEGACY per-user column (nothing writes it
+    # anymore, so this is False for new users -> approve stages a draft).
     out["auto_send_enabled"] = bool(getattr(user, "auto_followups_enabled", False))
     return out
 
@@ -933,7 +934,9 @@ def send_contact_followup(
 ):
     """Act on an approved follow-up draft for one owned contact.
 
-    Behavior is gated by the host's auto-send toggle (User.auto_followups_enabled):
+    Behavior is gated by the LEGACY per-user column User.auto_followups_enabled
+    (its settings routes + UI toggle are gone, so it is OFF for everyone unless
+    set directly in the DB):
       ON  -> send immediately through the contact's most-recent prospect via the
              shared send_and_log path (DRY_RUN / paywall enforced inside the
              provider, exactly like the follow-up cron). Returns status='sent'.
@@ -1013,10 +1016,11 @@ def schedule_contact_followup(
       send_at in the future    -> upsert the prospect's pending ScheduledFollowup
                                    to body + send_at, status='scheduled'.
 
-    The auto-send toggle (User.auto_followups_enabled) still gates a SCHEDULED
-    row: the dispatch cron only auto-fires it when auto-send is ON; OFF leaves it
-    queued for a manual send-now. We surface `auto_send_enabled` so the card can
-    say 'will send automatically' vs 'queued for your confirmation'. An immediate
+    A SCHEDULED row is auto-fired by the dispatcher only when the general-send
+    master (SURPLUS_AUTOMATED_SENDS + channel allowlist) is on; off leaves it
+    queued for a manual send-now. We surface `auto_send_enabled` (the legacy
+    per-user column) so the card can say 'will send automatically' vs 'queued
+    for your confirmation'. An immediate
     'send now' is an explicit host action and always sends. Owner-scoped."""
     from ..agents.relationship.followup_scheduler import pending_followup
 

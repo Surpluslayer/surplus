@@ -1033,12 +1033,12 @@ def _migrate_event_user_id() -> None:
 
 
 def _migrate_user_auto_followups() -> None:
-    """Add users.auto_followups_enabled (BOOLEAN, default False) : the per-user
-    opt-in for the Gmail-style scheduled follow-up feature.
+    """Add users.auto_followups_enabled (BOOLEAN, default False).
 
-    Defaulted to 0/false so every existing user stays opted OUT until they
-    explicitly turn it on : sending a first DM never auto-stages a follow-up
-    for a user who hasn't asked for it."""
+    LEGACY: the column no longer gates staging or dispatch (env gates
+    SURPLUS_AUTO_FOLLOWUPS / SURPLUS_AUTOMATED_SENDS own that now) and its
+    settings routes + UI toggle are gone. The migration stays so older DBs
+    keep a consistent schema with models.User."""
     from sqlalchemy import inspect, text
     insp = inspect(ENGINE)
     if "users" not in insp.get_table_names():
