@@ -260,9 +260,26 @@ def _run_once() -> dict:
     return _LAST_TICK
 
 
+def _initial_delay_seconds() -> int:
+    """How long a FRESH container waits before its first tick. Must exceed the
+    Railway healthcheck retry window (300s in railway.json): the sweeps run in
+    this process, and a heavy pass (gathering: per-user LinkedIn + email sync)
+    during boot starves /api/health on the single worker. That exact failure
+    took down deploy 247f9eb2 on 2026-07-01 (4m51s of "service unavailable"
+    while the first tick churned). Steady-state cadence is unaffected: claims
+    are shared, so an already-running replica keeps ticking on schedule."""
+    raw = (os.environ.get("UPDATES_SCHEDULER_INITIAL_DELAY_SECONDS") or "").strip()
+    try:
+        return max(0, int(raw)) if raw else 420
+    except ValueError:
+        return 420
+
+
 def _loop() -> None:
-    # Small initial delay so startup/migrations settle before the first claim.
-    time.sleep(min(60, _tick_seconds()))
+    # Sit out the deploy healthcheck window before the first claim (see
+    # _initial_delay_seconds); a new container must be HEALTHY before it is
+    # allowed to spend CPU on sweeps.
+    time.sleep(_initial_delay_seconds())
     while True:
         try:
             run_claimed_sweep()
