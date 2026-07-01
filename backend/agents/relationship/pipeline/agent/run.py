@@ -116,6 +116,60 @@ def _reconcile_summary(drafted: list[str], held: list[dict]) -> str:
     return f"{lead} {tail}"
 
 
+# Keyword cues that the natural next move with this person is to GET ON A CALL /
+# BOOK TIME (vs send a resource, make an intro, etc.). Used to decide whether a
+# draft should carry a scheduling link / proposed time + a booking payload. Loose
+# on purpose: the slot is only PROPOSED into the draft, and nothing books until the
+# host (or auto-send) actually sends the draft.
+_MEETING_CUES = (
+    "meet", "meeting", "call", "chat", "coffee", "schedule", "scheduling",
+    "calendar", "book a time", "grab time", "find time", "sync", "catch up",
+    "hop on", "zoom", "get on a call", "jump on", "15 min", "30 min", "quick call",
+)
+
+
+def _wants_meeting(*texts: str) -> bool:
+    """True when any of the provided strings (angle / natural_action / open-loop
+    evidence) signals that booking time is the natural next step."""
+    low = " ".join(t for t in texts if t).lower()
+    return any(cue in low for cue in _MEETING_CUES)
+
+
+def _humanize_slot(start_iso: str) -> str:
+    """An ISO slot -> a friendly local phrasing like 'Tuesday at 10:00 AM'. Falls
+    back to '' on a bad value (so the suffix is just dropped)."""
+    s = (start_iso or "").strip()
+    if not s:
+        return ""
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return ""
+    hour = dt.strftime("%I").lstrip("0") or "12"
+    return f"{dt.strftime('%A')} at {hour}:{dt.strftime('%M %p')}"
+
+
+def _meeting_body_suffix(slot: dict) -> str:
+    """The short scheduling line to append to a meeting-proposal draft body, given
+    the payload from booking.propose_meeting_slot. Calendly -> the self-serve link;
+    propose_time -> a human-readable proposed time the contact can confirm. Empty
+    for mode 'none' (the draft just asks for their availability in prose). No em
+    dashes (hard rule); the canonical scrubber runs over the final body anyway."""
+    mode = (slot or {}).get("mode")
+    if mode == "calendly":
+        url = (slot.get("scheduling_url") or "").strip()
+        return f"\n\nHere's my scheduling link if it's easier: {url}" if url else ""
+    if mode == "propose_time":
+        when = _humanize_slot((slot.get("start_iso") or "").strip())
+        if not when:
+            return ""
+        return (f"\n\nWould {when} work for a quick call? I'll send a calendar "
+                "invite to lock it in.")
+    return ""
+
+
 _TOOLS = [
     {
         "name": "get_contact",
@@ -188,6 +242,12 @@ class Proposal:
     contact_name: str
     text: str            # the next_step or the message body
     rationale: str = ""
+    # Structured booking intent for a MEETING-PROPOSAL draft. None for an ordinary
+    # follow-up. When set, the draft text already contains the Calendly link or the
+    # proposed time, and SENDING this draft fires the actual calendar booking (see
+    # integrations.booking.propose_meeting_slot + send.fire_booking_on_send). The
+    # host's chat surface threads this back as `booking_payload` on the schedule call.
+    booking_payload: Optional[dict] = None
 
 
 @dataclass
@@ -210,18 +270,12 @@ class RelationshipAgentResult:
             "proposals": [
                 {"kind": p.kind, "contact_id": p.contact_id,
                  "contact_name": p.contact_name, "text": p.text,
-                 "rationale": p.rationale}
+                 "rationale": p.rationale,
+                 **({"booking_payload": p.booking_payload}
+                    if p.booking_payload else {})}
                 for p in self.proposals
             ],
         }
-
-
-# Timeline source_types that carry actual host<->contact conversation (the
-# thread a follow-up should continue), in contrast to derived/system rows
-# (conversion, next_step, profile updates). Implemented in contact_context;
-# kept here as an alias so existing imports keep working.
-_MESSAGE_SOURCE_TYPES = {"in_person_capture", "manual_note", "linkedin_outreach",
-                         "email"}
 
 
 def _thread_from_timeline(timeline: list[dict]) -> list[dict]:
@@ -1144,17 +1198,40 @@ def run_relationship_agent_concurrent(
 
     # ── Phase 1.5 : materialise context SEQUENTIALLY (DB session is not
     # thread-safe, so all reads happen here, before any fan-out) ────────────
+    # The host User row, for the (DB-touching) availability lookup. Done HERE on the
+    # main thread, never inside the fan-out (the SQLAlchemy session isn't thread-safe).
+    from ..... import models as _models
+    host_user = db.get(_models.User, user_id)
+
     jobs: list[dict] = []
     for sel in clean:
         c = by_id[sel["contact_id"]]
         gathered = gather_contact_context(
             db, user_id, c, channel="linkedin", merge_email=True)
+        ctx = as_agent_context(gathered)
+        # If a meeting is the plausible next move for this person, precompute HOW to
+        # offer it (Calendly link or an open slot) so the threaded draft can weave it
+        # into the body and carry the booking payload. The slot itself isn't booked:
+        # SENDING the draft is what fires it. Best-effort; a failure just drops the
+        # scheduling line so the draft is an ordinary follow-up.
+        brief = _context_brief(sel, ctx)
+        meeting_slot = None
+        if host_user is not None and _wants_meeting(
+                sel.get("angle") or "", brief.get("natural_action") or "",
+                brief.get("desired_next_step") or "", steer or ""):
+            try:
+                from .....integrations.booking import propose_meeting_slot
+                meeting_slot = propose_meeting_slot(db, host_user, duration_min=30)
+            except Exception:  # noqa: BLE001
+                meeting_slot = None
         jobs.append({
             "sel": sel,
-            "ctx": as_agent_context(gathered),
+            "ctx": ctx,
             "compose_ctx": as_composer_context(gathered),
             "name": _name_of(sel["contact_id"]),
             "directive": steer,
+            "contact_id": sel["contact_id"],
+            "meeting_slot": meeting_slot,
         })
 
     # Nominees a drafter declined via skip_contact (with the per-person reason),
@@ -1291,10 +1368,22 @@ def run_relationship_agent_concurrent(
                 )
                 body = (msg or {}).get("body") or ""
                 if body:
+                    # Meeting-proposal coupling: when a call is the move and we
+                    # precomputed how to offer it, weave the link / proposed time
+                    # into the body and carry the booking payload so SENDING this
+                    # draft fires the calendar event + invite. Nothing books here.
+                    slot = job.get("meeting_slot")
+                    payload = None
+                    if slot and slot.get("mode") in ("calendly", "propose_time"):
+                        suffix = _meeting_body_suffix(slot)
+                        if suffix:
+                            body = (body.rstrip() + suffix)
+                        payload = {**slot, "contact_id": cid}
                     _stage(Proposal(
                         kind="draft_message", contact_id=cid, contact_name=name,
-                        text=body,
-                        rationale=_strip_dashes(inp.get("rationale") or "")))
+                        text=_strip_dashes(body),
+                        rationale=_strip_dashes(inp.get("rationale") or ""),
+                        booking_payload=payload))
 
     async def _fan_out() -> None:
         sem = asyncio.Semaphore(max(1, concurrency))

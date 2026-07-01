@@ -410,6 +410,80 @@ class UnipileProvider(LinkedInProvider):
             payload=payload,
         )
 
+    # ---- send_whatsapp (the WhatsApp cloud channel) --------------------
+
+    def send_whatsapp(
+        self,
+        *,
+        whatsapp_account_id: str,
+        to_phone: str,
+        body: str,
+        prospect_id: int = 0,
+    ) -> ProviderResult:
+        """Send one WhatsApp message from a user's connected WhatsApp account
+        (a CLOUD Unipile seat -- NOT the workspace LinkedIn account, hence the
+        explicit account id argument, same shape as send_email).
+
+        WhatsApp rides Unipile's unified messaging API: POST /api/v1/chats with
+        the recipient's PHONE as the attendee id (Unipile finds-or-starts the
+        1:1 chat by phone for WhatsApp). Same _post discipline as the LinkedIn
+        DM / email sends: 429s back off and an ambiguous timeout surfaces as
+        state="unconfirmed" (it may have landed -- block the blind retry).
+
+        UNIPILE_WHATSAPP_LIVE=true makes WHATSAPP sends real even under
+        UNIPILE_DRY_RUN -- a narrow escape hatch for testing this channel on
+        staging without un-dry-running LinkedIn sends too (mirrors
+        UNIPILE_EMAIL_LIVE)."""
+        wa_live = _env_bool("UNIPILE_WHATSAPP_LIVE", False)
+        payload = {
+            "account_id": whatsapp_account_id,
+            "text": body,
+            "attendees_ids": [to_phone],
+        }
+        if self._dry_run and not wa_live:
+            return ProviderResult(
+                prospect_id=prospect_id,
+                state="dry_run_queued",
+                provider=self.name,
+                provider_lead_id=f"dry_{uuid.uuid4().hex[:12]}",
+                dry_run=True,
+                payload=payload,
+            )
+
+        if not whatsapp_account_id:
+            return ProviderResult(
+                prospect_id=prospect_id, state="failed", provider=self.name,
+                provider_lead_id=None, dry_run=False, payload={},
+                error="no connected whatsapp account (whatsapp_account_id missing)")
+        if not (to_phone or "").strip():
+            return ProviderResult(
+                prospect_id=prospect_id, state="failed", provider=self.name,
+                provider_lead_id=None, dry_run=False, payload=payload,
+                error="no recipient phone for whatsapp send")
+
+        try:
+            data = self._post("/api/v1/chats", payload)
+        except AmbiguousSendError as exc:
+            return ProviderResult(
+                prospect_id=prospect_id, state="unconfirmed",
+                provider=self.name, provider_lead_id=None, dry_run=False,
+                payload=payload, error=f"send_whatsapp unconfirmed: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            return ProviderResult(
+                prospect_id=prospect_id, state="failed", provider=self.name,
+                provider_lead_id=None, dry_run=False, payload=payload,
+                error=f"send_whatsapp failed: {exc}")
+
+        chat_id = (data or {}).get("chat_id") or (data or {}).get("id")
+        return ProviderResult(
+            prospect_id=prospect_id,
+            state="message_sent",
+            provider=self.name,
+            provider_lead_id=str(chat_id) if chat_id else None,
+            dry_run=False,
+            payload=payload,
+        )
+
     # ---- is_relation (cold vs warm routing) ----------------------------
 
     def is_relation(self, linkedin_url: str) -> bool:

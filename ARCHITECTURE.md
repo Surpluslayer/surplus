@@ -20,6 +20,29 @@ Two product surfaces share the codebase:
 Host header picks the shell: `event.*` → `inperson.html` → `main-inperson.jsx` →
 **BookApp**; apex → `index.html` → `main.jsx` → **App**.
 
+- **Marketing landing** (`join.surpluslayer.com`) - the public "Try now"
+  page. Ported in-app from the old standalone `roi-engine` FastAPI
+  service (which 502'd whenever its Postgres blipped at startup). It is a
+  self-contained static `backend/landing/join.html` plus assets served at
+  `/landing-assets/*`, with **zero DB dependency** (pure file serve). Host
+  routing: any `join.*` host serves the landing instead of the React SPA;
+  `event.*` and `www`/apex are unchanged. A host-independent preview lives at
+  `/landing` (alias `/join`) for staging verification. The hero "Try now" CTA
+  points at `https://event.surpluslayer.com/?signup` (the shared sign-up
+  target, below); the secondary email-capture posts to a DB-free
+  `/api/join/demo-request` (validate + log, no persistence). See `main.py`
+  `_is_landing_host` / `_landing_response`.
+
+- **Sign-up entry (`?signup`)** - the app leads with sign-up, not LinkedIn.
+  Every "Sign up now" CTA (BookApp demo banner / draft / tour, CaptureShared
+  send-gate, TriageApp, App.jsx sign-in modal) and the landing "Try now" button
+  navigate to `/?signup` on their host. Both shells read this param at the app
+  root and render `<AuthOptions defaultMode="signup">` ("Create account" with
+  email / Google / Microsoft) over any state - signed-out OR demo - so a demo
+  visitor can convert without a LinkedIn OAuth bounce. A real signed-in
+  (non-demo) user who hits `?signup` falls through to their app. LinkedIn is no
+  longer a sign-in door; it stays a CONNECT data-source option after sign-up.
+
 ## 1b. The two sides (read this to know which half a file belongs to)
 
 The codebase is two product lines sharing infra. Every backend file belongs to
@@ -55,8 +78,9 @@ split is visible at the entrypoint.
   build frontend with Node, serve via uvicorn). Env: `production` (branch `main`,
   `event.surpluslayer.com`) + `staging` (branch `demo`). 2 replicas. Cloudflare in front.
 - **Modal** (`modal_jobs.py`, app `surplus-jobs`) runs off-box batch + scheduled
-  jobs when `USE_MODAL=1` (triage scoring, prospecting, CRM refresh, the hourly
-  updates sweep). Secrets: `surplus-jobs` (DB/Anthropic/etc) + `surplus-brightdata`.
+  jobs when `USE_MODAL=1` (triage scoring, prospecting, CRM refresh, the
+  on-connect WhatsApp first sync, the hourly updates sweep). Secrets:
+  `surplus-jobs` (DB/Anthropic/etc) + `surplus-brightdata`.
 - **Postgres** (Railway) in prod; SQLite (`backend/data/surplus.db`) for local dev.
   Schema migrations are inline idempotent `_migrate_*()` functions in `db.py`
   (no Alembic).
@@ -89,7 +113,7 @@ scheduler thread.
 - `demo_seed.py` — demo workspace bootstrap. `seed.py` — dev-only CLI (`python -m backend.seed`), not imported by the app.
 
 ### Routes (`backend/routes/`) — all mounted in `main.py`
-- `auth.py` — LinkedIn/email sign-in (Unipile), session, `/api/me`, onboarding, **auto-import on connect** (background worker seeds the Book from genuine DM conversations AND auto-syncs the host's voice from their own sent messages via `live_enrich.sync_host_voice_on_connect` — same ban-safe own-account read, idempotent).
+- `auth.py` — LinkedIn/email sign-in (Unipile), session, `/api/me`, onboarding, **auto-import on connect** (background worker seeds the Book from genuine DM conversations AND auto-syncs the host's voice from their own sent messages via `live_enrich.sync_host_voice_on_connect` — same ban-safe own-account read, idempotent). The WhatsApp connect webhook dispatches its first conversation sync DURABLY off the request lifecycle via `jobs.dispatch_whatsapp_first_sync` (Modal `run_whatsapp_first_sync` when `USE_MODAL`, else a daemon thread that owns its own DB session): minutes of Unipile I/O can't run in the webhook thread or it gets killed mid-sync. `whatsapp_sync` fetches each chat's attendees+messages concurrently (bounded `ThreadPoolExecutor`, read-only HTTP) then ingests single-threaded; idempotent by message id.
 - `book.py` — the BookApp surface: `/api/book/today` feed, `/draft`(+stream), `/ask`(+stream), relationship detail, `run-updates` sweep, `_updates-status` diagnostics, `_draft-preview` (admin: composes drafts across a user's top contacts + the "natural move" reasoning, to inspect messaging quality — read-only, bounded).
 - `relationships.py` — contact spine read API, star/VIP, email threads, **import-conversations**, CRM refresh, updates feed.
 - `demo.py` — token-gated demo entry + public walkthrough.
@@ -116,7 +140,7 @@ extraction/matching), `exa.py` (Exa search), `jsonx` use.
 
   The host's free-form **ask-bar instruction** threads through as a shared `directive` (`compose_from_context`/`compose_batch`/`stream_from_context`): `/ask`+`/ask/stream` pass the typed query so one intent ("mention the webinar Thursday") lands in every draft, while the per-person `reason` + facts keep each message differentiated rather than a pasted line.
 - `messaging_eval.py` — repeatable quality eval for the composer (messaging is the crux). A fixed scenario set (voiced/no-voice, recent update, open loop, live thread, stale, formal, cold) → real drafts → deterministic gates (no em dash / concise / not-generic) + an LLM judge (voice_match, specificity, correct_intent, natural, 1-5). `python -m backend.agents.messaging_eval [--runs N] [--dump out.json]` prints a per-case scorecard; `--pairwise base.json new.json` runs a position-randomized head-to-head judge (lower-variance than the absolute 1-5 means, which are ceiling-limited). Run before/after any prompt or context change to catch regressions — dump both, then pairwise. Baseline ~voice 4.2 / spec 3.7 / intent 4.5 / natural 4.6, gates clean; the 4-stage pipeline holds this at parity (48% pairwise vs the pre-pipeline composer) and turns formal-register adaptation from the known weak spot into a win (4-1).
-- `relationship_agent.py` — propose-only multi-turn CRM agent (the /ask bar).
+- `relationship_agent.py` — propose-only multi-turn CRM agent (the /ask bar). When a call is the move, a `draft_message` also carries a meeting `booking_payload` (scheduling link / proposed time woven into the body); the booking fires only when the draft is SENT (see §6b).
 - `book.py` — BookApp "today" engine: health scoring + update detection + `build_today` feed (drafts surfaced first).
 
 **Outreach/pipeline:** `prospector.py` `scorer.py` `outreach.py` `matcher.py`(+`matcher_lib.py`) `sponsor_matcher.py` `roi.py` `pair_explainer.py`.
@@ -150,6 +174,16 @@ extraction/matching), `exa.py` (Exa search), `jsonx` use.
 4. `apply_profile`/`apply_posts` diff vs baseline (first scrape = silent baseline) → `_emit` an `activity_update`.
 5. `_emit` auto-drafts a follow-up **for important kinds only** (`job_change`, milestone `new_post`) in the host's voice.
 6. `/api/book/today` surfaces draft-bearing updates **first**, with the ready message inline.
+
+## 6b. Meeting booking (a side effect of SENDING a draft)
+
+When a CALL is the natural next step, surplus can book the meeting itself. Booking is **coupled to the draft+send flow**, not a standalone agent action: the agent's draft carries the scheduling offer in its text **and** a structured booking payload, and the actual calendar event fires **when that draft is sent**.
+
+- **Availability** (`integrations/booking.find_open_slot`): reads the host's connected calendar (Google or Outlook, via the same `fetch_calendar_events` the read-sync uses) and returns the earliest open, business-hours, timezone-aware slot over the next ~5 business days. Never double-books. Host tz defaults to `SURPLUS_BOOKING_TZ` (no per-user tz column yet); business hours / lead time are env-tunable (`SURPLUS_BOOKING_START_HOUR` / `_END_HOUR` / `_MIN_LEAD_HOURS`).
+- **Draft-time decision** (`booking.propose_meeting_slot`): Calendly connected -> put the self-serve link in the draft (the link IS the booking); else propose a concrete open slot in the draft text. The relationship agent (`pipeline/agent/run.py`) detects a meeting cue on a `draft_message`, precomputes the slot **on the main thread** (the fan-out can't touch the DB session), appends the link/time to the body, and attaches the payload to the staged `Proposal` (surfaced as `booking_payload`).
+- **Booking action** (`booking.agent_book_meeting`): picks/uses a slot, invites the **contact** at their email (`Contact.email` else a strong `ContactIdentity` of kind `email`), attaches a **Zoom** link when Zoom is connected (else native Meet/Teams), and records a `meeting_booked` `RelationshipInteraction`. **Idempotent** (a live future booking for that contact is returned, never duplicated) and **email-required** (no email -> raises, so the message still sends with just the text/link, no broken attendee-less event).
+- **Send fires it** (`pipeline/send/sender.fire_booking_on_send`): every send path (`/api/relationships/contacts/{id}/schedule` send-now, `/api/followups/{id}/send-now`, and the `run-followups` cron) calls this **after** a clean dispatch. A `propose_time` payload creates the event+invite; a `calendly` payload is a no-op (the link in the body is the booking). A booking miss never fails the message that already went out. The payload rides on `ScheduledFollowup.booking_payload` (new nullable column) for scheduled/cron sends.
+- **The gate** (reuses the auto-send flag, `SURPLUS_AUTOMATED_SENDS`, OFF by default; layered with `User.auto_followups_enabled`): **manual** (default) -> the agent drafts the message with the link/time and stages it; nothing books until the HOST approves/sends, at which point send fires the booking. **automatic** (flag on + auto-followups on) -> the cron auto-sends and auto-books, no approval. No surprise invites for anyone while the flag is off.
 
 ## 7. Conventions
 

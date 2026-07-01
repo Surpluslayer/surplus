@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { Fragment, useState, useEffect } from "react";
 import { ArrowRight, CornerDownRight, Loader2, AlertCircle, Link2, Check, Sparkles, X } from "lucide-react";
 import { api } from "./lib/api.js";
 
@@ -510,7 +510,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
                 </p>
               )}
               {chatLog.map((m, i) => (
-                <React.Fragment key={i}>
+                <Fragment key={i}>
                   <div
                     className={`intake-chat-bubble intake-chat-${m.role}`}
                     style={{
@@ -533,7 +533,7 @@ export default function SharedIntake({ initialProfile, onSubmitted, onError }) {
                       <Check size={12} /> form updated
                     </span>
                   )}
-                </React.Fragment>
+                </Fragment>
               ))}
               {chatBusy && (
                 <div

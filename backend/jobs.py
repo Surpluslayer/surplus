@@ -35,6 +35,72 @@ def use_modal() -> bool:
     return (os.environ.get("USE_MODAL") or "").strip().lower() in {"1", "true", "yes"}
 
 
+# --------------------------------------------------------------------------- #
+# Fire-and-forget detached work : the ONE place that owns the repeated
+# "open a DB session, run a best-effort job, log, close, off the request
+# lifecycle" boilerplate that used to be hand-copied into a `_worker` closure +
+# raw daemon thread at every connect/kick site.
+#
+#   run_detached(fn, *args, prefer_modal=False, **kwargs)
+#
+# `fn(db, *args, **kwargs)` is a TOP-LEVEL callable (importable by dotted path,
+# so the Modal path can resolve it) that receives a fresh Session as its first
+# argument. run_detached opens the session, calls fn, swallows+logs any error,
+# and closes the session -- the caller never blocks and never sees a raise.
+#
+# prefer_modal=True routes to Modal when USE_MODAL is on (and reachable), so the
+# job SURVIVES the web worker recycling mid-deploy (the bug that left connect-time
+# seeds dropped). Modal isn't reachable / USE_MODAL off -> a local daemon thread,
+# same shape as the old hand-rolled one. Best-effort: never raises into the caller.
+# --------------------------------------------------------------------------- #
+def _fn_path(fn) -> str:
+    """Dotted import path 'module.qualname' for a top-level callable, so the
+    Modal worker can re-import and run it."""
+    return f"{fn.__module__}.{fn.__qualname__}"
+
+
+def _resolve_fn(fn_path: str):
+    """Import a callable from its 'module.qualname' dotted path."""
+    import importlib
+    module_name, _, qualname = fn_path.rpartition(".")
+    obj = importlib.import_module(module_name)
+    for part in qualname.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+def execute_detached(fn_path: str, *args, **kwargs) -> None:
+    """Run a detached job body on its OWN DB session: import fn from its dotted
+    path, call fn(db, *args, **kwargs), log any error, close the session. Shared
+    by the local-thread path and the durable Modal path (run_detached_job)."""
+    from .db import SessionLocal
+    fn = _resolve_fn(fn_path)
+    db = SessionLocal()
+    try:
+        fn(db, *args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 : detached work is best-effort
+        print(f"  [jobs.detached] {fn_path} FAILED: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+    finally:
+        db.close()
+
+
+def run_detached(fn, *args, prefer_modal: bool = False, **kwargs) -> str:
+    """Run fn(db, *args, **kwargs) off the request lifecycle. Returns 'modal' or
+    'local'. See module note above. fn MUST be a top-level callable."""
+    fn_path = _fn_path(fn)
+    if prefer_modal and use_modal() and _spawn_modal(
+            "run_detached_job", fn_path, list(args), kwargs):
+        return "modal"
+
+    import threading
+    threading.Thread(
+        target=execute_detached, args=(fn_path, *args), kwargs=kwargs,
+        name=f"detached-{fn.__name__}", daemon=True,
+    ).start()
+    return "local"
+
+
 def _spawn_modal(function_name: str, *args, **kwargs) -> bool:
     """Spawn a Modal function by name. Returns True on success.
 
@@ -276,6 +342,77 @@ def execute_crm_refresh(user_id: int, *, limit: int | None = None) -> dict:
         return {"user_id": user_id, "error": f"{type(exc).__name__}: {exc}"}
     finally:
         db.close()
+
+
+# ─── WhatsApp first-sync (durable on-connect import) ───────────────────────
+# When a user connects WhatsApp, the webhook kicks a FIRST sync that pages the
+# account's chats and ingests each conversation. That sync is minutes of
+# Unipile I/O, so it must NOT live in the request lifecycle (a throwaway thread
+# inside the webhook gets killed when the worker recycles, leaving the user with
+# 0 conversations). This is the durable worker -- own DB session, resolves its
+# own Unipile config, best-effort -- spawned to Modal (run_whatsapp_first_sync)
+# with a local-thread fallback, exactly like execute_crm_refresh / run_crm_refresh.
+#
+# Idempotent: ingest_messages skips by Unipile message id, so a retry/re-run
+# (Modal retries, or the fallback firing after a Modal spawn that also ran) only
+# re-ingests genuinely-new messages. Read-only against WhatsApp.
+
+def _unipile_env() -> tuple[str, str]:
+    """(dsn, api_key) from env, normalized like routes.auth helpers. Empty
+    strings when unset -- the sync then records 'unipile not configured'."""
+    dsn = (os.environ.get("UNIPILE_DSN", "") or "").strip().rstrip("/")
+    if dsn and not dsn.startswith(("http://", "https://")):
+        dsn = f"https://{dsn}"
+    api_key = (os.environ.get("UNIPILE_API_KEY", "") or "").strip()
+    return dsn, api_key
+
+
+def execute_whatsapp_first_sync(user_id: int) -> dict:
+    """Run a user's first WhatsApp conversation sync on its own DB session.
+
+    Returns the sync stats dict. Best-effort and never raises: the sync itself
+    swallows account/HTTP errors into stats['error']. Used by the durable Modal
+    path (run_whatsapp_first_sync) and the local BackgroundTask/thread fallback.
+    """
+    from .db import SessionLocal
+    from . import models
+    from .agents.relationship.whatsapp_sync import sync_whatsapp_contacts
+
+    dsn, api_key = _unipile_env()
+    db = SessionLocal()
+    try:
+        user = db.get(models.User, user_id)
+        if user is None:
+            print(f"  [jobs] whatsapp_first_sync user {user_id} NOT FOUND")
+            return {"user_id": user_id, "error": "user not found"}
+        stats = sync_whatsapp_contacts(db, user, dsn=dsn, api_key=api_key)
+        print(f"  [jobs] whatsapp_first_sync user={user_id}: {stats}")
+        return {"user_id": user_id, **stats}
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [jobs] whatsapp_first_sync user={user_id} FAILED: "
+              f"{type(exc).__name__}: {exc}")
+        return {"user_id": user_id, "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        db.close()
+
+
+def dispatch_whatsapp_first_sync(user_id: int) -> str:
+    """Dispatch a user's first WhatsApp sync DURABLY, off the request lifecycle.
+
+    Modal when USE_MODAL (and reachable) -- the job then survives the webhook
+    returning, autoscales, and gets one retry. Otherwise a daemon thread on this
+    process (same shape as the old in-request thread, but it owns its DB session
+    via execute_whatsapp_first_sync). Returns 'modal' or 'local'. Idempotent, so
+    a belt-and-suspenders double-run is safe. Never raises into the webhook."""
+    if use_modal() and _spawn_modal("run_whatsapp_first_sync", user_id):
+        return "modal"
+
+    import threading
+    threading.Thread(
+        target=execute_whatsapp_first_sync, args=(user_id,),
+        name=f"whatsapp-first-sync-{user_id}", daemon=True,
+    ).start()
+    return "local"
 
 
 def dispatch_job(background_tasks, db, job, **kwargs) -> str:

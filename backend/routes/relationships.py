@@ -24,6 +24,7 @@ from .. import models
 from ..agents.relationship.spine import relationships
 from ..auth import current_user
 from ..db import SessionLocal, get_db
+from ..integrations.unipile_config import unipile_creds
 
 router = APIRouter(prefix="/api/relationships", tags=["relationships"])
 
@@ -93,6 +94,23 @@ def _sendable_prospect(contact: models.Contact) -> models.Prospect:
     linked.sort(key=lambda p: getattr(p, "captured_at", None) or _MIN_DT,
                 reverse=True)
     return linked[0]
+
+
+def _fire_booking_after_send(db, user, contact, booking_payload, text: str):
+    """Fire the calendar booking a meeting-proposal draft carries, AFTER its
+    message sent. Booking is a side effect of SENDING the draft (manual host send
+    here; the cron does the auto-send equivalent). Never raises and never affects
+    the send's success: a booking miss (no contact email, no open slot) just means
+    the message went out without the auto-created invite. Returns the booking
+    result dict to surface on the response, or None when there's no payload."""
+    if not booking_payload:
+        return None
+    from ..agents.relationship.pipeline.send.sender import fire_booking_on_send
+    try:
+        topic = (text or "Quick chat").strip().split("\n", 1)[0][:80] or "Quick chat"
+        return fire_booking_on_send(db, user, contact, booking_payload, topic=topic)
+    except Exception:  # noqa: BLE001 : a booking miss never fails a sent message
+        return None
 
 
 def _owned_prospect(db: Session, prospect_id: int, user: models.User) -> models.Prospect:
@@ -183,16 +201,10 @@ def sync_email(
     a few Unipile pages — so the Integrations tile can await real counts.
     409 until a mailbox is connected. Also auto-kicked once by the email
     connect webhook, so most users never need to call this by hand."""
-    import os
     if not getattr(user, "unipile_email_account_id", None):
         raise HTTPException(409, "no email account connected")
     from ..agents.relationship.email_sync import sync_email_contacts
-    dsn = (os.environ.get("UNIPILE_DSN", "") or "").strip().rstrip("/")
-    if dsn and not dsn.startswith(("http://", "https://")):
-        dsn = f"https://{dsn}"
-    api_key = (os.environ.get("UNIPILE_API_KEY", "") or "").strip()
-    if not (dsn and api_key):
-        raise HTTPException(503, "Unipile not configured")
+    dsn, api_key = _unipile_cfg()
     stats = sync_email_contacts(db, user, dsn=dsn, api_key=api_key)
     return {"ok": stats.get("error") is None, **stats}
 
@@ -305,14 +317,10 @@ def send_contact_email(
 
 
 def _unipile_cfg() -> tuple[str, str]:
-    import os
-    dsn = (os.environ.get("UNIPILE_DSN", "") or "").strip().rstrip("/")
-    if dsn and not dsn.startswith(("http://", "https://")):
-        dsn = f"https://{dsn}"
-    api_key = (os.environ.get("UNIPILE_API_KEY", "") or "").strip()
-    if not (dsn and api_key):
+    creds = unipile_creds()
+    if not creds:
         raise HTTPException(503, "Unipile not configured")
-    return dsn, api_key
+    return creds
 
 
 def _email_channel_ready(user) -> str:
@@ -417,6 +425,17 @@ def set_contact_channel(
     return {"contact_id": contact_id, "preferred_channel": ch}
 
 
+def _kick_vip_scrape(db, contact_id: int) -> None:
+    """Detached one-off scrape for a just-starred contact (run via
+    jobs.run_detached). Top-level so it stays importable; `db` is the
+    run_detached-owned session. Best-effort."""
+    from ..agents.relationship.updates_engine import scrape_contact
+    c = db.get(models.Contact, contact_id)
+    if c is not None:
+        print(f"[star] kicked scrape for contact={contact_id}: "
+              f"{scrape_contact(db, c)}", flush=True)
+
+
 @router.post("/contacts/{contact_id}/star")
 def set_contact_star(
     contact_id: int,
@@ -433,23 +452,8 @@ def set_contact_star(
     # close-monitoring starts now instead of waiting for the next sweep. Best
     # effort, its own session; never blocks or fails the toggle.
     if contact.vip and (contact.linkedin_url or "").strip():
-        import threading
-
-        def _kick(cid: int):
-            from ..db import SessionLocal
-            from ..agents.relationship.updates_engine import scrape_contact
-            sdb = SessionLocal()
-            try:
-                c = sdb.get(models.Contact, cid)
-                if c is not None:
-                    print(f"[star] kicked scrape for contact={cid}: "
-                          f"{scrape_contact(sdb, c)}", flush=True)
-            except Exception as exc:  # noqa: BLE001
-                print(f"[star] kick failed contact={cid}: {exc}", flush=True)
-            finally:
-                sdb.close()
-
-        threading.Thread(target=_kick, args=(contact_id,), daemon=True).start()
+        from ..jobs import run_detached
+        run_detached(_kick_vip_scrape, contact_id)
     return {"contact_id": contact_id, "vip": contact.vip}
 
 
@@ -922,14 +926,9 @@ def send_contact_followup(
                 "prospect_id": prospect.id, "message": text}
 
     # Toggle on: send through the same path the follow-up cron uses.
-    from ..agents.relationship.pipeline.send.sender import send_and_log
-    from ..providers import get_provider
+    from ..agents.relationship.pipeline.send.sender import send_followup
     try:
-        res = send_and_log(
-            db, prospect, text,
-            sent_state="follow_up_sent",
-            fallback_provider=get_provider(),
-        )
+        res = send_followup(db, prospect, text, channel="linkedin")
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"send failed: {type(exc).__name__}: {exc}")
     if getattr(res, "error", None):
@@ -947,6 +946,12 @@ class FollowupScheduleIn(BaseModel):
     message: str
     send_at: Optional[datetime] = None
     channel: str = "linkedin"  # "linkedin" | "email"
+    # Structured booking intent for a MEETING-PROPOSAL draft (see
+    # integrations.booking.propose_meeting_slot). When present, SENDING this draft
+    # also fires the calendar booking: a "propose_time" payload creates the event +
+    # invites the contact; a "calendly" payload is self-serve (the link is in the
+    # body) so it fires nothing. None for an ordinary follow-up.
+    booking_payload: Optional[dict] = None
 
 
 @router.post("/contacts/{contact_id}/schedule")
@@ -987,44 +992,49 @@ def schedule_contact_followup(
     # Send now: no future time chosen. Explicit host action, sends regardless of
     # the auto toggle (same as the followups send-now route).
     want_email = (getattr(body, "channel", "") or "linkedin") == "email"
+    booking_payload = getattr(body, "booking_payload", None)
     if send_at is None or send_at <= now:
+        from ..agents.relationship.pipeline.send.sender import send_followup
         if want_email:
-            from ..agents.relationship.pipeline.send.sender import send_followup_email
             try:
-                res = send_followup_email(db, prospect, text)
+                res = send_followup(db, prospect, text, channel="email")
             except ValueError as exc:
                 raise HTTPException(409, str(exc))
             db.commit()
             if res.error and res.state == "failed":
                 raise HTTPException(502, f"email send failed: {res.error}")
+            booked = _fire_booking_after_send(db, user, contact, booking_payload, text)
             return {"status": "sent", "contact_id": contact_id,
                     "prospect_id": prospect.id, "channel": "email",
-                    "dry_run": res.dry_run}
-        from ..agents.relationship.pipeline.send.sender import send_and_log
-        from ..providers import get_provider
+                    "dry_run": res.dry_run, **({"booking": booked} if booked else {})}
         try:
-            res = send_and_log(db, prospect, text, sent_state="follow_up_sent",
-                               fallback_provider=get_provider())
+            res = send_followup(db, prospect, text, channel="linkedin")
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"send failed: {type(exc).__name__}: {exc}")
         if getattr(res, "error", None):
             raise HTTPException(502, f"send failed: {res.error}")
+        booked = _fire_booking_after_send(db, user, contact, booking_payload, text)
         return {"status": "sent", "contact_id": contact_id,
-                "prospect_id": prospect.id, "message": text}
+                "prospect_id": prospect.id, "message": text,
+                **({"booking": booked} if booked else {})}
 
     # Schedule: upsert the prospect's one pending row (idempotent per prospect,
     # mirroring stage_followup) so re-approving just reschedules instead of
     # stacking duplicates.
+    import json as _json
+    payload_str = _json.dumps(booking_payload) if booking_payload else None
     row = pending_followup(db, prospect.id)
     if row is None:
         row = models.ScheduledFollowup(
             prospect_id=prospect.id, body=text, send_at=send_at,
-            suggested_send_at=send_at, status="scheduled")
+            suggested_send_at=send_at, status="scheduled",
+            booking_payload=payload_str)
         db.add(row)
     else:
         row.body = text
         row.send_at = send_at
         row.updated_at = now
+        row.booking_payload = payload_str
     row.channel = "email" if want_email else "linkedin"
     db.commit()
     db.refresh(row)

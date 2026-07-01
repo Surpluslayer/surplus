@@ -37,6 +37,18 @@ def test_cookie_host_only_when_env_unset(monkeypatch):
     assert all("HttpOnly" in s and "SameSite=lax" in s and "Path=/" in s for s in sets)
 
 
+def test_session_cookie_is_persistent(monkeypatch):
+    # The session cookie MUST carry Max-Age so the browser keeps it across a
+    # close/reopen : without it a session-only cookie is dropped on close and a
+    # returning visitor is forced to re-login every visit. Max-Age must match
+    # SESSION_TTL_DAYS.
+    monkeypatch.delenv("SESSION_COOKIE_DOMAIN", raising=False)
+    r = Response()
+    auth.set_session_cookie(r, "tok")
+    sc = [v.decode() for k, v in r.raw_headers if k == b"set-cookie"][0]
+    assert f"Max-Age={auth.SESSION_TTL_DAYS * 24 * 60 * 60}" in sc
+
+
 def test_cookie_shared_across_subdomains_when_env_set(monkeypatch):
     sets, clear = _set_cookies(monkeypatch, ".surpluslayer.com")
     # Both the session and last-account cookies carry the shared Domain.

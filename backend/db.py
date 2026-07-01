@@ -138,10 +138,12 @@ def init_db() -> None:
         _migrate_user_onboarding,
         _migrate_prospect_vip,
         _migrate_user_email_account,
+        _migrate_user_whatsapp_account,
         _migrate_email_accounts,
         _migrate_prospect_email,
         _migrate_contact_email_thread,
         _migrate_followup_channel,
+        _migrate_followup_booking_payload,
         _migrate_contact_vip,
         _migrate_contact_profile_baselined,
         _migrate_contact_preferred_channel,
@@ -1154,6 +1156,24 @@ def _migrate_followup_channel() -> None:
         ))
 
 
+def _migrate_followup_booking_payload() -> None:
+    """Add scheduled_followups.booking_payload (TEXT, NULL). Carries the structured
+    booking intent for a meeting-proposal draft so the SEND step can fire the
+    calendar event + invite. NULL for an ordinary follow-up."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "scheduled_followups" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("scheduled_followups")}
+    if "booking_payload" in cols:
+        return
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            f"ALTER TABLE scheduled_followups ADD COLUMN {ine}booking_payload TEXT"
+        ))
+
+
 def _migrate_user_email_account() -> None:
     """Add the email-channel columns to users : a SECOND Unipile account id
     pointing at the user's real mailbox (Gmail / Outlook), plus its display
@@ -1191,6 +1211,41 @@ def _migrate_user_email_account() -> None:
         if "email_connected_at" not in cols:
             conn.execute(text(
                 f"ALTER TABLE users ADD COLUMN {ine}email_connected_at TIMESTAMP"
+            ))
+
+
+def _migrate_user_whatsapp_account() -> None:
+    """Add the WhatsApp-channel columns to users : a Unipile account id for the
+    user's connected WhatsApp account (a CLOUD seat, like the email one above),
+    plus its health status and connect timestamp. All nullable / defaulted so
+    existing rows are untouched (WhatsApp starts disconnected for everyone).
+    Cross-dialect-safe : SQLite + Postgres. Mirrors _migrate_user_email_account."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        if "unipile_whatsapp_account_id" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE users ADD COLUMN {ine}unipile_whatsapp_account_id "
+                "VARCHAR(80)"
+            ))
+            if ENGINE.dialect.name == "postgresql":
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "ix_users_unipile_whatsapp_account_id "
+                    "ON users (unipile_whatsapp_account_id)"
+                ))
+        if "whatsapp_status" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE users ADD COLUMN {ine}whatsapp_status VARCHAR(20) "
+                "DEFAULT 'disconnected'"
+            ))
+        if "whatsapp_connected_at" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE users ADD COLUMN {ine}whatsapp_connected_at TIMESTAMP"
             ))
 
 

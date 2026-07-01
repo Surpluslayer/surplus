@@ -92,65 +92,11 @@ _FOLLOWUP_SYSTEM = (
 # compose_followup() chains both for the single-draft (/draft tap) caller.
 
 
-def _email_thread_prior(db, user_id: int, contact) -> list[dict]:
-    """The contact's REAL email conversation (bodies), shaped like the timeline
-    thread ({when, who, channel, text}) so an email follow-up continues what was
-    actually written. Uses the linked thread (Contact.email_thread_id) if set,
-    else finds the newest thread with the contact's address. Best-effort: any
-    missing piece (no mailbox, no address, Unipile error) returns []."""
-    import os
-    from ..... import models
-    from . import email_sync
-    try:
-        user = db.get(models.User, user_id)
-        account_id = getattr(user, "unipile_email_account_id", None)
-        own = (getattr(user, "email_account_address", None) or "").strip().lower()
-        addr = (getattr(contact, "email", None) or "").strip().lower()
-        dsn = (os.environ.get("UNIPILE_DSN") or "").strip()
-        api_key = (os.environ.get("UNIPILE_API_KEY") or "").strip()
-        if not (account_id and dsn and api_key):
-            return []
-        thread_id = getattr(contact, "email_thread_id", None)
-        if not thread_id and addr:
-            threads = email_sync.list_threads_for_address(
-                dsn=dsn, api_key=api_key, account_id=account_id,
-                address=addr, own_address=own)
-            thread_id = threads[0]["thread_id"] if threads else None
-        if not thread_id:
-            return []
-        msgs = email_sync.thread_messages(
-            dsn=dsn, api_key=api_key, account_id=account_id,
-            thread_id=str(thread_id), own_address=own, with_bodies=True)
-        prior = []
-        for m in msgs:
-            text = (m.get("body") or "").strip()
-            if not text:
-                continue
-            prior.append({
-                "when": m.get("date"),
-                "who": "host" if m.get("direction") == "out" else "them",
-                "channel": "email",
-                "text": text[:600],
-            })
-        return prior
-    except Exception:  # noqa: BLE001 : email grounding is best-effort
-        return []
-
-
-def _voice_block_for(db, user_id: int, channel: str) -> str:
-    """The full model-ready voice context for this host: the distilled
-    <host_voice_profile> rules PLUS the ground-truth <style_examples>, scoped to
-    the channel being drafted. This is the same packaged voice the relationship
-    agent uses -- richer than raw examples alone, which is what made earlier
-    drafts read generic. DetachedInstance/lookup-safe (returns "")."""
-    from ..... import models
-    try:
-        user = db.get(models.User, user_id)
-    except Exception:  # noqa: BLE001 - keep the run alive on any lookup failure
-        user = None
-    vch = "email" if channel == "email" else "linkedin"
-    return voice.build_voice_context(
-        user, channel=vch, message_type="warm_followup")["block"]
+# Back-compat alias: the canonical voice-block builder lives in context.gather
+# (_voice_block); _voice_block_for was a byte-identical copy. Kept under the
+# historical name so existing call sites (this module's compose path,
+# routes/book.py) keep resolving.
+from ..context.gather import _voice_block as _voice_block_for
 
 
 def _months_ago(dt) -> str:
@@ -177,59 +123,6 @@ def _months_ago(dt) -> str:
         return f"~{months} months ago"
     years = round(days / 365)
     return "about a year ago" if years <= 1 else f"~{years} years ago"
-
-
-def _relationship_facts(db, contact) -> dict:
-    """The grounding the composer needs to hone in on THIS relationship when the
-    message thread is thin or absent (the common case): where/when the host met
-    them, how long it's been, the relationship stage, and the host's own noted
-    next step (the open loop). Pulled from the durable contact_summary rollup so
-    a draft can say 'great meeting you at <event>' / 'as promised, <next step>'
-    instead of a generic reconnect line. Best-effort: any read failure -> {}."""
-    try:
-        s = relationships.contact_summary(db, contact)
-    except Exception:  # noqa: BLE001 : a summary read failure must not break drafting
-        return {}
-
-    def _clean(v):
-        x = (str(v).strip() if v is not None else "")
-        return "" if x.lower() in ("", "unknown", "none") else x
-
-    # Their most recent detected activity (job change, new post, milestone) -- the
-    # single strongest "hone in" signal: lets the draft reference what they're
-    # ACTUALLY up to ("congrats on the new role", "saw your post on X") instead of
-    # a generic line. Already in the DB via the updates engine -- no new scraping.
-    upd = s.get("latest_update") or {}
-    types = [t for t in (s.get("contact_types") or []) if t and str(t).strip()]
-
-    # The headline ("New post" / "Started a role") AND the real content behind it
-    # (the actual post text / the role detail), so the draft can reference real
-    # substance -- "loved your post on inference infra" -- not just "saw your
-    # update". The detail is the activity_update summary (already in the DB).
-    head = _clean(upd.get("title"))
-    detail = _clean(upd.get("summary"))
-
-    # LOW-confidence color: what they do (their About / enriched works_on). Read
-    # gracefully (contact.about may not exist yet -> None); filter the "general"
-    # enrichment placeholder. Rendered as optional, never asserted.
-    def _real_about(v):
-        x = _clean(v)
-        return "" if x.lower() in ("general", "general networking", "networking") else x
-    ident = s.get("identity") or {}
-    about = (_real_about(getattr(contact, "about", None))
-             or _real_about(ident.get("works_on")) or _real_about(ident.get("bio")))
-    return {
-        "met_at": _clean(s.get("met_at")),               # event where they met
-        "first_met_at": s.get("first_met_at"),           # datetime (oldest touch)
-        "last_touch_at": s.get("last_touch_at"),
-        "n_events": s.get("n_events") or 0,
-        "stage": _clean(s.get("relationship_stage")),
-        "next_step": _clean(s.get("next_step")),          # host's own open loop
-        "latest_update": head or detail,                  # the headline
-        "latest_update_detail": detail,                   # the real content
-        "about": about[:240],                              # what they do (low-conf)
-        "relationship_types": types,                       # sales / investor / hiring / ...
-    }
 
 
 def build_context(db, user_id: int, contact, voice_block: Optional[str] = None,

@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..agents.relationship.pipeline.send.sender import send_and_log
+from ..agents.relationship.pipeline.send.sender import send_followup
 from ..auth import current_user
 from ..db import get_db
 from ..providers import get_provider
@@ -212,16 +212,12 @@ def send_followup_now(
 
     now = datetime.now(timezone.utc)
     try:
-        if (getattr(row, "channel", "") or "linkedin") == "email":
-            from ..agents.relationship.pipeline.send.sender import send_followup_email
-            res = send_followup_email(db, prospect, text)
-        else:
-            res = send_and_log(
-                db, prospect, text,
-                sent_state="follow_up_sent",
-                fallback_provider=get_provider(),
-                commit=False,
-            )
+        res = send_followup(
+            db, prospect, text,
+            channel=(getattr(row, "channel", "") or "linkedin"),
+            commit=False,
+            fallback_provider=get_provider(),
+        )
     except Exception as exc:  # noqa: BLE001
         row.status = "failed"
         row.cancel_reason = type(exc).__name__
@@ -240,6 +236,29 @@ def send_followup_now(
     row.status = "sent"
     row.sent_at = now
     row.updated_at = now
+    # An explicit host send-now is the manual approve of this draft: if it carried
+    # a meeting booking payload, fire the calendar event + invite now. Never fails
+    # the send (no contact email / no open slot just skips the auto-create).
+    _fire_followup_booking(db, prospect, getattr(row, "booking_payload", None), text)
     db.commit()
     db.refresh(row)
     return _to_out(row)
+
+
+def _fire_followup_booking(db, prospect, booking_payload, text: str) -> None:
+    """Fire the booking a SENT meeting-proposal follow-up carries (manual send-now).
+    Resolves host + Contact from the prospect, delegates to fire_booking_on_send.
+    Never raises: a booking miss must not fail a follow-up that already sent."""
+    if not booking_payload:
+        return
+    try:
+        from ..agents.relationship.pipeline.send.sender import fire_booking_on_send
+        owner = getattr(getattr(prospect, "event", None), "user", None)
+        contact = (db.get(models.Contact, prospect.contact_id)
+                   if getattr(prospect, "contact_id", None) else None)
+        if owner is None or contact is None:
+            return
+        topic = (text or "Quick chat").strip().split("\n", 1)[0][:80] or "Quick chat"
+        fire_booking_on_send(db, owner, contact, booking_payload, topic=topic)
+    except Exception:  # noqa: BLE001
+        pass

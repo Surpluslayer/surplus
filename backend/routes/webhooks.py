@@ -26,7 +26,9 @@ from ..agents.outreach import compose
 from ..agents.relationship.reply_agent import (
     ReplyDecision, ThreadMessage, decide_reply, should_auto_send,
 )
-from ..agents.relationship.pipeline.send.sender import automated_send_enabled, send_and_log
+from ..agents.relationship.pipeline.send.sender import (
+    automated_send_enabled, follow_up_send_enabled, send_and_log,
+)
 from ..providers import (
     get_provider,
     get_provider_for_prospect,
@@ -132,9 +134,13 @@ def _trigger_auto_dm(
 ) -> Optional[dict]:
     """For providers where the platform owns the sequence (Unipile), fire
     the post-accept DM ourselves : from the OWNING USER'S LinkedIn."""
-    # Channel-aware automation gate AND the provider's own gate -- both must be on.
-    # The post-accept auto-DM rides LinkedIn.
-    if not provider.auto_dm_after_accept or not automated_send_enabled("linkedin"):
+    # Gated on the provider's own gate AND the follow-up-specific master
+    # (SURPLUS_AUTO_FOLLOWUPS, decoupled from the general send master). NOT the
+    # per-host auto_followups_enabled toggle: the post-accept DM completes an
+    # outreach sequence the host already initiated (they sent the invite), so it
+    # is pre-authorized by that action -- unlike the proactive nudge cron, which
+    # does respect the per-host toggle. The post-accept auto-DM rides LinkedIn.
+    if not provider.auto_dm_after_accept or not follow_up_send_enabled("linkedin"):
         return None
 
     event = prospect.event

@@ -100,13 +100,18 @@ def _find_or_create_contact(db, user, handle: str, name: str):
     return contact, created
 
 
-@router.post("/ingest")
-def ingest(body: IngestIn, db: Session = Depends(get_db),
-           user: models.User = Depends(current_user)):
-    """Land incoming messages in the timeline as context, keyed by phone/email.
-    Idempotent per (contact, external_id)."""
+def ingest_messages(db, user, messages) -> dict:
+    """Land a batch of normalized messages in the relationship timeline, keyed
+    by phone/email, idempotent per (contact, external_id). The SHARED message
+    sink: the HTTP /ingest route, the WhatsApp pull, and any other source funnel
+    through here so the spine-upsert + idempotency rules live in ONE place.
+
+    `messages` is an iterable of IncomingMessage (or any object with the same
+    fields: handle, name, direction, text, ts, channel, external_id). Commits
+    and returns aggregate stats. Channel is carried by source_type (NOT a
+    `channel` meta key -- that collides with _item(channel=...) downstream)."""
     stats = {"contacts_created": 0, "appended": 0, "skipped": 0}
-    for m in body.messages:
+    for m in messages:
         contact, created = _find_or_create_contact(db, user, m.handle, m.name)
         if contact is None:
             stats["skipped"] += 1
@@ -139,6 +144,14 @@ def ingest(body: IngestIn, db: Session = Depends(get_db),
     return stats
 
 
+@router.post("/ingest")
+def ingest(body: IngestIn, db: Session = Depends(get_db),
+           user: models.User = Depends(current_user)):
+    """Land incoming messages in the timeline as context, keyed by phone/email.
+    Idempotent per (contact, external_id)."""
+    return ingest_messages(db, user, body.messages)
+
+
 @router.post("/send")
 def send(body: SendIn, db: Session = Depends(get_db),
          user: models.User = Depends(current_user)):
@@ -162,8 +175,55 @@ def send(body: SendIn, db: Session = Depends(get_db),
         channel=channel, to_handle=to_handle or None, body=body.body or "",
         scheduled_at=_parse_ts(body.scheduled_at), status="queued")
     db.add(om); db.commit(); db.refresh(om)
+
+    # CLOUD channels send server-side (no device companion). WhatsApp is a
+    # cloud channel on Unipile -- if this send is due now, dispatch it through
+    # Unipile and flip the row's status. Scheduled-for-later cloud sends stay
+    # queued for the server to drain at scheduled_at. Device channels are NOT
+    # touched here -- they drain to the companion via /outbox/due.
+    sched = om.scheduled_at
+    if sched is not None and sched.tzinfo is None:
+        sched = sched.replace(tzinfo=timezone.utc)  # SQLite stores naive
+    if channel == "whatsapp" and sched <= _utcnow():
+        _drain_whatsapp(db, user, om, contact)
+
     return {"id": om.id, "status": om.status, "channel": om.channel,
             "scheduled_at": om.scheduled_at.isoformat()}
+
+
+def _drain_whatsapp(db, user, om, contact) -> None:
+    """Dispatch one queued WhatsApp OutgoingMessage through Unipile (cloud
+    send) and flip its status in place. Best-effort: any failure marks the row
+    failed rather than raising, so a flaky provider can't 500 the send route."""
+    from ..providers.unipile import UnipileProvider
+
+    acct = getattr(user, "unipile_whatsapp_account_id", None) or ""
+    if not acct or getattr(user, "whatsapp_status", "") != "active":
+        om.status = "failed"
+        om.error = "owner has no connected whatsapp account"
+        db.commit()
+        return
+    to_phone = (om.to_handle or (contact.phone if contact else "") or "").strip()
+    if not to_phone:
+        om.status = "failed"
+        om.error = "no recipient phone for whatsapp send"
+        db.commit()
+        return
+
+    provider = UnipileProvider.from_env()
+    res = provider.send_whatsapp(
+        whatsapp_account_id=acct, to_phone=to_phone, body=om.body or "")
+    if res.state in ("message_sent", "dry_run_queued"):
+        om.status = "sent"
+        om.sent_at = _utcnow()
+    elif res.state == "unconfirmed":
+        # Dispatched but response lost -- leave queued so a human decides,
+        # rather than marking sent (may not have landed) or retrying (double-send).
+        om.error = (res.error or "unconfirmed")[:300]
+    else:
+        om.status = "failed"
+        om.error = (res.error or "whatsapp send failed")[:300]
+    db.commit()
 
 
 @router.get("/outbox/due")

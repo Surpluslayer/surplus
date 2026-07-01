@@ -20,15 +20,17 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Sparkles, ArrowUp, ArrowRight, Star, LayoutDashboard, Plus, BookText, Loader2, X,
   ChevronLeft, ChevronRight, ChevronDown, MapPin, QrCode, Link2, Search, Send,
-  Mail, Calendar, Plug, CreditCard, LogOut, CheckCircle2, Mic, KeyRound,
+  Mail, Calendar, Plug, CreditCard, LogOut, CheckCircle2, Mic, Video, MessageCircle,
+  KeyRound,
 } from "lucide-react";
 import { api } from "./lib/api.js";
-import { isNativeApp, nativeLinkedInLogin } from "./lib/nativeAuth.js";
 import {
   CaptureScreen, ScanResult, SignInBounce, IP_CSS,
   loadActiveEvent, saveActiveEvent, loadRecentLabels, pushRecentLabel,
 } from "./CaptureShared.jsx";
 import { StageChip } from "./components/ContactsPage.jsx";
+import AuthOptions from "./components/AuthOptions.jsx";
+import LinkedInMark from "./components/LinkedInMark.jsx";
 
 // Demo → real conversion: send the visitor into the connect-first LinkedIn
 // flow (same entry the send-gate uses). The callback returns them to the real
@@ -42,22 +44,29 @@ function track(event, props) {
   try { window.__surplusTrack && window.__surplusTrack(event, props); } catch { /* no-op */ }
 }
 
-function signInWithLinkedIn(source) {
+// Demo -> real conversion now lands on the in-app SIGN-UP screen (AuthOptions,
+// "Create account" with email / Google / Microsoft), NOT LinkedIn OAuth. The
+// `?signup` param on the event host forces that screen to render over the demo
+// (see SIGNUP_PARAM handling in BookApp). LinkedIn stays a CONNECT option once
+// the user is signed in; it is no longer the sign-in door.
+function goToSignup(source) {
   // `source` labels which conversion CTA was tapped (banner / tour_final /
   // tour_skip / draft_send / ...). When called as a bare onClick handler the
   // arg is a DOM event, so only strings count.
   track("demo_signin_click", { source: typeof source === "string" ? source : "unknown" });
-  // In the native app, run sign-in in the system browser and adopt the session
-  // via deep link (embedded-WebView login can't set a usable cookie). Falls
-  // back to the normal redirect on web or if the native flow errors.
-  if (isNativeApp()) {
-    nativeLinkedInLogin(api).catch((err) => {
-      console.error("[surplus] native login failed, falling back", err);
-      window.location.href = "/api/auth/linkedin/start-redirect";
-    });
-    return;
-  }
-  window.location.href = "/api/auth/linkedin/start-redirect";
+  // Sign-in now happens on the sign-up screen (email/password + Google/
+  // Microsoft via AuthOptions, which is native-aware for the iOS app).
+  window.location.href = "/?signup";
+}
+
+// True when the URL asks for the sign-up screen (?signup). This is the single
+// shared target every "Sign up now" CTA + the landing "Try now" button point
+// at. Read once at module scope so the value is stable for the initial render.
+function wantsSignup() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.has("signup");
+  } catch { return false; }
 }
 
 // Health word + colour token by relationship status.
@@ -144,8 +153,30 @@ export default function BookApp() {
     }
   }, [user && typeof user === "object" ? user.is_demo : false]);
 
-  // Signed out → the same LinkedIn sign-in bounce as the event surface (this
-  // is the shell event hosts serve, so it must gate, not error).
+  // Auth still resolving (user === null): brief neutral loading, NOT the book
+  // shell and NOT the sign-in screen, so a returning user with a valid session
+  // lands straight in the book once /me resolves (no login flash).
+  if (user === null) {
+    return (
+      <div className="bk-root">
+        <style>{BOOK_CSS}</style>
+        <div className="bk-frame">
+          <div className="bk-loading" style={{ minHeight: "60vh" }}>
+            <Loader2 className="bk-spin" size={18} /> Loading…
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ?signup → force the in-app sign-up screen (AuthOptions, "Create account")
+  // regardless of demo state. Shared target for every "Sign up now" CTA and the
+  // landing "Try now". A real signed-in (non-demo) user falls through to their app.
+  if (wantsSignup() && (user === undefined || (user && typeof user === "object" && user.is_demo))) {
+    return <BookSignupScreen />;
+  }
+
+  // Signed out (real 401, user === undefined) → the sign-in bounce.
   if (user === undefined) return <SignInBounce />;
 
   const openDetail = (row) => setRoute({ name: "detail", row });
@@ -187,7 +218,7 @@ export default function BookApp() {
         {user?.is_demo ? (
           <div className="bk-demobar">
             <span><b>Demo</b> · sample data. Sign in to use it for real, or skip the tour.</span>
-            <button className="bk-demobar-cta" data-onb="signin" onClick={() => signInWithLinkedIn("banner")}>Sign in</button>
+            <button className="bk-demobar-cta" data-onb="signin" onClick={() => goToSignup("banner")}>Sign up now</button>
           </div>
         ) : !(user?.unipile_account_id && user?.linkedin_status === "active") ? (
           // Real user without LinkedIn connected: nudge them into the connectors
@@ -220,6 +251,39 @@ export default function BookApp() {
                                isDemo={!!user?.is_demo} />}
 
       {onbOn && <BookOnboarding step={onbStep} onGo={onbGo} onClose={onbClose} />}
+    </div>
+  );
+}
+
+// ── Sign-up screen (the ?signup target) ──────────────────────────────────────
+// Renders AuthOptions in "Create account" mode over the event host. Reached by
+// every "Sign up now" CTA and the landing "Try now" button (both navigate to
+// /?signup). On success we drop the param and reload into the real signed-in
+// Book, so the new account sees their own book, not the demo.
+function BookSignupScreen() {
+  const onSignedIn = () => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      params.delete("signup");
+      const qs = params.toString();
+      window.location.href = window.location.pathname + (qs ? `?${qs}` : "");
+    } catch {
+      window.location.href = "/";
+    }
+  };
+  return (
+    <div className="ip-root">
+      <style>{IP_CSS}</style>
+      <div className="ip-centered">
+        <div className="ip-empty">
+          <Sparkles size={36} />
+          <p className="ip-empty-title">Create your surplus account</p>
+          <p>Sign up now to turn this into your real book, with your own contacts, your voice, and your follow-ups.</p>
+          <div style={{ width: "100%", maxWidth: 340, marginTop: 18, textAlign: "left" }}>
+            <AuthOptions defaultMode="signup" onSignedIn={onSignedIn} />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -547,7 +611,7 @@ function DraftPanel({ detail, isDemo = false }) {
   const [sendAt, setSendAt] = useState("");
 
   // Real Send/Schedule need a numeric contact id; demo-book slugs get Copy.
-  // Demo users can never really send -> always show the "Sign in to send"
+  // Demo users can never really send -> always show the "Sign up now"
   // conversion CTA at the moment of intent (no 402-then-redirect detour).
   const canSend = !isDemo && !!detail.contact_id && /^\d+$/.test(String(detail.contact_id));
 
@@ -618,9 +682,9 @@ function DraftPanel({ detail, isDemo = false }) {
                 {working === "send" ? "Sending…" : "Send"}
               </button>
             ) : isDemo ? (
-              <button className="bk-btn bk-btn--primary" onClick={() => signInWithLinkedIn("draft_send")}>
+              <button className="bk-btn bk-btn--primary" onClick={() => goToSignup("draft_send")}>
                 <Send size={13} style={{ marginRight: 5, verticalAlign: -1 }} />
-                Sign in to send
+                Sign up now
               </button>
             ) : (
               <button className="bk-btn bk-btn--primary" onClick={copy}>
@@ -652,6 +716,26 @@ function AccountScreen({ user, onBack, onConnections }) {
     window.location.reload();
   };
 
+  // Autopilot: per-user automation toggle (auto_followups_enabled). On = the agent
+  // drafts + sends + books follow-ups on its own; off = it drafts and waits for you.
+  const [autoOn, setAutoOn] = useState(null);   // null while loading
+  const [autoBusy, setAutoBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api.getFollowupSettings()
+       .then((d) => { if (alive && d) setAutoOn(!!d.auto_followups_enabled); })
+       .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  const toggleAuto = async () => {
+    if (autoBusy || autoOn === null) return;
+    const next = !autoOn;
+    setAutoBusy(true); setAutoOn(next);
+    try { await api.setFollowupSettings(next); }
+    catch { setAutoOn(!next); }
+    finally { setAutoBusy(false); }
+  };
+
   return (
     <div className="bk-scroll">
       <div className="bk-detail-head">
@@ -681,6 +765,27 @@ function AccountScreen({ user, onBack, onConnections }) {
       </div>
 
       <PasswordSection user={user} />
+
+      <div className="bk-set-group">
+        <div className="bk-set-row">
+          <span className="bk-set-lead"><Sparkles size={19} /><span className="bk-set-lbl">Autopilot</span></span>
+          <button type="button" role="switch" aria-checked={autoOn === true}
+                  aria-label="Autopilot" onClick={toggleAuto}
+                  disabled={autoBusy || autoOn === null}
+                  style={{ width: 44, height: 26, borderRadius: 13, border: 0, flex: "0 0 auto",
+                           background: autoOn ? "#4f46e5" : "#d1d5db",
+                           position: "relative",
+                           cursor: (autoBusy || autoOn === null) ? "default" : "pointer",
+                           transition: "background .15s", opacity: autoOn === null ? 0.5 : 1 }}>
+            <span style={{ position: "absolute", top: 3, left: autoOn ? 21 : 3, width: 20, height: 20,
+                           borderRadius: "50%", background: "#fff", transition: "left .15s",
+                           boxShadow: "0 1px 2px rgba(0,0,0,.2)" }} />
+          </button>
+        </div>
+        <p style={{ padding: "2px 16px 12px", color: "#99a0a8", fontSize: 13, lineHeight: 1.45 }}>
+          When on, surplus drafts, sends, and books follow-ups on its own based on context and next steps. When off, it drafts them and waits for you to send.
+        </p>
+      </div>
 
       <div className="bk-set-group">
         <button className="bk-set-row bk-set-row--danger" onClick={signOut}>
@@ -774,11 +879,15 @@ function ConnectionsScreen({ user, onBack }) {
   // would otherwise keep showing "Connect". Falls back to the prop until the first
   // fetch resolves so there's no flicker.
   const [me, setMe] = useState(null);
+  const [integrations, setIntegrations] = useState(null);
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
       api.me()
          .then((d) => { if (!cancelled && d) setMe(d); })
+         .catch(() => {});
+      api.listIntegrations()
+         .then((d) => { if (!cancelled && d) setIntegrations(d); })
          .catch(() => {});
     };
     refresh();
@@ -798,6 +907,10 @@ function ConnectionsScreen({ user, onBack }) {
   // defaults to "active" even with none, so check unipile_account_id too.
   const liOn = !!u?.unipile_account_id && u?.linkedin_status === "active";
   const emailOn = u?.email_status === "active";
+  // WhatsApp is a CLOUD seat (Unipile), like email -- connected when the
+  // account is tied AND active.
+  const whatsappOn = !!u?.unipile_whatsapp_account_id
+    && u?.whatsapp_status === "active";
   // All connected mailboxes. Falls back to the legacy single-account view when
   // the API doesn't return the array (older session / pre-feature backend).
   const emailAccounts = Array.isArray(u?.email_accounts)
@@ -816,12 +929,17 @@ function ConnectionsScreen({ user, onBack }) {
   };
   // Google (calendar + contacts) -- from /me (instant on/off, no separate fetch).
   const googleOn = !!u?.google_connected;
+  // Zoom -- shown only when the server has Zoom creds (available.zoom), connected
+  // when an active zoom account is tied. From the /api/integrations list.
+  const zoomAvail = !!integrations?.available?.zoom;
+  const zoomOn = Array.isArray(integrations?.connected)
+    && integrations.connected.some((a) => a.provider === "zoom" && a.status === "active");
 
   const connect = async (starter, label) => {
     try {
       const { url } = await starter();
       if (url) window.location.assign(url);
-      else setNote(`Couldn't start ${label} — try again.`);
+      else setNote(`Couldn't start ${label}. Try again.`);
     } catch (e) { setNote(e.message || `Couldn't start ${label}.`); }
   };
 
@@ -834,14 +952,18 @@ function ConnectionsScreen({ user, onBack }) {
       <div className="bk-subhead"><p className="bk-display">Connections</p></div>
 
       <div className="bk-set-group">
-        <ConnRow icon={<LinkedinGlyph size={21} />} name="LinkedIn"
+        <ConnRow icon={<LinkedInMark size={21} />} name="LinkedIn"
                  sub="Enrichment & job-change updates"
                  connected={liOn}
                  onConnect={() => connect(api.startLinkedinAuth, "LinkedIn")} />
         {emailAccounts && emailAccounts.length > 0 ? (
           // One row per connected mailbox (personal Gmail + work Outlook ...),
           // plus an "Add another email" row to connect one more.
-          <React.Fragment>
+          // NOTE: fragment shorthand <>, NOT <React.Fragment> -- the `React`
+          // namespace binding is not present in this code-split chunk (Vite's
+          // automatic JSX runtime), so `React.Fragment` throws
+          // "React is not defined" at render for any user WITH email accounts.
+          <>
             {emailAccounts.map((acct) => (
               <ConnRow key={acct.unipile_account_id}
                        icon={<Mail size={21} />}
@@ -856,7 +978,7 @@ function ConnectionsScreen({ user, onBack }) {
                      sub="Gmail or Outlook"
                      connected={false}
                      onConnect={() => connect(api.startEmailAuth, "email")} />
-          </React.Fragment>
+          </>
         ) : (
           // Legacy / no-mailbox fallback : the original single Gmail row.
           <ConnRow icon={<Mail size={21} />} name="Gmail"
@@ -866,14 +988,26 @@ function ConnectionsScreen({ user, onBack }) {
                    connected={emailOn}
                    onConnect={() => connect(api.startEmailAuth, "Gmail")} />
         )}
+        <ConnRow icon={<MessageCircle size={21} />} name="WhatsApp"
+                 sub={whatsappOn
+                   ? "Connected"
+                   : "Tracks chats, sends your drafts"}
+                 connected={whatsappOn}
+                 onConnect={() => connect(api.startWhatsappAuth, "WhatsApp")} />
         <ConnRow icon={<Calendar size={21} />} name="Google Calendar & Contacts"
                  sub={googleOn ? "Connected" : "Logs meetings, syncs contacts"}
                  connected={googleOn}
                  onConnect={() => connect(api.connectGoogle, "Google")} />
+        {zoomAvail && (
+          <ConnRow icon={<Video size={21} />} name="Zoom"
+                   sub={zoomOn ? "Connected" : "Add Zoom links to your bookings"}
+                   connected={zoomOn}
+                   onConnect={() => connect(api.connectZoom, "Zoom")} />
+        )}
       </div>
 
       {note && <p className="bk-note bk-note--warn">{note}</p>}
-      <p className="bk-note">Surplus reads these to keep your book current — it never posts or emails without you.</p>
+      <p className="bk-note">Surplus reads these to keep your book current. It never posts or emails without you.</p>
     </div>
   );
 }
@@ -1113,7 +1247,7 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
 
   // Send / Schedule are keyed on a real numeric contact id; demo-book slugs
   // can't send, so we only offer Copy for those. Demo users never really send
-  // -> always the "Sign in to send" conversion CTA (no 402-then-redirect).
+  // -> always the "Sign up now" conversion CTA (no 402-then-redirect).
   const canSend = !isDemo && !!draft.contact_id && /^\d+$/.test(String(draft.contact_id));
 
   const generate = useCallback(() => {
@@ -1164,9 +1298,9 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
     } catch (e) {
       const code = e?.body?.detail?.code || e?.body?.code;
       if (e?.status === 402 || code === "linkedin_send_locked" || code === "payment_required") {
-        // Sending is gated for demo / not-signed-in users : take them to sign in
-        // (native-aware: uses the system-browser flow in the app).
-        signInWithLinkedIn("draft_send"); return;
+        // Sending is gated for demo / not-signed-in users : take them to the
+        // sign-up screen (they connect LinkedIn later, after they have an account).
+        window.location.href = "/?signup"; return;
       }
       setErr(e.message || "Couldn't send");
     }
@@ -1248,9 +1382,9 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
                   {working === "send" ? "Sending…" : "Send now"}
                 </button>
               ) : isDemo ? (
-                <button className="bk-btn bk-btn--primary bk-btn--block" onClick={() => signInWithLinkedIn("draft_send")}>
+                <button className="bk-btn bk-btn--primary bk-btn--block" onClick={() => goToSignup("draft_send")}>
                   <Send size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
-                  Sign in to send
+                  Sign up now
                 </button>
               ) : (
                 <button className="bk-btn bk-btn--block" onClick={copy}>
@@ -1328,16 +1462,6 @@ function DraftLink({ onClick }) {
 }
 
 function Empty({ text }) { return <div className="bk-empty">{text}</div>; }
-
-// lucide dropped brand icons — render the LinkedIn mark inline so the tile
-// matches the design's ti-brand-linkedin.
-function LinkedinGlyph({ size = 21 }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-      <path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.13 1.45-2.13 2.94v5.67H9.35V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.45v6.29zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zM7.12 20.45H3.56V9h3.56v11.45zM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.22.79 24 1.77 24h20.45c.98 0 1.78-.78 1.78-1.73V1.73C24 .77 23.2 0 22.22 0z"/>
-    </svg>
-  );
-}
 
 // ── helpers ─────────────────────────────────────────────────────────────────────
 
@@ -1444,9 +1568,9 @@ const BK_ONB_STEPS = [
   {
     key: "signin", tab: "today", anchor: "signin", place: "bottom",
     title: "Make it yours",
-    body: "Sign in with your LinkedIn up top to turn this into your real book, "
+    body: "Sign up now to turn this into your real book, "
         + "with your own contacts, your voice, and your follow-ups.",
-    final: true, cta: "Sign in with LinkedIn", convert: true,
+    final: true, cta: "Sign up now", convert: true,
   },
 ];
 
@@ -1504,7 +1628,7 @@ function BookOnboarding({ step, onGo, onClose }) {
   }, [selector]);
 
   const next = () => {
-    if (def.convert) { signInWithLinkedIn("tour_final"); return; }  // final step = convert
+    if (def.convert) { goToSignup("tour_final"); return; }  // final step = convert
     if (def.final) onClose(); else onGo(idx + 1);
   };
   const back = () => { if (idx > 0) onGo(idx - 1); };
@@ -1529,11 +1653,11 @@ function BookOnboarding({ step, onGo, onClose }) {
         <div className="bk-onb-body">{def.body}</div>
         <div className="bk-onb-actions">
           {/* Skipping the tour is a conversion moment, not a dead end: drop the
-              visitor straight into LinkedIn sign-in to use it for real. The
+              visitor straight into the sign-up screen to use it for real. The
               corner ✕ remains a plain dismiss for anyone who just wants to keep
               poking around the demo. */}
-          <button className="bk-onb-skip" onClick={() => signInWithLinkedIn("tour_skip")}>
-            Skip tour &amp; sign in
+          <button className="bk-onb-skip" onClick={() => goToSignup("tour_skip")}>
+            Skip tour &amp; sign up
           </button>
           <div className="bk-onb-nav">
             {idx > 0 && <button className="bk-onb-back" onClick={back}>Back</button>}

@@ -19,6 +19,20 @@ _GCAL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 _PEOPLE = "https://people.googleapis.com/v1/people/me/connections"
 
 
+def get_calendar_timezone(token: str) -> Optional[str]:
+    """The host's primary-calendar IANA timezone (e.g. 'America/New_York'), or
+    None if it can't be read. Read from the events.list response (which carries
+    the calendar's timeZone) because that works with the calendar.events scope we
+    request -- the calendars/primary resource needs a broader scope (403). This
+    is the user's REAL timezone, so bookings land in their local time."""
+    try:
+        data = _get(token, _GCAL, {"maxResults": 1})
+        tzname = (data.get("timeZone") or "").strip()
+        return tzname or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _get(token: str, url: str, params: Optional[dict] = None) -> dict:
     r = httpx.get(url, headers={"Authorization": f"Bearer {token}"},
                   params=params or {}, timeout=20)

@@ -45,11 +45,13 @@ def db(env):
 
 @pytest.fixture
 def user(db):
-    """A fully connected + paid user so the send gate passes."""
+    """A fully connected + paid user so the send gate passes (incl. the per-host
+    follow-up toggle, now part of the auto-DM / follow-up gate)."""
     u = models.User(
         name="Operator", email="op@example.com",
         unipile_account_id="user_acct", linkedin_status="active",
         paid_at=datetime.now(timezone.utc),
+        auto_followups_enabled=True,
     )
     db.add(u); db.commit()
     return u
@@ -445,7 +447,7 @@ def test_webhook_auto_dm_fires_on_accept(db, user, monkeypatch):
     dry-run provider it queues (no real send) : returns dry_run=True /
     dry_run_queued, so no live message leaves the host's LinkedIn in the test."""
     monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")
-    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")   # automation opt-in
+    monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "true")   # follow-up gate opt-in
     from backend.providers.unipile import UnipileProvider
     from backend.routes.webhooks import _trigger_auto_dm
 
@@ -499,10 +501,11 @@ def test_channel_allowlist_routes_auto_fire(monkeypatch):
 
 
 def test_master_flag_off_blocks_auto_dm(db, user, monkeypatch):
-    """MASTER kill switch: with SURPLUS_AUTOMATED_SENDS=false the post-accept
-    auto-DM does NOT fire, even though the provider's own gate is on."""
+    """FOLLOW-UP kill switch: with SURPLUS_AUTO_FOLLOWUPS=false the post-accept
+    auto-DM does NOT fire, even though the provider's own gate + per-host toggle
+    are on."""
     monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")
-    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "false")
+    monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "false")
     from backend.providers.unipile import UnipileProvider
     from backend.routes.webhooks import _trigger_auto_dm
     ip_event = db.get(models.Event, _make_event(db, user)["event_id"])
@@ -641,7 +644,7 @@ def _seed_scanned(db, user, handle="maya-rodriguez", name="Maya Rodriguez"):
 
 def test_new_relation_matches_scan_prospect_fires_inperson_auto_dm(db, user, monkeypatch):
     monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")   # deterministic template
-    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")  # automation opt-in
+    monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "true")  # follow-up gate opt-in
     from backend.providers.unipile import UnipileProvider
     from backend.routes.webhooks import _apply_canonical_event, _trigger_auto_dm
 

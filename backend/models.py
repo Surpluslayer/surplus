@@ -614,6 +614,21 @@ class User(Base):
     # semantics (credentials = OAuth lapsed, needs the reconnect flow).
     email_status: Mapped[str] = mapped_column(String(20), default="disconnected")
     email_connected_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+
+    # ─── WhatsApp channel (Unipile WHATSAPP account) ────────────────────
+    # A THIRD Unipile account on the same workspace -- WhatsApp is a CLOUD
+    # channel on Unipile (a hosted WhatsApp account, like the LinkedIn/email
+    # seats above; NOT a device companion). Independent of the other seats:
+    # any of the three can be connected without the others. Connected via the
+    # hosted-auth flow in routes/auth.py (/whatsapp/start -> /whatsapp/webhook),
+    # which is the only writer of these fields. Mirrors the email_* fields.
+    unipile_whatsapp_account_id: Mapped[Optional[str]] = mapped_column(
+        String(80), unique=True, index=True, default=None,
+    )
+    # "disconnected" | "active" | "credentials" -- mirrors email_status
+    # semantics (credentials = the WhatsApp session lapsed, needs reconnect).
+    whatsapp_status: Mapped[str] = mapped_column(String(20), default="disconnected")
+    whatsapp_connected_at: Mapped[Optional[datetime]] = mapped_column(default=None)
     # Operator-curated outreach exemplars used as style guides when Claude
     # composes personalized notes/DMs for their events. JSON-encoded list
     # of strings (each = one past outreach message). Empty / unset means
@@ -1237,6 +1252,13 @@ class ScheduledFollowup(Base):
     suggested_send_at: Mapped[datetime] = mapped_column(default=_utcnow)
     status: Mapped[str] = mapped_column(String(20), default="scheduled", index=True)
     cancel_reason: Mapped[str] = mapped_column(String(20), default="")
+    # Structured booking intent carried alongside a MEETING-PROPOSAL draft. When the
+    # drafter proposes a time (or a Calendly self-serve link), it stashes the payload
+    # here (JSON: {mode, start_iso, duration_min, tz, with_zoom, contact_id, ...}) so
+    # that the SEND step can fire the actual calendar event + invite. NULL/'' for an
+    # ordinary follow-up. A Calendly link IS the booking, so its payload fires nothing
+    # on send; a propose_time payload creates the event+invite when the draft sends.
+    booking_payload: Mapped[Optional[str]] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
     sent_at: Mapped[Optional[datetime]] = mapped_column(default=None)
