@@ -92,7 +92,9 @@ _CALL_ASK_RE = re.compile(
 # sanitize. Without this exemption, \bzoom\b in _CALL_ASK_RE silently ate
 # whole clauses containing Zoom meeting URLs from booking drafts (part of
 # the "the demo link never sends" bug, fixed 2026-07-01).
-_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+# Public: also reused by agents/outreach.resolve_send_link (one URL regex,
+# one definition).
+URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
 
 def strip_call_asks(text: Optional[str]) -> Optional[str]:
@@ -117,7 +119,7 @@ def strip_call_asks(text: Optional[str]) -> Optional[str]:
         core = sent[: m.start()] if m else sent
         clauses = [c.strip() for c in core.split(",")]
         kept = [c for c in clauses
-                if c and (_URL_RE.search(c) or not _CALL_ASK_RE.search(c))]
+                if c and (URL_RE.search(c) or not _CALL_ASK_RE.search(c))]
         if not kept:
             continue  # the whole sentence was the call ask
         # If the dropped clause was the one carrying the '?', the survivors

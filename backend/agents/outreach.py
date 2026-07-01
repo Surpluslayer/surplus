@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 from .. import config
 from ..jsonx import extract_json
-from ..providers.base import strip_call_asks, strip_em_dashes
+from ..providers.base import URL_RE, strip_call_asks, strip_em_dashes
 from . import voice
 
 
@@ -441,9 +441,6 @@ def _compose_template(prospect, host_bio, framing) -> Message:
     return Message(note=note, message="\n".join(msg_lines).strip())
 
 
-_SEND_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
-
-
 def resolve_send_link(prospect, event):
     """The scheduling / demo URL this send should carry, if any.
 
@@ -453,7 +450,7 @@ def resolve_send_link(prospect, event):
     detached ORM instance, and a link miss must never break compose.
     """
     step = (getattr(prospect, "next_step", None) or "")
-    m = _SEND_URL_RE.search(step)
+    m = URL_RE.search(step)
     if m:
         return m.group(0).rstrip(".,;)")
     try:
