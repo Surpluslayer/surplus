@@ -270,10 +270,27 @@ def test_run_followups_sends_due_row(db, monkeypatch):
     assert states.count("follow_up_sent") == 1
 
 
-def test_run_followups_holds_due_row_when_auto_send_off(db):
-    """Auto-send off : a due draft is HELD (left scheduled), never sent or
-    cancelled, so the host can still send it manually or flip the toggle on."""
+def test_run_followups_sends_even_when_user_toggle_off(db, monkeypatch):
+    """BUILT-IN first follow-up: the per-user auto_followups_enabled column no
+    longer gates dispatch. With the ops kill switch on, a host with the old
+    toggle off still gets the follow-up sent."""
+    monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "true")
     _u, _ev, p = _seed(db, auto_followups=False)
+    row = _stage_due(db, p)
+    result = run_followups(db=db, _=None)
+    assert result["due"] == 1
+    assert result["sent"] == 1
+    assert result["held"] == 0
+    db.expire_all()
+    assert db.get(models.ScheduledFollowup, row.id).status == "sent"
+
+
+def test_run_followups_holds_when_kill_switch_off(db, monkeypatch):
+    """Ops kill switch (SURPLUS_AUTO_FOLLOWUPS) off : a due draft is HELD (left
+    scheduled), never sent or cancelled, so it can still be sent manually or
+    dispatched once the switch comes back on."""
+    monkeypatch.delenv("SURPLUS_AUTO_FOLLOWUPS", raising=False)
+    _u, _ev, p = _seed(db)
     row = _stage_due(db, p)
     result = run_followups(db=db, _=None)
     assert result["due"] == 1
@@ -284,6 +301,23 @@ def test_run_followups_holds_due_row_when_auto_send_off(db):
     refreshed = db.get(models.ScheduledFollowup, row.id)
     assert refreshed.status == "scheduled"
     assert refreshed.sent_at is None
+
+
+def test_run_followups_expires_stale_row(db, monkeypatch):
+    """A row overdue past the staleness window must EXPIRE (cancelled reason
+    "stale"), not fire a weeks-late "just checking in" -- guards the backlog
+    the moment dispatch opens after an outage."""
+    monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "true")
+    _u, _ev, p = _seed(db)
+    row = _stage_due(db, p, hours_ago=9 * 24)   # 9 days overdue > 7-day window
+    result = run_followups(db=db, _=None)
+    assert result["due"] == 1
+    assert result["sent"] == 0
+    assert result["cancelled"] == 1
+    db.expire_all()
+    refreshed = db.get(models.ScheduledFollowup, row.id)
+    assert refreshed.status == "cancelled"
+    assert refreshed.cancel_reason == "stale"
 
 
 def test_run_followups_skips_future_row(db):
