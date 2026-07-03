@@ -277,3 +277,41 @@ def test_expire_stale_gcs_ancient_oneoff_only(db):
     surviving = {(f.key, f.value) for f in cm.get_facts(db, c.id)}
     assert ("flight", "old") not in surviving
     assert ("flight", "recent") in surviving and ("birthday", "bd") in surviving
+
+
+def test_run_sweep_exa_commits_per_contact(db, monkeypatch):
+    """The Exa fallback must commit per contact so one pooled connection is not
+    held open across the whole (minutes-long, ~200-contact) network loop -- and
+    so a mid-loop crash preserves prior contacts' progress. We assert the second
+    contact's failure does not roll back the first contact's watched_at write."""
+    from unittest.mock import patch
+    from backend.agents.relationship import updates_engine
+
+    u = models.User(name="Host", email="h2@x.com", unipile_account_id="a2")
+    db.add(u); db.commit()
+    c1 = models.Contact(user_id=u.id, primary_identity_key="li:a",
+                        name="Alice", linkedin_url="https://linkedin.com/in/a")
+    c2 = models.Contact(user_id=u.id, primary_identity_key="li:b",
+                        name="Bob", linkedin_url="https://linkedin.com/in/b")
+    db.add_all([c1, c2]); db.commit()
+    c1_id, c2_id = c1.id, c2.id
+
+    # Force the Exa path (no Bright Data) and stub the network call: succeed for
+    # the first contact, blow up on the second.
+    monkeypatch.setattr(updates_engine, "_brightdata_enabled", lambda: False)
+
+    def fake_find(_db, contact):
+        if contact.id == c2_id:
+            raise RuntimeError("exa down")
+        return []
+
+    with patch.object(updates_engine.updates_watch, "find_updates",
+                      side_effect=fake_find):
+        res = updates_engine.run_sweep(db, user_id=u.id, limit=40)
+
+    assert res["mode"] == "exa"
+    db.expire_all()
+    # First contact committed before the second's crash -> its watched_at stuck.
+    assert db.get(models.Contact, c1_id).watched_at is not None
+    # The failing contact was rolled back, not marked checked.
+    assert db.get(models.Contact, c2_id).watched_at is None
