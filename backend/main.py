@@ -59,6 +59,15 @@ async def lifespan(app: FastAPI):
     yield
 
 
+# DB pool exhaustion (a burst of long-running background work checking out
+# every connection) must degrade to a RETRIABLE 503, not a bare 500: the
+# frontend's request wrapper auto-retries transient statuses, so a spike shows
+# up as a ~1.5s delay instead of "Internal Server Error" (2026-07-01 incident:
+# QueuePool limit reached -> /api/auth/me 500 on a phone mid-connect).
+from sqlalchemy.exc import TimeoutError as _SAPoolTimeout
+from fastapi.responses import JSONResponse as _JSONResponse
+
+
 app = FastAPI(
     title="surplus · event ROI engine",
     description="AI prospecting, autonomous outreach, symbiotic matching, and "
@@ -66,6 +75,15 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(_SAPoolTimeout)
+async def _pool_exhausted_503(request: Request, exc: _SAPoolTimeout):
+    return _JSONResponse(
+        status_code=503,
+        content={"detail": "The server is momentarily busy. Please retry."},
+        headers={"Retry-After": "2", "Cache-Control": "no-store"},
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -381,9 +399,21 @@ def health(deep: bool = False):
     # when the DB query fails so the healthcheck stays a 200.
     last_webhook_paid_at = None
     pending_replies_count = None
+    db_pool_stats = None
     if deep:
         # Only on explicit ?deep=1 : never on the platform healthcheck path, so
         # DB-pool exhaustion can't fail the healthcheck and trigger a restart.
+        # Pool pressure gauge: watch checked_out approach size+overflow BEFORE
+        # requests start 503ing (the 2026-07-01 exhaustion gave no warning).
+        try:
+            _pool = ENGINE.pool
+            db_pool_stats = {
+                "size": _pool.size(),
+                "checked_out": _pool.checkedout(),
+                "overflow": _pool.overflow(),
+            }
+        except Exception:  # noqa: BLE001 -- SQLite/NullPool lacks these
+            db_pool_stats = None
         try:
             from sqlalchemy import text
             with ENGINE.connect() as conn:
@@ -428,6 +458,7 @@ def health(deep: bool = False):
         # value confirms a fresh deploy landed even if GIT_SHA wasn't passed.
         "image_ref": os.environ.get("FLY_IMAGE_REF"),
         "db_dialect": db_dialect,
+        "db_pool": db_pool_stats,
         "db_url_set": bool((os.environ.get("DATABASE_URL") or "").strip()),
         "integrations": integrations,
         "last_paid_at": last_webhook_paid_at,
