@@ -23,7 +23,7 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe prod health (custom + railway domains, with retries)
+      - name: "Probe prod health (custom + railway domains, with retries)"
         run: |
           set -u
           CUSTOM="https://event.surpluslayer.com/api/health"
@@ -61,7 +61,7 @@ jobs:
           fi
           echo "prod healthy."
 
-      - name: Leading indicators (fail BEFORE an outage: pool/memory/db-latency/config)
+      - name: "Leading indicators (fail before an outage: pool/memory/db-latency/config)"
         if: always()
         env:
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
