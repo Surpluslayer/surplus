@@ -59,8 +59,28 @@ _JUNK_LOCALPART_PREFIXES = (
     "help", "billing", "receipts", "receipt", "invoice", "orders",
     "accounts", "account", "admin", "team", "careers", "jobs", "security",
     "feedback", "calendar-notification", "drive-shares", "comments",
-    "automated", "unsubscribe",
+    "automated", "unsubscribe", "invitations", "invitation", "invites",
+    "invite", "messages-noreply", "calendar-server",
 )
+
+# Relay domains whose mail IMPERSONATES a person: the display name is a real
+# human ("Brian Pahng") but the address is platform machinery, so a contact
+# minted from it is junk wearing a face. Matched as domain suffixes.
+# Deterministic by design (Daniel: deterministic first, AI only if needed).
+_NOTIFICATION_DOMAINS = (
+    "linkedin.com", "luma-mail.com", "lu.ma", "calendly.com", "cal.com",
+    "zoom.us", "eventbrite.com", "partiful.com", "meetup.com",
+    "calendar.google.com", "calendar-server.bounces.google.com",
+    "docs.google.com", "notion.so", "loom.com",
+)
+
+# Calendar-machinery subjects. An "Accepted:" reply is your CALENDAR talking,
+# not you corresponding, so it must not count as outbound (else accepting a
+# meeting invite marks its organizer as real correspondence); an
+# "Invitation:" inbound is likewise the organizer's calendar, not a note.
+_CALENDAR_SUBJECT_RE = __import__("re").compile(
+    r"(?i)^\s*(accepted|declined|tentative(?:ly accepted)?|invitation|"
+    r"updated invitation|canceled(?: event)?|cancelled(?: event)?):")
 # More than this many recipients = an announcement / thread blast, not a
 # 1:1 correspondence worth a contact row.
 _MAX_RECIPIENTS = 5
@@ -92,8 +112,11 @@ def is_junk_address(addr: str) -> bool:
     addr = (addr or "").strip().lower()
     if "@" not in addr:
         return True
-    local = addr.split("@", 1)[0]
-    return any(local.startswith(p) for p in _JUNK_LOCALPART_PREFIXES)
+    local, _, domain = addr.partition("@")
+    if any(local.startswith(p) for p in _JUNK_LOCALPART_PREFIXES):
+        return True
+    return any(domain == d or domain.endswith("." + d)
+               for d in _NOTIFICATION_DOMAINS)
 
 
 def _attendee(a: Any) -> tuple[str, str]:
@@ -259,6 +282,12 @@ def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
             for mail in items:
                 stats["scanned"] += 1
                 direction, people = counterparts_of(mail, own)
+                # Calendar machinery is not correspondence in EITHER direction:
+                # skip before counting so an Accepted: reply can't inflate
+                # n_out and an Invitation: can't inflate n_in.
+                if _CALENDAR_SUBJECT_RE.match(mail.get("subject") or ""):
+                    stats["skipped_calendar"] = stats.get("skipped_calendar", 0) + 1
+                    continue
                 if direction == "skip":
                     # Classify the skip so ops can see WHAT the mailbox is
                     # full of: promotional/automated senders vs everything

@@ -230,3 +230,44 @@ def test_set_contact_email_clears_stale_thread(db):
         c.id, rel_routes.ContactEmailIn(email="maya@lo91r.com"), db, u)
     db.refresh(c)
     assert c.email_thread_id == "tNEW"
+
+
+def test_calendar_machinery_never_counts_as_correspondence(db):
+    """An Accepted: reply is the calendar talking, not the user corresponding:
+    it must not count as outbound (else accepting a meeting invite marks its
+    organizer as real correspondence). Invitation: inbound is skipped too."""
+    u = _user(db)
+    mails = [
+        _mail(("organizer@fund.com", "Organizer Person"), [("host@gmail.com", "Host")],
+              date="2026-07-01T10:00:00Z", pid="c1",
+              subject="Invitation: Coffee chat @ Thu Jul 9"),
+        _mail(("host@gmail.com", "Host"), [("organizer@fund.com", "Organizer Person")],
+              date="2026-07-01T10:05:00Z", role="sent", pid="c2",
+              subject="Accepted: Coffee chat @ Thu Jul 9"),
+    ]
+    fetch = lambda cursor: {"items": mails, "cursor": None}
+    stats = es.sync_email_contacts(db, u, dsn="d", api_key="k", fetch_page=fetch)
+    assert stats.get("skipped_calendar") == 2
+    assert db.query(models.Contact).filter_by(user_id=u.id).count() == 0
+
+
+def test_notification_relay_domains_are_junk(db):
+    """Relay mail that impersonates a person (LinkedIn invitations, Luma) must
+    not mint a contact even when the display name looks human."""
+    assert es.is_junk_address("invitations@linkedin.com")
+    assert es.is_junk_address("musacap@user.luma-mail.com")
+    assert es.is_junk_address("someone@calendly.com")
+    assert not es.is_junk_address("maya@lo91r.com")
+    u = _user(db)
+    mails = [
+        _mail(("invitations@linkedin.com", "Brian Pahng"), [("host@gmail.com", "Host")],
+              date="2026-07-01T10:00:00Z", pid="n1",
+              subject="Brian Pahng wants to connect"),
+        # even OUTBOUND to a relay must not mint a contact
+        _mail(("host@gmail.com", "Host"), [("musacap@user.luma-mail.com", "Allen Smith")],
+              date="2026-07-01T10:05:00Z", role="sent", pid="n2",
+              subject="re: the event"),
+    ]
+    fetch = lambda cursor: {"items": mails, "cursor": None}
+    es.sync_email_contacts(db, u, dsn="d", api_key="k", fetch_page=fetch)
+    assert db.query(models.Contact).filter_by(user_id=u.id).count() == 0
