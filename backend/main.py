@@ -81,9 +81,41 @@ def _validate_startup_config() -> list[str]:
     return degraded
 
 
+def _init_db_resilient() -> None:
+    """Run init_db(), retrying on a TRANSIENT DB error at boot.
+
+    Railway's Postgres TCP proxy intermittently drops rapid successive
+    connections; if that blip hits the very first connection init_db needs,
+    an unguarded init_db() raises and the whole process crashes. With
+    restartPolicyMaxRetries the container could burn through every retry on
+    the same short-lived blip and stay HARD DOWN until a human redeploys.
+
+    Retry a handful of times with linear backoff (~1,2,3,4,5s = 15s total,
+    well inside the healthcheck window) so a transient proxy drop self-heals.
+    A genuinely dead / misconfigured DB still surfaces: after the last attempt
+    we let the error propagate and boot fails loudly, as it should.
+    """
+    import time as _t
+
+    from sqlalchemy.exc import OperationalError, DBAPIError
+    attempts = 5
+    for i in range(1, attempts + 1):
+        try:
+            init_db()
+            return
+        except (OperationalError, DBAPIError) as exc:
+            if i == attempts:
+                print(f"  [startup] init_db failed after {attempts} attempts: {exc}",
+                      flush=True)
+                raise
+            print(f"  [startup] init_db attempt {i}/{attempts} hit a transient DB "
+                  f"error, retrying in {i}s: {exc}", flush=True)
+            _t.sleep(i)
+
+
 async def lifespan(app: FastAPI):
     _validate_startup_config()
-    init_db()
+    _init_db_resilient()
     # One-shot backfill for User rows created before the
     # _extract_profile_fields camelCase fix. Idempotent — re-runs are no-ops.
     try:
