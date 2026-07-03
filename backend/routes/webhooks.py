@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 
 from .. import models
 from ..db import get_db
+from ..jobs import run_detached
 from ..agents.relationship.spine import relationships
 from ..agents.outreach import compose
 from ..agents.relationship.reply_agent import (
@@ -260,9 +261,27 @@ async def _handle(request: Request, db: Session, provider: LinkedInProvider) -> 
 
     applied, reason, prospect = _apply_canonical_event(db, provider, canonical)
 
+    # A live provider makes the follow-up path do real network work: an LLM
+    # compose/decide plus an outbound provider send. Doing that inline holds the
+    # webhook response open for many seconds, and Unipile RETRIES a slow webhook
+    # -- which re-drives this handler and risks duplicate work / a retry storm.
+    # So for a live provider we DETACH the follow-up onto its own session/thread
+    # and return the 200 immediately. The idempotency marker that makes this
+    # retry-safe (the invite_accepted / message_replied OutreachLog committed by
+    # _apply_canonical_event above) is already in place before we detach.
+    #
+    # In dry-run (tests + local), compose returns instantly and nothing is sent,
+    # so we keep the fast inline path -- the response still carries the concrete
+    # auto_dm / ai_reply result the callers assert on.
+    detach = not getattr(provider, "dry_run", False)
+
     auto_dm = None
     if applied and prospect is not None and canonical.state == "invite_accepted":
-        auto_dm = _trigger_auto_dm(db, provider, prospect)
+        if detach:
+            run_detached(_detached_auto_dm, prospect.id)
+            auto_dm = {"detached": True}
+        else:
+            auto_dm = _trigger_auto_dm(db, provider, prospect)
 
     ai_reply = None
     if applied and prospect is not None and canonical.state == "message_replied":
@@ -270,7 +289,13 @@ async def _handle(request: Request, db: Session, provider: LinkedInProvider) -> 
         # a "circling back" to someone who already replied.
         from ..agents.relationship.followup_scheduler import cancel_pending_followups
         cancel_pending_followups(db, prospect.id, reason="replied")
-        ai_reply = _handle_ai_reply(db, provider, prospect, canonical)
+        if detach:
+            # Snapshot the inbound body: the canonical event is not carried into
+            # the detached session, so pass the fields the reply path needs.
+            run_detached(_detached_ai_reply, prospect.id, canonical.body or "")
+            ai_reply = {"detached": True}
+        else:
+            ai_reply = _handle_ai_reply(db, provider, prospect, canonical)
 
     return {
         "ok": True,
@@ -282,6 +307,42 @@ async def _handle(request: Request, db: Session, provider: LinkedInProvider) -> 
         "auto_dm": auto_dm,
         "ai_reply": ai_reply,
     }
+
+
+def _detached_auto_dm(db: Session, prospect_id: int) -> None:
+    """Detached body for the live-provider post-accept auto-DM (jobs.run_detached
+    owns `db`). Re-derives the provider and re-loads the prospect on this session,
+    then reuses the same inline helper. Fail-soft: run_detached logs and swallows.
+
+    Retry-safe: the invite_accepted OutreachLog is already committed by the time
+    this is scheduled, and _trigger_auto_dm's send is deduped on that log, so a
+    Unipile webhook retry cannot double-send."""
+    prospect = db.get(models.Prospect, prospect_id)
+    if prospect is None:
+        return
+    _trigger_auto_dm(db, get_provider(), prospect)
+
+
+def _detached_ai_reply(db: Session, prospect_id: int, inbound_body: str) -> None:
+    """Detached body for the live-provider AI reply (jobs.run_detached owns
+    `db`). Rebuilds the canonical event from the snapshotted inbound body and
+    reuses the same inline helper."""
+    prospect = db.get(models.Prospect, prospect_id)
+    if prospect is None:
+        return
+    provider = get_provider()
+    # _handle_ai_reply only reads .body and .state off the canonical event; the
+    # other fields are filled to satisfy the frozen dataclass contract.
+    canonical = CanonicalEvent(
+        event_id=prospect.event_id,
+        prospect_id=prospect_id,
+        state="message_replied",
+        provider=getattr(provider, "name", "unipile"),
+        provider_lead_id=None,
+        ts=datetime.now(timezone.utc),
+        body=inbound_body,
+    )
+    _handle_ai_reply(db, provider, prospect, canonical)
 
 
 def _last_chat_id(prospect: models.Prospect) -> Optional[str]:

@@ -190,3 +190,89 @@ def test_thread_always_includes_canonical_body(db):
     assert seen_threads, "decide_reply was not called"
     texts = [m.text for m in seen_threads[0]]
     assert "are you there?" in texts
+
+
+# -- Live-provider detach: webhook must not run LLM/send work inline ----------
+#
+# A slow synchronous webhook response makes Unipile RETRY (retry storm + double
+# work). For a LIVE provider we detach the follow-up onto run_detached and ack
+# the 200 immediately; for dry-run (tests/local) we keep the fast inline path.
+
+class _LiveProvider:
+    """Minimal live (non-dry-run) provider stand-in for the detach branch."""
+    name = "unipile"
+    dry_run = False
+
+    def __init__(self, canonical):
+        self._canonical = canonical
+
+    def parse_account_status(self, payload):
+        return None
+
+    def normalize_webhook(self, payload):
+        return self._canonical
+
+    def verify_webhook(self, headers, raw):
+        return True
+
+
+def _seeded_canonical(ev, p, state):
+    return CanonicalEvent(
+        event_id=ev.id, prospect_id=p.id, state=state, provider="unipile",
+        provider_lead_id="li_maya", ts=datetime.now(timezone.utc), body="hi", raw={},
+    )
+
+
+def test_live_provider_detaches_auto_dm_instead_of_inline(db):
+    from backend.routes import webhooks
+    ev, p = _seed_prospect(db)
+    canonical = _seeded_canonical(ev, p, "invite_accepted")
+
+    calls = []
+    with patch.object(webhooks, "_apply_canonical_event",
+                      return_value=(True, "applied", p)), \
+         patch.object(webhooks, "run_detached",
+                      side_effect=lambda fn, *a, **k: calls.append((fn.__name__, a))), \
+         patch.object(webhooks, "_trigger_auto_dm") as inline:
+        import asyncio
+        out = asyncio.get_event_loop().run_until_complete(
+            webhooks._handle(_FakeRequest(canonical), db, _LiveProvider(canonical)))
+
+    inline.assert_not_called()               # no inline LLM/send in the request
+    assert out["auto_dm"] == {"detached": True}
+    assert calls and calls[0][0] == "_detached_auto_dm"
+    assert calls[0][1] == (p.id,)
+
+
+def test_live_provider_detaches_ai_reply_instead_of_inline(db):
+    from backend.routes import webhooks
+    ev, p = _seed_prospect(db)
+    canonical = _seeded_canonical(ev, p, "message_replied")
+
+    calls = []
+    with patch.object(webhooks, "_apply_canonical_event",
+                      return_value=(True, "applied", p)), \
+         patch.object(webhooks, "run_detached",
+                      side_effect=lambda fn, *a, **k: calls.append((fn.__name__, a))), \
+         patch.object(webhooks, "_handle_ai_reply") as inline, \
+         patch("backend.agents.relationship.followup_scheduler."
+               "cancel_pending_followups"):
+        import asyncio
+        out = asyncio.get_event_loop().run_until_complete(
+            webhooks._handle(_FakeRequest(canonical), db, _LiveProvider(canonical)))
+
+    inline.assert_not_called()
+    assert out["ai_reply"] == {"detached": True}
+    assert calls and calls[0][0] == "_detached_ai_reply"
+
+
+class _FakeRequest:
+    """Just enough of a Starlette Request for _handle: raw body + headers."""
+    def __init__(self, canonical):
+        self._canonical = canonical
+        self.headers = {}
+
+    async def body(self):
+        # _handle json-loads this; the provider stub's normalize_webhook returns
+        # the CanonicalEvent regardless, so the payload content does not matter.
+        return b"{}"
