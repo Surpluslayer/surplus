@@ -144,6 +144,17 @@ def _trigger_auto_dm(
     if not provider.auto_dm_after_accept or not follow_up_send_enabled("linkedin"):
         return None
 
+    # Out-of-order webhook guard: Unipile can deliver the recipient's REPLY
+    # before the invite_accepted event (observed 2026-07-03: reply at 15:01,
+    # accept at 15:36). If they already wrote to us, a canned opener on top of
+    # their warm reply reads tone-deaf; the conversation is live, the human
+    # (or reply agent) owns it now. Same guard the nudge dispatcher uses.
+    if any((getattr(o, "state", "") or "") in ("message_replied", "replied")
+           for o in (getattr(prospect, "outreach", None) or [])):
+        print(f"  [auto_dm] prospect={prospect.id} already replied; "
+              f"skipping post-accept DM", flush=True)
+        return None
+
     event = prospect.event
     peers = [p.name for p in event.prospects if p.id != prospect.id and
              p.status in ("approved", "contacted", "rsvp")]

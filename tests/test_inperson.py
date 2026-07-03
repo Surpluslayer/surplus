@@ -959,3 +959,29 @@ def test_send_skips_connection_refresh_when_fresh(db, user, monkeypatch):
     db.commit()
     send_capture(p.id, _req(), SendIn(note="hi again"), db, user)
     assert calls == [p.id]
+
+
+def test_auto_dm_skipped_when_reply_arrived_before_accept(db, user, monkeypatch):
+    """Out-of-order webhooks: if the recipient's reply landed BEFORE the
+    invite_accepted event (observed in prod 2026-07-03), the post-accept
+    auto-DM must NOT fire a canned opener on top of their warm reply."""
+    monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")
+    monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "true")
+    from backend.providers.unipile import UnipileProvider
+    from backend.routes.webhooks import _trigger_auto_dm
+
+    ip_event = db.get(models.Event, _make_event(db, user)["event_id"])
+    p = models.Prospect(
+        event_id=ip_event.id, identity="gab-c", name="Gabriel Covington",
+        role="Founder", company="Taco Tech",
+        linkedin_url="https://www.linkedin.com/in/gabriel-covington",
+        linkedin_provider_id="dry_li_gab", note="agents and context windows")
+    db.add(p); db.flush()
+    db.add(models.OutreachLog(prospect_id=p.id, channel="linkedin",
+                              state="message_replied",
+                              body="Great meeting you as well!"))
+    db.commit(); db.refresh(p)
+
+    provider = UnipileProvider(dry_run=True, account_id="operator_acct")
+    assert _trigger_auto_dm(db, provider, p) is None
+    assert [o for o in p.outreach if o.state in ("message_sent", "dry_run_queued")] == []
