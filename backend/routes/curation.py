@@ -318,25 +318,39 @@ def import_attendees(
     )
 
 
+# Hard ceiling on how many attendee rows a single list call materializes +
+# serializes. A runaway import (thousands of rows) otherwise loads the whole
+# table into memory and builds thousands of pydantic objects in the request
+# path, which is slow enough to pin a worker. The UI ranks by fit_score and
+# shows the top slice; 2000 is far above any real guest list.
+_ATTENDEE_LIST_MAX = 2000
+
+
 @router.get("/{event_id}/curation/attendees",
             response_model=list[AttendeeOut])
 def list_attendees(
     event_id: int,
     list_source: Optional[str] = None,
     rsvp_status: Optional[str] = None,
+    limit: int = _ATTENDEE_LIST_MAX,
     db: Session = Depends(get_db),
     user: models.User = Depends(current_user),
 ):
     """All attendees for the event. Optional filters narrow by list_source
-    or rsvp_status (handy for "show me only the alumni rows")."""
+    or rsvp_status (handy for "show me only the alumni rows").
+
+    Bounded by `limit` (capped at _ATTENDEE_LIST_MAX) so a runaway import can't
+    make this response unboundedly large and pin a worker; rows are fit-ranked
+    so the cap keeps the most relevant attendees."""
     ev = get_owned_event(event_id, user, db)
+    limit = max(1, min(limit, _ATTENDEE_LIST_MAX))
     q = db.query(models.Attendee).filter(models.Attendee.event_id == ev.id)
     if list_source:
         q = q.filter(models.Attendee.list_source == list_source)
     if rsvp_status:
         q = q.filter(models.Attendee.rsvp_status == rsvp_status)
     rows = q.order_by(models.Attendee.fit_score.desc(),
-                      models.Attendee.created_at.asc()).all()
+                      models.Attendee.created_at.asc()).limit(limit).all()
     return [AttendeeOut.of(a) for a in rows]
 
 

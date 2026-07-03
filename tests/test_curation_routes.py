@@ -339,3 +339,24 @@ def test_run_enrich_all_is_fail_soft_per_row(db, user_and_event):
         curation._run_enrich_all(db, ev.id, False)   # must not raise
 
     assert len(seen) == 3                       # all rows attempted despite one failure
+
+
+def test_list_attendees_is_bounded_by_limit(db, user_and_event):
+    """list_attendees must cap how many rows it materializes so a runaway import
+    can't build an unbounded response in the request path. The cap is clamped to
+    _ATTENDEE_LIST_MAX and rows come back fit-ranked."""
+    from backend.routes.curation import list_attendees, _ATTENDEE_LIST_MAX
+    user, ev = user_and_event
+    for i in range(15):
+        db.add(models.Attendee(event_id=ev.id, name=f"A{i}",
+                               email=f"a{i}@x.com", fit_score=i))
+    db.commit()
+
+    top5 = list_attendees(ev.id, limit=5, db=db, user=user)
+    assert len(top5) == 5
+    assert top5[0].fit_score == 14           # fit-ranked, highest first
+
+    # An absurd limit is clamped to the hard ceiling, never honored verbatim.
+    everyone = list_attendees(ev.id, limit=10_000_000, db=db, user=user)
+    assert len(everyone) == 15               # only 15 exist
+    assert 10_000_000 > _ATTENDEE_LIST_MAX   # ceiling would have applied at scale
