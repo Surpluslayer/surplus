@@ -80,6 +80,15 @@ from sqlalchemy.exc import TimeoutError as _SAPoolTimeout
 from fastapi.responses import JSONResponse as _JSONResponse
 
 
+# Process start time (monotonic wall clock). Exposed on /api/health as
+# uptime_seconds: a value that keeps resetting to near-zero across polls means
+# the container is crash-looping (ON_FAILURE restarts) even while each
+# individual probe returns 200 -- the silent-restart signature that a plain
+# healthcheck misses. This is how the NEXT outage leaves a fingerprint.
+import time as _time
+_PROC_START = _time.time()
+
+
 app = FastAPI(
     title="surplus · event ROI engine",
     description="AI prospecting, autonomous outreach, symbiotic matching, and "
@@ -461,6 +470,7 @@ def health(deep: bool = False):
         # value that hasn't changed after a deploy means the build was a full
         # cache hit / stale source — i.e. your new code did NOT ship.
         "build_time": build_time,
+        "uptime_seconds": round(_time.time() - _PROC_START, 1),
         # Which BookApp bundle is in this image + whether it's the redesign.
         # frontend_has_redesign==false with a fresh build_time => the BACKEND
         # rebuilt but the FRONTEND stage was served from cache (stale dist).
