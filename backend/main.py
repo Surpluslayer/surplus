@@ -16,7 +16,8 @@ from .env_loader import load_env
 
 load_env()
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Header, Depends
+from fastapi import Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -480,8 +481,17 @@ def health(deep: bool = False):
     }
 
 
+
+def __admin_dep(x_admin_token=Header(default=None, alias="X-Admin-Token")):
+    """Gate the operator diagnostics endpoints (billed upstream calls) behind
+    the admin token, 404-on-miss like routes/admin. Unauthenticated access was
+    a cost-DoS + integration-config disclosure (security review H-2)."""
+    from .routes.admin import _require_admin_token
+    return _require_admin_token(x_admin_token)
+
+
 @app.get("/api/diagnostics/anthropic", tags=["meta"])
-def anthropic_diagnostics():
+def anthropic_diagnostics(_: None = Depends(__admin_dep)):
     """
     Tests outbound connectivity to api.anthropic.com from inside the
     container. Useful when prospecting is silently returning 0 candidates
@@ -539,6 +549,7 @@ def anthropic_diagnostics():
 
 @app.get("/api/diagnostics/exa/discover", tags=["meta"])
 def exa_discover_probe(
+    _: None = Depends(__admin_dep),
     source: str = "linkedin",
     role: str = "ML platform engineer",
     seniority: str = "Senior",
@@ -630,7 +641,7 @@ def _exa_raw_results(source: str, icp: dict, max_candidates: int) -> list:
 
 
 @app.get("/api/diagnostics/exa", tags=["meta"])
-def exa_diagnostics():
+def exa_diagnostics(_: None = Depends(__admin_dep)):
     """
     Tests outbound connectivity to api.exa.ai from inside the container.
     Useful when /prospect is silently returning 0 LinkedIn candidates :

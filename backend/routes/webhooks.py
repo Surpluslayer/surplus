@@ -11,6 +11,7 @@ Idempotency: dedup by (prospect_id, state, provider_lead_id).
 Unknown events: 200 + applied=false (never crash, never trigger retry storms).
 """
 from __future__ import annotations
+import hmac
 import json
 from typing import Optional
 
@@ -434,12 +435,16 @@ async def brightdata_webhook(request: Request, db: Session = Depends(get_db),
     from ..providers import brightdata
     from ..agents.relationship import updates_engine
 
+    # Fail CLOSED, like the Unipile verifier: no secret configured -> reject, so
+    # an attacker can't forge profile/post "updates" written onto any contact
+    # matched by linkedin_url. Set BRIGHTDATA_WEBHOOK_SECRET to enable the feed.
     secret = brightdata.webhook_secret()
-    if secret:
-        auth = (request.headers.get("authorization")
-                or request.headers.get("Authorization") or "").strip()
-        if auth != f"Bearer {secret}":
-            raise HTTPException(status_code=401, detail="bad webhook secret")
+    if not secret:
+        raise HTTPException(status_code=503, detail="brightdata webhook not configured")
+    auth = (request.headers.get("authorization")
+            or request.headers.get("Authorization") or "").strip()
+    if not hmac.compare_digest(auth, f"Bearer {secret}"):
+        raise HTTPException(status_code=401, detail="bad webhook secret")
 
     try:
         payload = await request.json()

@@ -73,8 +73,21 @@ def send_verification_code(db: DbSession, user: User) -> bool:
         text=f"Your surplus verification code is {code} (expires in 10 minutes).")
 
 
-def _sign(purpose: str, uid: int, ttl: int) -> str:
-    return oauth.sign_state({"purpose": purpose, "uid": int(uid), "exp": time.time() + ttl})
+def _sign(purpose: str, uid: int, ttl: int, bind: str = "") -> str:
+    p = {"purpose": purpose, "uid": int(uid), "exp": time.time() + ttl}
+    if bind:
+        p["pb"] = bind
+    return oauth.sign_state(p)
+
+
+def _pw_bind(user: User) -> str:
+    """A short fingerprint of the user's CURRENT password_hash. Mixed into a
+    reset token so that ANY successful reset (which changes password_hash)
+    invalidates every outstanding token: single-use + no-replay, with no new
+    column. Empty for accounts with no password yet."""
+    import hashlib
+    h = (getattr(user, "password_hash", None) or "").encode()
+    return hashlib.sha256(h).hexdigest()[:16] if h else ""
 
 
 def _verify(token: str, purpose: str) -> int:
@@ -93,7 +106,7 @@ def forgot_password(body: ForgotBody, request: Request,
     email = (body.email or "").strip().lower()
     user = db.query(User).filter(User.email == email).first() if email else None
     if user is not None and user.password_hash:   # only password accounts can reset
-        token = _sign("reset_password", user.id, _TTL_RESET)
+        token = _sign("reset_password", user.id, _TTL_RESET, bind=_pw_bind(user))
         link = f"{_surplus_base_url(request)}/reset-password?token={token}"
         email_sender.send_email(
             to=user.email, subject="Reset your surplus password",
@@ -113,7 +126,19 @@ def reset_password(body: ResetBody, db: DbSession = Depends(get_db)) -> JSONResp
     user = db.get(User, uid) if uid else None
     if user is None:
         raise HTTPException(400, "invalid or expired reset link")
+    # Single-use: the token was bound to the password_hash at issue time. If it
+    # no longer matches (a prior reset already consumed it, or the hash changed),
+    # reject: a captured link can't be replayed and stale tokens die on any reset.
+    payload = oauth.verify_state(body.token or "") or {}
+    if payload.get("pb", "") != _pw_bind(user):
+        raise HTTPException(400, "this reset link has already been used")
     user.password_hash = hash_password(pw)
+    # Revoke every existing session: a resetter must not inherit the victim's
+    # live sessions, and the victim's own stale sessions are cut on takeover.
+    from ..models import Session as _Session
+    (db.query(_Session)
+       .filter(_Session.user_id == user.id, _Session.revoked_at.is_(None))
+       .update({"revoked_at": datetime.now(timezone.utc)}))
     db.commit()
     return JSONResponse({"ok": True})
 
