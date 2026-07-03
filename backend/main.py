@@ -40,7 +40,48 @@ from .routes import (
 
 
 @asynccontextmanager
+def _validate_startup_config() -> list[str]:
+    """Check the env vars the app actually READS are present + well-formed, and
+    log a loud banner for anything missing. This is the boot-time counterpart to
+    the /api/health config warnings: config drift (PORT silently vanished on
+    2026-07-03 and caused a 30-min outage) should be screamed at startup, not
+    discovered when a user hits a broken flow. In prod (DATABASE_URL set) a
+    missing takeover-critical secret is fatal; other gaps are logged and run
+    degraded so a single missing integration key does not black out the app."""
+    prod = bool((os.environ.get("DATABASE_URL") or "").strip())
+    def _missing(name: str) -> bool:
+        return not (os.environ.get(name) or "").strip()
+
+    fatal, degraded = [], []
+    # Fatal in prod: without these, auth/data are broken or insecure.
+    if prod and len((os.environ.get("SURPLUS_OAUTH_STATE_SECRET") or "").strip()) < 32:
+        fatal.append("SURPLUS_OAUTH_STATE_SECRET (<32 bytes: signs reset tokens)")
+    # Degraded: the app runs, but a whole feature is dark. Surface loudly.
+    for name, feature in (
+        ("UNIPILE_DSN", "LinkedIn/email/WhatsApp"),
+        ("UNIPILE_API_KEY", "LinkedIn/email/WhatsApp"),
+        ("ANTHROPIC_API_KEY", "all AI drafting"),
+        ("ADMIN_TOKEN", "cron + admin ops + deep health"),
+    ):
+        if _missing(name):
+            degraded.append(f"{name} ({feature} disabled)")
+
+    if fatal:
+        banner = "STARTUP CONFIG FATAL: " + "; ".join(fatal)
+        print("=" * 70 + f"\n  {banner}\n" + "=" * 70, flush=True)
+        raise RuntimeError(banner)  # fail fast, loudly, in prod
+    if degraded:
+        print("=" * 70, flush=True)
+        for d in degraded:
+            print(f"  [startup] CONFIG WARNING: {d}", flush=True)
+        print("=" * 70, flush=True)
+    else:
+        print("  [startup] config validated: all critical env present.", flush=True)
+    return degraded
+
+
 async def lifespan(app: FastAPI):
+    _validate_startup_config()
     init_db()
     # One-shot backfill for User rows created before the
     # _extract_profile_fields camelCase fix. Idempotent — re-runs are no-ops.
