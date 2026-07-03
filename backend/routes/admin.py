@@ -821,3 +821,92 @@ def backfill_contact_links(
     print(f"  [admin.backfill] contact links: linked={linked} "
           f"skipped={skipped} failed={failed}", flush=True)
     return {"linked": linked, "skipped": skipped, "failed": failed}
+
+
+class CleanupEmailContactsBody(BaseModel):
+    """Delete contacts whose ONLY footprint is the email-sync import :
+    inbound-only promotional/newsletter senders that were minted as contacts
+    before the two-way filter existed. dry_run defaults True so the operator
+    previews the counts + a name sample before anything is touched."""
+    dry_run: bool = True
+
+
+@router.post("/cleanup-email-contacts")
+def cleanup_email_contacts(
+    body: CleanupEmailContactsBody,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """Remove email-sync-only junk contacts from every user's book.
+
+    A contact is deletable ONLY when ALL of these hold:
+      (a) it was created by the email sync (primary_identity_key = "em:...")
+      (b) zero linked prospects
+      (c) its interactions are exactly the single source_type="email_sync"
+          rollup (nothing manual, no notes, no other channels)
+      (d) no outbound correspondence recorded (rollup meta n_out == 0) and no
+          queued/sent OutgoingMessage rows
+      (e) not VIP, no manually linked email thread, no ContactFact memory,
+          no ContactIdentity rows (another system touched the person)
+    plus the extra guard: the address looks automated (junk local part) OR
+    the no-outbound test held. Anything uncertain (unparseable rollup meta)
+    is kept and counted, never deleted. The real run deletes the contact and
+    its email_sync rollup row only."""
+    import json as _json
+
+    from ..agents.relationship.email_sync import is_junk_address
+
+    candidates = (db.query(models.Contact)
+                  .filter(models.Contact.primary_identity_key.like("em:%"))
+                  .order_by(models.Contact.id.asc())
+                  .all())
+    to_delete: list[tuple[models.Contact, models.RelationshipInteraction]] = []
+    kept = 0
+    for c in candidates:
+        rollups = [i for i in c.interactions if i.source_type == "email_sync"]
+        others = [i for i in c.interactions if i.source_type != "email_sync"]
+        if len(rollups) != 1 or others:        # (c) : any other touch = real
+            kept += 1
+            continue
+        if c.vip or c.email_thread_id:         # (e) : starred / host-linked
+            kept += 1
+            continue
+        if c.prospects:                        # (b) : event pipeline knows them
+            kept += 1
+            continue
+        if db.query(models.ContactFact).filter_by(contact_id=c.id).count():
+            kept += 1                          # (e) : has memory facts
+            continue
+        if db.query(models.ContactIdentity).filter_by(contact_id=c.id).count():
+            kept += 1                          # (e) : identity spine touched them
+            continue
+        if db.query(models.OutgoingMessage).filter_by(contact_id=c.id).count():
+            kept += 1                          # (d) : we messaged them
+            continue
+        try:                                   # (d) : rollup says inbound-only
+            n_out = int(_json.loads(rollups[0].meta_json or "{}").get("n_out") or 0)
+        except (ValueError, TypeError):
+            kept += 1                          # uncertain -> keep, never guess
+            continue
+        if n_out > 0:
+            kept += 1
+            continue
+        # Extra guard (explicit, so a future reorder can't drop it): automated
+        # local part OR the no-outbound test must hold before deletion.
+        if not (is_junk_address(c.email or "") or n_out == 0):
+            kept += 1
+            continue
+        to_delete.append((c, rollups[0]))
+
+    if body.dry_run:
+        return {"dry_run": True, "would_delete": len(to_delete), "kept": kept,
+                "sample": [(c.name or c.email or f"contact:{c.id}")
+                           for c, _r in to_delete[:20]]}
+
+    for c, rollup in to_delete:
+        db.delete(rollup)
+        db.delete(c)
+    db.commit()
+    print(f"  [admin.cleanup-email-contacts] deleted={len(to_delete)} "
+          f"kept={kept}", flush=True)
+    return {"dry_run": False, "deleted": len(to_delete), "kept": kept}
