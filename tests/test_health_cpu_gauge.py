@@ -40,6 +40,9 @@ def _run(monkeypatch, usage_seq, times, cpu_max="200000 100000"):
     tv = iter(times)
     monkeypatch.setattr(builtins, "open", fake_open)
     monkeypatch.setattr(m._time, "time", lambda: next(tv, times[-1]))
+    # Pin boot 10s before the first call so the since-boot average is a known
+    # quantity (the real _PROC_START is stamped at import, far from our clock).
+    monkeypatch.setattr(m, "_PROC_START", times[0] - 10.0)
     m._CPU_SAMPLE.clear()
     h = {"X-Admin-Token": "testtok"}
     with TestClient(m.app) as c:
@@ -49,12 +52,16 @@ def _run(monkeypatch, usage_seq, times, cpu_max="200000 100000"):
     return r1, r2
 
 
-def test_first_call_null_second_call_computes(monkeypatch):
-    # +10 CPU-seconds over 10s wall on 2 cores = 50%.
+def test_first_call_uses_since_boot_second_call_windows(monkeypatch):
+    # First call: no prior sample, so used_pct falls back to the since-boot
+    # average (never null). usage 0 -> 0%. Second call: +10 CPU-s over 10s on
+    # 2 cores = 50% windowed, which is preferred over the since-boot average.
     r1, r2 = _run(monkeypatch, [0, 10_000_000], [1000.0, 1000.0, 1010.0, 1010.0])
-    assert r1["cpu"]["used_pct"] is None          # no prior sample
+    assert r1["cpu"]["used_pct"] == 0.0           # since-boot, NOT null
+    assert r1["cpu"]["window_pct"] is None         # no window yet
     assert r1["cpu"]["cores"] == 2.0
-    assert r2["cpu"]["used_pct"] == 50.0
+    assert r2["cpu"]["used_pct"] == 50.0           # windowed preferred
+    assert r2["cpu"]["window_pct"] == 50.0
     assert r2["cpu"]["window_s"] == 10.0
     assert not [w for w in r2["warnings"] if w.startswith("cpu")]  # 50 < 60
 

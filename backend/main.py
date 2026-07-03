@@ -572,22 +572,38 @@ def health(deep: bool = False,
                 _ncpu = float(os.cpu_count() or 1)
             _now = _time.time()
             if _usage_usec is not None:
+                # Average CPU since boot: computable from a SINGLE reading
+                # (cumulative usage / elapsed / cores), so used_pct is never null
+                # even on the very first call or when the load balancer routes
+                # this call to a replica that has no prior sample. Robust but
+                # coarse (whole-life average).
+                _up = max(_now - _PROC_START, 0.001)
+                _avg = round(100 * (_usage_usec / 1e6) / (_up * _ncpu), 1)
+                _avg = max(0.0, min(_avg, 100.0))
+                # Windowed CPU since the last deep call: sharper / more recent,
+                # but only available once this process has a prior sample.
                 _prev = _CPU_SAMPLE.get("usage_usec")
                 _prev_ts = _CPU_SAMPLE.get("ts")
-                cpu_stats = {"cores": round(_ncpu, 2), "used_pct": None,
-                             "window_s": None}
+                _win_pct = None
+                _wall = None
                 if _prev is not None and _prev_ts is not None and _now > _prev_ts:
                     _cpu_secs = (_usage_usec - _prev) / 1e6
                     _wall = _now - _prev_ts
-                    _cpct = round(100 * _cpu_secs / (_wall * _ncpu), 1)
-                    # Clamp: a clock/counter hiccup shouldn't report >100 or <0.
-                    _cpct = max(0.0, min(_cpct, 100.0))
-                    cpu_stats["used_pct"] = _cpct
-                    cpu_stats["window_s"] = round(_wall, 1)
-                    if _cpct >= 60:
-                        warnings.append(
-                            f"cpu {_cpct}% of {round(_ncpu,2)} cores over "
-                            f"{round(_wall)}s -- sustained load, consider scaling")
+                    _win_pct = max(0.0, min(
+                        round(100 * _cpu_secs / (_wall * _ncpu), 1), 100.0))
+                # Prefer the windowed (recent) number; fall back to since-boot.
+                _cpct = _win_pct if _win_pct is not None else _avg
+                cpu_stats = {"cores": round(_ncpu, 2),
+                             "used_pct": _cpct,
+                             "window_pct": _win_pct,
+                             "avg_since_boot_pct": _avg,
+                             "window_s": round(_wall, 1) if _wall else None}
+                if _cpct >= 60:
+                    _over = (f"over {round(_wall)}s" if _wall
+                             else f"avg since boot ({round(_up)}s)")
+                    warnings.append(
+                        f"cpu {_cpct}% of {round(_ncpu,2)} cores {_over} "
+                        f"-- sustained load, consider scaling")
                 _CPU_SAMPLE["usage_usec"] = _usage_usec
                 _CPU_SAMPLE["ts"] = _now
         except Exception:  # noqa: BLE001 -- non-linux / no cgroup
