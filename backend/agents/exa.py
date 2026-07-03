@@ -393,6 +393,22 @@ def discover_via_exa(source: str, icp: dict, max_candidates: int = 5,
         with httpx.Client(timeout=20.0) as client:
             resp = client.post("https://api.exa.ai/search",
                                headers=headers, json=body)
+            # Exa (unlike Unipile) has no built-in backoff : a 429 here would
+            # otherwise sink discovery to []. Retry a bounded couple of times,
+            # honoring Retry-After when present, then give up gracefully. Kept
+            # conservative so we never hammer the API.
+            for _attempt in range(2):
+                if resp.status_code != 429:
+                    break
+                ra = (resp.headers.get("retry-after") or "").strip()
+                try:
+                    delay = min(float(ra), 5.0) if ra else 1.0
+                except ValueError:
+                    delay = 1.0
+                print(f"  [exa] {source} 429, backing off {delay}s and retrying")
+                time.sleep(delay)
+                resp = client.post("https://api.exa.ai/search",
+                                   headers=headers, json=body)
     except Exception as exc:  # noqa: BLE001
         print(f"  [exa] {source} search failed: {type(exc).__name__}: {exc}")
         failure_log.report_failure(

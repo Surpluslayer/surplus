@@ -43,7 +43,13 @@ def _job_view(job: models.Job) -> dict:
         "runner": job.runner,
     }
     if job.status == "done" and job.result_json:
-        out["result"] = json.loads(job.result_json)
+        try:
+            out["result"] = json.loads(job.result_json)
+        except (ValueError, TypeError):
+            # A truncated / corrupt result_json (container killed mid-write)
+            # must not 500 the poller. Surface the raw payload so the client
+            # can still finish, rather than raising.
+            out["result_raw"] = job.result_json
     if job.status == "error":
         out["error"] = job.error
     return out

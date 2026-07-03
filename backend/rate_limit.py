@@ -36,6 +36,26 @@ from fastapi import HTTPException, Request, status
 # defaultdict(deque) so a new caller's bucket lazily appears.
 _WINDOWS: dict[str, deque[float]] = defaultdict(deque)
 
+# Longest window we ever hand out. A key whose newest timestamp is older than
+# this can never gate a future request, so it is safe to evict. Kept generous
+# so a legitimate slow-drip caller is never dropped mid-window.
+_MAX_WINDOW_S = 3600
+
+
+def _sweep_stale(now: float) -> None:
+    """Evict fully-expired keys so distinct IPs (every one, behind Cloudflare)
+    don't leave permanent buckets and leak memory unbounded. A key is stale
+    once its NEWEST timestamp has aged past the widest possible window : nothing
+    it holds can gate a future request. Bounded work : iterate a snapshot of the
+    keys once, drop empties + stale ones."""
+    cutoff = now - _MAX_WINDOW_S
+    for k in list(_WINDOWS.keys()):
+        b = _WINDOWS.get(k)
+        if b is None:
+            continue
+        if not b or b[-1] < cutoff:
+            _WINDOWS.pop(k, None)
+
 
 def _client_ip(request: Request) -> str:
     """Best-effort real-client IP.
@@ -75,6 +95,14 @@ def per_ip_rate_limit(
         cutoff = now - window_s
         while bucket and bucket[0] < cutoff:
             bucket.popleft()
+        if not bucket:
+            # This key's window fully expired before this request. Drop the
+            # empty bucket now so a one-shot IP doesn't leave a permanent key ;
+            # we re-create a fresh one below. Also piggyback a bounded sweep of
+            # other stale keys so never-returning IPs don't accumulate either.
+            _WINDOWS.pop(key, None)
+            _sweep_stale(now)
+            bucket = _WINDOWS[key]
         if len(bucket) >= limit:
             # Compute the wait time : when does the oldest entry age out?
             wait = max(1, int(bucket[0] + window_s - now) + 1)

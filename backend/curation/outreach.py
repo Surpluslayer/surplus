@@ -75,7 +75,7 @@ def compose_for_attendee(
     """
     enrichment = enrich_mod.get_enrichment(attendee)
     framing = _framing(event)
-    first_name = (attendee.name or "there").split()[0]
+    first_name = ((attendee.name or "").strip().split() or ["there"])[0]
 
     if not (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
         claude_log.log_disabled(

@@ -17,7 +17,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .. import billing_plans as bp
 from .. import models
@@ -172,14 +172,24 @@ def list_relationships(
     """
     q = (db.query(models.Prospect)
            .join(models.Event, models.Prospect.event_id == models.Event.id)
-           .filter(models.Event.user_id == user.id))
+           .filter(models.Event.user_id == user.id)
+           # Eager-load the per-row links relationship_summary() reads, so a big
+           # book is 3 batched queries instead of N+1 lazy loads : a 500-person
+           # book must not 524 behind Cloudflare's 100s cap.
+           .options(
+               selectinload(models.Prospect.conversion),
+               selectinload(models.Prospect.outreach),
+               selectinload(models.Prospect.event),
+           ))
     if event_id is not None:
         q = q.filter(models.Prospect.event_id == event_id)
     if contact_type:
         q = q.filter(models.Prospect.contact_type == contact_type)
 
     rows = []
-    for p in q.all():
+    # Sane cap : the biggest realistic book still renders ; an unbounded scan
+    # cannot hang a request until the edge times it out.
+    for p in q.limit(1000).all():
         summary = relationships.relationship_summary(p)
         if stage and summary["relationship_stage"] != stage:
             continue
@@ -434,7 +444,12 @@ def import_conversations_status(
         raise HTTPException(404, "import job not found")
     out: dict = {"job_id": job.id, "status": job.status}
     if job.status == "done" and job.result_json:
-        out["result"] = json.loads(job.result_json)
+        try:
+            out["result"] = json.loads(job.result_json)
+        except (ValueError, TypeError):
+            # A truncated / corrupt result_json must not 500 the poller ; hand
+            # back the raw payload so the import screen can still resolve.
+            out["result_raw"] = job.result_json
     elif job.status in ("queued", "running") and job.result_json:
         try:
             out["progress"] = json.loads(job.result_json)

@@ -416,7 +416,7 @@ def _compose_template(prospect, host_bio, framing) -> Message:
     """Deterministic fallback : the original template-based composition,
     minus the peer-reveal line (kept aligned with the LLM path, which no
     longer names peers either)."""
-    first = (prospect.name or "there").split()[0]
+    first = ((prospect.name or "").strip().split() or ["there"])[0]
     domain = (prospect.works_on or "your space").replace("-", " ")
 
     note_body = (
@@ -603,7 +603,7 @@ def _compose_inperson_template(prospect, event) -> Message:
     as the fallback when the LLM call fails. Reads as a post-meeting note and
     weaves in prospect.note when present. Connection note is run through
     _truncate_note so it always fits LinkedIn's connect-request cap."""
-    first = (prospect.name or "there").split()[0]
+    first = ((prospect.name or "").strip().split() or ["there"])[0]
     label = _event_label(event)
     note = (getattr(prospect, "note", None) or "").strip()
     # Drop a conversational lead-in the operator may have typed ("we talked
@@ -674,7 +674,7 @@ def compose_followup(prospect, event, prior_message: str | None = None) -> str:
     and the event framing. `prior_message` (the first DM text) only shifts the
     opener to acknowledge a prior touch : the template can't summarize free
     text, so the real first-message grounding happens in the LLM path."""
-    first = (prospect.name or "there").split()[0]
+    first = ((prospect.name or "").strip().split() or ["there"])[0]
     framing = _framing(event)
     hook = _followup_hook(prospect)
     opener = (f"Hey {first} : circling back on the {event.format.lower()}."
