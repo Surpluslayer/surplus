@@ -104,10 +104,6 @@ def init_db() -> None:
     """
     from . import models  # noqa: F401  (import registers the models)
     from . import models_monitoring  # noqa: F401  (continuous-enrichment tables)
-    try:
-        Base.metadata.create_all(ENGINE)
-    except Exception as exc:  # noqa: BLE001
-        print(f"  [init_db] create_all failed: {type(exc).__name__}: {exc}")
 
     migrations = [
         _migrate_event_user_id,
@@ -161,6 +157,43 @@ def init_db() -> None:
         _migrate_user_linkedin_chat_synced_at,
         _migrate_user_autonomy_mode,
     ]
+
+    # Schema-revision sentinel: the loop below plus create_all's checkfirst is
+    # HUNDREDS of inspector round-trips. On a replica far from the DB (EU
+    # replica, US Postgres) that is MINUTES of boot time, which blew the
+    # deploy healthcheck window across 6+ consecutive deploys on 2026-07-03.
+    # The schema only changes when this list changes, so: one query reads the
+    # stamped revision, and a match skips ALL of it. The revision is
+    # len(migrations), so appending a migration re-runs the loop with no
+    # manual bump. FORCE_DB_MIGRATIONS=1 overrides for ops.
+    rev = str(len(migrations))
+    if (os.environ.get("FORCE_DB_MIGRATIONS") or "").strip() not in ("1", "true"):
+        try:
+            from sqlalchemy import text as _text
+            with ENGINE.connect() as _conn:
+                got = _conn.execute(_text(
+                    "SELECT value FROM schema_meta WHERE key = 'schema_rev'"
+                )).scalar()
+            if got == rev:
+                # Schema already at this revision: skip create_all + the whole
+                # migration loop (the boot-time win). The operator seed below
+                # is DATA, not schema, and tests reset data between runs, so
+                # it must run on every init_db call: cheap (one SELECT when
+                # the operator row already exists).
+                try:
+                    _ensure_operator_user_and_backfill()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  [init_db] operator backfill failed: "
+                          f"{type(exc).__name__}: {exc}")
+                return
+        except Exception:  # noqa: BLE001 -- table missing / first boot: run all
+            pass
+
+    try:
+        Base.metadata.create_all(ENGINE)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [init_db] create_all failed: {type(exc).__name__}: {exc}")
+
     for migration in migrations:
         try:
             migration()
@@ -188,6 +221,20 @@ def init_db() -> None:
         _ensure_operator_user_and_backfill()
     except Exception as exc:  # noqa: BLE001
         print(f"  [init_db] operator backfill failed: {type(exc).__name__}: {exc}")
+
+    # All migrations ran (benign races swallowed, real failures raised above):
+    # stamp the revision so every subsequent boot on this schema is one query.
+    try:
+        from sqlalchemy import text as _text
+        with ENGINE.begin() as _conn:
+            _conn.execute(_text(
+                "CREATE TABLE IF NOT EXISTS schema_meta "
+                "(key VARCHAR(64) PRIMARY KEY, value VARCHAR(255))"))
+            _conn.execute(_text(
+                "INSERT INTO schema_meta (key, value) VALUES ('schema_rev', :v) "
+                "ON CONFLICT (key) DO UPDATE SET value = :v"), {"v": rev})
+    except Exception as exc:  # noqa: BLE001 -- stamping is best-effort
+        print(f"  [init_db] schema_rev stamp failed: {type(exc).__name__}: {exc}")
 
 
 def _migrate_user_google_sub() -> None:

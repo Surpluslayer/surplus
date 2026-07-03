@@ -43,11 +43,22 @@ async def lifespan(app: FastAPI):
     # One-shot backfill for User rows created before the
     # _extract_profile_fields camelCase fix. Idempotent — re-runs are no-ops.
     try:
+        import asyncio as _asyncio
+
         from .routes.auth import backfill_user_dedup_keys
-        await backfill_user_dedup_keys()
+
+        async def _backfill_quietly():
+            try:
+                await backfill_user_dedup_keys()
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [startup] backfill_user_dedup_keys failed: {exc}")
+
+        # Fire-and-forget: this makes Unipile HTTP calls, and BOOT MUST NEVER
+        # WAIT ON THE NETWORK -- the healthcheck window is unforgiving and a
+        # hung upstream must not keep uvicorn from accepting.
+        _asyncio.get_running_loop().create_task(_backfill_quietly())
     except Exception as exc:  # noqa: BLE001
-        # Don't let a backfill hiccup block startup; log and continue.
-        print(f"  [startup] backfill_user_dedup_keys failed: {exc}")
+        print(f"  [startup] backfill scheduling failed: {exc}")
     # In-process updates scheduler (replaces the external GitHub-Actions cron):
     # a daemon thread that periodically runs the tiered "what's new" sweep. It's
     # claim-guarded so multiple workers/replicas don't double-fire.
