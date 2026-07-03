@@ -16,6 +16,14 @@ How it works
          not a correspondence)
   3. Aggregate per counterpart address: name, last inbound, last outbound,
      message counts.
+  3b. TWO-WAY FILTER (product rule): an email sender only belongs in the
+     relationship book when there is REAL correspondence : the user has sent
+     them at least one email (outreach) or the thread is genuinely two-way.
+     Inbound-only senders (newsletters, promos, notifications, cold inbound)
+     never become NEW contacts; the outbound set built from the scan window
+     (mails where role == "sent" / from == own address) is the allowlist.
+     EXISTING contacts still get their rollup refreshed either way, so real
+     relationships are never orphaned by the filter.
   4. Upsert each counterpart into the Contact spine via the SAME identity
      scheme the rest of the app uses (identity_keys -> "em:<salted hash>"),
      and record ONE rollup RelationshipInteraction per contact carrying the
@@ -30,13 +38,19 @@ a flaky mailbox can't break the connect flow that auto-kicks this.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from ... import models
 
+log = logging.getLogger(__name__)
+
 # Senders that are machines, not relationships. Matched as a PREFIX of the
-# local part (so "noreply+tag@x" is caught) after lowercasing.
+# local part (so "noreply+tag@x" is caught) after lowercasing. This is the
+# belt-and-suspenders heuristic on top of the two-way filter: even an address
+# the user has written to (an auto-ack they replied to by mistake) is skipped
+# when its local part is obviously automated.
 _JUNK_LOCALPART_PREFIXES = (
     "no-reply", "noreply", "no_reply", "do-not-reply", "donotreply",
     "notifications", "notification", "notify", "mailer-daemon", "postmaster",
@@ -45,6 +59,7 @@ _JUNK_LOCALPART_PREFIXES = (
     "help", "billing", "receipts", "receipt", "invoice", "orders",
     "accounts", "account", "admin", "team", "careers", "jobs", "security",
     "feedback", "calendar-notification", "drive-shares", "comments",
+    "automated", "unsubscribe",
 )
 # More than this many recipients = an announcement / thread blast, not a
 # 1:1 correspondence worth a contact row.
@@ -175,7 +190,9 @@ def sync_email_contacts(
     from ...models import list_email_accounts
 
     stats = {"scanned": 0, "people": 0, "contacts_created": 0,
-             "contacts_updated": 0, "skipped_junk": 0, "error": None}
+             "contacts_updated": 0, "skipped_junk": 0,
+             "skipped_promotional": 0, "skipped_no_outbound": 0,
+             "error": None}
 
     # Injected fetcher : single-source path (unchanged behavior for tests /
     # the Gmail-OAuth sync). Uses the user's mirrored own-address.
@@ -243,7 +260,14 @@ def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
                 stats["scanned"] += 1
                 direction, people = counterparts_of(mail, own)
                 if direction == "skip":
-                    stats["skipped_junk"] += 1
+                    # Classify the skip so ops can see WHAT the mailbox is
+                    # full of: promotional/automated senders vs everything
+                    # else (fan-out blasts, self-mail, malformed).
+                    from_addr, _ = _attendee(mail.get("from_attendee"))
+                    if from_addr and from_addr != own and is_junk_address(from_addr):
+                        stats["skipped_promotional"] += 1
+                    else:
+                        stats["skipped_junk"] += 1
                     continue
                 when = _parse_date(mail.get("date"))
                 for addr, name in people:
@@ -271,11 +295,25 @@ def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
         keys = identity_keys(email=addr, linkedin_url="")
         if not keys:
             continue
-        stats["people"] += 1
+        # Belt-and-suspenders: counterparts_of already drops junk senders, but
+        # never let an automated local part through here either (covers
+        # outbound-set edge cases like a reply sent to an auto-ack address).
+        if is_junk_address(addr):
+            stats["skipped_promotional"] += 1
+            continue
         primary = keys[0]
         contact = (db.query(models.Contact)
                    .filter_by(user_id=user.id, primary_identity_key=primary)
                    .first())
+        # TWO-WAY FILTER: only mint a NEW contact when the user has written to
+        # this address at least once in the scan window (the outbound set).
+        # Inbound-only senders (newsletters, promos, cold inbound) are skipped
+        # entirely: no contact, no rollup. An EXISTING contact still gets its
+        # rollup refreshed below, so real relationships are never orphaned.
+        if contact is None and a["n_out"] == 0:
+            stats["skipped_no_outbound"] += 1
+            continue
+        stats["people"] += 1
         if contact is None:
             contact = models.Contact(
                 user_id=user.id, primary_identity_key=primary,
@@ -325,6 +363,11 @@ def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
         })
 
     db.commit()
+    log.info(
+        "email_sync mailbox=%s created=%s updated=%s "
+        "skipped_promotional=%s skipped_no_outbound=%s",
+        own or "?", stats["contacts_created"], stats["contacts_updated"],
+        stats["skipped_promotional"], stats["skipped_no_outbound"])
     return stats
 
 

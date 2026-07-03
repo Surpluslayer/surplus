@@ -195,15 +195,16 @@ def test_sync_iterates_all_active_mailboxes(db, monkeypatch):
                                 address="me@outlook.com", provider="outlook")
     db.commit()
 
-    # Each mailbox surfaces a DIFFERENT counterpart. The default fetcher is
-    # keyed off account_id so we route per mailbox.
+    # Each mailbox surfaces a DIFFERENT counterpart the user WROTE to (the
+    # two-way filter only mints contacts for outbound correspondence). The
+    # default fetcher is keyed off account_id so we route per mailbox.
     pages = {
-        "mail_g": [_mail(("alice@lo91r.com", "Alice"),
-                         [("me@gmail.com", "Me")],
-                         date="2026-06-08T10:00:00Z", pid="g1")],
-        "mail_o": [_mail(("bob@lo91r.com", "Bob"),
-                         [("me@outlook.com", "Me")],
-                         date="2026-06-08T10:00:00Z", pid="o1")],
+        "mail_g": [_mail(("me@gmail.com", "Me"),
+                         [("alice@lo91r.com", "Alice")],
+                         date="2026-06-08T10:00:00Z", role="sent", pid="g1")],
+        "mail_o": [_mail(("me@outlook.com", "Me"),
+                         [("bob@lo91r.com", "Bob")],
+                         date="2026-06-08T10:00:00Z", role="sent", pid="o1")],
     }
 
     def fake_fetch(dsn, api_key, account_id, cursor):
@@ -232,8 +233,10 @@ def test_sync_legacy_fallback_when_no_email_accounts(db):
     db.add(u); db.commit(); db.refresh(u)
     assert models.list_email_accounts(db, u) == []
 
-    mails = [_mail(("carol@lo91r.com", "Carol"), [("me@gmail.com", "Me")],
-                   date="2026-06-08T10:00:00Z", pid="c1")]
+    # Outbound mail : the two-way filter requires the user to have written
+    # to a counterpart before it becomes a contact.
+    mails = [_mail(("me@gmail.com", "Me"), [("carol@lo91r.com", "Carol")],
+                   date="2026-06-08T10:00:00Z", role="sent", pid="c1")]
     fetch = lambda cursor: {"items": mails, "cursor": None}  # noqa: E731
     stats = es.sync_email_contacts(db, u, dsn="d", api_key="k",
                                    fetch_page=fetch)

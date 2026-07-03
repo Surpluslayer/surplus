@@ -77,6 +77,94 @@ def test_sync_builds_contacts_and_rollup_idempotently(db):
     assert db.query(models.RelationshipInteraction).count() == 1
 
 
+def test_inbound_only_sender_creates_nothing(db):
+    """Product rule: a sender the user never wrote to (newsletter, promo,
+    cold inbound) must NOT become a contact -- no row, no rollup."""
+    u = _user(db)
+    mails = [
+        _mail(("cleantechies@substack.com", "CleanTechies"),
+              [("host@gmail.com", "Host")], date="2026-06-08T10:00:00Z", pid="m1"),
+        _mail(("cold@vc-blast.com", "Cold Person"),
+              [("host@gmail.com", "Host")], date="2026-06-09T10:00:00Z", pid="m2"),
+    ]
+    stats = es.sync_email_contacts(db, u, dsn="d", api_key="k",
+                                   fetch_page=lambda c: {"items": mails,
+                                                         "cursor": None})
+    assert stats["contacts_created"] == 0
+    assert stats["skipped_no_outbound"] == 2
+    assert db.query(models.Contact).count() == 0
+    assert db.query(models.RelationshipInteraction).count() == 0
+
+
+def test_outbound_recipient_creates_contact(db):
+    """Someone the user WROTE to is real correspondence: contact + rollup."""
+    u = _user(db)
+    mails = [
+        _mail(("host@gmail.com", "Host"), [("leo@acme.com", "Leo Park")],
+              date="2026-06-07T10:00:00Z", role="sent", pid="m1"),
+    ]
+    stats = es.sync_email_contacts(db, u, dsn="d", api_key="k",
+                                   fetch_page=lambda c: {"items": mails,
+                                                         "cursor": None})
+    assert stats["contacts_created"] == 1
+    assert stats["skipped_no_outbound"] == 0
+    c = db.query(models.Contact).one()
+    assert c.email == "leo@acme.com" and c.name == "Leo Park"
+    r = (db.query(models.RelationshipInteraction)
+         .filter_by(contact_id=c.id, source_type="email_sync").one())
+    assert r.direction == "out"
+
+
+def test_promotional_local_parts_are_junk():
+    """The automated-local-part heuristic, including the newest prefixes."""
+    for addr in ("noreply@linkedin.com", "no-reply@aws.amazon.com",
+                 "donotreply@x.com", "notifications@github.com",
+                 "newsletters@substack.com", "promotions@amazon.com",
+                 "marketing@x.com", "offers@x.com", "deals@x.com",
+                 "alerts@x.com", "digest@x.com", "mailer-daemon@x.com",
+                 "bounce@x.com", "automated@x.com", "unsubscribe@x.com",
+                 "NoReply@Upper.Case"):
+        assert es.is_junk_address(addr), addr
+    assert not es.is_junk_address("maya@lo91r.com")
+
+
+def test_promotional_sender_counted_and_skipped(db):
+    u = _user(db)
+    mails = [_mail(("noreply@linkedin.com", "LinkedIn Premium"),
+                   [("host@gmail.com", "Host")],
+                   date="2026-06-08T10:00:00Z", pid="m1")]
+    stats = es.sync_email_contacts(db, u, dsn="d", api_key="k",
+                                   fetch_page=lambda c: {"items": mails,
+                                                         "cursor": None})
+    assert stats["skipped_promotional"] == 1
+    assert db.query(models.Contact).count() == 0
+
+
+def test_existing_contact_rollup_still_updates_on_inbound_only(db):
+    """The two-way filter gates CREATION only: a contact already in the book
+    keeps getting its rollup refreshed even when the window is inbound-only."""
+    from backend.triage.enrichment_cache import identity_keys
+    u = _user(db)
+    key = identity_keys(email="maya@lo91r.com", linkedin_url="")[0]
+    c = models.Contact(user_id=u.id, primary_identity_key=key,
+                       name="Maya Rodriguez", email="maya@lo91r.com")
+    db.add(c); db.commit(); db.refresh(c)
+
+    mails = [_mail(("maya@lo91r.com", "Maya Rodriguez"),
+                   [("host@gmail.com", "Host")],
+                   date="2026-06-08T10:00:00Z", pid="m1")]
+    stats = es.sync_email_contacts(db, u, dsn="d", api_key="k",
+                                   fetch_page=lambda c: {"items": mails,
+                                                         "cursor": None})
+    assert stats["contacts_created"] == 0
+    assert stats["contacts_updated"] == 1
+    assert stats["skipped_no_outbound"] == 0
+    assert db.query(models.Contact).count() == 1
+    r = (db.query(models.RelationshipInteraction)
+         .filter_by(contact_id=c.id, source_type="email_sync").one())
+    assert json.loads(r.meta_json)["n_in"] == 1
+
+
 def test_thread_candidates_group_and_sort():
     page = {"items": [
         _mail(("maya@x.com", "Maya"), [("host@gmail.com", "")],

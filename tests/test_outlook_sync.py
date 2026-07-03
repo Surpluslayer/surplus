@@ -72,10 +72,15 @@ def test_outlook_calendar_flattens(monkeypatch):
 def test_sync_outlook_email_reuses_spine_pipeline(db, monkeypatch):
     u = _user(db)
     monkeypatch.setattr(oauth, "get_valid_access_token", lambda db, a, **k: "tok")
+    # Two-way exchange : the user's reply is what qualifies Sarah as a
+    # contact under the two-way filter (direction derives from from == own).
     monkeypatch.setattr(outlook_client, "outlook_fetch_page", lambda *a, **k: {"items": [{
         "from_attendee": {"identifier": "sarah@x.com", "display_name": "Sarah"},
         "to_attendees": [{"identifier": "me@x.com", "display_name": ""}],
-        "date": "2026-06-24T10:00:00Z", "role": "", "provider_id": "m1"}],
+        "date": "2026-06-24T10:00:00Z", "role": "", "provider_id": "m1"}, {
+        "from_attendee": {"identifier": "me@x.com", "display_name": ""},
+        "to_attendees": [{"identifier": "sarah@x.com", "display_name": "Sarah"}],
+        "date": "2026-06-24T11:00:00Z", "role": "", "provider_id": "m2"}],
         "cursor": None})
     stats = outlook_sync.sync_outlook_email(db, u, SimpleNamespace(account_email="me@x.com"))
     c = db.query(models.Contact).filter_by(user_id=u.id).one()
