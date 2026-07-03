@@ -77,6 +77,16 @@ class MergeUsersBody(BaseModel):
     dry_run: bool = True
 
 
+class DedupContactsBody(BaseModel):
+    """Merge same-person duplicate Contacts. `user_id` scopes to one owner (omit
+    to sweep EVERY user). dry_run defaults True : preview the groups + a name
+    sample before anything is merged. Only STRONG-identity duplicates (shared
+    normalized email / linkedin / phone) are auto-merged; name-only collisions are
+    reported separately for review, never merged."""
+    user_id: Optional[int] = None
+    dry_run: bool = True
+
+
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
@@ -931,3 +941,130 @@ def cleanup_email_contacts(
           f"kept={kept} kept_by={kept_by}", flush=True)
     return {"dry_run": False, "deleted": len(to_delete), "kept": kept,
             "kept_by": kept_by}
+
+
+def _backfill_identities_from_rows(db: Session, user_id: int) -> int:
+    """Mirror every Contact's OWN strong fields (email / phone / linkedin) into the
+    ContactIdentity table for one owner, so pre-hook rows (created before the
+    creation-path linked all identities) become linkable by the merge engine.
+    Idempotent (record_identity is a no-op on an existing (kind,value)). Returns the
+    number of identity rows added/seen. Fail-soft per contact."""
+    from ..agents.relationship import identity as _identity
+
+    added = 0
+    # Track keys already staged this sweep : when TWO pre-hook contacts carry the
+    # SAME email (exactly the duplicate we are here to collapse), record_identity's
+    # lookup can't see the sibling row staged moments ago (autoflush is off), so
+    # without this guard the second insert would trip the (user,kind,value) unique.
+    # Skipping the second is correct : one identity row is enough to bridge them.
+    staged: set = set()
+    contacts = (db.query(models.Contact)
+                .filter(models.Contact.user_id == user_id).all())
+    for c in contacts:
+        for kind, value in _identity.identities_of_contact(c):
+            if (kind, value) in staged:
+                continue
+            try:
+                row = _identity.record_identity(
+                    db, contact=c, kind=kind, value=value,
+                    source="backfill",
+                    is_primary=bool(c.primary_identity_key
+                                    and c.primary_identity_key.strip().lower()
+                                    .startswith({"email": "em:", "linkedin": "li:",
+                                                 "phone": "ph:"}.get(kind, ""))))
+                if row is not None:
+                    added += 1
+                    staged.add((kind, value))
+                    db.flush()  # make it visible to the next lookup
+            except Exception:  # noqa: BLE001 : one bad contact never sinks the sweep
+                db.rollback()
+                continue
+    db.flush()
+    return added
+
+
+@router.post("/dedup-contacts")
+def dedup_contacts(
+    body: DedupContactsBody,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """Merge same-person duplicate Contacts using the ContactIdentity-backed merge
+    engine (agents/relationship/identity.py).
+
+    This catches the em-vs-li case: an email-sync contact (em:<hash>) and a
+    LinkedIn contact (li:<slug>) for the same person. The engine groups by SHARED
+    strong identity (normalized email / linkedin / phone) via union-find over the
+    ContactIdentity table; a "bridge" row carrying identities of BOTH pulls the two
+    into one group. Because pre-hook rows may not have all their identities
+    mirrored into ContactIdentity yet, we BACKFILL each contact's own strong fields
+    into ContactIdentity first, THEN group -- so a row that carries both an email
+    and a linkedin bridges the two single-dimension dups.
+
+    CONSERVATIVE: a group is only auto-merged when its members share a STRONG
+    identity. Contacts that merely share a display NAME (no shared email/linkedin/
+    phone) are NEVER merged here -- different people share names -- they are
+    reported separately under `name_only_review` for a human to decide.
+
+    Survivor: the RICHEST row wins (most interactions / prospects / facts / outgoing
+    messages; VIP is unioned onto it; ties -> oldest, then lowest id).
+
+    Body: {user_id?: int, dry_run: bool=true}. dry_run=true previews only.
+    """
+    from ..agents.relationship import identity as _identity
+
+    if body.user_id is not None:
+        user_ids = [body.user_id]
+    else:
+        user_ids = [row[0] for row in db.query(models.User.id).all()]  # every owner
+
+    total_would = 0
+    total_merged = 0
+    groups_sample: list[list[str]] = []
+    name_only_review: list[list[str]] = []
+
+    for uid in user_ids:
+        # 1) make pre-existing rows linkable, then group + merge on STRONG identity.
+        _backfill_identities_from_rows(db, uid)
+        report = _identity.backfill_merge(db, uid, apply=not body.dry_run)
+        for cl in report.get("clusters", []):
+            ids = cl.get("contact_ids", [])
+            names = [
+                (c.name or c.primary_identity_key or f"contact:{c.id}")
+                for c in db.query(models.Contact)
+                .filter(models.Contact.id.in_(ids)).all()
+            ]
+            if len(groups_sample) < 25:
+                groups_sample.append(sorted(names))
+        # 2) name-only collisions are REPORTED, never auto-merged.
+        for rc in _identity.find_review_candidates(db, uid):
+            ids = rc.get("contact_ids", [])
+            names = [
+                (c.name or c.primary_identity_key or f"contact:{c.id}")
+                for c in db.query(models.Contact)
+                .filter(models.Contact.id.in_(ids)).all()
+            ]
+            if len(name_only_review) < 25:
+                name_only_review.append(sorted(names))
+        would = report.get("would_merge", 0)
+        total_would += would
+        if not body.dry_run:
+            total_merged += would
+
+    if body.dry_run:
+        db.rollback()  # discard the identity backfill staged for preview only
+
+    result = {
+        "dry_run": body.dry_run,
+        "user_ids": user_ids,
+        "groups": groups_sample,
+        "name_only_review": name_only_review,
+    }
+    if body.dry_run:
+        result["would_merge"] = total_would
+    else:
+        result["merged"] = total_merged
+    print(f"  [admin.dedup-contacts] dry_run={body.dry_run} "
+          f"users={len(user_ids)} would/merged={total_would} "
+          f"name_only={len(name_only_review)}", flush=True)
+    return result
