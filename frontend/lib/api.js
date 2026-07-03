@@ -51,7 +51,7 @@ async function consumeSSE(path, body, { handlers = {}, stallMs = 45000 } = {}) {
     stallTimer = setTimeout(() => { stalled = true; controller.abort(); }, stallMs);
   };
   const stallError = () =>
-    new Error("the connection went quiet and was closed — try asking again");
+    new Error("The connection went quiet and was closed. Try asking again.");
 
   armWatchdog();
   try {
@@ -114,7 +114,11 @@ async function consumeSSE(path, body, { handlers = {}, stallMs = 45000 } = {}) {
 
 async function request(path, opts = {}) {
   const method = (opts.method || "GET").toUpperCase();
-  const tries = method === "GET" ? 2 : 1; // reads retry once; writes never auto-repeat
+  // Reads retry once. Writes never auto-repeat UNLESS the caller marks the
+  // call retriable (idempotent POSTs like the auth-start endpoints, which just
+  // mint a fresh state token): one LTE blip on a Connect tap should not dead-end
+  // in "Couldn't reach the server" when a retry would open the hosted auth.
+  const tries = (method === "GET" || opts.retriable) ? 2 : 1;
   let lastErr = null;
   for (let attempt = 0; attempt < tries; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, 1500));
@@ -130,7 +134,7 @@ async function request(path, opts = {}) {
       });
     } catch (e) {
       // Network drop / deploy blip : retriable for reads, friendly either way.
-      lastErr = new Error("Couldn't reach the server — check your connection.");
+      lastErr = new Error("Couldn't reach the server. Check your connection and try again.");
       lastErr.status = 0;
       lastErr.body = null;
       continue;
@@ -449,7 +453,7 @@ export const api = {
       body: JSON.stringify({ password, current_password }),
     }),
   // returns { url } : frontend sets window.location = url to begin the flow
-  startLinkedinAuth: () => request("/api/auth/linkedin/start", { method: "POST" }),
+  startLinkedinAuth: () => request("/api/auth/linkedin/start", { method: "POST", retriable: true }),
   // Native app variant: callback deep-links the session token back to the app
   // (see lib/nativeAuth.js) instead of redirecting the web SPA.
   startLinkedinAuthMobile: () =>
@@ -457,12 +461,12 @@ export const api = {
   // Connect the signed-in user's mailbox (Gmail/Outlook) as a second Unipile
   // seat. Returns { url } — redirect the browser there; the hosted page does
   // the OAuth and bounces back with the Integrations tile flipped.
-  startEmailAuth: () => request("/api/auth/email/start", { method: "POST" }),
+  startEmailAuth: () => request("/api/auth/email/start", { method: "POST", retriable: true }),
   // Connect the signed-in user's WhatsApp as a Unipile CLOUD seat (like the
   // email/LinkedIn seats, not a device companion). Returns { url } — redirect
   // the browser there; the hosted page does the WhatsApp pairing and bounces
   // back with the Connections tile flipped.
-  startWhatsappAuth: () => request("/api/auth/whatsapp/start", { method: "POST" }),
+  startWhatsappAuth: () => request("/api/auth/whatsapp/start", { method: "POST", retriable: true }),
   // Star / unstar a contact — starred contacts are monitored more often by the
   // updates engine. Pass vip true/false to set, or omit to toggle server-side.
   starContact: (id, vip) =>
