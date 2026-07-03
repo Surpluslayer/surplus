@@ -187,6 +187,73 @@ def test_sync_skips_linkedin_system_account(db):
     assert db.query(models.Contact).filter_by(user_id=u.id).count() == 0
 
 
+def test_ingest_opens_a_short_lived_session_per_chat(db):
+    """Session-hygiene contract: the ingest phase must not hold one session
+    for the whole run. Each chat's writes go through a FRESH session from the
+    factory (open, commit, close), so a multi-chat run opens one session per
+    chat and closes every one of them."""
+    from sqlalchemy.orm import sessionmaker
+
+    u = _user(db)
+    chats = {"items": [
+        {"id": "chat_1", "timestamp": "2026-06-20T12:00:00Z"},
+        {"id": "chat_2", "timestamp": "2026-06-19T12:00:00Z"},
+    ]}
+    attendees = {
+        "chat_1": {"items": [
+            {"is_self": True, "provider_id": "SELF_ID"},
+            {"is_self": False, "provider_id": "M1", "name": "Sarah Chen"},
+        ]},
+        "chat_2": {"items": [
+            {"is_self": True, "provider_id": "SELF_ID"},
+            {"is_self": False, "provider_id": "M2", "name": "Ben Ito"},
+        ]},
+    }
+    profiles = {"M1": {"public_identifier": "sarah-chen"},
+                "M2": {"public_identifier": "ben-ito"}}
+    messages = {
+        "chat_1": {"items": [{"id": "limsg.1", "text": "hey from sarah",
+                              "is_sender": False,
+                              "timestamp": "2026-06-20T12:00:00Z"}]},
+        "chat_2": {"items": [{"id": "limsg.2", "text": "hey from ben",
+                              "is_sender": False,
+                              "timestamp": "2026-06-19T12:00:00Z"}]},
+    }
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False)
+    counts = {"opened": 0, "closed": 0}
+
+    def counting_factory():
+        counts["opened"] += 1
+        s = factory()
+        orig_close = s.close
+
+        def close():
+            counts["closed"] += 1
+            orig_close()
+        s.close = close
+        return s
+
+    stats = sync_linkedin_chats(
+        db, u,
+        list_chats=lambda cursor: chats if cursor is None else {"items": []},
+        chat_attendees=lambda cid: attendees[cid],
+        chat_messages=lambda cid, cursor: (messages[cid] if cursor is None
+                                           else {"items": []}),
+        resolve_profile=lambda pid: profiles[pid],
+        session_factory=counting_factory,
+    )
+    assert stats["error"] is None
+    assert stats["chats"] == 2
+    assert stats["appended"] == 2
+    # One fresh session PER chat (> 1 proves no single long-held session),
+    # and every one of them was closed again.
+    assert counts["opened"] == 2
+    assert counts["closed"] == 2
+    # The per-batch commits are real: the outer session sees both contacts.
+    assert db.query(models.Contact).filter_by(user_id=u.id).count() == 2
+
+
 def test_sync_no_account_or_inactive_returns_error(db):
     u = models.User(name="Host", email="h@x.com")  # no linkedin account
     db.add(u); db.commit(); db.refresh(u)

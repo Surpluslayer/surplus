@@ -82,7 +82,13 @@ def _seed_conversations_and_voice(db, user_id: int) -> None:
     LinkedIn DM conversations into the Book, then learn their voice. Top-level so
     the Modal durable path can resolve it. `db` is the run_detached-owned session
     used for the import; the voice sync opens its OWN second session (the import
-    may have committed/closed work on `db`). Idempotent + best-effort."""
+    may have committed/closed work on `db`). Idempotent + best-effort.
+
+    Session lifecycle: import_conversation_contacts releases db's pooled
+    connection before its minutes-long Unipile walk (see its docstring), so
+    this job never pins a connection across network I/O. The voice sync's
+    single bounded fetch (8 sent messages) is the only network done while its
+    own short session is open."""
     from ..agents.relationship.spine.relationships import import_conversation_contacts
     from ..models import User as _User
     try:

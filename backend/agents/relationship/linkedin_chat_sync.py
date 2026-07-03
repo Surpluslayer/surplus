@@ -227,6 +227,37 @@ def _find_or_create_linkedin_contact(db, user, peer: dict, stats: dict):
     return contact
 
 
+def _ingest_chat_batch(session_factory, user_id: int, peer: dict,
+                       batch: list, stats: dict) -> bool:
+    """Ingest ONE fetched chat in its OWN short-lived session: open, write,
+    commit, close. Returns True when the chat landed (the caller counts it in
+    stats['chats']). Per-chat sessions mean a pooled DB connection is never
+    held longer than one chat's writes -- the multi-minute network fetching
+    happens with no connection checked out at all. Partial progress persists
+    (each chat commits); dedup-by-message-id makes any re-run overlap free."""
+    from ... import models
+    from ...routes.messages import append_message_for_contact
+
+    s = session_factory()
+    try:
+        u = s.get(models.User, user_id)
+        if u is None:
+            return False
+        contact = _find_or_create_linkedin_contact(s, u, peer, stats)
+        if contact is None:
+            s.rollback()
+            return False
+        for m in batch:
+            append_message_for_contact(s, u, contact, m, stats)
+        s.commit()
+        return True
+    except Exception:
+        s.rollback()
+        raise
+    finally:
+        s.close()
+
+
 def sync_linkedin_chats(
     db,
     user,
@@ -241,6 +272,7 @@ def sync_linkedin_chats(
     max_msg_pages: int = _MAX_MSG_PAGES,
     fetch_workers: int = _FETCH_WORKERS,
     incremental: bool = True,
+    session_factory: Optional[Callable[[], object]] = None,
 ) -> dict:
     """Sync the user's LinkedIn DM conversations into their relationship
     timeline. Returns aggregate stats; never raises (callers auto-kick this
@@ -250,9 +282,15 @@ def sync_linkedin_chats(
     unipile_account_id (the LinkedIn seat); tests inject their own to drive the
     mapping without HTTP. Each message lands via the shared message-sink rules
     keyed by the peer's li: identity, channel='linkedin', idempotent by Unipile
-    message id. `incremental` uses/advances users.linkedin_chat_synced_at."""
-    from ...routes.messages import append_message_for_contact
+    message id. `incremental` uses/advances users.linkedin_chat_synced_at.
 
+    Session lifecycle contract: `db` is used only for the brief input read
+    (account, status, watermark) and the final watermark stamp. Its pooled
+    connection is RELEASED (via commit) before the network phases, so this
+    multi-minute sync never pins a connection while it talks to Unipile (the
+    2026-07-01 QueuePool exhaustion). Each chat's ingest runs in its own
+    short-lived session from `session_factory` (default: a sessionmaker on
+    db's bind), committed per chat."""
     stats = {"chats": 0, "appended": 0, "contacts_created": 0,
              "skipped": 0, "error": None}
 
@@ -281,6 +319,14 @@ def sync_linkedin_chats(
     since = _aware(getattr(user, "linkedin_chat_synced_at", None)) \
         if incremental else None
     started_at = datetime.now(timezone.utc)
+    user_id = user.id
+    if session_factory is None:
+        from sqlalchemy.orm import sessionmaker
+        session_factory = sessionmaker(bind=db.get_bind(), autoflush=False)
+    # Inputs are captured; RELEASE db's pooled connection before the long
+    # network phases. Commit (not rollback) so any caller-pending work is
+    # preserved rather than discarded; by contract nothing of ours is staged.
+    db.commit()
 
     try:
         # 1) PAGE chat ids (cheap, sequential -- cursor chains; few pages).
@@ -308,7 +354,7 @@ def sync_linkedin_chats(
             cursor = page.get("cursor")
             if not cursor:
                 break
-        print(f"  [linkedin_sync] user={user.id} scanning {len(chat_ids)} chats"
+        print(f"  [linkedin_sync] user={user_id} scanning {len(chat_ids)} chats"
               + (f" (since {since.isoformat()})" if since else ""), flush=True)
 
         # 2) FETCH each chat's peer + messages CONCURRENTLY (read-only Unipile
@@ -334,25 +380,24 @@ def sync_linkedin_chats(
                 except Exception as exc:  # noqa: BLE001 : one bad chat != whole sync
                     stats["error"] = f"{type(exc).__name__}: {exc}"
 
-        # 3) INGEST sequentially on the MAIN THREAD -- the only writer to the
-        # shared SQLAlchemy session. Preserves idempotency (skip-by-message-id
-        # lives in append_message_for_contact) and keeps DB access single-threaded.
+        # 3) INGEST sequentially on the MAIN THREAD, one SHORT-LIVED session
+        # per chat (open, write, commit, close) -- no pooled connection is
+        # held across chats, and none was held during the fetches above.
+        # Idempotency is preserved (skip-by-message-id lives in
+        # append_message_for_contact) and DB access stays single-threaded.
         for peer, batch in results:
             if not batch:
                 continue
-            contact = _find_or_create_linkedin_contact(db, user, peer, stats)
-            if contact is None:
-                continue
-            for m in batch:
-                append_message_for_contact(db, user, contact, m, stats)
-            stats["chats"] += 1
+            if _ingest_chat_batch(session_factory, user_id, peer, batch, stats):
+                stats["chats"] += 1
         # Advance the watermark only on a CLEAN pass -- a partial/errored run
         # must re-scan its window next time (dedup makes the overlap free).
+        # This is the one write on `db` (short: set + commit).
         if incremental and stats["error"] is None \
                 and hasattr(user, "linkedin_chat_synced_at"):
             user.linkedin_chat_synced_at = started_at
-        db.commit()
-        print(f"  [linkedin_sync] user={user.id} done: {stats}", flush=True)
+            db.commit()
+        print(f"  [linkedin_sync] user={user_id} done: {stats}", flush=True)
     except Exception as exc:  # noqa: BLE001 : a flaky account must not 500
         stats["error"] = f"{type(exc).__name__}: {exc}"
 

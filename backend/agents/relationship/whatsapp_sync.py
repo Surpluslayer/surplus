@@ -194,6 +194,34 @@ def _fetch_chat_batch(
     return batch
 
 
+def _ingest_whatsapp_batch(session_factory, user_id: int,
+                           batch: list, stats: dict) -> bool:
+    """Ingest ONE fetched chat in its OWN short-lived session: open, write,
+    commit (inside ingest_messages), close. Returns True when the chat landed
+    (the caller counts it in stats['chats']). Per-chat sessions mean a pooled
+    DB connection is never held longer than one chat's writes -- the long
+    network fetching happens with no connection checked out at all. Partial
+    progress persists; dedup-by-message-id makes any re-run overlap free."""
+    from ... import models
+    from ...routes.messages import ingest_messages
+
+    s = session_factory()
+    try:
+        u = s.get(models.User, user_id)
+        if u is None:
+            return False
+        r = ingest_messages(s, u, batch)  # commits internally
+        stats["appended"] += r.get("appended", 0)
+        stats["contacts_created"] += r.get("contacts_created", 0)
+        stats["skipped"] += r.get("skipped", 0)
+        return True
+    except Exception:
+        s.rollback()
+        raise
+    finally:
+        s.close()
+
+
 def sync_whatsapp_contacts(
     db,
     user,
@@ -206,6 +234,7 @@ def sync_whatsapp_contacts(
     max_chats: int = _MAX_CHATS,
     max_msg_pages: int = _MAX_MSG_PAGES,
     fetch_workers: int = _FETCH_WORKERS,
+    session_factory: Optional[Callable[[], object]] = None,
 ) -> dict:
     """Sync the user's WhatsApp conversations into their relationship timeline.
     Returns aggregate stats; never raises (the connect flow auto-kicks this
@@ -215,9 +244,14 @@ def sync_whatsapp_contacts(
     unipile_whatsapp_account_id; tests inject their own to drive the mapping
     without HTTP. Each message lands via the shared message sink keyed by the
     counterpart's phone, channel='whatsapp', idempotent by Unipile message id.
-    """
-    from ...routes.messages import ingest_messages
 
+    Session lifecycle contract: `db` is used only for the brief input read
+    (account id, user id). Its pooled connection is RELEASED (via commit)
+    before the network phases, so this multi-minute sync never pins a
+    connection while it talks to Unipile. Each chat's ingest runs in its own
+    short-lived session from `session_factory` (default: a sessionmaker on
+    db's bind), committed per chat.
+    """
     stats = {"chats": 0, "appended": 0, "contacts_created": 0,
              "skipped": 0, "error": None}
 
@@ -236,6 +270,15 @@ def sync_whatsapp_contacts(
         dsn, api_key, account_id, cid))
     _msgs = chat_messages or (lambda cid, cursor: _default_chat_messages(
         dsn, api_key, account_id, cid, cursor))
+
+    user_id = user.id
+    if session_factory is None:
+        from sqlalchemy.orm import sessionmaker
+        session_factory = sessionmaker(bind=db.get_bind(), autoflush=False)
+    # Inputs are captured; RELEASE db's pooled connection before the long
+    # network phases. Commit (not rollback) so any caller-pending work is
+    # preserved rather than discarded; by contract nothing of ours is staged.
+    db.commit()
 
     try:
         # 1) PAGE chat ids (cheap, sequential -- cursor chains; few pages).
@@ -277,17 +320,16 @@ def sync_whatsapp_contacts(
                 except Exception as exc:  # noqa: BLE001 : one bad chat != whole sync
                     stats["error"] = f"{type(exc).__name__}: {exc}"
 
-        # 3) INGEST sequentially on the MAIN THREAD -- the only writer to the
-        # shared SQLAlchemy session. Preserves idempotency (skip-by-message-id
-        # lives in ingest_messages) and keeps DB access single-threaded.
+        # 3) INGEST sequentially on the MAIN THREAD, one SHORT-LIVED session
+        # per chat (open, write, commit, close) -- no pooled connection is
+        # held across chats, and none was held during the fetches above.
+        # Idempotency is preserved (skip-by-message-id lives in
+        # ingest_messages) and DB access stays single-threaded.
         for _cid, batch in results:
             if not batch:
                 continue
-            s = ingest_messages(db, user, batch)
-            stats["chats"] += 1
-            stats["appended"] += s.get("appended", 0)
-            stats["contacts_created"] += s.get("contacts_created", 0)
-            stats["skipped"] += s.get("skipped", 0)
+            if _ingest_whatsapp_batch(session_factory, user_id, batch, stats):
+                stats["chats"] += 1
     except Exception as exc:  # noqa: BLE001 : a flaky account must not 500
         stats["error"] = f"{type(exc).__name__}: {exc}"
 

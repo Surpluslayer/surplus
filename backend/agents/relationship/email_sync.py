@@ -165,7 +165,13 @@ def sync_email_contacts(
 
     A caller that supplies its own `fetch_page` (e.g. the Gmail-OAuth sync, or
     a test) drives a SINGLE source against the user's own address -- we don't
-    fan the injected fetcher across accounts."""
+    fan the injected fetcher across accounts.
+
+    Session lifecycle contract: the inputs (own address, per-mailbox Unipile
+    account ids) are read up front and db's pooled connection is RELEASED
+    (via commit) before any paging, so the long Unipile network run never
+    pins a connection. Each mailbox's upsert is a short DB-only transaction
+    ending in commit (which releases again before the next mailbox pages)."""
     from ...models import list_email_accounts
 
     stats = {"scanned": 0, "people": 0, "contacts_created": 0,
@@ -175,6 +181,7 @@ def sync_email_contacts(
     # the Gmail-OAuth sync). Uses the user's mirrored own-address.
     if fetch_page is not None:
         own = (getattr(user, "email_account_address", "") or "").strip().lower()
+        db.commit()  # release the pooled connection before paging
         return _sync_one_mailbox(db, user, stats, fetch_page, own, max_pages)
 
     # Default (Unipile) path : iterate every connected mailbox.
@@ -188,15 +195,27 @@ def sync_email_contacts(
         own = (getattr(user, "email_account_address", "") or "").strip().lower()
         fetcher = lambda cursor: _default_fetch_page(  # noqa: E731
             dsn, api_key, account_id, cursor)
+        db.commit()  # release the pooled connection before paging
         return _sync_one_mailbox(db, user, stats, fetcher, own, max_pages)
 
     from datetime import datetime, timezone
-    for acct in accounts:
-        own = (acct.address or "").strip().lower()
-        fetcher = (lambda cursor, _aid=acct.unipile_account_id:
+    from ... import models
+
+    # Capture each account's scalars NOW, then release the connection: the
+    # paging below must run with nothing checked out, and expired ORM rows
+    # would silently re-check a connection out on attribute access.
+    specs = [(a.id, (a.address or "").strip().lower(), a.unipile_account_id)
+             for a in accounts]
+    db.commit()
+    for _acct_id, own, unipile_account_id in specs:
+        fetcher = (lambda cursor, _aid=unipile_account_id:
                    _default_fetch_page(dsn, api_key, _aid, cursor))
         _sync_one_mailbox(db, user, stats, fetcher, own, max_pages)
-        acct.last_synced_at = datetime.now(timezone.utc)
+    # Stamp every synced mailbox in one short transaction at the end.
+    (db.query(models.EmailAccount)
+     .filter(models.EmailAccount.id.in_([s[0] for s in specs]))
+     .update({"last_synced_at": datetime.now(timezone.utc)},
+             synchronize_session=False))
     db.commit()
     return stats
 
@@ -204,7 +223,12 @@ def sync_email_contacts(
 def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
     """Page + aggregate + upsert ONE mailbox into the contact spine, folding
     its counts into the shared `stats` dict. `own` is this mailbox's address
-    (per-account, so in/out direction is correct per source)."""
+    (per-account, so in/out direction is correct per source).
+
+    Two phases by design: the paging/aggregation phase is pure network I/O
+    that never touches `db` (the caller releases the pooled connection before
+    invoking us), and the upsert phase is one short DB-only transaction that
+    ends in db.commit() -- so no connection is held across network I/O."""
     from .spine.relationships import _clean  # same cleaners as the LinkedIn spine
     from ...triage.enrichment_cache import identity_keys
 

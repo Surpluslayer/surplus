@@ -524,7 +524,12 @@ def import_conversation_contacts(db, user, want: int = 15,
     `on_progress(scanned, found)` (optional) is forwarded to the provider's
     chat walk so a background Job can surface live progress while the slow
     Unipile paging runs (this is the hot loop: up to scan_cap chats x 3
-    sequential HTTP calls each)."""
+    sequential HTTP calls each).
+
+    Session lifecycle contract: the inputs (account id, user id) are read up
+    front and db's pooled connection is RELEASED (via commit) before the
+    minutes-long Unipile walk, so the walk never pins a connection. The
+    dedup + upsert afterwards is one short DB-only transaction."""
     import os
     from .... import models
     from ....providers.unipile import UnipileProvider
@@ -533,6 +538,11 @@ def import_conversation_contacts(db, user, want: int = 15,
     acct = _clean(getattr(user, "unipile_account_id", None))
     if not acct:
         return {"imported": 0, "considered": 0, "reason": "no linkedin account"}
+    user_id = user.id
+    # Inputs are captured; release the pooled connection before the long
+    # network walk. Commit (not rollback) so any caller-pending work is
+    # preserved rather than discarded; by contract nothing of ours is staged.
+    db.commit()
     try:
         prov = UnipileProvider(
             dsn=os.environ.get("UNIPILE_DSN"),
@@ -562,7 +572,7 @@ def import_conversation_contacts(db, user, want: int = 15,
     existing: dict = {}
     if keyed:
         rows = (db.query(models.Contact)
-                .filter(models.Contact.user_id == user.id,
+                .filter(models.Contact.user_id == user_id,
                         models.Contact.primary_identity_key.in_(
                             {k for _, _, k in keyed}))
                 .all())
@@ -574,7 +584,7 @@ def import_conversation_contacts(db, user, want: int = 15,
             contact = existing.get(primary)
             if contact is None:
                 contact = models.Contact(
-                    user_id=user.id,
+                    user_id=user_id,
                     primary_identity_key=primary,
                     name=_clean(p.get("name")),
                     linkedin_url=url,
