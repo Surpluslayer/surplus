@@ -16,6 +16,7 @@ from .env_loader import load_env
 
 load_env()
 
+import hmac
 from fastapi import FastAPI, Request, Header, Depends
 from fastapi import Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -351,7 +352,8 @@ def join_demo_request(payload: _DemoRequest):
 
 
 @app.get("/api/health", tags=["meta"])
-def health(deep: bool = False):
+def health(deep: bool = False,
+           x_admin_token: str = Header(default=None, alias="X-Admin-Token")):
     """API discovery JSON. Moved from `/` so the frontend can own `/`.
 
     Railway's healthcheck hits this on an interval and RESTARTS the container if
@@ -420,7 +422,17 @@ def health(deep: bool = False):
     # when the DB query fails so the healthcheck stays a 200.
     last_webhook_paid_at = None
     pending_replies_count = None
+    # Deep diagnostics (pool/memory/db_ping/config warnings) are operator-only:
+    # they reveal which integrations are configured and internal pressure. Gate
+    # behind the admin token so ?deep=1 is not an unauthenticated info leak.
+    if deep:
+        _exp = (os.environ.get("ADMIN_TOKEN") or "").strip()
+        deep = bool(_exp and x_admin_token
+                    and hmac.compare_digest(x_admin_token, _exp))
     db_pool_stats = None
+    mem_stats = None
+    db_ping_ms = None
+    warnings: list[str] = []  # leading indicators: things to fix BEFORE they page
     if deep:
         # Only on explicit ?deep=1 : never on the platform healthcheck path, so
         # DB-pool exhaustion can't fail the healthcheck and trigger a restart.
@@ -428,13 +440,51 @@ def health(deep: bool = False):
         # requests start 503ing (the 2026-07-01 exhaustion gave no warning).
         try:
             _pool = ENGINE.pool
-            db_pool_stats = {
-                "size": _pool.size(),
-                "checked_out": _pool.checkedout(),
-                "overflow": _pool.overflow(),
-            }
+            _out, _cap = _pool.checkedout(), _pool.size() + _pool.overflow()
+            _pct = round(100 * _out / _cap, 1) if _cap else 0.0
+            db_pool_stats = {"size": _pool.size(), "checked_out": _out,
+                             "overflow": _pool.overflow(),
+                             "capacity": _cap, "used_pct": _pct}
+            if _pct >= 80:
+                warnings.append(f"db_pool {_pct}% used ({_out}/{_cap}) -- exhaustion imminent")
         except Exception:  # noqa: BLE001 -- SQLite/NullPool lacks these
             db_pool_stats = None
+
+        # Container memory headroom (cgroup v2). OOM at WEB_CONCURRENCY=1 with
+        # heavy imports is a silent-restart cause a 200-check misses entirely.
+        try:
+            cur = int(open("/sys/fs/cgroup/memory.current").read().strip())
+            mx_raw = open("/sys/fs/cgroup/memory.max").read().strip()
+            mx = int(mx_raw) if mx_raw != "max" else 0
+            mpct = round(100 * cur / mx, 1) if mx else None
+            mem_stats = {"used_mb": round(cur / 1e6, 1),
+                         "limit_mb": round(mx / 1e6, 1) if mx else None,
+                         "used_pct": mpct}
+            if mpct is not None and mpct >= 85:
+                warnings.append(f"memory {mpct}% of limit -- OOM restart risk")
+        except Exception:  # noqa: BLE001 -- non-linux / no cgroup
+            mem_stats = None
+
+        # DB round-trip latency: a climbing number is the early tell of the
+        # flaky Railway PG proxy or a saturated DB before it starts erroring.
+        try:
+            from sqlalchemy import text as _t
+            _t0 = _time.time()
+            with ENGINE.connect() as _c:
+                _c.execute(_t("SELECT 1"))
+            db_ping_ms = round((_time.time() - _t0) * 1000, 1)
+            if db_ping_ms >= 500:
+                warnings.append(f"db_ping {db_ping_ms}ms -- DB slow/degrading")
+        except Exception as _e:  # noqa: BLE001
+            warnings.append(f"db_ping FAILED: {type(_e).__name__}")
+
+        # Config drift guard: a required prod secret going missing (PORT did,
+        # 2026-07-03) is a leading indicator of an outage. Surface it here so
+        # the monitor can alert BEFORE the missing value breaks a flow.
+        for _var in ("DATABASE_URL", "SURPLUS_OAUTH_STATE_SECRET",
+                     "UNIPILE_DSN", "UNIPILE_API_KEY", "ANTHROPIC_API_KEY"):
+            if not (os.environ.get(_var) or "").strip():
+                warnings.append(f"required config missing: {_var}")
         try:
             from sqlalchemy import text
             with ENGINE.connect() as conn:
@@ -481,6 +531,9 @@ def health(deep: bool = False):
         "image_ref": os.environ.get("FLY_IMAGE_REF"),
         "db_dialect": db_dialect,
         "db_pool": db_pool_stats,
+        "memory": mem_stats,
+        "db_ping_ms": db_ping_ms,
+        "warnings": warnings,  # non-empty => fix before it becomes an outage
         "db_url_set": bool((os.environ.get("DATABASE_URL") or "").strip()),
         "integrations": integrations,
         "last_paid_at": last_webhook_paid_at,

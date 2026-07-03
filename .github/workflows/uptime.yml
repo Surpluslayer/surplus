@@ -60,3 +60,33 @@ jobs:
             exit 1
           fi
           echo "prod healthy."
+
+      - name: Leading indicators (fail BEFORE an outage: pool/memory/db-latency/config)
+        if: always()
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+        run: |
+          set -u
+          if [ -z "${ADMIN_TOKEN:-}" ]; then
+            echo "ADMIN_TOKEN secret not set; skipping deep checks"; exit 0
+          fi
+          BASE="https://surplus-production.up.railway.app"
+          body=$(curl -s --max-time 20 "$BASE/api/health?deep=1" -H "X-Admin-Token: $ADMIN_TOKEN")
+          echo "$body" | jq -c '{db_pool, memory, db_ping_ms, uptime_seconds}' || {
+            echo "::warning::could not parse deep health"; exit 0; }
+
+          # Collect warnings: the app's own list, plus a crash-loop tell.
+          warns=$(echo "$body" | jq -r '(.warnings // [])[]' 2>/dev/null)
+          up=$(echo "$body" | jq -r '.uptime_seconds // empty' 2>/dev/null)
+          if [ -n "${up:-}" ] && awk "BEGIN{exit !($up < 120)}"; then
+            warns="$warns
+          uptime only ${up}s -- possible crash loop"
+          fi
+
+          if [ -n "$(echo "$warns" | tr -d '[:space:]')" ]; then
+            echo "$warns" | while IFS= read -r w; do
+              [ -n "$(echo "$w" | tr -d '[:space:]')" ] && echo "::error::LEADING INDICATOR: $w"
+            done
+            exit 1
+          fi
+          echo "all leading indicators green."
