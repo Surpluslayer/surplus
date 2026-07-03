@@ -31,18 +31,16 @@ guardrail layer. On top of that sits a fragile foundation we can only mitigate:
 | Detection | external uptime monitor (.github/workflows/uptime.yml, every 5 min, both domains) + uptime_seconds crash-loop signal on /api/health | 88ef1ba, 9228134 |
 | Prediction | leading-indicator warnings on /api/health?deep=1 (pool used_pct >=80, memory used_pct >=85, db_ping_ms >=1500, missing config); monitor fails on any tripped indicator; deep gated behind admin token | 5693f1f, 583144c |
 | Config drift | boot-time validator: fatal on <32-byte SURPLUS_OAUTH_STATE_SECRET in prod, loud CONFIG WARNING on missing integration keys | 7e7f9dc |
+| Config validator crash-safety | `import os` moved to module top in main.py (the validator relied on os leaking into globals) | 7b82d09 |
+| C1: double-send race | follow-up dispatch now claims each row atomically (`scheduled` -> `sending`, committed) BEFORE the network send; `_due_followups` uses `with_for_update(skip_locked=True)` on Postgres so replicas claim disjoint rows; `send_followup_now` 409s if the row is no longer scheduled. Cron/replica/double-tap can no longer send the same DM twice | 8ccebd5 |
+| FK-cascade family | `ondelete="CASCADE"` on the User/Contact child FKs (ContactIdentity, ContactFact, OutgoingMessage, Job, ConnectedAccount, EmailAccount); SQLite FK pragma enabled; Postgres `_migrate_fk_cascade` rewrites existing constraints (idempotent, atomic in one txn, fail-soft). merge_users / demo cleanup / cleanup-email-contacts delete paths no longer 500 on ForeignKeyViolation | 16bcf90 |
+| Quick wins | M3 rate-limiter empty-bucket eviction; H5 /api/relationships selectinload + limit; M2 guarded json.loads; M1 Exa 429 backoff; M6 blank-name IndexError; M8 frontend 30s fetch timeout | 4d20d44, 7b82d09 |
 
 ### How to use the new observability
 - `GET /api/health` (public): shallow. `uptime_seconds` resetting to near-zero across polls = crash loop.
 - `GET /api/health?deep=1` with header `X-Admin-Token: <ADMIN_TOKEN>`: pool/memory/db_ping + a `warnings` list. Non-empty warnings = fix before it becomes an outage.
 - The uptime GitHub Action emails on real downtime OR any tripped leading indicator. It is a BACKSTOP (GitHub crons drift). PRIMARY should be UptimeRobot/BetterStack (free) with phone push -> add a monitor for https://event.surpluslayer.com/api/health.
 - Slow admin endpoints (dedup, cleanup) exceed Cloudflare's 100s cap (error 524): call them via https://surplus-production.up.railway.app directly.
-
-## In flight (2026-07-03, agents committing locally for review)
-
-- **C1 (Critical): double-send race.** dispatch_due_followups + send_followup_now read status=="scheduled", send, then flip to "sent". 2 replicas / cron overlap / double-tap can send the same LinkedIn DM twice. Fix: claim rows with_for_update(skip_locked=True) + flip to "sending" BEFORE the send.
-- **FK-cascade family (High).** Three delete paths throw ForeignKeyViolation because child tables lack ON DELETE CASCADE: merge_users (admin.py:722), demo cleanup (demo.py:283), cleanup-email-contacts missing ContactFact (admin.py:931). Fix: ondelete="CASCADE" on User/Contact child FKs in models.py + a migration.
-- **Quick wins.** M3 rate-limiter empty-bucket eviction (memory leak); H5 /api/relationships N+1 + unbounded (selectinload + limit, 524 risk); M2 raw json.loads on job-done branch (jobs.py:46, relationships.py:437); M1 Exa 429 no backoff; M6 name.split()[0] IndexError on blank name; M8 fetch timeout in lib/api.js.
 
 ## Still open (backlog, from the verified audit)
 
