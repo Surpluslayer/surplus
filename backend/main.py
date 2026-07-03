@@ -469,11 +469,18 @@ def health(deep: bool = False,
         # flaky Railway PG proxy or a saturated DB before it starts erroring.
         try:
             from sqlalchemy import text as _t
-            _t0 = _time.time()
+            # Warm the pool first so we time QUERY latency, not the one-time
+            # connect+TLS+auth to the cross-region Railway PG proxy (that setup
+            # alone is ~600ms and is not a health signal). Threshold is generous
+            # (1500ms) because a leading indicator should flag a DB that is
+            # REALLY degrading, not normal cross-region latency (a 500ms warn
+            # false-alarmed on the very first real monitor run, 2026-07-03).
             with ENGINE.connect() as _c:
-                _c.execute(_t("SELECT 1"))
-            db_ping_ms = round((_time.time() - _t0) * 1000, 1)
-            if db_ping_ms >= 500:
+                _c.execute(_t("SELECT 1"))              # warm
+                _t0 = _time.time()
+                _c.execute(_t("SELECT 1"))              # measured
+                db_ping_ms = round((_time.time() - _t0) * 1000, 1)
+            if db_ping_ms >= 1500:
                 warnings.append(f"db_ping {db_ping_ms}ms -- DB slow/degrading")
         except Exception as _e:  # noqa: BLE001
             warnings.append(f"db_ping FAILED: {type(_e).__name__}")
