@@ -163,6 +163,16 @@ from fastapi.responses import JSONResponse as _JSONResponse
 import time as _time
 _PROC_START = _time.time()
 
+# Last CPU sample for the deep-health CPU gauge. cgroup exposes only CUMULATIVE
+# CPU time, so a percentage needs two readings over a wall-clock interval. We
+# stash (cumulative_cpu_seconds, monotonic_ts) here and diff against it on the
+# NEXT deep call -- no sampling sleep, no subprocess, so reading CPU adds no
+# measurable load. The monitor polls every ~5 min, so the reported number is the
+# average CPU utilisation over that window. Per-process (each worker has its own
+# module state) but cpu.stat is the whole container's, so any worker's reading
+# reflects the container. First call after boot returns null (no prior sample).
+_CPU_SAMPLE: dict = {}
+
 
 app = FastAPI(
     title="surplus · event ROI engine",
@@ -505,6 +515,7 @@ def health(deep: bool = False,
                     and hmac.compare_digest(x_admin_token, _exp))
     db_pool_stats = None
     mem_stats = None
+    cpu_stats = None
     db_ping_ms = None
     warnings: list[str] = []  # leading indicators: things to fix BEFORE they page
     if deep:
@@ -538,6 +549,49 @@ def health(deep: bool = False,
                 warnings.append(f"memory {mpct}% of limit -- OOM restart risk")
         except Exception:  # noqa: BLE001 -- non-linux / no cgroup
             mem_stats = None
+
+        # Container CPU headroom (cgroup v2). The EARLY-WARNING for "we are
+        # approaching the ceiling of the current worker/replica count" : sustained
+        # high CPU is the signal to scale UP before requests start queuing and
+        # 524ing. Cost is two tiny file reads + arithmetic -- no sampling sleep,
+        # no subprocess -- so this does NOT add load. cpu.stat gives cumulative
+        # usage_usec; we percentage it against the container's allocated cores
+        # over the interval since the last deep call (null on the first call).
+        try:
+            _usage_usec = None
+            for _line in open("/sys/fs/cgroup/cpu.stat"):
+                if _line.startswith("usage_usec"):
+                    _usage_usec = int(_line.split()[1])
+                    break
+            # Allocated cores from the cgroup quota (cpu.max = "<quota> <period>";
+            # "max" = unshaped, fall back to the host core count).
+            _qraw = open("/sys/fs/cgroup/cpu.max").read().split()
+            if _qraw and _qraw[0] != "max":
+                _ncpu = max(int(_qraw[0]) / int(_qraw[1]), 0.01)
+            else:
+                _ncpu = float(os.cpu_count() or 1)
+            _now = _time.time()
+            if _usage_usec is not None:
+                _prev = _CPU_SAMPLE.get("usage_usec")
+                _prev_ts = _CPU_SAMPLE.get("ts")
+                cpu_stats = {"cores": round(_ncpu, 2), "used_pct": None,
+                             "window_s": None}
+                if _prev is not None and _prev_ts is not None and _now > _prev_ts:
+                    _cpu_secs = (_usage_usec - _prev) / 1e6
+                    _wall = _now - _prev_ts
+                    _cpct = round(100 * _cpu_secs / (_wall * _ncpu), 1)
+                    # Clamp: a clock/counter hiccup shouldn't report >100 or <0.
+                    _cpct = max(0.0, min(_cpct, 100.0))
+                    cpu_stats["used_pct"] = _cpct
+                    cpu_stats["window_s"] = round(_wall, 1)
+                    if _cpct >= 60:
+                        warnings.append(
+                            f"cpu {_cpct}% of {round(_ncpu,2)} cores over "
+                            f"{round(_wall)}s -- sustained load, consider scaling")
+                _CPU_SAMPLE["usage_usec"] = _usage_usec
+                _CPU_SAMPLE["ts"] = _now
+        except Exception:  # noqa: BLE001 -- non-linux / no cgroup
+            cpu_stats = None
 
         # DB round-trip latency: a climbing number is the early tell of the
         # flaky Railway PG proxy or a saturated DB before it starts erroring.
@@ -613,6 +667,7 @@ def health(deep: bool = False,
         "db_dialect": db_dialect,
         "db_pool": db_pool_stats,
         "memory": mem_stats,
+        "cpu": cpu_stats,
         "db_ping_ms": db_ping_ms,
         "warnings": warnings,  # non-empty => fix before it becomes an outage
         "db_url_set": bool((os.environ.get("DATABASE_URL") or "").strip()),

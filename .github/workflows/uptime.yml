@@ -72,7 +72,7 @@ jobs:
           fi
           BASE="https://surplus-production.up.railway.app"
           body=$(curl -s --max-time 20 "$BASE/api/health?deep=1" -H "X-Admin-Token: $ADMIN_TOKEN")
-          echo "$body" | jq -c '{db_pool, memory, db_ping_ms, uptime_seconds}' || {
+          echo "$body" | jq -c '{db_pool, memory, cpu, db_ping_ms, uptime_seconds}' || {
             echo "::warning::could not parse deep health"; exit 0; }
 
           # Collect warnings: the app's own list, plus a crash-loop tell.
