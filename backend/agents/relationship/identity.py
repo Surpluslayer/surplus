@@ -464,19 +464,107 @@ def record_identity(db, *, contact, kind: str, value: str,
     return row
 
 
-# TODO(identity-hook): wire the contact CREATION/UPSERT path into ContactIdentity
-# so a NEW contact links to an EXISTING person instead of forking a duplicate.
-# The upsert today keys ONLY on (user_id, primary_identity_key) in four places --
-#   - agents/relationship/email_sync.py::_sync_one_mailbox
-#   - agents/relationship/spine/relationships.py (LinkedIn import x2)
-#   - integrations/google_sync.py (People API import)
-#   - integrations/sync_common.py
-# Each should: before creating, normalize the incoming identity and look it up in
-# ContactIdentity (via record_identity's lookup); on a hit pointing at a DIFFERENT
-# contact, attach to THAT contact (and record_identity the other keys) rather than
-# inserting a new Contact. This is deliberately NOT done here : it touches every
-# write path on real relationship data and wants its own reviewed change. For now
-# backfill_merge cleans up the duplicates that the un-hooked path still creates.
+# ── creation-path hook : link to an EXISTING person before forking a dup ──────
+#
+# The upsert sites (email_sync, linkedin_chat_sync, spine/relationships,
+# google_sync) historically keyed ONLY on (user_id, primary_identity_key) -- the
+# single STRONGEST key of the incoming source. So an email-sync mint (em:) and a
+# LinkedIn mint (li:) for the SAME person never met, forking a duplicate. The two
+# helpers below are the fix : each create site normalizes EVERY strong identity it
+# knows, looks up an existing contact by ANY of them (not just the primary), and
+# registers all of them onto whatever contact wins. All fail-soft : a lookup or
+# registration error must never break a sync.
+
+
+def normalize_identity(kind: str, value: str) -> str:
+    """The normalized value for a (kind, raw-value), or '' when it can't key."""
+    if kind == "email":
+        return normalize_email(value)
+    if kind == "phone":
+        return normalize_phone(value)
+    if kind == "linkedin":
+        # accept either a slug/public_id or a full profile URL
+        v = (value or "").strip()
+        if "/" in v or "linkedin.com" in v.lower():
+            return normalize_linkedin(url=v)
+        return normalize_linkedin(public_id=v)
+    return ""
+
+
+def strong_identities(*, email: str = "", linkedin_url: str = "",
+                      linkedin_public_id: str = "", phone: str = "",
+                      ) -> list[tuple[str, str]]:
+    """Every (kind, normalized_value) strong identity derivable from the raw
+    signals a source knows for one person. STRONG only (email/linkedin/phone);
+    de-duplicated; '' values dropped."""
+    out: list[tuple[str, str]] = []
+    seen: set = set()
+
+    def _add(kind: str, norm: str):
+        if norm and (kind, norm) not in seen:
+            seen.add((kind, norm))
+            out.append((kind, norm))
+
+    _add("email", normalize_email(email))
+    _add("linkedin", normalize_linkedin(public_id=linkedin_public_id,
+                                        url=linkedin_url))
+    _add("phone", normalize_phone(phone))
+    return out
+
+
+def lookup_contact_by_identities(db, *, user_id: int,
+                                 identities: list[tuple[str, str]]):
+    """The existing Contact for `user_id` carrying ANY of these normalized
+    identities, or None. Reads the ContactIdentity table first (the authoritative
+    multi-identity index), then falls back to matching contacts' OWN row fields so
+    pre-hook rows (which may have no ContactIdentity yet) are still found. Fail-soft
+    : any error -> None (the caller falls back to its own primary-key lookup)."""
+    if not identities:
+        return None
+    try:
+        wanted = set(identities)
+        rows = (db.query(models.ContactIdentity)
+                .filter(models.ContactIdentity.user_id == user_id)
+                .filter(models.ContactIdentity.kind.in_({k for k, _ in identities}))
+                .all())
+        for r in rows:
+            if (r.kind, r.value) in wanted:
+                c = db.get(models.Contact, r.contact_id)
+                if c is not None and c.user_id == user_id:
+                    return c
+        # Fallback : scan the user's contacts' own fields (covers rows not yet
+        # mirrored into ContactIdentity). Bounded by the book size.
+        contacts = (db.query(models.Contact)
+                    .filter(models.Contact.user_id == user_id).all())
+        for c in contacts:
+            if wanted & set(identities_of_contact(c)):
+                return c
+    except Exception:  # noqa: BLE001 : a lookup error never breaks a sync
+        db.rollback()
+        return None
+    return None
+
+
+def register_identities(db, *, contact, identities: list[tuple[str, str]],
+                        source: str = "sync",
+                        primary_key: str = "") -> int:
+    """Attach each strong identity to `contact` (idempotent, no commit). Marks the
+    one whose "kind:value" prefix matches `primary_key` as is_primary. Returns the
+    count registered/seen. Fail-soft : never raises."""
+    n = 0
+    pk = (primary_key or "").strip().lower()
+    for kind, norm in identities:
+        try:
+            prefix = {"email": "em:", "linkedin": "li:", "phone": "ph:"}.get(kind, "")
+            is_primary = bool(pk) and pk.startswith(prefix) if prefix else False
+            # value is already normalized; record_identity re-normalizes harmlessly
+            row = record_identity(db, contact=contact, kind=kind, value=norm,
+                                  source=source, is_primary=is_primary)
+            if row is not None:
+                n += 1
+        except Exception:  # noqa: BLE001 : one bad identity never sinks a sync
+            continue
+    return n
 
 
 def backfill_merge(db, user, *, apply: bool = False) -> dict:

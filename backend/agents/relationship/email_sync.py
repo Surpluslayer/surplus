@@ -271,6 +271,7 @@ def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
     ends in db.commit() -- so no connection is held across network I/O."""
     from .spine.relationships import _clean  # same cleaners as the LinkedIn spine
     from ...triage.enrichment_cache import identity_keys
+    from . import identity as _identity
 
     # ── 1+2+3 : page + aggregate per counterpart ────────────────────────────
     agg: dict[str, dict] = {}
@@ -331,9 +332,16 @@ def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
             stats["skipped_promotional"] += 1
             continue
         primary = keys[0]
+        # Look up by the primary key first (existing behavior), then by ANY strong
+        # identity this address implies -- so an email-sync mint links to a contact
+        # already created from LinkedIn (or vice-versa) instead of forking a dup.
+        idents = _identity.strong_identities(email=addr)
         contact = (db.query(models.Contact)
                    .filter_by(user_id=user.id, primary_identity_key=primary)
                    .first())
+        if contact is None:
+            contact = _identity.lookup_contact_by_identities(
+                db, user_id=user.id, identities=idents)
         # TWO-WAY FILTER: only mint a NEW contact when the user has written to
         # this address at least once in the scan window (the outbound set).
         # Inbound-only senders (newsletters, promos, cold inbound) are skipped
@@ -358,6 +366,10 @@ def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
             if not contact.name and a["name"]:
                 contact.name = _clean(a["name"])
             stats["contacts_updated"] += 1
+        # Register every strong identity onto whatever contact won, so future
+        # syncs (and the dedup engine) can bridge this person across channels.
+        _identity.register_identities(db, contact=contact, identities=idents,
+                                      source="email_sync", primary_key=primary)
 
         last_touch = max(filter(None, [a["last_in"], a["last_out"]]),
                          default=None)

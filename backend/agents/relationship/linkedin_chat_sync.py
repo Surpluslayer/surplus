@@ -195,14 +195,24 @@ def _find_or_create_linkedin_contact(db, user, peer: dict, stats: dict):
     new one). Returns the Contact or None when the URL yields no strong key."""
     from ... import models
     from ...triage.enrichment_cache import identity_keys
+    from . import identity as _identity
 
     keys = identity_keys(email="", linkedin_url=peer["linkedin_url"])
     if not keys:
         return None
     primary = keys[0]
+    # Look up by the primary li: key first, then by ANY strong identity the peer
+    # implies -- so a LinkedIn mint links to a contact already created from email
+    # (once that person's linkedin is known) rather than forking a duplicate.
+    idents = _identity.strong_identities(
+        linkedin_url=peer["linkedin_url"],
+        linkedin_public_id=peer.get("linkedin_public_id") or "")
     contact = (db.query(models.Contact)
                .filter_by(user_id=user.id, primary_identity_key=primary)
                .first())
+    if contact is None:
+        contact = _identity.lookup_contact_by_identities(
+            db, user_id=user.id, identities=idents)
     if contact is None:
         contact = models.Contact(
             user_id=user.id, primary_identity_key=primary,
@@ -224,6 +234,8 @@ def _find_or_create_linkedin_contact(db, user, peer: dict, stats: dict):
             contact.linkedin_public_id = peer["linkedin_public_id"]
         if not contact.headline and peer["headline"]:
             contact.headline = peer["headline"]
+    _identity.register_identities(db, contact=contact, identities=idents,
+                                  source="linkedin_profile", primary_key=primary)
     return contact
 
 

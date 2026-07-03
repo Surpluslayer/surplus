@@ -472,6 +472,7 @@ def link_contact(db, prospect, owner_user_id: int):
     contact-less, which every flow supports). Never raises."""
     from .... import models
     from ....triage.enrichment_cache import identity_keys
+    from .. import identity as _identity
     try:
         if getattr(prospect, "contact_id", None) is not None:
             return db.get(models.Contact, prospect.contact_id)
@@ -483,10 +484,20 @@ def link_contact(db, prospect, owner_user_id: int):
         if not keys:
             return None
         primary = keys[0]
+        # Every strong identity the prospect implies -- so a capture links to a
+        # contact already known from the OTHER channel instead of forking a dup.
+        idents = _identity.strong_identities(
+            email=_clean(getattr(prospect, "email", None)) or "",
+            linkedin_url=_clean(getattr(prospect, "linkedin_url", None)) or "",
+            linkedin_public_id=_clean(getattr(prospect, "linkedin_provider_id", None)) or "",
+        )
 
         contact = (db.query(models.Contact)
                      .filter_by(user_id=owner_user_id, primary_identity_key=primary)
                      .first())
+        if contact is None:
+            contact = _identity.lookup_contact_by_identities(
+                db, user_id=owner_user_id, identities=idents)
         if contact is None:
             contact = models.Contact(
                 user_id=owner_user_id,
@@ -502,6 +513,8 @@ def link_contact(db, prospect, owner_user_id: int):
         elif getattr(prospect, "vip", False) and not contact.vip:
             contact.vip = True  # a starred capture promotes an existing contact
 
+        _identity.register_identities(db, contact=contact, identities=idents,
+                                      source="capture", primary_key=primary)
         prospect.contact_id = contact.id
         db.commit()
         db.refresh(contact)
@@ -534,6 +547,7 @@ def import_conversation_contacts(db, user, want: int = 15,
     from .... import models
     from ....providers.unipile import UnipileProvider
     from ....triage.enrichment_cache import identity_keys
+    from .. import identity as _identity
 
     acct = _clean(getattr(user, "unipile_account_id", None))
     if not acct:
@@ -581,7 +595,15 @@ def import_conversation_contacts(db, user, want: int = 15,
     imported = 0
     for p, url, primary in keyed:
         try:
+            idents = _identity.strong_identities(
+                linkedin_url=url,
+                linkedin_public_id=_clean(p.get("linkedin_public_id")) or "")
             contact = existing.get(primary)
+            if contact is None:
+                # Also look up by ANY identity (via the ContactIdentity index) so a
+                # DM import links to a contact already known from email, not a dup.
+                contact = _identity.lookup_contact_by_identities(
+                    db, user_id=user_id, identities=idents)
             if contact is None:
                 contact = models.Contact(
                     user_id=user_id,
@@ -602,6 +624,10 @@ def import_conversation_contacts(db, user, want: int = 15,
                     contact.headline = _clean(p.get("headline"))
                 if not contact.linkedin_public_id and p.get("linkedin_public_id"):
                     contact.linkedin_public_id = _clean(p.get("linkedin_public_id"))
+                existing[primary] = contact
+            _identity.register_identities(db, contact=contact, identities=idents,
+                                          source="linkedin_profile",
+                                          primary_key=primary)
         except Exception as exc:  # noqa: BLE001 : one bad person never sinks the import
             print(f"  [import_conversations] skipped one: {type(exc).__name__}: {exc}",
                   flush=True)
