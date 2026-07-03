@@ -235,7 +235,10 @@ def test_live_provider_detaches_auto_dm_instead_of_inline(db):
                       side_effect=lambda fn, *a, **k: calls.append((fn.__name__, a))), \
          patch.object(webhooks, "_trigger_auto_dm") as inline:
         import asyncio
-        out = asyncio.get_event_loop().run_until_complete(
+        # asyncio.run (not get_event_loop) so the test does not depend on a
+        # current loop existing -- get_event_loop() raises "no current event
+        # loop" on 3.9 once an earlier test in the suite has closed its loop.
+        out = asyncio.run(
             webhooks._handle(_FakeRequest(canonical), db, _LiveProvider(canonical)))
 
     inline.assert_not_called()               # no inline LLM/send in the request
@@ -258,7 +261,10 @@ def test_live_provider_detaches_ai_reply_instead_of_inline(db):
          patch("backend.agents.relationship.followup_scheduler."
                "cancel_pending_followups"):
         import asyncio
-        out = asyncio.get_event_loop().run_until_complete(
+        # asyncio.run (not get_event_loop) so the test does not depend on a
+        # current loop existing -- get_event_loop() raises "no current event
+        # loop" on 3.9 once an earlier test in the suite has closed its loop.
+        out = asyncio.run(
             webhooks._handle(_FakeRequest(canonical), db, _LiveProvider(canonical)))
 
     inline.assert_not_called()
