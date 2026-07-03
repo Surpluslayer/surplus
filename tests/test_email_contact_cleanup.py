@@ -154,20 +154,32 @@ def test_unparseable_rollup_meta_is_kept(db):
     assert db.get(models.Contact, c.id) is not None
 
 
-def test_identity_spine_touch_is_kept(db):
-    """A ContactIdentity row means another system knows this person."""
+def test_identity_kinds_gate_precisely(db):
+    """The sync writes an EMAIL identity for every contact it creates, so an
+    email-kind identity must NOT keep a junk row (that guard kept 122/165 on
+    the first prod dry-run). An identity of another kind (linkedin) means a
+    different system knows the person: kept."""
     u = models.User(name="Host", email="host@x.com")
     db.add(u)
     db.commit()
     db.refresh(u)
-    c = _contact(db, u, "em:id1", "Known Elsewhere", "news@known.com")
-    _rollup(db, u, c)
-    db.add(models.ContactIdentity(contact_id=c.id, user_id=u.id,
-                                  kind="email", value="news@known.com",
-                                  source="google_contacts"))
+    junk = _contact(db, u, "em:id1", "Newsletter Inc", "news@junk.com")
+    _rollup(db, u, junk)
+    db.add(models.ContactIdentity(contact_id=junk.id, user_id=u.id,
+                                  kind="email", value="news@junk.com",
+                                  source="email_sync"))
+    real = _contact(db, u, "em:id2", "Known Elsewhere", "kim@real.com")
+    _rollup(db, u, real)
+    db.add(models.ContactIdentity(contact_id=real.id, user_id=u.id,
+                                  kind="linkedin", value="kim-real",
+                                  source="linkedin_sync"))
     db.commit()
 
     out = cleanup_email_contacts(CleanupEmailContactsBody(dry_run=False),
                                  db=db, _=None)
-    assert out["deleted"] == 0
-    assert db.get(models.Contact, c.id) is not None
+    assert out["deleted"] == 1
+    assert db.get(models.Contact, junk.id) is None       # em-only junk: gone
+    assert (db.query(models.ContactIdentity)
+              .filter_by(contact_id=junk.id).count()) == 0  # identities too (FK)
+    assert db.get(models.Contact, real.id) is not None   # linkedin-known: kept
+    assert out["kept_by"].get("non_email_identity") == 1
