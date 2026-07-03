@@ -53,6 +53,53 @@ def use_modal() -> bool:
 # seeds dropped). Modal isn't reachable / USE_MODAL off -> a local daemon thread,
 # same shape as the old hand-rolled one. Best-effort: never raises into the caller.
 # --------------------------------------------------------------------------- #
+# ── Local-job concurrency cap ────────────────────────────────────────────────
+# The local fallback used to spawn an unbounded daemon thread per job: a burst
+# of on-connect syncs could run many multi-minute jobs at once and starve the
+# request path (each job briefly checks DB connections out of the shared pool).
+# A module-level semaphore caps how many local jobs RUN concurrently; extras
+# queue up in their (cheap, sleeping) threads until a slot frees. Modal-
+# dispatched jobs are unaffected. Env-tunable: LOCAL_JOBS_MAX_CONCURRENT
+# (default 4). The semaphore is built lazily so tests can reset it after
+# changing the env.
+
+_local_jobs_sem = None
+_local_jobs_sem_lock = None
+
+
+def _local_jobs_semaphore():
+    """The process-wide local-job semaphore, built on first use from
+    LOCAL_JOBS_MAX_CONCURRENT (default 4, floor 1)."""
+    import threading
+    global _local_jobs_sem, _local_jobs_sem_lock
+    if _local_jobs_sem_lock is None:
+        _local_jobs_sem_lock = threading.Lock()
+    with _local_jobs_sem_lock:
+        if _local_jobs_sem is None:
+            raw = (os.environ.get("LOCAL_JOBS_MAX_CONCURRENT") or "").strip()
+            try:
+                n = max(1, int(raw)) if raw else 4
+            except ValueError:
+                n = 4
+            _local_jobs_sem = threading.Semaphore(n)
+        return _local_jobs_sem
+
+
+def _run_local_job(job_name: str, target, *args, **kwargs) -> None:
+    """Run one local background job under the concurrency cap: acquire a slot
+    (queueing, never dropping), run, release in finally. This is the thread
+    body every local daemon-thread job goes through."""
+    sem = _local_jobs_semaphore()
+    if not sem.acquire(blocking=False):
+        print(f"  [jobs] local job {job_name} waiting for a slot "
+              f"(LOCAL_JOBS_MAX_CONCURRENT reached)", flush=True)
+        sem.acquire()
+    try:
+        target(*args, **kwargs)
+    finally:
+        sem.release()
+
+
 def _fn_path(fn) -> str:
     """Dotted import path 'module.qualname' for a top-level callable, so the
     Modal worker can re-import and run it."""
@@ -95,7 +142,9 @@ def run_detached(fn, *args, prefer_modal: bool = False, **kwargs) -> str:
 
     import threading
     threading.Thread(
-        target=execute_detached, args=(fn_path, *args), kwargs=kwargs,
+        target=_run_local_job,
+        args=(f"detached-{fn.__name__}", execute_detached, fn_path, *args),
+        kwargs=kwargs,
         name=f"detached-{fn.__name__}", daemon=True,
     ).start()
     return "local"
@@ -464,7 +513,9 @@ def dispatch_whatsapp_first_sync(user_id: int) -> str:
 
     import threading
     threading.Thread(
-        target=execute_whatsapp_first_sync, args=(user_id,),
+        target=_run_local_job,
+        args=(f"whatsapp-first-sync-{user_id}",
+              execute_whatsapp_first_sync, user_id),
         name=f"whatsapp-first-sync-{user_id}", daemon=True,
     ).start()
     return "local"
