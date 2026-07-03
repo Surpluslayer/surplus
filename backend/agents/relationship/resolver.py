@@ -111,9 +111,24 @@ def resolve_by_url(linkedin_url: str, provider) -> dict:
     a page snippet : best-effort, so an empty snippet just omits those keys.
 
     Returns {linkedin_url, provider_id, name?, headline?, confidence: "high"}.
+
+    Provider-degraded soft-fail: a live Unipile that is throttled / down makes
+    resolve_linkedin_user raise. This is called from request paths, so instead
+    of letting that 500 the caller we return {..., confidence: "failed"} and let
+    the send path re-resolve lazily later. (Both current callers also wrap this;
+    the internal guard makes the soft-fail behavior the contract, not the luck of
+    the call site.)
     """
     canonical = normalize_linkedin_url(linkedin_url) or linkedin_url
-    provider_id = provider.resolve_linkedin_user(canonical)
+    try:
+        provider_id = provider.resolve_linkedin_user(canonical)
+    except Exception as exc:  # noqa: BLE001 : degraded provider must not 500
+        return {
+            "linkedin_url": canonical,
+            "provider_id": None,
+            "confidence": "failed",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
 
     out: dict = {
         "linkedin_url": canonical,
