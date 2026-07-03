@@ -294,3 +294,48 @@ def test_predict_no_show(db, user_and_event, monkeypatch):
     by_id = {r["attendee_id"]: r["no_show_probability"] for r in res["results"]}
     rows = {a.name: a for a in db.query(models.Attendee).all()}
     assert by_id[rows["X"].id] > by_id[rows["Y"].id]
+
+
+def test_enrich_all_detaches_instead_of_blocking(db, user_and_event):
+    """enrich-all is a per-attendee Claude call; running it inline over a large
+    list trips the edge timeout (524). The route must hand off to run_detached
+    and return a fast ack, never loop over enrich_attendee in the request."""
+    from unittest.mock import patch
+    from backend.routes import curation
+    user, ev = user_and_event
+    for i in range(3):
+        db.add(models.Attendee(event_id=ev.id, name=f"A{i}", email=f"a{i}@x.com"))
+    db.commit()
+
+    calls = []
+    with patch.object(curation, "run_detached",
+                      side_effect=lambda fn, *a, **k: calls.append((fn.__name__, a))), \
+         patch.object(curation.enrichment_mod, "enrich_attendee") as inline:
+        out = curation.enrich_all(ev.id, refresh=False, db=db, user=user)
+
+    inline.assert_not_called()                 # no inline LLM loop in the request
+    assert out == {"event_id": ev.id, "started": True, "total": 3}
+    assert calls and calls[0][0] == "_run_enrich_all"
+    assert calls[0][1] == (ev.id, False)
+
+
+def test_run_enrich_all_is_fail_soft_per_row(db, user_and_event):
+    """The detached body must not let one bad enrichment sink the batch."""
+    from unittest.mock import patch
+    from backend.routes import curation
+    _user, ev = user_and_event
+    for i in range(3):
+        db.add(models.Attendee(event_id=ev.id, name=f"A{i}", email=f"a{i}@x.com"))
+    db.commit()
+
+    seen = []
+
+    def flaky(_db, attendee, **kw):
+        seen.append(attendee.id)
+        if len(seen) == 2:
+            raise RuntimeError("boom")
+
+    with patch.object(curation.enrichment_mod, "enrich_attendee", side_effect=flaky):
+        curation._run_enrich_all(db, ev.id, False)   # must not raise
+
+    assert len(seen) == 3                       # all rows attempted despite one failure

@@ -56,6 +56,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..auth import current_user, get_owned_event
 from ..db import get_db
+from ..jobs import run_detached
 from ..curation import (
     attribution as attribution_mod,
     csv_import,
@@ -358,7 +359,25 @@ def enrich_one(
     return AttendeeOut.of(a)
 
 
-@router.post("/{event_id}/curation/attendees/enrich-all")
+def _run_enrich_all(db: Session, event_id: int, refresh: bool) -> None:
+    """Detached body for enrich-all (jobs.run_detached owns `db`). Enriches every
+    attendee on the event; each enrich_attendee is a per-row Claude call. Commits
+    per row so partial progress survives a crash and the poller sees rows fill in.
+    Fail-soft per row: one bad enrichment must not sink the whole batch."""
+    rows = db.query(models.Attendee).filter(
+        models.Attendee.event_id == event_id
+    ).all()
+    for a in rows:
+        try:
+            enrichment_mod.enrich_attendee(db, a, refresh=refresh)
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            print(f"  [enrich-all] event={event_id} attendee={a.id} failed: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+
+
+@router.post("/{event_id}/curation/attendees/enrich-all", status_code=202)
 def enrich_all(
     event_id: int,
     refresh: bool = False,
@@ -367,19 +386,18 @@ def enrich_all(
 ) -> dict:
     """Enrich every attendee on the event in one batch.
 
-    Synchronous: this can be slow on large lists. The route returns a
-    summary, not the full row payload, to keep the response light.
+    Each attendee is a Claude call, so a large list is minutes of network work.
+    Running that inline held the request open long enough to trip the edge
+    timeout (a 524 -- and every retry re-ran the whole batch). It now runs
+    DETACHED on its own session (jobs.run_detached) and the route returns a fast
+    202 ack; the UI polls GET /curation/attendees to watch rows fill in.
     """
     ev = get_owned_event(event_id, user, db)
-    rows = db.query(models.Attendee).filter(
+    total = db.query(models.Attendee).filter(
         models.Attendee.event_id == ev.id
-    ).all()
-    enriched = 0
-    for a in rows:
-        enrichment_mod.enrich_attendee(db, a, refresh=refresh)
-        enriched += 1
-    db.commit()
-    return {"event_id": ev.id, "enriched": enriched, "total": len(rows)}
+    ).count()
+    run_detached(_run_enrich_all, ev.id, refresh)
+    return {"event_id": ev.id, "started": True, "total": total}
 
 
 # ── Stage 2: Curate & score ────────────────────────────────────────────
