@@ -158,7 +158,18 @@ def _trigger_auto_dm(
     event = prospect.event
     peers = [p.name for p in event.prospects if p.id != prospect.id and
              p.status in ("approved", "contacted", "rsvp")]
-    msg = compose(prospect, event, peers=peers)
+    # Ground the post-accept DM in the ACTUAL relationship history (prior
+    # conversation from the chat sync, capture notes, meeting facts) exactly
+    # like the scan-path draft does: the outbound-safe compact brief from
+    # relationship_context, never the raw timeline. Fail-soft: a context miss
+    # must never block the built-in first follow-up.
+    rel_ctx = None
+    try:
+        rel_ctx = relationships.relationship_context(
+            prospect, relationships.fetch_interactions(db, prospect))
+    except Exception:  # noqa: BLE001
+        pass
+    msg = compose(prospect, event, peers=peers, relationship_ctx=rel_ctx)
     res = send_and_log(
         db, prospect, msg.message,
         sent_state="message_sent", fallback_provider=provider,

@@ -1637,7 +1637,10 @@ function _first(name) { return String(name || "they").trim().split(/\s+/)[0]; }
 function _book_meta(r) {
   const bits = [];
   if (r.met_at) bits.push(`Met at ${r.met_at}`);
-  if (r.is_prospect) bits.push("moments ago");
+  // "moments ago" is ONLY for a genuinely fresh capture (met today). A
+  // prospect-linked row with real history shows real recency; the backfill
+  // that linked every prospect made the whole book read "moments ago".
+  if (r.is_prospect && !(r.days_since > 0)) bits.push("moments ago");
   else if (r.review_due) bits.push(r.days_since > 0 ? `review overdue ${r.days_since}d` : "review due");
   else if (r.days_since > 0) bits.push(`last spoke ${r.days_since}d ago`);
   return bits.join(" · ");
