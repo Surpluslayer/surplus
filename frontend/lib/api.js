@@ -16,7 +16,7 @@ function _friendly(status, text) {
   // Never echo a raw error body at the user : gateway/edge failures ship whole
   // HTML pages (Cloudflare's 524 template) that are noise in an error chip.
   const isHtml = /^\s*</.test(text || "");
-  if (TRANSIENT.has(status)) return "The server took too long — try again in a moment.";
+  if (TRANSIENT.has(status)) return "The server took too long. Try again in a moment.";
   if (isHtml) return `Request failed (${status}).`;
   return `${status} : ${(text || "").slice(0, 240)}`;
 }
@@ -157,7 +157,7 @@ async function request(path, opts = {}) {
       // cut mid-response (container restart during a deploy). Safari surfaces
       // this as the cryptic "The string did not match the expected pattern."
       // Treat it as transient — reads retry, writes get a friendly message.
-      lastErr = new Error("The connection dropped mid-response — try again.");
+      lastErr = new Error("The connection dropped mid-response. Try again.");
       lastErr.status = 0;
       lastErr.body = null;
       continue;
