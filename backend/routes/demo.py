@@ -280,6 +280,9 @@ def _cleanup_stale_demo_users(db: DbSession, *, limit: int = 50) -> int:
                 synchronize_session=False)
             for ev in db.query(Event).filter(Event.user_id == u.id).all():
                 db.delete(ev)  # cascade drops prospects/edges/applicants/sponsors
+            # ON DELETE CASCADE on the Contact children (ContactIdentity,
+            # ContactFact, OutgoingMessage.contact_id) drops them with the
+            # contacts here, so the bulk delete no longer 500s on a FK violation.
             db.query(Contact).filter(Contact.user_id == u.id).delete(
                 synchronize_session=False)
             db.query(Session).filter(Session.user_id == u.id).delete(

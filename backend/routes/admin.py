@@ -794,6 +794,11 @@ def merge_users(
     for attr in keys_to_backfill:
         setattr(dst, attr, getattr(src, attr))
 
+    # The MOVE children (events/contacts/interactions/sessions/auth-state) were
+    # re-pointed to the survivor above and so are no longer src's. The remaining
+    # DIE-with-user children (ContactIdentity, ContactFact, OutgoingMessage, Job,
+    # ConnectedAccount, EmailAccount) carry ON DELETE CASCADE, so deleting src
+    # drops them in the DB instead of throwing a ForeignKeyViolation.
     db.delete(src)
     db.commit()
 
@@ -975,10 +980,16 @@ def cleanup_email_contacts(
                            for c, _r in to_delete[:20]]}
 
     for c, rollup in to_delete:
-        # The em: identity rows the sync itself wrote must go with the contact
-        # (FK) : by this point the contact has no non-em identities.
+        # The child rows the sync wrote must go with the contact (FK). The DB now
+        # ON DELETE CASCADEs these when the contact is deleted, but we clear them
+        # explicitly too (belt-and-suspenders + keeps the ORM identity map sane):
+        #   - ContactIdentity : em: identity rows (no non-em identities by here)
+        #   - ContactFact     : per-contact facts (was the missing delete -> FK 500)
         (db.query(models.ContactIdentity)
            .filter(models.ContactIdentity.contact_id == c.id)
+           .delete(synchronize_session=False))
+        (db.query(models.ContactFact)
+           .filter(models.ContactFact.contact_id == c.id)
            .delete(synchronize_session=False))
         db.delete(rollup)
         db.delete(c)

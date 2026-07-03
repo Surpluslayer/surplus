@@ -1076,8 +1076,13 @@ class ContactIdentity(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), index=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    # CASCADE: an identity is meaningless without its Contact and its owning
+    # User; both delete paths (Contact-bulk-delete, User merge/cleanup) rely on
+    # the DB to drop these children so no delete throws a ForeignKeyViolation.
+    contact_id: Mapped[int] = mapped_column(
+        ForeignKey("contacts.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True)
     # "email" | "phone" | "linkedin".
     kind: Mapped[str] = mapped_column(String(20), index=True)
     # The NORMALIZED identity value (lowercased email, last-10-digit phone,
@@ -1108,8 +1113,12 @@ class ContactFact(Base):
     """
     __tablename__ = "contact_facts"
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), index=True)
+    # CASCADE: a fact is per-contact memory owned by a user; it dies with either
+    # parent so Contact/User delete paths cascade cleanly (no FK violation).
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    contact_id: Mapped[int] = mapped_column(
+        ForeignKey("contacts.id", ondelete="CASCADE"), index=True)
     # Fact type, e.g. "birthday" | "based_in" | "interest" | "works_on" |
     # "mutual" | "upcoming_travel". Free-form but conventional.
     key: Mapped[str] = mapped_column(String(60), index=True)
@@ -1196,9 +1205,13 @@ class OutgoingMessage(Base):
     __tablename__ = "outgoing_messages"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    # CASCADE on BOTH parents: an outgoing message is send history owned by a
+    # user and (optionally) tied to a contact; it dies with either so the
+    # User-merge/cleanup and Contact-bulk-delete paths cascade without a FK error.
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True)
     contact_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("contacts.id"), default=None, index=True)
+        ForeignKey("contacts.id", ondelete="CASCADE"), default=None, index=True)
     channel: Mapped[str] = mapped_column(String(20))          # whatsapp|linkedin|email|imessage|sms
     to_handle: Mapped[Optional[str]] = mapped_column(String(200), default=None)  # phone/email for device sends
     body: Mapped[str] = mapped_column(Text, default="")
@@ -1233,8 +1246,10 @@ class Job(Base):
         ForeignKey("events.id"), default=None, index=True
     )
     # Owner, for the poll-auth check. Nullable to tolerate operator/legacy paths.
+    # CASCADE: a user's jobs are ephemeral work records that die with the user
+    # (User merge/cleanup) rather than orphaning; NULL rows are unaffected.
     user_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("users.id"), default=None, index=True
+        ForeignKey("users.id", ondelete="CASCADE"), default=None, index=True
     )
     # "prospect" (search) | "match" | "import_conversations".
     kind: Mapped[str] = mapped_column(String(20))
@@ -1313,7 +1328,10 @@ class ConnectedAccount(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    # CASCADE: a connected account is per-user credential state; it dies with
+    # the user so the User merge/cleanup delete cascades without a FK violation.
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True)
     provider: Mapped[str] = mapped_column(String(40), index=True)        # "google"
     account_email: Mapped[str] = mapped_column(String(200), default="")
     access_token: Mapped[str] = mapped_column(Text, default="")
@@ -1342,8 +1360,10 @@ class EmailAccount(Base):
     __tablename__ = "email_accounts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # CASCADE: a connected mailbox is per-user credential state; it dies with
+    # the user so the User merge/cleanup delete cascades without a FK violation.
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id"), index=True, nullable=False)
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     # "google" / "outlook" -- best-effort provider label for the UI tile.
     provider: Mapped[str] = mapped_column(String(40), default="")
     # The mailbox address Unipile reports (e.g. "daniel@gmail.com"). Display.
