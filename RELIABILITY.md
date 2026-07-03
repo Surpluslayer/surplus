@@ -35,6 +35,13 @@ guardrail layer. On top of that sits a fragile foundation we can only mitigate:
 | C1: double-send race | follow-up dispatch now claims each row atomically (`scheduled` -> `sending`, committed) BEFORE the network send; `_due_followups` uses `with_for_update(skip_locked=True)` on Postgres so replicas claim disjoint rows; `send_followup_now` 409s if the row is no longer scheduled. Cron/replica/double-tap can no longer send the same DM twice | 8ccebd5 |
 | FK-cascade family | `ondelete="CASCADE"` on the User/Contact child FKs (ContactIdentity, ContactFact, OutgoingMessage, Job, ConnectedAccount, EmailAccount); SQLite FK pragma enabled; Postgres `_migrate_fk_cascade` rewrites existing constraints (idempotent, atomic in one txn, fail-soft). merge_users / demo cleanup / cleanup-email-contacts delete paths no longer 500 on ForeignKeyViolation | 16bcf90 |
 | Quick wins | M3 rate-limiter empty-bucket eviction; H5 /api/relationships selectinload + limit; M2 guarded json.loads; M1 Exa 429 backoff; M6 blank-name IndexError; M8 frontend 30s fetch timeout | 4d20d44, 7b82d09 |
+| Boot resilience | restartPolicyMaxRetries 3 -> 10; init_db() retries transient DB errors 5x w/ backoff so a Postgres-proxy blip at boot self-heals instead of crash-looping to hard-down | 3f6da39 |
+| CPU leading indicator | /api/health?deep=1 cpu block (windowed + since-boot-avg, never null), warns >=60% sustained; deep-path only so no added load on the shallow healthcheck | bdbdea7, a0bcb9b |
+| 524: webhook detach | live-provider auto-DM + AI-reply now detached (jobs.run_detached) so the Unipile webhook acks 200 immediately instead of holding open for LLM+send (retry-storm risk); retry-safe via the pre-committed OutreachLog | 9f200d9 |
+| 524: enrich-all detach | curation /enrich-all (one Claude call per attendee) detached, returns 202; UI polls | 3cf796d |
+| Pool: Exa sweep | updates_engine sweep commits per contact so the pooled connection is freed across the network-bound gap (was held across up-to-200-contact loop -> starvation) | d7a6db2 |
+| Unbounded queries | triage CSV export selectinload + 5000-row cap (was 2N+1); curation list_attendees limit clamp 2000 | 7f2a5e9 |
+| Provider soft-fail | resolver.resolve_by_url returns {confidence: failed} on a degraded provider rather than relying on each caller to guard | 15d1457 |
 
 ### How to use the new observability
 - `GET /api/health` (public): shallow. `uptime_seconds` resetting to near-zero across polls = crash loop.
@@ -46,12 +53,11 @@ guardrail layer. On top of that sits a fragile foundation we can only mitigate:
 
 Ranked; each has a known fix. Pick up any item independently.
 
-- **H4** updates sweep (updates_engine.py:367) holds one DB connection across a 200-contact Exa loop. Under LOCAL_JOBS_MAX_CONCURRENT=4 that is up to 4 pinned connections during slow-Exa. Fix: fetch Exa with the session closed, reopen to write; or commit per contact.
-- **H6** resolver.py:116 `provider.resolve_linkedin_user` is unguarded in a request path -> 500 when Unipile degrades. Wrap, return {confidence: "failed"}.
-- **M4** curation.py:361 /enrich-all: synchronous Claude call per attendee in a request handler -> 524 on any real event. Detach like the other sweeps.
-- **M5** list_attendees (curation.py:322) + triage CSV export (triage.py:605) N+1, no limit. selectinload + limit.
 - **M7** frontend App.jsx:663 reads runResult.event.threshold unguarded (Tech Week/matching surface, not the core book). Optional-chain it.
-- **LOW** auto-DM on invite_accepted: a crash after send but before commit could let a webhook retry re-fire. Mostly covered by OutreachLog dedup; worth an explicit idempotency marker.
+- **check_connections (524 + pool-hold)** pipeline.py:481 makes one Unipile call per prospect synchronously in the request path, holding the session across all of them. Detaching changes its inline-results contract -> needs a UI poll change. Flagged, not yet done.
+- **Legacy sync /prospect, /outreach, /run** (pipeline.py) heavy LLM+provider fan-out inline. jobs.py already has /async replacements; these are superseded but still return inline results tests depend on, with deliberate confirm_live_batch guards. Needs a deprecate-vs-document decision.
+
+(Fixed 2026-07-03 and moved to the table above: H4 Exa-sweep connection hold, H6 resolver soft-fail, M4 enrich-all detach, M5 list/export bounds, plus the webhook detach.)
 
 ## Inherent (mitigate, do not eliminate at this stage)
 
