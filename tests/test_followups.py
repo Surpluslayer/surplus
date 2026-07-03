@@ -410,6 +410,86 @@ def test_send_now_dispatches_immediately(db):
     assert "follow_up_sent" in states
 
 
+# ── double-send race (atomic claim) ──────────────────────────────────────
+
+def test_dispatch_skips_row_already_sending(db, monkeypatch):
+    """A row a concurrent pass already flipped to "sending" is NOT re-dispatched:
+    _due_followups only selects status=="scheduled", so a claimed row is
+    invisible to the next dispatch pass -- the core double-send guard."""
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")
+    _u, _ev, p = _seed(db)
+    _u.autonomy_mode = "auto"
+    db.commit()
+    row = _stage_due(db, p)
+    # Simulate a concurrent replica having claimed this row mid-flight.
+    row.status = "sending"
+    db.commit()
+
+    result = run_followups(db=db, _=None)
+    assert result["due"] == 0      # the claimed row is not even due-visible
+    assert result["sent"] == 0
+    db.expire_all()
+    # Still "sending" : the second pass left it alone (never sent a 2nd copy).
+    assert db.get(models.ScheduledFollowup, row.id).status == "sending"
+
+
+def test_dispatch_sends_clean_row_exactly_once(db, monkeypatch):
+    """A clean scheduled+due row is claimed, sent once, and ends "sent" with a
+    single follow_up_sent outreach log (no duplicate send)."""
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")
+    _u, _ev, p = _seed(db)
+    _u.autonomy_mode = "auto"
+    db.commit()
+    row = _stage_due(db, p)
+
+    result = run_followups(db=db, _=None)
+    assert result["due"] == 1
+    assert result["sent"] == 1
+    db.expire_all()
+    assert db.get(models.ScheduledFollowup, row.id).status == "sent"
+    states = [o.state for o in db.get(models.Prospect, p.id).outreach]
+    assert states.count("follow_up_sent") == 1
+
+    # A second overlapping pass finds nothing to send (idempotent, no 2nd copy).
+    result2 = run_followups(db=db, _=None)
+    assert result2["due"] == 0
+    assert result2["sent"] == 0
+    states = [o.state for o in db.get(models.Prospect, p.id).outreach]
+    assert states.count("follow_up_sent") == 1
+
+
+def test_send_now_409s_on_already_sending_row(db):
+    """The manual send-now path re-checks the row status under a lock and 409s
+    if the cron (or a double-tap) already claimed it as "sending", so the
+    manual path and the cron are mutually exclusive on the same row."""
+    user, _ev, p = _seed(db)
+    row = stage_followup(db, p)
+    # The cron has claimed it (or a first tap is mid-flight).
+    row.status = "sending"
+    db.commit()
+    with pytest.raises(HTTPException) as exc:
+        followups_route.send_followup_now(row.id, db=db, user=user)
+    assert exc.value.status_code == 409
+    db.expire_all()
+    # Untouched : the manual path did not send a second copy.
+    assert db.get(models.ScheduledFollowup, row.id).status == "sending"
+
+
+def test_send_now_claims_before_send(db):
+    """A clean send-now flips the row through "sending" to "sent" exactly once
+    and records a single follow_up_sent log."""
+    user, _ev, p = _seed(db)
+    row = stage_followup(db, p)
+    out = followups_route.send_followup_now(row.id, db=db, user=user)
+    assert out.status == "sent"
+    states = [o.state for o in db.get(models.Prospect, p.id).outreach]
+    assert states.count("follow_up_sent") == 1
+    # A second send-now on the now-"sent" row 409s (not re-sendable).
+    with pytest.raises(HTTPException) as exc:
+        followups_route.send_followup_now(row.id, db=db, user=user)
+    assert exc.value.status_code == 409
+
+
 def test_routes_404_on_not_owned(db):
     _user, _ev, p = _seed(db)
     row = stage_followup(db, p)

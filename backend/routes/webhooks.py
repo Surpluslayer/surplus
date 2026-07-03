@@ -134,7 +134,19 @@ def _trigger_auto_dm(
     prospect: models.Prospect,
 ) -> Optional[dict]:
     """For providers where the platform owns the sequence (Unipile), fire
-    the post-accept DM ourselves : from the OWNING USER'S LinkedIn."""
+    the post-accept DM ourselves : from the OWNING USER'S LinkedIn.
+
+    Webhook-RETRY safe by construction (no change needed here). _handle only
+    calls this when _apply_canonical_event returned applied=True, and that
+    function COMMITS the `invite_accepted` OutreachLog BEFORE returning. The
+    log is deduped by (prospect_id, state, provider, provider_lead_id): a
+    Unipile retry of the same invite_accepted (e.g. after a crash mid-DM) hits
+    that dedup, so _apply_canonical_event returns applied=False and this trigger
+    never re-fires. A crash AFTER the accept log commits but BEFORE the DM sent
+    means the DM is (correctly) skipped on retry -- the accept is recorded, and
+    a missed first nudge is safe; a DOUBLE nudge is the failure we must avoid.
+    So the existing OutreachLog dedup already provides the idempotency marker;
+    we intentionally do not add a second one."""
     # Gated on the provider's own gate AND the follow-up-specific master
     # (SURPLUS_AUTO_FOLLOWUPS, decoupled from the general send master): the
     # post-accept DM completes an outreach sequence the host already initiated

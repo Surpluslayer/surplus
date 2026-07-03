@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session, selectinload
 from .. import models
 from ..agents.relationship.pipeline.send.sender import send_and_log, send_followup
 from ..auth import _as_aware_utc
-from ..db import get_db
+from ..db import ENGINE, get_db
 from ..providers import (
     LinkedInProvider,
     get_provider,
@@ -116,18 +116,28 @@ def _due_followups(db: Session) -> list[models.ScheduledFollowup]:
     defensive reply re-check don't fan out into per-row queries.
     """
     now = datetime.now(timezone.utc)
-    rows = (db.query(models.ScheduledFollowup)
-              .filter(models.ScheduledFollowup.status == "scheduled")
-              .options(
-                  selectinload(models.ScheduledFollowup.prospect)
-                  .selectinload(models.Prospect.outreach),
-                  selectinload(models.ScheduledFollowup.prospect)
-                  .selectinload(models.Prospect.event)
-                  .selectinload(models.Event.user))
-              .all())
+    q = (db.query(models.ScheduledFollowup)
+           .filter(models.ScheduledFollowup.status == "scheduled",
+                   models.ScheduledFollowup.send_at <= now)
+           .options(
+               selectinload(models.ScheduledFollowup.prospect)
+               .selectinload(models.Prospect.outreach),
+               selectinload(models.ScheduledFollowup.prospect)
+               .selectinload(models.Prospect.event)
+               .selectinload(models.Event.user)))
+    # Cross-replica claim: on Postgres, SELECT ... FOR UPDATE SKIP LOCKED lets
+    # each replica lock a DISJOINT set of due rows, so two overlapping dispatch
+    # passes never both pick the same row. SQLite has no such lock (single-writer
+    # anyway), so the FOR UPDATE is Postgres-only; the real double-send guard is
+    # the status flip to "sending" committed BEFORE the network send (below).
+    if ENGINE.dialect.name == "postgresql":
+        q = q.with_for_update(skip_locked=True)
+    rows = q.all()
     due: list[models.ScheduledFollowup] = []
     for r in rows:
         send_at = _as_aware_utc(r.send_at)
+        # Defensive : the DB filter already applied send_at <= now, but a naive
+        # stored value could round-trip oddly, so keep the explicit guard.
         if send_at is None or send_at > now:
             continue
         due.append(r)
@@ -207,7 +217,24 @@ def run_followups(
 def dispatch_due_followups(db: Session) -> dict:
     """Core dispatch pass: send every scheduled follow-up whose send_at has
     arrived. Callable from the route (external cron) AND the in-process
-    scheduler thread. Sends are idempotent (status flips per row)."""
+    scheduler thread.
+
+    Double-send safe. Two passes:
+
+      PASS 1 (claim, one commit, still under the FOR UPDATE SKIP LOCKED row
+      locks from _due_followups): classify each due row. Terminal non-send
+      outcomes (no-prospect, replied, stale, held, empty-body) get their final
+      status now; rows that WILL send are flipped "scheduled" -> "sending".
+      The single commit persists all of this AND releases the row locks. After
+      it, every to-send row is claimed as "sending", so no overlapping dispatch
+      (cron re-fire, second replica) and no racing manual send-now can re-pick
+      it : both only ever act on status=="scheduled".
+
+      PASS 2 (send, commit per row): the actual network send for each claimed
+      row, flipping "sending" -> "sent" | "failed". A crash between the two
+      passes leaves the row "sending" (never "scheduled"), so it is never
+      resent -- it is safely inspectable/recoverable, not silently double-fired.
+    """
     fallback_provider = get_provider()
     due = _due_followups(db)
     now = datetime.now(timezone.utc)
@@ -217,6 +244,8 @@ def dispatch_due_followups(db: Session) -> dict:
     cancelled: list[dict] = []
     held: list[dict] = []
 
+    # ── PASS 1 : classify + claim, then one commit (releases the row locks). ──
+    to_send: list[models.ScheduledFollowup] = []
     for row in due:
         prospect = row.prospect
         if prospect is None or prospect.event is None:
@@ -265,6 +294,22 @@ def dispatch_due_followups(db: Session) -> dict:
             failed.append({"followup_id": row.id, "error": "empty body"})
             continue
 
+        # Claim: flip "scheduled" -> "sending" so nothing else re-picks it once
+        # the commit below lands. The network send happens in PASS 2.
+        row.status = "sending"
+        row.updated_at = now
+        to_send.append(row)
+
+    # Single commit: persists the terminal transitions AND the "sending" claims,
+    # and releases the FOR UPDATE SKIP LOCKED locks. From here the claimed rows
+    # are off-limits to any other dispatch / manual send-now (they filter on
+    # status=="scheduled").
+    db.commit()
+
+    # ── PASS 2 : network send for each claimed row (commit per row). ──────────
+    for row in to_send:
+        prospect = row.prospect
+        text = (row.body or "").strip()
         try:
             res = send_followup(
                 db, prospect, text,
@@ -276,6 +321,7 @@ def dispatch_due_followups(db: Session) -> dict:
             row.status = "failed"
             row.cancel_reason = f"{type(exc).__name__}"
             row.updated_at = now
+            db.commit()
             failed.append({"followup_id": row.id, "prospect_id": prospect.id,
                            "error": f"{type(exc).__name__}: {exc}"})
             continue
@@ -284,6 +330,7 @@ def dispatch_due_followups(db: Session) -> dict:
             row.status = "failed"
             row.cancel_reason = "send_error"
             row.updated_at = now
+            db.commit()
             failed.append({"followup_id": row.id, "prospect_id": prospect.id,
                            "error": res.error})
             continue
@@ -296,10 +343,9 @@ def dispatch_due_followups(db: Session) -> dict:
         # implicitly by reaching here (auto-send is ON). Never fails the send.
         _fire_followup_booking(db, prospect, getattr(row, "booking_payload", None),
                                text)
+        db.commit()
         sent.append({"followup_id": row.id, "prospect_id": prospect.id,
                      "state": res.state, "dry_run": res.dry_run})
-
-    db.commit()
 
     return {
         "due": len(due),

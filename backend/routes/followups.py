@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..agents.relationship.pipeline.send.sender import send_followup
 from ..auth import current_user
-from ..db import get_db
+from ..db import ENGINE, get_db
 from ..providers import get_provider
 
 router = APIRouter(prefix="/api/followups", tags=["followups"])
@@ -248,7 +248,25 @@ def send_followup_now(
     if not text:
         raise HTTPException(400, "follow-up body is empty")
 
+    # ── Atomic claim : make the manual send-now and the cron mutually exclusive
+    # on this row. Re-fetch under a row lock (Postgres) and re-check the status:
+    # if the cron (or a double-tap) already flipped it to sending/sent/failed
+    # since _owned_followup read it, 409 instead of sending a second copy. Then
+    # flip "scheduled" -> "sending" and COMMIT before the network send, so the
+    # cron's _due_followups (status=="scheduled" only) can never re-pick it.
+    q = db.query(models.ScheduledFollowup).filter(
+        models.ScheduledFollowup.id == followup_id)
+    if ENGINE.dialect.name == "postgresql":
+        q = q.with_for_update()
+    locked = q.one()
+    if locked.status != "scheduled":
+        raise HTTPException(409, f"follow-up is {locked.status}, cannot send")
     now = datetime.now(timezone.utc)
+    locked.status = "sending"
+    locked.updated_at = now
+    db.commit()
+    row = locked
+
     try:
         res = send_followup(
             db, prospect, text,
