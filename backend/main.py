@@ -17,6 +17,7 @@ from .env_loader import load_env
 load_env()
 
 import hmac
+import os
 from fastapi import FastAPI, Request, Header, Depends
 from fastapi import Depends
 from fastapi.middleware.cors import CORSMiddleware

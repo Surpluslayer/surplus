@@ -123,6 +123,12 @@ async function request(path, opts = {}) {
   for (let attempt = 0; attempt < tries; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, 1500));
     let res;
+    // Bound every request so a black-holed connection (proxy died, wifi dropped
+    // without a reset) can't leave a spinner stuck forever. 30s is well under
+    // Cloudflare's 100s edge cap ; a timeout is treated as a network drop, so
+    // reads retry and writes get the same friendly message.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000);
     try {
       res = await fetch(path, {
         // include cookies on every call : the surplus_session cookie carries
@@ -130,14 +136,18 @@ async function request(path, opts = {}) {
         // SPA + API at one origin) and in dev (Vite proxies /api → :8000).
         credentials: "same-origin",
         headers: { "content-type": "application/json", ...(opts.headers || {}) },
+        signal: controller.signal,
         ...opts,
       });
     } catch (e) {
-      // Network drop / deploy blip : retriable for reads, friendly either way.
+      // Network drop / deploy blip / 30s timeout : retriable for reads,
+      // friendly either way.
       lastErr = new Error("Couldn't reach the server. Check your connection and try again.");
       lastErr.status = 0;
       lastErr.body = null;
       continue;
+    } finally {
+      clearTimeout(timer);
     }
     if (!res.ok) {
       // errorFromResponse() builds the friendly message and surfaces .status
