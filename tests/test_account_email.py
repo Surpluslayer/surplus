@@ -77,8 +77,8 @@ def test_reset_password_sets_new_password(client):
     c, Session = client
     s = Session()
     u = models.User(name="U", email="a@x.com", password_hash=auth_mod.hash_password("oldpass12"))
-    s.add(u); s.commit(); uid = u.id; s.close()
-    token = ae._sign("reset_password", uid, 1800)
+    s.add(u); s.commit(); uid = u.id; bind = ae._pw_bind(u); s.close()
+    token = ae._sign("reset_password", uid, 1800, bind=bind)
     r = c.post("/api/auth/reset-password", json={"token": token, "password": "brandnew123"})
     assert r.status_code == 200
     s = Session(); u2 = s.get(models.User, uid)
@@ -157,3 +157,28 @@ def test_verify_code_none_requested(client):
     tok, uid = _signed_in_user(Session)
     c.cookies.set("surplus_session", tok)
     assert c.post("/api/auth/verify-code", json={"code": "123456"}).status_code == 400
+
+
+def test_reset_token_single_use_and_revokes_sessions(client):
+    """H-1: the reset token is single-use (binding self-invalidates on reset)
+    and a reset revokes existing sessions."""
+    c, Session = client
+    s = Session()
+    u = models.User(name="U", email="ru@x.com",
+                    password_hash=auth_mod.hash_password("oldpass12"))
+    s.add(u); s.commit(); uid = u.id
+    auth_mod.create_session(s, u)             # a live session
+    token = ae._sign("reset_password", uid, 1800, bind=ae._pw_bind(u))
+    s.close()
+
+    assert c.post("/api/auth/reset-password",
+                  json={"token": token, "password": "brandnew123"}).status_code == 200
+    # replay the same token: binding is now stale -> rejected
+    assert c.post("/api/auth/reset-password",
+                  json={"token": token, "password": "different99"}).status_code == 400
+    s = Session()
+    live = (s.query(models.Session)
+              .filter(models.Session.user_id == uid,
+                      models.Session.revoked_at.is_(None)).count())
+    s.close()
+    assert live == 0

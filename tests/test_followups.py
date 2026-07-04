@@ -68,14 +68,12 @@ def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
-def _seed(db, *, replied: bool = False, status: str = "contacted",
-          auto_followups: bool = True):
+def _seed(db, *, replied: bool = False, status: str = "contacted"):
     """A user + event + prospect with a first DM already sent.
 
-    `auto_followups` defaults True so staging tests work; the gate is exercised
-    explicitly by tests that pass auto_followups=False."""
-    user = models.User(email="host@example.com",
-                       auto_followups_enabled=auto_followups)
+    The legacy per-user auto_followups_enabled column is left at its default
+    (False): neither staging nor dispatch reads it anymore."""
+    user = models.User(email="host@example.com")
     db.add(user); db.flush()
     ev = models.Event(
         user_id=user.id,
@@ -219,10 +217,11 @@ def test_user_message_includes_prior_message_section():
 
 
 def test_stage_followup_drafts_even_when_auto_send_off(db):
-    """The draft is always created : auto_followups_enabled gates SENDING at
-    dispatch, not whether a follow-up gets staged. A host with the toggle off
-    still gets a staged draft they can manually send."""
-    _u, _ev, p = _seed(db, auto_followups=False)
+    """The draft is always created regardless of any send gate: SENDING is
+    gated at dispatch by the general-send master (SURPLUS_AUTOMATED_SENDS),
+    never at staging. A host with automation off still gets a staged draft
+    they can manually send."""
+    _u, _ev, p = _seed(db)
     row = stage_followup(db, p)
     assert row is not None
     assert row.status == "scheduled"
@@ -255,8 +254,10 @@ def test_cancel_pending_followups_marks_cancelled(db):
 # ── dispatch (run_followups) ─────────────────────────────────────────────
 
 def test_run_followups_sends_due_row(db, monkeypatch):
-    monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "true")   # follow-up gate opt-in
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")   # env master opt-in
     _u, _ev, p = _seed(db)
+    _u.autonomy_mode = "auto"                               # per-user opt-in
+    db.commit()
     row = _stage_due(db, p)
     result = run_followups(db=db, _=None)
     assert result["due"] == 1
@@ -271,11 +272,14 @@ def test_run_followups_sends_due_row(db, monkeypatch):
 
 
 def test_run_followups_sends_even_when_user_toggle_off(db, monkeypatch):
-    """BUILT-IN first follow-up: the per-user auto_followups_enabled column no
-    longer gates dispatch. With the ops kill switch on, a host with the old
-    toggle off still gets the follow-up sent."""
-    monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "true")
-    _u, _ev, p = _seed(db, auto_followups=False)
+    """The legacy per-user auto_followups_enabled column does not gate the
+    dispatcher. With the env master on and the user's autonomy_mode 'auto',
+    a host with the old toggle off still gets the nudge sent."""
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")
+    _u, _ev, p = _seed(db)
+    assert _u.auto_followups_enabled is False  # legacy column, default off
+    _u.autonomy_mode = "auto"
+    db.commit()
     row = _stage_due(db, p)
     result = run_followups(db=db, _=None)
     assert result["due"] == 1
@@ -286,10 +290,10 @@ def test_run_followups_sends_even_when_user_toggle_off(db, monkeypatch):
 
 
 def test_run_followups_holds_when_kill_switch_off(db, monkeypatch):
-    """Ops kill switch (SURPLUS_AUTO_FOLLOWUPS) off : a due draft is HELD (left
-    scheduled), never sent or cancelled, so it can still be sent manually or
-    dispatched once the switch comes back on."""
-    monkeypatch.delenv("SURPLUS_AUTO_FOLLOWUPS", raising=False)
+    """Autonomy gate (SURPLUS_AUTOMATED_SENDS, shared with auto-reply) off : a
+    due nudge is HELD (left scheduled), never sent or cancelled, so it can
+    still be sent manually or dispatched once the user turns autonomy on."""
+    monkeypatch.delenv("SURPLUS_AUTOMATED_SENDS", raising=False)
     _u, _ev, p = _seed(db)
     row = _stage_due(db, p)
     result = run_followups(db=db, _=None)
@@ -307,8 +311,10 @@ def test_run_followups_expires_stale_row(db, monkeypatch):
     """A row overdue past the staleness window must EXPIRE (cancelled reason
     "stale"), not fire a weeks-late "just checking in" -- guards the backlog
     the moment dispatch opens after an outage."""
-    monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "true")
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")
     _u, _ev, p = _seed(db)
+    _u.autonomy_mode = "auto"
+    db.commit()
     row = _stage_due(db, p, hours_ago=9 * 24)   # 9 days overdue > 7-day window
     result = run_followups(db=db, _=None)
     assert result["due"] == 1
@@ -404,20 +410,84 @@ def test_send_now_dispatches_immediately(db):
     assert "follow_up_sent" in states
 
 
-def test_settings_default_off_and_toggle(db):
-    user = models.User(email="settings@example.com")
-    db.add(user); db.commit()
-    # Default off.
-    assert followups_route.get_followup_settings(user=user).auto_followups_enabled is False
-    # Turn on.
-    out = followups_route.set_followup_settings(
-        followups_route.FollowupSettingsPatch(enabled=True), db=db, user=user)
-    assert out.auto_followups_enabled is True
-    assert db.get(models.User, user.id).auto_followups_enabled is True
-    # Turn off.
-    out = followups_route.set_followup_settings(
-        followups_route.FollowupSettingsPatch(enabled=False), db=db, user=user)
-    assert out.auto_followups_enabled is False
+# ── double-send race (atomic claim) ──────────────────────────────────────
+
+def test_dispatch_skips_row_already_sending(db, monkeypatch):
+    """A row a concurrent pass already flipped to "sending" is NOT re-dispatched:
+    _due_followups only selects status=="scheduled", so a claimed row is
+    invisible to the next dispatch pass -- the core double-send guard."""
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")
+    _u, _ev, p = _seed(db)
+    _u.autonomy_mode = "auto"
+    db.commit()
+    row = _stage_due(db, p)
+    # Simulate a concurrent replica having claimed this row mid-flight.
+    row.status = "sending"
+    db.commit()
+
+    result = run_followups(db=db, _=None)
+    assert result["due"] == 0      # the claimed row is not even due-visible
+    assert result["sent"] == 0
+    db.expire_all()
+    # Still "sending" : the second pass left it alone (never sent a 2nd copy).
+    assert db.get(models.ScheduledFollowup, row.id).status == "sending"
+
+
+def test_dispatch_sends_clean_row_exactly_once(db, monkeypatch):
+    """A clean scheduled+due row is claimed, sent once, and ends "sent" with a
+    single follow_up_sent outreach log (no duplicate send)."""
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")
+    _u, _ev, p = _seed(db)
+    _u.autonomy_mode = "auto"
+    db.commit()
+    row = _stage_due(db, p)
+
+    result = run_followups(db=db, _=None)
+    assert result["due"] == 1
+    assert result["sent"] == 1
+    db.expire_all()
+    assert db.get(models.ScheduledFollowup, row.id).status == "sent"
+    states = [o.state for o in db.get(models.Prospect, p.id).outreach]
+    assert states.count("follow_up_sent") == 1
+
+    # A second overlapping pass finds nothing to send (idempotent, no 2nd copy).
+    result2 = run_followups(db=db, _=None)
+    assert result2["due"] == 0
+    assert result2["sent"] == 0
+    states = [o.state for o in db.get(models.Prospect, p.id).outreach]
+    assert states.count("follow_up_sent") == 1
+
+
+def test_send_now_409s_on_already_sending_row(db):
+    """The manual send-now path re-checks the row status under a lock and 409s
+    if the cron (or a double-tap) already claimed it as "sending", so the
+    manual path and the cron are mutually exclusive on the same row."""
+    user, _ev, p = _seed(db)
+    row = stage_followup(db, p)
+    # The cron has claimed it (or a first tap is mid-flight).
+    row.status = "sending"
+    db.commit()
+    with pytest.raises(HTTPException) as exc:
+        followups_route.send_followup_now(row.id, db=db, user=user)
+    assert exc.value.status_code == 409
+    db.expire_all()
+    # Untouched : the manual path did not send a second copy.
+    assert db.get(models.ScheduledFollowup, row.id).status == "sending"
+
+
+def test_send_now_claims_before_send(db):
+    """A clean send-now flips the row through "sending" to "sent" exactly once
+    and records a single follow_up_sent log."""
+    user, _ev, p = _seed(db)
+    row = stage_followup(db, p)
+    out = followups_route.send_followup_now(row.id, db=db, user=user)
+    assert out.status == "sent"
+    states = [o.state for o in db.get(models.Prospect, p.id).outreach]
+    assert states.count("follow_up_sent") == 1
+    # A second send-now on the now-"sent" row 409s (not re-sendable).
+    with pytest.raises(HTTPException) as exc:
+        followups_route.send_followup_now(row.id, db=db, user=user)
+    assert exc.value.status_code == 409
 
 
 def test_routes_404_on_not_owned(db):
@@ -428,3 +498,45 @@ def test_routes_404_on_not_owned(db):
     with pytest.raises(HTTPException) as exc:
         followups_route.cancel_followup(row.id, db=db, user=stranger)
     assert exc.value.status_code == 404
+
+
+# ── send-link wiring (demo / scheduling link) ─────────────────────────────
+
+def test_strip_call_asks_keeps_url_clauses():
+    """The no-call hygiene must never eat an attached link: \\bzoom\\b used to
+    strip whole clauses containing Zoom meeting URLs from booking drafts."""
+    from backend.providers.base import strip_call_asks
+    msg = ("Great meeting you! Here is the Zoom link for Tuesday: "
+           "https://zoom.us/j/123?pwd=abc. Looking forward to it.")
+    assert strip_call_asks(msg) == msg
+    # ...while prose call asks are still stripped.
+    prose = ("Would love to hop on a quick call next week. "
+             "Also, congrats on the launch.")
+    out = strip_call_asks(prose)
+    assert "call" not in out
+    assert "congrats on the launch" in out
+
+
+def test_followup_body_carries_saved_send_link(db, monkeypatch):
+    """Deterministic link guarantee: with the host's reusable saved_send_link
+    set, the staged follow-up body always contains it, template path included
+    (the LLM weave is best-effort; ensure_send_link is the guarantee)."""
+    monkeypatch.setenv("FOLLOWUP_COMPOSE_DISABLE", "1")
+    u, _ev, p = _seed(db)
+    u.saved_send_link = "https://calendly.com/host/15min"
+    db.commit()
+    row = stage_followup(db, p)
+    assert row is not None
+    assert "https://calendly.com/host/15min" in row.body
+
+
+def test_followup_next_step_url_beats_saved_link(db, monkeypatch):
+    """A URL captured in the prospect's next_step wins over the reusable link."""
+    monkeypatch.setenv("FOLLOWUP_COMPOSE_DISABLE", "1")
+    u, _ev, p = _seed(db)
+    u.saved_send_link = "https://calendly.com/host/15min"
+    p.next_step = "book a time: https://calendly.com/host/demo-30"
+    db.commit()
+    row = stage_followup(db, p)
+    assert "https://calendly.com/host/demo-30" in row.body
+    assert "https://calendly.com/host/15min" not in row.body

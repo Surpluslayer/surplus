@@ -16,6 +16,14 @@ How it works
          not a correspondence)
   3. Aggregate per counterpart address: name, last inbound, last outbound,
      message counts.
+  3b. TWO-WAY FILTER (product rule): an email sender only belongs in the
+     relationship book when there is REAL correspondence : the user has sent
+     them at least one email (outreach) or the thread is genuinely two-way.
+     Inbound-only senders (newsletters, promos, notifications, cold inbound)
+     never become NEW contacts; the outbound set built from the scan window
+     (mails where role == "sent" / from == own address) is the allowlist.
+     EXISTING contacts still get their rollup refreshed either way, so real
+     relationships are never orphaned by the filter.
   4. Upsert each counterpart into the Contact spine via the SAME identity
      scheme the rest of the app uses (identity_keys -> "em:<salted hash>"),
      and record ONE rollup RelationshipInteraction per contact carrying the
@@ -30,13 +38,19 @@ a flaky mailbox can't break the connect flow that auto-kicks this.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from ... import models
 
+log = logging.getLogger(__name__)
+
 # Senders that are machines, not relationships. Matched as a PREFIX of the
-# local part (so "noreply+tag@x" is caught) after lowercasing.
+# local part (so "noreply+tag@x" is caught) after lowercasing. This is the
+# belt-and-suspenders heuristic on top of the two-way filter: even an address
+# the user has written to (an auto-ack they replied to by mistake) is skipped
+# when its local part is obviously automated.
 _JUNK_LOCALPART_PREFIXES = (
     "no-reply", "noreply", "no_reply", "do-not-reply", "donotreply",
     "notifications", "notification", "notify", "mailer-daemon", "postmaster",
@@ -45,7 +59,28 @@ _JUNK_LOCALPART_PREFIXES = (
     "help", "billing", "receipts", "receipt", "invoice", "orders",
     "accounts", "account", "admin", "team", "careers", "jobs", "security",
     "feedback", "calendar-notification", "drive-shares", "comments",
+    "automated", "unsubscribe", "invitations", "invitation", "invites",
+    "invite", "messages-noreply", "calendar-server",
 )
+
+# Relay domains whose mail IMPERSONATES a person: the display name is a real
+# human ("Brian Pahng") but the address is platform machinery, so a contact
+# minted from it is junk wearing a face. Matched as domain suffixes.
+# Deterministic by design (Daniel: deterministic first, AI only if needed).
+_NOTIFICATION_DOMAINS = (
+    "linkedin.com", "luma-mail.com", "lu.ma", "calendly.com", "cal.com",
+    "zoom.us", "eventbrite.com", "partiful.com", "meetup.com",
+    "calendar.google.com", "calendar-server.bounces.google.com",
+    "docs.google.com", "notion.so", "loom.com",
+)
+
+# Calendar-machinery subjects. An "Accepted:" reply is your CALENDAR talking,
+# not you corresponding, so it must not count as outbound (else accepting a
+# meeting invite marks its organizer as real correspondence); an
+# "Invitation:" inbound is likewise the organizer's calendar, not a note.
+_CALENDAR_SUBJECT_RE = __import__("re").compile(
+    r"(?i)^\s*(accepted|declined|tentative(?:ly accepted)?|invitation|"
+    r"updated invitation|canceled(?: event)?|cancelled(?: event)?):")
 # More than this many recipients = an announcement / thread blast, not a
 # 1:1 correspondence worth a contact row.
 _MAX_RECIPIENTS = 5
@@ -77,8 +112,11 @@ def is_junk_address(addr: str) -> bool:
     addr = (addr or "").strip().lower()
     if "@" not in addr:
         return True
-    local = addr.split("@", 1)[0]
-    return any(local.startswith(p) for p in _JUNK_LOCALPART_PREFIXES)
+    local, _, domain = addr.partition("@")
+    if any(local.startswith(p) for p in _JUNK_LOCALPART_PREFIXES):
+        return True
+    return any(domain == d or domain.endswith("." + d)
+               for d in _NOTIFICATION_DOMAINS)
 
 
 def _attendee(a: Any) -> tuple[str, str]:
@@ -165,16 +203,25 @@ def sync_email_contacts(
 
     A caller that supplies its own `fetch_page` (e.g. the Gmail-OAuth sync, or
     a test) drives a SINGLE source against the user's own address -- we don't
-    fan the injected fetcher across accounts."""
+    fan the injected fetcher across accounts.
+
+    Session lifecycle contract: the inputs (own address, per-mailbox Unipile
+    account ids) are read up front and db's pooled connection is RELEASED
+    (via commit) before any paging, so the long Unipile network run never
+    pins a connection. Each mailbox's upsert is a short DB-only transaction
+    ending in commit (which releases again before the next mailbox pages)."""
     from ...models import list_email_accounts
 
     stats = {"scanned": 0, "people": 0, "contacts_created": 0,
-             "contacts_updated": 0, "skipped_junk": 0, "error": None}
+             "contacts_updated": 0, "skipped_junk": 0,
+             "skipped_promotional": 0, "skipped_no_outbound": 0,
+             "error": None}
 
     # Injected fetcher : single-source path (unchanged behavior for tests /
     # the Gmail-OAuth sync). Uses the user's mirrored own-address.
     if fetch_page is not None:
         own = (getattr(user, "email_account_address", "") or "").strip().lower()
+        db.commit()  # release the pooled connection before paging
         return _sync_one_mailbox(db, user, stats, fetch_page, own, max_pages)
 
     # Default (Unipile) path : iterate every connected mailbox.
@@ -188,15 +235,27 @@ def sync_email_contacts(
         own = (getattr(user, "email_account_address", "") or "").strip().lower()
         fetcher = lambda cursor: _default_fetch_page(  # noqa: E731
             dsn, api_key, account_id, cursor)
+        db.commit()  # release the pooled connection before paging
         return _sync_one_mailbox(db, user, stats, fetcher, own, max_pages)
 
     from datetime import datetime, timezone
-    for acct in accounts:
-        own = (acct.address or "").strip().lower()
-        fetcher = (lambda cursor, _aid=acct.unipile_account_id:
+    from ... import models
+
+    # Capture each account's scalars NOW, then release the connection: the
+    # paging below must run with nothing checked out, and expired ORM rows
+    # would silently re-check a connection out on attribute access.
+    specs = [(a.id, (a.address or "").strip().lower(), a.unipile_account_id)
+             for a in accounts]
+    db.commit()
+    for _acct_id, own, unipile_account_id in specs:
+        fetcher = (lambda cursor, _aid=unipile_account_id:
                    _default_fetch_page(dsn, api_key, _aid, cursor))
         _sync_one_mailbox(db, user, stats, fetcher, own, max_pages)
-        acct.last_synced_at = datetime.now(timezone.utc)
+    # Stamp every synced mailbox in one short transaction at the end.
+    (db.query(models.EmailAccount)
+     .filter(models.EmailAccount.id.in_([s[0] for s in specs]))
+     .update({"last_synced_at": datetime.now(timezone.utc)},
+             synchronize_session=False))
     db.commit()
     return stats
 
@@ -204,9 +263,15 @@ def sync_email_contacts(
 def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
     """Page + aggregate + upsert ONE mailbox into the contact spine, folding
     its counts into the shared `stats` dict. `own` is this mailbox's address
-    (per-account, so in/out direction is correct per source)."""
+    (per-account, so in/out direction is correct per source).
+
+    Two phases by design: the paging/aggregation phase is pure network I/O
+    that never touches `db` (the caller releases the pooled connection before
+    invoking us), and the upsert phase is one short DB-only transaction that
+    ends in db.commit() -- so no connection is held across network I/O."""
     from .spine.relationships import _clean  # same cleaners as the LinkedIn spine
     from ...triage.enrichment_cache import identity_keys
+    from . import identity as _identity
 
     # ── 1+2+3 : page + aggregate per counterpart ────────────────────────────
     agg: dict[str, dict] = {}
@@ -218,8 +283,21 @@ def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
             for mail in items:
                 stats["scanned"] += 1
                 direction, people = counterparts_of(mail, own)
+                # Calendar machinery is not correspondence in EITHER direction:
+                # skip before counting so an Accepted: reply can't inflate
+                # n_out and an Invitation: can't inflate n_in.
+                if _CALENDAR_SUBJECT_RE.match(mail.get("subject") or ""):
+                    stats["skipped_calendar"] = stats.get("skipped_calendar", 0) + 1
+                    continue
                 if direction == "skip":
-                    stats["skipped_junk"] += 1
+                    # Classify the skip so ops can see WHAT the mailbox is
+                    # full of: promotional/automated senders vs everything
+                    # else (fan-out blasts, self-mail, malformed).
+                    from_addr, _ = _attendee(mail.get("from_attendee"))
+                    if from_addr and from_addr != own and is_junk_address(from_addr):
+                        stats["skipped_promotional"] += 1
+                    else:
+                        stats["skipped_junk"] += 1
                     continue
                 when = _parse_date(mail.get("date"))
                 for addr, name in people:
@@ -247,11 +325,32 @@ def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
         keys = identity_keys(email=addr, linkedin_url="")
         if not keys:
             continue
-        stats["people"] += 1
+        # Belt-and-suspenders: counterparts_of already drops junk senders, but
+        # never let an automated local part through here either (covers
+        # outbound-set edge cases like a reply sent to an auto-ack address).
+        if is_junk_address(addr):
+            stats["skipped_promotional"] += 1
+            continue
         primary = keys[0]
+        # Look up by the primary key first (existing behavior), then by ANY strong
+        # identity this address implies -- so an email-sync mint links to a contact
+        # already created from LinkedIn (or vice-versa) instead of forking a dup.
+        idents = _identity.strong_identities(email=addr)
         contact = (db.query(models.Contact)
                    .filter_by(user_id=user.id, primary_identity_key=primary)
                    .first())
+        if contact is None:
+            contact = _identity.lookup_contact_by_identities(
+                db, user_id=user.id, identities=idents)
+        # TWO-WAY FILTER: only mint a NEW contact when the user has written to
+        # this address at least once in the scan window (the outbound set).
+        # Inbound-only senders (newsletters, promos, cold inbound) are skipped
+        # entirely: no contact, no rollup. An EXISTING contact still gets its
+        # rollup refreshed below, so real relationships are never orphaned.
+        if contact is None and a["n_out"] == 0:
+            stats["skipped_no_outbound"] += 1
+            continue
+        stats["people"] += 1
         if contact is None:
             contact = models.Contact(
                 user_id=user.id, primary_identity_key=primary,
@@ -267,6 +366,10 @@ def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
             if not contact.name and a["name"]:
                 contact.name = _clean(a["name"])
             stats["contacts_updated"] += 1
+        # Register every strong identity onto whatever contact won, so future
+        # syncs (and the dedup engine) can bridge this person across channels.
+        _identity.register_identities(db, contact=contact, identities=idents,
+                                      source="email_sync", primary_key=primary)
 
         last_touch = max(filter(None, [a["last_in"], a["last_out"]]),
                          default=None)
@@ -301,6 +404,11 @@ def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
         })
 
     db.commit()
+    log.info(
+        "email_sync mailbox=%s created=%s updated=%s "
+        "skipped_promotional=%s skipped_no_outbound=%s",
+        own or "?", stats["contacts_created"], stats["contacts_updated"],
+        stats["skipped_promotional"], stats["skipped_no_outbound"])
     return stats
 
 

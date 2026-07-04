@@ -63,6 +63,31 @@ else:
 SessionLocal = sessionmaker(bind=ENGINE, autoflush=False, autocommit=False)
 
 
+# SQLite does NOT enforce foreign keys (and therefore ON DELETE CASCADE) unless
+# PRAGMA foreign_keys is turned ON per connection. Postgres always enforces. We
+# now rely on the DB to cascade-delete User/Contact children (identities, facts,
+# outgoing messages, jobs, ...), so a SQLite deployment must enable it or the
+# delete paths would silently orphan children instead of cascading. Postgres
+# engines are untouched. Tests that build their own SQLite engine should install
+# the same listener (see enable_sqlite_fk_pragma).
+def enable_sqlite_fk_pragma(engine) -> None:
+    """Attach a connect listener that runs `PRAGMA foreign_keys=ON` on every new
+    SQLite connection. No-op for non-SQLite engines. Idempotent-safe to call once
+    per engine."""
+    if engine.dialect.name != "sqlite":
+        return
+    from sqlalchemy import event as _sa_event
+
+    @_sa_event.listens_for(engine, "connect")
+    def _fk_on(dbapi_conn, _rec):  # noqa: ANN001
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
+
+enable_sqlite_fk_pragma(ENGINE)
+
+
 class Base(DeclarativeBase):
     """Declarative base for all ORM models."""
 
@@ -104,10 +129,6 @@ def init_db() -> None:
     """
     from . import models  # noqa: F401  (import registers the models)
     from . import models_monitoring  # noqa: F401  (continuous-enrichment tables)
-    try:
-        Base.metadata.create_all(ENGINE)
-    except Exception as exc:  # noqa: BLE001
-        print(f"  [init_db] create_all failed: {type(exc).__name__}: {exc}")
 
     migrations = [
         _migrate_event_user_id,
@@ -156,7 +177,51 @@ def init_db() -> None:
         _migrate_session_client,
         _migrate_contact_phone,
         _migrate_contact_identities,
+        _migrate_prospect_draft_fields,
+        _migrate_job_event_id_nullable,
+        _migrate_user_linkedin_chat_synced_at,
+        _migrate_user_autonomy_mode,
+        # Runs LAST : re-points existing User/Contact child FKs to ON DELETE
+        # CASCADE so the delete paths (merge/cleanup) stop 500ing on Postgres.
+        _migrate_fk_cascade,
     ]
+
+    # Schema-revision sentinel: the loop below plus create_all's checkfirst is
+    # HUNDREDS of inspector round-trips. On a replica far from the DB (EU
+    # replica, US Postgres) that is MINUTES of boot time, which blew the
+    # deploy healthcheck window across 6+ consecutive deploys on 2026-07-03.
+    # The schema only changes when this list changes, so: one query reads the
+    # stamped revision, and a match skips ALL of it. The revision is
+    # len(migrations), so appending a migration re-runs the loop with no
+    # manual bump. FORCE_DB_MIGRATIONS=1 overrides for ops.
+    rev = str(len(migrations))
+    if (os.environ.get("FORCE_DB_MIGRATIONS") or "").strip() not in ("1", "true"):
+        try:
+            from sqlalchemy import text as _text
+            with ENGINE.connect() as _conn:
+                got = _conn.execute(_text(
+                    "SELECT value FROM schema_meta WHERE key = 'schema_rev'"
+                )).scalar()
+            if got == rev:
+                # Schema already at this revision: skip create_all + the whole
+                # migration loop (the boot-time win). The operator seed below
+                # is DATA, not schema, and tests reset data between runs, so
+                # it must run on every init_db call: cheap (one SELECT when
+                # the operator row already exists).
+                try:
+                    _ensure_operator_user_and_backfill()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  [init_db] operator backfill failed: "
+                          f"{type(exc).__name__}: {exc}")
+                return
+        except Exception:  # noqa: BLE001 -- table missing / first boot: run all
+            pass
+
+    try:
+        Base.metadata.create_all(ENGINE)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [init_db] create_all failed: {type(exc).__name__}: {exc}")
+
     for migration in migrations:
         try:
             migration()
@@ -184,6 +249,20 @@ def init_db() -> None:
         _ensure_operator_user_and_backfill()
     except Exception as exc:  # noqa: BLE001
         print(f"  [init_db] operator backfill failed: {type(exc).__name__}: {exc}")
+
+    # All migrations ran (benign races swallowed, real failures raised above):
+    # stamp the revision so every subsequent boot on this schema is one query.
+    try:
+        from sqlalchemy import text as _text
+        with ENGINE.begin() as _conn:
+            _conn.execute(_text(
+                "CREATE TABLE IF NOT EXISTS schema_meta "
+                "(key VARCHAR(64) PRIMARY KEY, value VARCHAR(255))"))
+            _conn.execute(_text(
+                "INSERT INTO schema_meta (key, value) VALUES ('schema_rev', :v) "
+                "ON CONFLICT (key) DO UPDATE SET value = :v"), {"v": rev})
+    except Exception as exc:  # noqa: BLE001 -- stamping is best-effort
+        print(f"  [init_db] schema_rev stamp failed: {type(exc).__name__}: {exc}")
 
 
 def _migrate_user_google_sub() -> None:
@@ -231,6 +310,38 @@ def _migrate_user_password_hash() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(200)"))
+
+
+def _migrate_user_linkedin_chat_synced_at() -> None:
+    """Add users.linkedin_chat_synced_at (TIMESTAMP, NULL) -- the incremental
+    watermark for the LinkedIn DM sync. NULL = never synced (full scan)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "linkedin_chat_synced_at" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE users ADD COLUMN linkedin_chat_synced_at TIMESTAMP"))
+
+
+def _migrate_user_autonomy_mode() -> None:
+    """Add users.autonomy_mode (VARCHAR(8), default 'off') -- the per-user
+    autonomy control over agent-initiated sends: 'off' | 'ask' | 'auto'.
+    Existing rows default to 'off' (agent drafts; nothing agent-initiated
+    sends), matching the safe product default for new users."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "autonomy_mode" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE users ADD COLUMN autonomy_mode VARCHAR(8) DEFAULT 'off'"))
 
 
 def _migrate_contact_phone() -> None:
@@ -1015,12 +1126,12 @@ def _migrate_event_user_id() -> None:
 
 
 def _migrate_user_auto_followups() -> None:
-    """Add users.auto_followups_enabled (BOOLEAN, default False) : the per-user
-    opt-in for the Gmail-style scheduled follow-up feature.
+    """Add users.auto_followups_enabled (BOOLEAN, default False).
 
-    Defaulted to 0/false so every existing user stays opted OUT until they
-    explicitly turn it on : sending a first DM never auto-stages a follow-up
-    for a user who hasn't asked for it."""
+    LEGACY: the column no longer gates staging or dispatch (env gates
+    SURPLUS_AUTO_FOLLOWUPS / SURPLUS_AUTOMATED_SENDS own that now) and its
+    settings routes + UI toggle are gone. The migration stays so older DBs
+    keep a consistent schema with models.User."""
     from sqlalchemy import inspect, text
     insp = inspect(ENGINE)
     if "users" not in insp.get_table_names():
@@ -1377,5 +1488,136 @@ def _ensure_operator_user_and_backfill() -> None:
 def reset_db() -> None:
     """Drop + recreate every table. Used by tests and the seed script."""
     from . import models  # noqa: F401
+    # SQLite with PRAGMA foreign_keys=ON (which we now enable so ON DELETE
+    # CASCADE is enforced) REFUSES to DROP a table another table still
+    # references, which breaks drop_all's teardown. Disable FK enforcement for
+    # the DDL, then restore it. Postgres drops in dependency order regardless.
+    if ENGINE.dialect.name == "sqlite":
+        from sqlalchemy import text
+        with ENGINE.begin() as conn:
+            conn.execute(text("PRAGMA foreign_keys=OFF"))
+            Base.metadata.drop_all(conn)
+            Base.metadata.create_all(conn)
+            conn.execute(text("PRAGMA foreign_keys=ON"))
+        return
     Base.metadata.drop_all(ENGINE)
     Base.metadata.create_all(ENGINE)
+
+
+def _migrate_prospect_draft_fields() -> None:
+    """Add prospects.draft_status / draft_note / draft_message : the persisted
+    in-person draft. /scan now returns fast and a detached worker composes the
+    note + DM off the request path, storing them here for the UI to poll.
+    All nullable, so existing rows are untouched (NULL = no stored draft)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "prospects" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("prospects")}
+    ine = "IF NOT EXISTS " if ENGINE.dialect.name == "postgresql" else ""
+    with ENGINE.begin() as conn:
+        if "draft_status" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}draft_status VARCHAR(12)"
+            ))
+        if "draft_note" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}draft_note VARCHAR(400)"
+            ))
+        if "draft_message" not in cols:
+            conn.execute(text(
+                f"ALTER TABLE prospects ADD COLUMN {ine}draft_message TEXT"
+            ))
+
+
+def _migrate_job_event_id_nullable() -> None:
+    """Drop the NOT NULL constraint on jobs.event_id so user-scoped jobs (the
+    LinkedIn conversation import has no event) can use the Job poll machinery.
+    Same posture as _migrate_user_unipile_account_id_nullable : SQLite already
+    allows NULL via the updated Mapped[] annotation at create_all time, so the
+    explicit ALTER is Postgres-only."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "jobs" not in insp.get_table_names():
+        return
+    if ENGINE.dialect.name != "postgresql":
+        return
+    cols = insp.get_columns("jobs")
+    target = next((c for c in cols if c["name"] == "event_id"), None)
+    if target is None or target.get("nullable") is True:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE jobs ALTER COLUMN event_id DROP NOT NULL"
+        ))
+
+
+# The User/Contact child tables whose rows must DIE with the parent, so the
+# delete paths (admin.merge_users, demo cleanup, admin.cleanup-email-contacts)
+# cascade in the DB instead of throwing a ForeignKeyViolation. Each entry is
+# (child_table, fk_column, parent_table). Only orphan-delete children live here
+# -- NOT rows a merge MOVES to a survivor (events/contacts/interactions/sessions
+# are re-pointed by merge_users, never cascade-deleted).
+_CASCADE_FKS: list[tuple[str, str, str]] = [
+    ("contact_identities", "contact_id", "contacts"),
+    ("contact_identities", "user_id", "users"),
+    ("contact_facts", "contact_id", "contacts"),
+    ("contact_facts", "user_id", "users"),
+    ("outgoing_messages", "contact_id", "contacts"),
+    ("outgoing_messages", "user_id", "users"),
+    ("jobs", "user_id", "users"),
+    ("connected_accounts", "user_id", "users"),
+    ("email_accounts", "user_id", "users"),
+]
+
+
+def _migrate_fk_cascade() -> None:
+    """Make the User/Contact child FKs ON DELETE CASCADE on Postgres.
+
+    SQLite already picks up the ondelete="CASCADE" on the model columns at
+    create_all time (and the app enables PRAGMA foreign_keys), so this explicit
+    ALTER is Postgres-only : create_all never rewrites an EXISTING table's
+    constraints, so a prod DB created before the cascade was added still carries
+    NO CASCADE and every delete path 500s on a ForeignKeyViolation.
+
+    For each (child, column, parent) we look the constraint up by its actual
+    columns in pg_constraint (names differ : SQLAlchemy-created tables use
+    <table>_<col>_fkey, the raw-SQL contact_identities table is auto-named), then
+    DROP + re-ADD it with ON DELETE CASCADE. Idempotent : confdeltype 'c' means
+    it is already cascading, so we skip. No-op when a table doesn't exist yet."""
+    from sqlalchemy import inspect, text
+    if ENGINE.dialect.name != "postgresql":
+        return
+    insp = inspect(ENGINE)
+    have = set(insp.get_table_names())
+    with ENGINE.begin() as conn:
+        for child, col, parent in _CASCADE_FKS:
+            if child not in have or parent not in have:
+                continue
+            # Find the single-column FK constraint on child.(col) -> parent.
+            # confdeltype: 'c' = CASCADE, 'a' = NO ACTION (default), etc.
+            row = conn.execute(text(
+                "SELECT c.conname, c.confdeltype "
+                "FROM pg_constraint c "
+                "JOIN pg_class ch ON ch.oid = c.conrelid "
+                "JOIN pg_class par ON par.oid = c.confrelid "
+                "JOIN pg_attribute a ON a.attrelid = c.conrelid "
+                "                    AND a.attnum = c.conkey[1] "
+                "WHERE c.contype = 'f' "
+                "  AND ch.relname = :child "
+                "  AND par.relname = :parent "
+                "  AND a.attname = :col "
+                "  AND array_length(c.conkey, 1) = 1"
+            ), {"child": child, "parent": parent, "col": col}).first()
+            if row is None:
+                # No matching FK (e.g. constraint dropped by an operator, or a
+                # legacy table without it) : nothing to re-point.
+                continue
+            conname, deltype = row[0], row[1]
+            if deltype == "c":
+                continue  # already ON DELETE CASCADE
+            conn.execute(text(
+                f'ALTER TABLE {child} DROP CONSTRAINT "{conname}"'))
+            conn.execute(text(
+                f'ALTER TABLE {child} ADD CONSTRAINT "{conname}" '
+                f'FOREIGN KEY ({col}) REFERENCES {parent}(id) ON DELETE CASCADE'))

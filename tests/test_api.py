@@ -423,3 +423,13 @@ def test_webhook_signature_required_when_secret_set(client, monkeypatch):
     r = _post_unipile_webhook(client, payload, secret="the-real-secret")
     assert r.status_code == 200
     assert r.json()["applied"] is True
+
+
+def test_diagnostics_endpoints_require_admin_token(client):
+    """Security review H-2: the operator diagnostics endpoints make BILLED
+    upstream calls; unauthenticated access is a cost-DoS + config leak, so they
+    404 without the admin token (same posture as /admin)."""
+    for path in ("/api/diagnostics/anthropic", "/api/diagnostics/exa",
+                 "/api/diagnostics/exa/discover"):
+        r = client.get(path)
+        assert r.status_code == 404, f"{path} should be gated, got {r.status_code}"

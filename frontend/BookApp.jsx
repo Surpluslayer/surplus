@@ -19,7 +19,8 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Sparkles, ArrowUp, ArrowRight, Star, LayoutDashboard, Plus, BookText, Loader2, X,
-  ChevronLeft, ChevronRight, ChevronDown, MapPin, QrCode, Link2, Search, Send,
+  Link2,
+  ChevronLeft, ChevronRight, ChevronDown, MapPin, QrCode, Search, Send,
   Mail, Calendar, Plug, CreditCard, LogOut, CheckCircle2, Mic, Video, MessageCircle,
   KeyRound,
 } from "lucide-react";
@@ -300,6 +301,74 @@ function Avatar({ user, feed, onAccount }) {
   );
 }
 
+// Ask-mode queue: when the user's autonomy mode is "ask", surface the
+// due-but-held follow-ups above Updates for a one-tap Send / Skip. Mode is
+// read fresh on mount (the user prop's /me snapshot can be stale after a
+// visit to Account); any other mode, or an empty queue, renders nothing.
+function WaitingForOk({ user }) {
+  const [mode, setMode] = useState(user?.autonomy_mode || "off");
+  const [items, setItems] = useState([]);
+  const [busyId, setBusyId] = useState(null);
+  const [note, setNote] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getSettings()
+       .then((d) => { if (!cancelled && d?.autonomy_mode) setMode(d.autonomy_mode); })
+       .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (mode !== "ask") return;
+    let cancelled = false;
+    api.pendingFollowups()
+       .then((d) => { if (!cancelled) setItems(Array.isArray(d) ? d : []); })
+       .catch(() => {});
+    return () => { cancelled = true; };
+  }, [mode]);
+
+  if (mode !== "ask" || items.length === 0) return null;
+
+  const resolve = async (item, action) => {
+    setBusyId(item.id); setNote("");
+    try {
+      if (action === "send") await api.sendFollowupNow(item.id);
+      else await api.skipFollowup(item.id);
+      setItems((prev) => prev.filter((x) => x.id !== item.id));
+    } catch (e) {
+      setNote(e.message || "That didn't go through. Try again.");
+    } finally { setBusyId(null); }
+  };
+
+  return (
+    <>
+      <SectionHead label="Waiting for your OK" count={items.length} />
+      <div className="bk-group">
+        {items.map((item) => (
+          <div key={item.id} className="bk-upd">
+            <div className="bk-row" style={{ alignItems: "flex-start" }}>
+              <div className="bk-main">
+                <p className="bk-name">{item.name}</p>
+                <p className="bk-sub">{item.message}</p>
+              </div>
+              <div className="bk-aside" style={{ display: "flex", gap: 6 }}>
+                <button className="bk-btn bk-btn--primary" disabled={busyId === item.id}
+                        onClick={() => resolve(item, "send")}>
+                  {busyId === item.id ? "…" : "Send"}
+                </button>
+                <button className="bk-btn" disabled={busyId === item.id}
+                        onClick={() => resolve(item, "skip")}>Skip</button>
+              </div>
+            </div>
+          </div>
+        ))}
+        {note && <p className="bk-note bk-note--warn" style={{ margin: "8px 14px" }}>{note}</p>}
+      </div>
+    </>
+  );
+}
+
 function TodayView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
   const updates = feed?.updates || [];
   const needs = feed?.needs_outreach || [];
@@ -335,6 +404,8 @@ function TodayView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
 
       {feed && (
         <>
+          <WaitingForOk user={user} />
+
           <SectionHead label="Updates" count={updates.length} />
           <div className="bk-group">
             {updates.map((u, i) => (
@@ -404,15 +475,41 @@ function BookView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
   const roster = feed?.roster || [];
 
   const runImport = async () => {
+    // The import runs as a background job now (the chat walk is minutes of
+    // Unipile paging) : queue it, then poll for progress until it lands.
     setImporting(true); setImportNote("");
     try {
-      const res = await api.importConversations();
-      const n = res?.imported ?? 0;
-      setImportNote(n > 0 ? `Imported ${n} from your LinkedIn chats.`
-                          : "No new conversations to import yet.");
-      if (n > 0) onReload?.();
+      const start = await api.importConversations();
+      const jobId = start?.job_id;
+      if (!jobId) throw new Error("Couldn't start the import.");
+      const startedAt = Date.now();
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      for (;;) {
+        if (Date.now() - startedAt > 240000) {
+          setImportNote("Still importing in the background. Check back in a minute.");
+          return;
+        }
+        await sleep(2000);
+        let s;
+        try { s = await api.importConversationsStatus(jobId); }
+        catch { continue; }   // transient poll error : keep waiting
+        if (s.status === "done") {
+          const n = s.result?.imported ?? 0;
+          setImportNote(n > 0 ? `Imported ${n} from your LinkedIn chats.`
+                              : "No new conversations to import yet.");
+          if (n > 0) onReload?.();
+          return;
+        }
+        if (s.status === "error") {
+          throw new Error(s.error || "Import failed.");
+        }
+        if (s.progress) {
+          setImportNote(`Importing… checked ${s.progress.scanned} chats, `
+                        + `found ${s.progress.found} people.`);
+        }
+      }
     } catch (e) {
-      setImportNote(e?.message || "Couldn't import — try again.");
+      setImportNote(e?.message || "Couldn't import. Try again.");
     } finally {
       setImporting(false);
     }
@@ -744,6 +841,8 @@ function AccountScreen({ user, onBack, onConnections }) {
         </div>
       </div>
 
+      <AutonomySection user={user} />
+
       <PasswordSection user={user} />
 
       <div className="bk-set-group">
@@ -751,6 +850,92 @@ function AccountScreen({ user, onBack, onConnections }) {
           <span className="bk-set-lead"><LogOut size={19} /><span className="bk-set-lbl">Sign out</span></span>
         </button>
       </div>
+    </div>
+  );
+}
+
+// Autonomy: how much the agent may send on its own. Three modes, saved via
+// PUT /api/settings. "Full auto" gets an inline confirm step before commit
+// (a send-without-asking grant should never be one accidental tap).
+const AUTONOMY_OPTIONS = [
+  { key: "off", label: "Off", hint: "surplus drafts, you send" },
+  { key: "ask", label: "Ask first", hint: "surplus lines up sends and asks you" },
+  { key: "auto", label: "Full auto", hint: "surplus sends on its own" },
+];
+
+function AutonomySection({ user }) {
+  const [mode, setMode] = useState(user?.autonomy_mode || "off");
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  // Fresh read on mount: the BookApp-level user prop is a one-shot /me from
+  // app start and may be stale if the mode changed in another tab.
+  useEffect(() => {
+    let cancelled = false;
+    api.getSettings()
+       .then((d) => { if (!cancelled && d?.autonomy_mode) setMode(d.autonomy_mode); })
+       .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const commit = async (m) => {
+    setBusy(true); setErr("");
+    try {
+      const d = await api.setAutonomyMode(m);
+      setMode(d?.autonomy_mode || m);
+      setConfirming(false);
+    } catch (e) {
+      setErr(e.message || "Couldn't save that.");
+    } finally { setBusy(false); }
+  };
+
+  const pick = (m) => {
+    if (busy || m === mode) { setConfirming(false); return; }
+    if (m === "auto") { setConfirming(true); setErr(""); return; }
+    setConfirming(false);
+    commit(m);
+  };
+
+  return (
+    <div className="bk-set-group">
+      <div className="bk-set-row" style={{ borderBottom: 0 }}>
+        <span className="bk-set-lead"><Sparkles size={19} />
+          <span className="bk-set-lbl">Autonomy</span></span>
+      </div>
+      {AUTONOMY_OPTIONS.map((opt) => (
+        <button key={opt.key} className="bk-set-row" disabled={busy}
+                onClick={() => pick(opt.key)} aria-pressed={mode === opt.key}>
+          <span className="bk-set-lead">
+            <span className={"bk-radio" + (mode === opt.key ? " on" : "")} aria-hidden="true" />
+            <span>
+              <span className="bk-set-lbl">{opt.label}</span>
+              <span className="bk-set-hint">{opt.hint}</span>
+            </span>
+          </span>
+          {mode === opt.key && <CheckCircle2 size={17} className="bk-chev" />}
+        </button>
+      ))}
+      {confirming && (
+        <div className="bk-set-row" style={{ display: "block" }}>
+          <p style={{ fontSize: 13, margin: "0 0 9px", color: "var(--ink)", lineHeight: 1.45 }}>
+            Surplus will send messages without asking. Confirm?
+          </p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="bk-btn bk-btn--primary" disabled={busy}
+                    onClick={() => commit("auto")}>
+              {busy ? "Saving…" : "Turn on"}
+            </button>
+            <button className="bk-btn" disabled={busy}
+                    onClick={() => setConfirming(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {err && (
+        <div className="bk-set-row" style={{ display: "block" }}>
+          <p style={{ fontSize: 12.5, margin: 0, color: "#c0433d" }}>{err}</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -933,19 +1118,30 @@ function ConnectionsScreen({ user, onBack }) {
                        connected={acct.status === "active"}
                        onConnect={() => connect(api.startEmailAuth, "email")} />
             ))}
-            <ConnRow icon={<Mail size={21} />} name="Add another email"
-                     sub="Gmail or Outlook"
+            <ConnRow icon={<Mail size={21} />} name="Add Gmail"
+                     sub="Connect a Google mailbox"
                      connected={false}
-                     onConnect={() => connect(api.startEmailAuth, "email")} />
+                     onConnect={() => connect(() => api.startEmailAuth("google"), "Gmail")} />
+            <ConnRow icon={<Mail size={21} />} name="Add Outlook"
+                     sub="Connect a Microsoft 365 / Outlook mailbox"
+                     connected={false}
+                     onConnect={() => connect(() => api.startEmailAuth("outlook"), "Outlook")} />
           </>
         ) : (
-          // Legacy / no-mailbox fallback : the original single Gmail row.
-          <ConnRow icon={<Mail size={21} />} name="Gmail"
-                   sub={emailOn && user?.email_account_address
-                     ? `Connected as ${user.email_account_address}`
-                     : "Tracks replies, sends your drafts"}
-                   connected={emailOn}
-                   onConnect={() => connect(api.startEmailAuth, "Gmail")} />
+          // No mailbox yet : explicit Gmail + Outlook connect rows. Both go
+          // through Unipile hosted auth (no separate Microsoft/Azure app).
+          <>
+            <ConnRow icon={<Mail size={21} />} name="Gmail"
+                     sub={emailOn && user?.email_account_address
+                       ? `Connected as ${user.email_account_address}`
+                       : "Tracks replies, sends your drafts"}
+                     connected={emailOn}
+                     onConnect={() => connect(() => api.startEmailAuth("google"), "Gmail")} />
+            <ConnRow icon={<Mail size={21} />} name="Outlook"
+                     sub="Microsoft 365 / Outlook : tracks replies, sends your drafts"
+                     connected={false}
+                     onConnect={() => connect(() => api.startEmailAuth("outlook"), "Outlook")} />
+          </>
         )}
         <ConnRow icon={<MessageCircle size={21} />} name="WhatsApp"
                  sub={whatsappOn
@@ -957,7 +1153,15 @@ function ConnectionsScreen({ user, onBack }) {
                  sub={googleOn ? "Connected" : "Logs meetings, syncs contacts"}
                  connected={googleOn}
                  onConnect={() => connect(api.connectGoogle, "Google")} />
-        {zoomAvail && (
+        {integrations === null ? (
+          // /api/integrations hasn't resolved yet: render the row in its
+          // loading state instead of hiding it, so it doesn't pop into the
+          // list a few seconds after the screen opens (layout jump).
+          <ConnRow icon={<Video size={21} />} name="Zoom"
+                   sub="Add Zoom links to your bookings"
+                   loading
+                   onConnect={() => connect(api.connectZoom, "Zoom")} />
+        ) : zoomAvail && (
           <ConnRow icon={<Video size={21} />} name="Zoom"
                    sub={zoomOn ? "Connected" : "Add Zoom links to your bookings"}
                    connected={zoomOn}
@@ -1083,13 +1287,13 @@ function AddScreen({ user, onAccount, onAdded }) {
 
 // Match the relationship-agent chat's suggested "bubbles" (event-host framing).
 const CHIPS = ["Reach out to my sales prospects",
-               "Schedule calls with leads",
-               "Follow up with people from the event"];
+               "Who do I know at Cursor?",
+               "2nd degree founders in NYC"];
 
 function AskBar({ variant, onOpen, onDraft }) {
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
-  const [res, setRes] = useState(null);   // {answer, people}
+  const [res, setRes] = useState(null);   // {answer, people, networkHits}
   const [err, setErr] = useState("");
   const [phase, setPhase] = useState("");  // live "thinking / drafting X…" label
 
@@ -1105,8 +1309,12 @@ function AskBar({ variant, onOpen, onDraft }) {
         onStatus: ({ phase: ph, name }) =>
           setPhase(ph === "drafting" ? `Drafting ${name || "…"}` :
                    ph === "selecting" ? "Finding who to follow up with…" : "Thinking…"),
-        onPeople: ({ people, answer }) =>
-          setRes({ answer: answer || "", people: people || [] }),
+        onPeople: ({ people, answer, network_hits }) =>
+          setRes({
+            answer: answer || "",
+            people: people || [],
+            networkHits: network_hits || [],
+          }),
         onToken: ({ index, t }) =>     // each card types out live
           setRes((r) => {
             if (!r || !r.people[index]) return r;
@@ -1183,8 +1391,38 @@ function AskBar({ variant, onOpen, onDraft }) {
               ))}
             </div>
           )}
+          {(res.networkHits || []).length > 0 && (
+            <div className="bk-answer-network">
+              {res.networkHits.map((h, i) => (
+                <NetworkHitCard key={`${h.linkedin_slug || h.name}-${i}`} hit={h} />
+              ))}
+            </div>
+          )}
           <button className="bk-link" onClick={() => { setRes(null); setQ(""); }}>Clear</button>
         </div>
+      )}
+    </div>
+  );
+}
+
+function NetworkHitCard({ hit }) {
+  const url = hit.linkedin_url
+    || (hit.linkedin_slug ? `https://www.linkedin.com/in/${hit.linkedin_slug}` : null);
+  const path = hit.via_connector
+    ? `Ask ${hit.via_connector} for an intro`
+    : (hit.network_degree ? `${hit.network_degree}° connection` : "Extended network");
+
+  return (
+    <div className="bk-network-hit">
+      <div className="bk-network-main">
+        <div className="bk-ap-name">{hit.name || "Unknown"}</div>
+        {hit.headline && <div className="bk-ap-reason">{hit.headline}</div>}
+        <div className="bk-network-path"><Link2 size={12} /> {path}</div>
+      </div>
+      {url && (
+        <a className="bk-network-link" href={url} target="_blank" rel="noopener noreferrer">
+          LinkedIn
+        </a>
       )}
     </div>
   );
@@ -1445,7 +1683,10 @@ function _first(name) { return String(name || "they").trim().split(/\s+/)[0]; }
 function _book_meta(r) {
   const bits = [];
   if (r.met_at) bits.push(`Met at ${r.met_at}`);
-  if (r.is_prospect) bits.push("moments ago");
+  // "moments ago" is ONLY for a genuinely fresh capture (met today). A
+  // prospect-linked row with real history shows real recency; the backfill
+  // that linked every prospect made the whole book read "moments ago".
+  if (r.is_prospect && !(r.days_since > 0)) bits.push("moments ago");
   else if (r.review_due) bits.push(r.days_since > 0 ? `review overdue ${r.days_since}d` : "review due");
   else if (r.days_since > 0) bits.push(`last spoke ${r.days_since}d ago`);
   return bits.join(" · ");
@@ -1792,6 +2033,13 @@ const BOOK_CSS = `
 .bk-answer-people{margin-top:10px; display:flex; flex-direction:column; gap:8px;}
 .bk-answer-person{display:flex; align-items:flex-start; justify-content:space-between; gap:10px;
   background:var(--bg); border:.5px solid var(--line); border-radius:var(--r-md); padding:9px 11px;}
+.bk-answer-network{margin-top:10px; display:flex; flex-direction:column; gap:8px;}
+.bk-network-hit{display:flex; align-items:flex-start; justify-content:space-between; gap:10px;
+  background:#fafbff; border:.5px solid rgba(109,40,217,.15); border-radius:var(--r-md); padding:9px 11px;}
+.bk-network-main{flex:1; min-width:0;}
+.bk-network-path{display:flex; align-items:center; gap:5px; font-size:12px; color:var(--faint); margin-top:4px;}
+.bk-network-link{flex:none; font-size:12px; font-weight:600; color:var(--accent); text-decoration:none;
+  padding:6px 10px; border-radius:8px; border:.5px solid var(--line); background:#fff;}
 .bk-ap-name{font-size:13px; font-weight:500; color:var(--ink);}
 .bk-ap-reason{font-size:12px; color:var(--muted); margin-top:1px;}
 .bk-ap-draft{font-size:12px; color:var(--muted); font-style:italic; margin-top:4px; line-height:1.4;}
@@ -1924,6 +2172,11 @@ const BOOK_CSS = `
 .bk-set-val{font-size:12px; color:var(--faint);}
 .bk-chev{color:var(--faint);}
 .bk-set-row--danger .bk-set-lead svg, .bk-set-row--danger .bk-set-lbl{color:var(--danger);}
+/* autonomy setting rows */
+.bk-set-hint{display:block; font-size:11.5px; color:var(--faint); margin-top:1px;}
+.bk-radio{width:16px; height:16px; border-radius:50%; border:1.5px solid var(--line-2);
+  flex:none; display:inline-block;}
+.bk-radio.on{border-color:var(--accent); box-shadow:inset 0 0 0 4px var(--accent);}
 
 /* connections */
 .bk-conn-row{display:flex; align-items:center; gap:12px; padding:13px 14px;}

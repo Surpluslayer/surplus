@@ -70,24 +70,115 @@ chrome.tabs.onActivated.addListener(scanActiveTab);
 
 const BOOK_ORIGIN = 'https://event.surpluslayer.com';
 
+// --- Single shared plugin session token ----------------------------------
+// Chrome partitions the cookie jar for the embedded Book iframe (it's a
+// third-party frame under the extension origin), so the iframe and the
+// service worker's own fetches can resolve to different surplus accounts than
+// the user's first-party web tab. To make every extension context resolve to
+// ONE account we hold a single client="plugin" session token and:
+//   - send it as `Authorization: Bearer` on all service-worker API calls, and
+//   - replay it into the Book iframe via /api/auth/token-bootstrap (sidepanel.js)
+// so the iframe adopts the SAME session in its partitioned cookie jar.
+//
+// The token is minted from whatever session the browser already has (the
+// cookie that rides our host permission), so it can only ever represent the
+// user who is actually signed in. Cached in chrome.storage.local; never logged.
+
+let pluginToken = null; // in-memory cache; chrome.storage.local is the source of truth
+
+async function loadPluginToken() {
+  if (pluginToken) return pluginToken;
+  try {
+    const got = await chrome.storage.local.get('surplus_plugin_token');
+    pluginToken = got?.surplus_plugin_token || null;
+  } catch (_) {
+    pluginToken = null;
+  }
+  return pluginToken;
+}
+
+async function savePluginToken(token) {
+  pluginToken = token || null;
+  try {
+    if (token) await chrome.storage.local.set({ surplus_plugin_token: token });
+    else await chrome.storage.local.remove('surplus_plugin_token');
+  } catch (_) {
+    /* storage best-effort */
+  }
+}
+
+// Authorization header for a known token (empty object when we have none, so
+// callers can spread it unconditionally).
+function authHeader(token) {
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+// Mint a fresh plugin token from the current (cookie) session and cache it.
+// Returns the token, or null if the browser isn't signed in (401).
+async function mintPluginToken() {
+  const res = await fetch(`${BOOK_ORIGIN}/api/auth/plugin/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    if (res.status === 401) await savePluginToken(null);
+    return null;
+  }
+  const data = await res.json().catch(() => null);
+  const token = data?.token || null;
+  if (token) await savePluginToken(token);
+  return token;
+}
+
+// URL to load in the Book iframe. With a plugin token, route through the
+// same-origin token-bootstrap endpoint so the iframe adopts OUR session in its
+// partitioned cookie jar (and lands on "/" after). Without a token, the bare
+// origin (the SPA shows its own sign-in screen).
+function bookUrlFor(token) {
+  if (!token) return BOOK_ORIGIN;
+  return (
+    `${BOOK_ORIGIN}/api/auth/token-bootstrap` +
+    `?token=${encodeURIComponent(token)}&next=${encodeURIComponent('/')}`
+  );
+}
+
+// Best-effort authenticated fetch: attaches the cached plugin token as a Bearer
+// header (and keeps credentials:'include' so the partitioned cookie still works
+// as a fallback). On a 401 with a stale token, re-mint once from the cookie
+// session and retry, so a rotated/expired plugin token self-heals.
+async function authedFetch(path, opts = {}) {
+  const token = await loadPluginToken();
+  const doFetch = (tok) =>
+    fetch(`${BOOK_ORIGIN}${path}`, {
+      ...opts,
+      credentials: 'include',
+      headers: { ...(opts.headers || {}), ...authHeader(tok) },
+    });
+  let res = await doFetch(token);
+  if (res.status === 401) {
+    const fresh = await mintPluginToken();
+    if (fresh) res = await doFetch(fresh);
+  }
+  return res;
+}
+
 // Capture a LinkedIn profile into surplus using the existing in-person flow:
 // get-or-create a "LinkedIn" event, then /scan the profile (which resolves +
 // drafts). Runs from the service worker so the session cookie is sent via the
 // extension's host permission for event.surpluslayer.com.
 async function captureProfile(profile) {
-  const evRes = await fetch(`${BOOK_ORIGIN}/api/inperson/events`, {
+  const evRes = await authedFetch(`/api/inperson/events`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
     body: JSON.stringify({ label: 'LinkedIn', city: '' }),
   });
   if (!evRes.ok) throw new Error(`events ${evRes.status}`);
   const ev = await evRes.json();
 
-  const scanRes = await fetch(`${BOOK_ORIGIN}/api/inperson/scan`, {
+  const scanRes = await authedFetch(`/api/inperson/scan`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
     body: JSON.stringify({
       event_id: ev.event_id,
       linkedin_url: profile.url,
@@ -103,12 +194,11 @@ async function captureProfile(profile) {
 // Fire the LinkedIn connect request (with note) + DM for a captured prospect.
 // note/message override the composed draft; the backend routes warm vs cold.
 async function sendCapture(prospectId, note, message) {
-  const res = await fetch(
-    `${BOOK_ORIGIN}/api/inperson/captures/${prospectId}/send`,
+  const res = await authedFetch(
+    `/api/inperson/captures/${prospectId}/send`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
       body: JSON.stringify({ note: note ?? null, message: message ?? null }),
     },
   );
@@ -148,22 +238,18 @@ function getLinkedInCookie() {
 // Is LinkedIn already connected to this surplus account? Call FIRST so we never
 // create a second Unipile account (the backend dedup guard).
 async function linkedinStatus() {
-  const res = await fetch(
-    `${BOOK_ORIGIN}/api/integrations/linkedin/status`,
-    { credentials: 'include' },
-  );
+  const res = await authedFetch(`/api/integrations/linkedin/status`, {});
   if (!res.ok) throw new Error(`status ${res.status}`);
   return res.json(); // {connected, account_id, status}
 }
 
 // Hand the li_at cookie to surplus to attach LinkedIn via Unipile.
 async function connectLinkedInCookie(liAt, userAgent) {
-  const res = await fetch(
-    `${BOOK_ORIGIN}/api/integrations/linkedin/connect-cookie`,
+  const res = await authedFetch(
+    `/api/integrations/linkedin/connect-cookie`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
       body: JSON.stringify({ li_at: liAt, user_agent: userAgent || undefined }),
     },
   );
@@ -225,19 +311,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
   }
   if (msg?.type === 'surplus:auth-check') {
-    // Are we signed in to surplus with a REAL account? /me returns 200 with the
-    // session cookie, 401 without. The cookie rides the fetch via our host
-    // permission. A leftover demo session (anyone who opened the /demo
-    // walkthrough in this browser) also returns 200 -- but with is_demo:true and
-    // seeded sample data, not the user's real book. Treat demo as signed-OUT so
-    // the panel shows its sign-in screen instead of loading the demo.
-    fetch(`${BOOK_ORIGIN}/api/auth/me`, { credentials: 'include' })
-      .then(async (r) => {
+    // Are we signed in to surplus with a REAL account? /me returns 200 with a
+    // valid session (Bearer plugin token, or the cookie via our host
+    // permission), 401 without. A leftover demo session (anyone who opened the
+    // /demo walkthrough in this browser) also returns 200 -- but with
+    // is_demo:true and seeded sample data, not the user's real book. Treat demo
+    // as signed-OUT so the panel shows its sign-in screen instead of the demo.
+    //
+    // On success we ensure we hold a plugin token (mint one from the cookie
+    // session if we don't yet) and hand the panel a token-bootstrap URL so the
+    // embedded Book iframe adopts the SAME session in its partitioned jar.
+    (async () => {
+      try {
+        // authedFetch self-mints a token on 401-with-stale-token; but first
+        // load whatever we have so /me can resolve via Bearer when the cookie
+        // jar is partitioned away.
+        const r = await authedFetch(`/api/auth/me`, {});
         if (!r.ok) return sendResponse({ authed: false });
         const me = await r.json().catch(() => null);
-        sendResponse({ authed: !!(me && me.id && !me.is_demo) });
-      })
-      .catch(() => sendResponse({ authed: false }));
+        const authed = !!(me && me.id && !me.is_demo);
+        if (!authed) return sendResponse({ authed: false });
+        // Make sure we have a plugin token to replay into the iframe. /me
+        // resolved, so the session is valid; mint if we don't already hold one.
+        let token = await loadPluginToken();
+        if (!token) token = await mintPluginToken();
+        sendResponse({ authed: true, bookUrl: bookUrlFor(token) });
+      } catch (_) {
+        sendResponse({ authed: false });
+      }
+    })();
+    return true; // async
+  }
+  if (msg?.type === 'surplus:book-url') {
+    // The panel asks for the URL to load in the Book iframe. With a plugin
+    // token we hand back the token-bootstrap URL so the iframe adopts our
+    // session; otherwise the bare origin (signed-out -> shows sign-in).
+    loadPluginToken().then((token) =>
+      sendResponse({ url: bookUrlFor(token) }),
+    );
     return true; // async
   }
   if (msg?.type === 'surplus:signout') {
@@ -246,12 +357,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // make the book tab re-open the demo instead of the real sign-in screen.
     // POST carries the cookie via our host permission; the Set-Cookie clears it
     // from the shared jar the panel iframe / book tab both use.
-    fetch(`${BOOK_ORIGIN}/api/auth/logout`, {
-      method: 'POST',
-      credentials: 'include',
-    })
-      .then(() => sendResponse({ ok: true }))
-      .catch(() => sendResponse({ ok: false }));
+    // Revoke + clear BOTH transports: the plugin Bearer token (so the iframe
+    // bootstrap can't re-adopt it) and the partitioned cookie. authedFetch
+    // sends the Bearer so the backend revokes the plugin session we hold.
+    authedFetch(`/api/auth/logout`, { method: 'POST' })
+      .then(async () => {
+        await savePluginToken(null);
+        sendResponse({ ok: true });
+      })
+      .catch(async () => {
+        await savePluginToken(null);
+        sendResponse({ ok: false });
+      });
     return true; // async
   }
   if (msg?.type === 'surplus:linkedin:status') {

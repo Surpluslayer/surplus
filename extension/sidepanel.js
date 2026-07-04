@@ -44,15 +44,32 @@ book.addEventListener('load', () => {
   loading.style.display = 'none';
 });
 
-function loadBook() {
+function loadBook(bookUrl) {
   loading.style.display = 'flex';
-  book.src = bookUrlWithPlatform(BOOK_URL);
-  bookLoaded = true;
-  // LinkedIn connect now lives in the book's Connections (connectors) screen,
-  // which renders inside this iframe and shows its own "Connect LinkedIn" banner
-  // when not connected. The standalone v4 one-tap cookie affordance is kept in
-  // the code (background.js handlers) but no longer surfaced here.
-  liConnect.classList.remove('show');
+  // The iframe is a partitioned third-party context under the extension origin,
+  // so it does NOT share the standalone web tab's surplus_session cookie. The
+  // background hands us a /api/auth/token-bootstrap URL carrying our single
+  // plugin token; loading it makes the iframe adopt the SAME session (sets the
+  // cookie inside the iframe's own partition) so the book matches the
+  // service-worker API calls + the user's web view. Falls back to the bare
+  // origin (signed-out) if we somehow have no token yet.
+  const apply = (url) => {
+    book.src = url || bookUrlWithPlatform(BOOK_URL);
+    bookLoaded = true;
+    // LinkedIn connect now lives in the book's Connections (connectors) screen,
+    // which renders inside this iframe and shows its own "Connect LinkedIn"
+    // banner when not connected. The standalone v4 one-tap cookie affordance is
+    // kept in the code (background.js handlers) but no longer surfaced here.
+    liConnect.classList.remove('show');
+  };
+  if (bookUrl) {
+    apply(bookUrl);
+    return;
+  }
+  // No URL passed (e.g. reload button): ask the background for the current one.
+  chrome.runtime.sendMessage({ type: 'surplus:book-url' }, (resp) => {
+    apply(chrome.runtime.lastError ? bookUrlWithPlatform(BOOK_URL) : resp?.url);
+  });
 }
 
 // --- LinkedIn connect-cookie (v4) ----------------------------------------
@@ -140,7 +157,9 @@ function gateOnAuth() {
     if (authed) {
       signin.classList.remove('show');
       if (authPoll) { clearInterval(authPoll); authPoll = null; }
-      if (!bookLoaded) loadBook();
+      // resp.bookUrl is the token-bootstrap URL so the iframe adopts our
+      // session in its partitioned cookie jar (see background.js).
+      if (!bookLoaded) loadBook(resp.bookUrl);
     } else {
       signin.classList.add('show');
       // Signed out of surplus: the connect-cookie call wouldn't be authed, so

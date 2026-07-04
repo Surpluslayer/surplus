@@ -17,7 +17,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .. import billing_plans as bp
 from .. import models
@@ -172,14 +172,24 @@ def list_relationships(
     """
     q = (db.query(models.Prospect)
            .join(models.Event, models.Prospect.event_id == models.Event.id)
-           .filter(models.Event.user_id == user.id))
+           .filter(models.Event.user_id == user.id)
+           # Eager-load the per-row links relationship_summary() reads, so a big
+           # book is 3 batched queries instead of N+1 lazy loads : a 500-person
+           # book must not 524 behind Cloudflare's 100s cap.
+           .options(
+               selectinload(models.Prospect.conversion),
+               selectinload(models.Prospect.outreach),
+               selectinload(models.Prospect.event),
+           ))
     if event_id is not None:
         q = q.filter(models.Prospect.event_id == event_id)
     if contact_type:
         q = q.filter(models.Prospect.contact_type == contact_type)
 
     rows = []
-    for p in q.all():
+    # Sane cap : the biggest realistic book still renders ; an unbounded scan
+    # cannot hang a request until the edge times it out.
+    for p in q.limit(1000).all():
         summary = relationships.relationship_summary(p)
         if stage and summary["relationship_stage"] != stage:
             continue
@@ -398,9 +408,56 @@ def import_conversations(
 ):
     """Seed the Book from the user's genuine LinkedIn DM conversations (people
     they actually replied to and had an active back-and-forth with). Idempotent
-    -- re-runs only add new people. Uses the user's OWN connected account."""
-    from ..agents.relationship.spine.relationships import import_conversation_contacts
-    return import_conversation_contacts(db, user, want=max(1, min(want, 30)))
+    -- re-runs only add new people. Uses the user's OWN connected account.
+
+    Used to run the whole import INLINE : up to 80 chats x 3 sequential
+    Unipile GETs each (12s timeout apiece) before this returned, so the button
+    could spin for minutes. Now it queues a Job and returns the id
+    immediately; the work runs detached (jobs.execute_import_conversations, on
+    its own DB session) and the frontend polls
+    GET /import-conversations/{job_id} for progress + the final stats."""
+    from .. import jobs as jobs_mod
+    job = jobs_mod.new_job(db, event_id=None, user_id=user.id,
+                           kind="import_conversations")
+    # prefer_modal : the walk can take minutes, so let it survive a web-worker
+    # recycle when USE_MODAL is on (local daemon thread otherwise).
+    runner = jobs_mod.run_detached(
+        jobs_mod.execute_import_conversations, job.id,
+        prefer_modal=True,
+        want=max(1, min(want, 30)))
+    return {"job_id": job.id, "status": "queued", "runner": runner}
+
+
+@router.get("/import-conversations/{job_id}")
+def import_conversations_status(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Poll one import job. Owner-scoped : 404 unless the job belongs to the
+    requesting user and is a conversation import. While running, `progress`
+    carries {scanned, found} beats from the chat walk; when done, `result`
+    carries the import stats ({imported, considered, reason?})."""
+    job = db.get(models.Job, job_id)
+    if (job is None or job.kind != "import_conversations"
+            or job.user_id != user.id):
+        raise HTTPException(404, "import job not found")
+    out: dict = {"job_id": job.id, "status": job.status}
+    if job.status == "done" and job.result_json:
+        try:
+            out["result"] = json.loads(job.result_json)
+        except (ValueError, TypeError):
+            # A truncated / corrupt result_json must not 500 the poller ; hand
+            # back the raw payload so the import screen can still resolve.
+            out["result_raw"] = job.result_json
+    elif job.status in ("queued", "running") and job.result_json:
+        try:
+            out["progress"] = json.loads(job.result_json)
+        except ValueError:
+            pass
+    if job.status == "error":
+        out["error"] = job.error
+    return out
 
 
 class ChannelIn(BaseModel):
@@ -736,17 +793,18 @@ def relationship_chat(
     The host types an ask; we steer the same auditable survey-and-propose loop
     with it and hand back (a) a one-paragraph natural-language reply and (b) the
     staged proposals (each a contact + drafted follow-up + rationale). NOTHING
-    is sent here — the host approves a draft separately via the followup route,
-    which is where the auto-send toggle is honored. Owner-scoped."""
+    is sent here: the host approves a draft separately via the followup route,
+    which is where the send-vs-draft decision is made. Owner-scoped."""
     _enforce_relationship_quota(db, user)
     from ..agents.relationship.pipeline.agent.run import (
         run_relationship_agent_concurrent as _run)
     res = _run(db, user.id, instruction=(body.message or "").strip())
     _record_relationship_usage(db, user, res)
     out = res.as_dict()
-    # Surface the host's auto-send preference so the chat can label the approve
+    # Surface the send-on-approve preference so the chat can label the approve
     # button correctly ("Send now" when on, "Save draft" when off) without a
-    # second round-trip.
+    # second round-trip. Reads the LEGACY per-user column (nothing writes it
+    # anymore, so this is False for new users -> approve stages a draft).
     out["auto_send_enabled"] = bool(getattr(user, "auto_followups_enabled", False))
     return out
 
@@ -846,7 +904,8 @@ def relationship_chat_stream(
             if worker_user is not None:
                 _record_relationship_usage(db, worker_user, res)
             q.put(("done", {"summary": res.summary or "Done.",
-                            "auto_send_enabled": auto}))
+                            "auto_send_enabled": auto,
+                            "network_hits": list(res.network_hits)}))
         except Exception as exc:  # noqa: BLE001 : surface to the client, don't 500 mid-stream
             q.put(("error", {"message": str(exc)}))
         finally:
@@ -889,14 +948,12 @@ def send_contact_followup(
     db: Session = Depends(get_db),
     user: models.User = Depends(current_user),
 ):
-    """Act on an approved follow-up draft for one owned contact.
+    """Send an approved follow-up draft for one owned contact, immediately.
 
-    Behavior is gated by the host's auto-send toggle (User.auto_followups_enabled):
-      ON  -> send immediately through the contact's most-recent prospect via the
-             shared send_and_log path (DRY_RUN / paywall enforced inside the
-             provider, exactly like the follow-up cron). Returns status='sent'.
-      OFF -> stage the draft as a private note on the timeline and return
-             status='drafted'; nothing leaves the system.
+    Approve = send: this is a manual, user-initiated action, so it bypasses the
+    autonomy gates (which only govern unattended sends) and goes out through the
+    shared send path (DRY_RUN / paywall enforced inside the provider, exactly
+    like the dispatcher). Returns status='sent'.
 
     Owner-scoped (404 on not-owned contact). The contact is resolved to a
     sendable Prospect by picking its most-recently captured linked prospect."""
@@ -915,17 +972,10 @@ def send_contact_followup(
 
     prospect = _sendable_prospect(contact)
 
-    auto_send = bool(getattr(user, "auto_followups_enabled", False))
-    if not auto_send:
-        # Toggle off: stage the draft as a private note so it shows on the
-        # timeline; the host can send it later from the follow-up queue.
-        relationships.add_note(
-            db, prospect, user.id, text,
-            title="Follow-up draft", visibility="private")
-        return {"status": "drafted", "contact_id": contact_id,
-                "prospect_id": prospect.id, "message": text}
-
-    # Toggle on: send through the same path the follow-up cron uses.
+    # Approving a specific message IS the user deciding: a manual send, so it
+    # always sends (the autonomy gates only govern UNATTENDED sends). The old
+    # legacy-column branch quietly staged a private note instead -- an approve
+    # button that does not send. Flipped 2026-07-01 per Daniel.
     from ..agents.relationship.pipeline.send.sender import send_followup
     try:
         res = send_followup(db, prospect, text, channel="linkedin")
@@ -971,10 +1021,11 @@ def schedule_contact_followup(
       send_at in the future    -> upsert the prospect's pending ScheduledFollowup
                                    to body + send_at, status='scheduled'.
 
-    The auto-send toggle (User.auto_followups_enabled) still gates a SCHEDULED
-    row: the dispatch cron only auto-fires it when auto-send is ON; OFF leaves it
-    queued for a manual send-now. We surface `auto_send_enabled` so the card can
-    say 'will send automatically' vs 'queued for your confirmation'. An immediate
+    A SCHEDULED row is auto-fired by the dispatcher only when the general-send
+    master (SURPLUS_AUTOMATED_SENDS + channel allowlist) is on; off leaves it
+    queued for a manual send-now. We surface `auto_send_enabled` (the legacy
+    per-user column) so the card can say 'will send automatically' vs 'queued
+    for your confirmation'. An immediate
     'send now' is an explicit host action and always sends. Owner-scoped."""
     from ..agents.relationship.followup_scheduler import pending_followup
 

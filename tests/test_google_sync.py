@@ -75,10 +75,15 @@ def _user(db):
 def test_sync_email_reuses_spine_pipeline(db, monkeypatch):
     u = _user(db)
     monkeypatch.setattr(oauth, "get_valid_access_token", lambda db, a, **k: "tok")
+    # Two-way exchange : the user's reply is what qualifies Sarah as a
+    # contact under the two-way filter (direction derives from from == own).
     monkeypatch.setattr(google_client, "gmail_fetch_page", lambda *a, **k: {"items": [{
         "from_attendee": {"identifier": "sarah@x.com", "display_name": "Sarah"},
         "to_attendees": [{"identifier": "me@x.com", "display_name": ""}],
-        "date": "Wed, 24 Jun 2026 10:00:00 +0000", "role": "", "provider_id": "m1"}],
+        "date": "Wed, 24 Jun 2026 10:00:00 +0000", "role": "", "provider_id": "m1"}, {
+        "from_attendee": {"identifier": "me@x.com", "display_name": ""},
+        "to_attendees": [{"identifier": "sarah@x.com", "display_name": "Sarah"}],
+        "date": "Wed, 24 Jun 2026 11:00:00 +0000", "role": "", "provider_id": "m2"}],
         "cursor": None})
     acct = SimpleNamespace(account_email="me@x.com")
     stats = google_sync.sync_google_email(db, u, acct)

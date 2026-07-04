@@ -641,6 +641,61 @@ class UnipileProvider(LinkedInProvider):
                 out["birthdate"] = {"month": int(month), "day": int(day)}
         return out
 
+    def search_people(
+        self,
+        *,
+        keywords: str = "",
+        network_distance: Optional[list[int]] = None,
+        connections_of: Optional[list[str]] = None,
+        limit: int = 15,
+    ) -> list[dict]:
+        """POST /api/v1/linkedin/search — people search on the connected account.
+
+        `network_distance` uses numeric degrees ([2], [3]) — not DISTANCE_2 strings.
+        `connections_of` expects Unipile member/provider ids (ACoAA...), not slugs.
+        Read-only; returns [] on dry-run or missing creds."""
+        if self._dry_run:
+            return []
+        if not (self.api_key and self.dsn and self.account_id):
+            return []
+        body: dict = {
+            "api": "classic",
+            "category": "people",
+            "limit": max(1, min(int(limit), 25)),
+        }
+        kw = (keywords or "").strip()
+        if kw:
+            body["keywords"] = kw
+        if network_distance:
+            body["network_distance"] = list(network_distance)
+        if connections_of:
+            body["connections_of"] = list(connections_of)
+        import httpx
+        url = f"{self.dsn}/api/v1/linkedin/search"
+        headers = {
+            "X-API-KEY": self.api_key,
+            "accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                resp = client.post(
+                    url, headers=headers,
+                    params={"account_id": self.account_id},
+                    json=body,
+                )
+        except Exception as exc:  # noqa: BLE001 : search is best-effort
+            print(f"  [unipile.search_people] skipped: {type(exc).__name__}: {exc}")
+            return []
+        if resp.status_code >= 400:
+            print(f"  [unipile.search_people] {resp.status_code}: {resp.text[:200]}")
+            return []
+        try:
+            data = resp.json() if resp.text else {}
+        except Exception:
+            return []
+        return list(data.get("items") or [])
+
     def linkedin_raw(
         self,
         *,
@@ -786,7 +841,8 @@ class UnipileProvider(LinkedInProvider):
                 "name": name, "headline": d.get("headline") or ""}
 
     def list_active_conversation_contacts(self, want: int = 15,
-                                          scan_cap: int = 80) -> list[dict]:
+                                          scan_cap: int = 80,
+                                          on_progress=None) -> list[dict]:
         """The people the account owner is in a GENUINE two-way conversation with.
 
         Walks recent chats (most-recent-first) and keeps only threads where the
@@ -794,13 +850,27 @@ class UnipileProvider(LinkedInProvider):
         inbound, ads, and unanswered outreach are skipped; only conversations the
         user actually engaged in seed the Book. Each kept person is resolved to a
         clean public LinkedIn URL. Returns up to `want`, bounded by `scan_cap`.
-        Best-effort: any error degrades to fewer/no results, never raises."""
+        Best-effort: any error degrades to fewer/no results, never raises.
+
+        `on_progress(scanned, found)` (optional) fires per chat examined --
+        this walk costs 1-3 sequential HTTP calls PER CHAT, so the background
+        import job uses it to surface live progress. Callback errors are
+        swallowed (progress must never break the walk)."""
         if not (self.api_key and self.dsn and self.account_id):
             return []
         out: list[dict] = []
         seen: set = set()
         cursor = None
         scanned = 0
+
+        def _beat() -> None:
+            if on_progress is None:
+                return
+            try:
+                on_progress(scanned, len(out))
+            except Exception:  # noqa: BLE001
+                pass
+
         while len(out) < want and scanned < scan_cap:
             params = {"account_id": self.account_id, "limit": 20}
             if cursor:
@@ -811,6 +881,7 @@ class UnipileProvider(LinkedInProvider):
                 break
             for ch in items:
                 scanned += 1
+                _beat()
                 cid = ch.get("id")
                 if not cid:
                     continue
@@ -849,6 +920,7 @@ class UnipileProvider(LinkedInProvider):
             cursor = data.get("cursor")
             if not cursor:
                 break
+        _beat()   # final count, so the poller sees the end state
         return out
 
     def _get(self, path: str, params: dict) -> dict:

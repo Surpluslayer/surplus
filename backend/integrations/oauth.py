@@ -29,12 +29,27 @@ _REFRESH_SKEW = 120     # refresh if the access token expires within this (s)
 
 
 # ── signed state (CSRF) ───────────────────────────────────────────────────────
+# The dev fallback ONLY applies when explicitly in dev (no DATABASE_URL = local
+# SQLite). In prod this MUST fail closed: the same key signs OAuth CSRF state
+# AND the password-reset / email-verify tokens, so a guessable fallback
+# (SURPLUS_BASE_URL is public; the literal is in git) is an account-takeover
+# primitive. An env var silently vanishing is a demonstrated risk on this
+# service (PORT did, 2026-07-03), so we refuse to run rather than sign with junk.
 def _secret() -> bytes:
-    # Must be a SHARED, stable secret across workers/restarts (the dev fallback is
-    # fine locally; prod should set SURPLUS_OAUTH_STATE_SECRET).
-    return (os.environ.get("SURPLUS_OAUTH_STATE_SECRET")
-            or os.environ.get("SURPLUS_BASE_URL")
-            or "surplus-dev-state-secret").encode()
+    s = (os.environ.get("SURPLUS_OAUTH_STATE_SECRET") or "").strip()
+    prod = bool((os.environ.get("DATABASE_URL") or "").strip())  # Postgres = prod
+    if prod:
+        # Prod MUST fail closed on a weak/missing secret: a guessable key lets an
+        # attacker forge password-reset tokens (account takeover).
+        if len(s) < 32:
+            raise RuntimeError(
+                "SURPLUS_OAUTH_STATE_SECRET must be set to >=32 random bytes in "
+                "prod: it signs password-reset tokens, so a weak/missing value "
+                "is an account-takeover primitive. Gen: secrets.token_urlsafe(48)")
+        return s.encode()
+    # Dev/test (no DATABASE_URL): honor an explicit secret of any length, else
+    # the local literal. Never the public SURPLUS_BASE_URL fallback.
+    return (s or "surplus-dev-state-secret").encode()
 
 
 def sign_state(payload: dict) -> str:

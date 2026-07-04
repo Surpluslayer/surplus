@@ -257,3 +257,53 @@ def test_evaluation_progress_reports_pending_count(db, user_and_event):
     progress = get_evaluation_progress(ev.id, db, user)
     assert progress.scored == 1
     assert progress.pending == 2
+
+
+def test_export_csv_eager_loads_and_is_bounded(db, user_and_event):
+    """The CSV export must NOT fire a lazy 2N+1 (evaluation + decision per row)
+    -- on a big Luma export that N+1 is slow enough to 524 a plain download. We
+    count the SQL statements the export issues and assert it stays flat as rows
+    grow (eager selectinload), rather than scaling with the applicant count."""
+    from sqlalchemy import event as sa_event
+    from backend.routes.triage import export_decisions_csv
+    from backend import models
+    user, ev = user_and_event
+
+    for i in range(12):
+        a = models.Applicant(event_id=ev.id, name=f"P{i}", email=f"p{i}@x.com")
+        db.add(a); db.flush()
+        db.add(models.ApplicantEvaluation(
+            applicant_id=a.id, event_id=ev.id, fit_score=i, recommendation="maybe"))
+        db.add(models.ReviewDecision(
+            applicant_id=a.id, event_id=ev.id, human_decision="accept"))
+    db.commit()
+    db.expire_all()   # force real loads, not identity-map hits
+
+    statements: list = []
+
+    def _count(conn, cursor, stmt, params, context, executemany):
+        statements.append(stmt)
+
+    sa_event.listen(db.get_bind(), "before_cursor_execute", _count)
+    try:
+        resp = export_decisions_csv(ev.id, db, user)
+    finally:
+        sa_event.remove(db.get_bind(), "before_cursor_execute", _count)
+
+    # Flat query count: applicants + evaluation-batch + decision-batch. Nowhere
+    # near the ~1 + 2*12 the lazy path would have fired.
+    assert len(statements) <= 6, statements
+
+    # Content sanity: all 12 rows present in the streamed CSV. StreamingResponse
+    # was built from a single-chunk iterator, so drain it directly.
+    import asyncio
+
+    async def _drain():
+        out = []
+        async for chunk in resp.body_iterator:
+            out.append(chunk if isinstance(chunk, str) else chunk.decode())
+        return "".join(out)
+
+    csv_text = asyncio.new_event_loop().run_until_complete(_drain())
+    assert csv_text.count("\n") >= 13   # header + 12 rows
+    assert "P0" in csv_text and "P11" in csv_text

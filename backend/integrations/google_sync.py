@@ -59,6 +59,7 @@ def sync_google_contacts(db, user, account, *, max_pages: int = 10) -> dict:
     keyed by ph: and dedupes against existing people. Enrich, never clobber."""
     from .. import models
     from ..triage.enrichment_cache import identity_keys
+    from ..agents.relationship import identity as _identity
     token = oauth.get_valid_access_token(db, account)
     if not token:
         return {"error": "no valid token"}
@@ -76,13 +77,20 @@ def sync_google_contacts(db, user, account, *, max_pages: int = 10) -> dict:
             if not keys:
                 continue
             primary = keys[0]
+            idents = _identity.strong_identities(
+                email=ct.get("email", ""), phone=ct.get("phone", ""))
             contact = (db.query(models.Contact)
                        .filter_by(user_id=user.id, primary_identity_key=primary).first())
             if contact is None:
-                db.add(models.Contact(
+                contact = _identity.lookup_contact_by_identities(
+                    db, user_id=user.id, identities=idents)
+            if contact is None:
+                contact = models.Contact(
                     user_id=user.id, primary_identity_key=primary,
                     name=ct.get("name") or None, email=ct.get("email") or None,
-                    phone=ct.get("phone") or None))
+                    phone=ct.get("phone") or None)
+                db.add(contact)
+                db.flush()
                 stats["contacts_created"] += 1
             else:
                 if not contact.email and ct.get("email"):
@@ -92,6 +100,8 @@ def sync_google_contacts(db, user, account, *, max_pages: int = 10) -> dict:
                 if not contact.phone and ct.get("phone"):
                     contact.phone = ct["phone"]
                 stats["contacts_updated"] += 1
+            _identity.register_identities(db, contact=contact, identities=idents,
+                                          source="google_contacts", primary_key=primary)
         cursor = page.get("cursor")
         if not cursor:
             break

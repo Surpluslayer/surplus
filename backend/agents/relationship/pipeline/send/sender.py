@@ -50,10 +50,11 @@ def automated_send_enabled(channel: str = "") -> bool:
     Auto-fire is keyed to the TRANSPORT the message arrived/goes on (linkedin /
     email / whatsapp): the master switch must be on AND this channel must be in the
     auto-fire allowlist; channels not allowed STAGE a draft for review instead.
-    Allowlist unset -> all channels auto-fire when master is on. Gates every
-    fully-automated path (post-accept auto-DM, follow-up cron, AI auto-reply) and
-    is layered ABOVE the per-target gates (`auto_dm_after_accept`,
-    `auto_followups_enabled`) -- an automated send needs BOTH. MANUAL UI sends
+    Allowlist unset -> all channels auto-fire when master is on. Gates the
+    agent-autonomy sends (the later nudge, AI auto-reply); the post-accept first
+    follow-up has its own master (`follow_up_send_enabled`). Layered ABOVE the
+    provider's per-target gate (`auto_dm_after_accept`) where one applies --
+    an automated send needs BOTH. MANUAL UI sends
     (send-now, approve-a-draft) never pass through here, so they always work."""
     if not _automation_master_on():
         return False
@@ -63,23 +64,40 @@ def automated_send_enabled(channel: str = "") -> bool:
     return (channel or "").strip().lower() in allow
 
 
+AUTONOMY_MODES = ("off", "ask", "auto")
+
+
+def owner_autonomy_mode(user) -> str:
+    """The owning user's per-user autonomy mode: 'off' | 'ask' | 'auto'.
+
+    Normalizes anything unexpected (a missing user, NULL, legacy junk in the
+    column) to 'off', the safe default: only an explicit 'auto' ever unlocks
+    an unattended agent-initiated send. 'ask' holds exactly like 'off' at the
+    gate level; the difference is the Today surface that lists what is
+    waiting for a one-tap confirm. Layered UNDER the env master
+    (`automated_send_enabled(channel)`): an unattended send needs BOTH."""
+    mode = (getattr(user, "autonomy_mode", "") or "").strip().lower()
+    return mode if mode in AUTONOMY_MODES else "off"
+
+
 def _followups_master_on() -> bool:
-    """Env `SURPLUS_AUTO_FOLLOWUPS`, default FALSE. SEPARATE kill switch for the
-    automated FOLLOW-UP paths only (post-accept auto-DM + follow-up cron)."""
+    """Env `SURPLUS_AUTO_FOLLOWUPS`, default FALSE. Kill switch for the ONE
+    built-in automated send: the post-accept first follow-up (the DM that fires
+    when an invite is accepted). The later nudge is NOT gated here anymore --
+    it is agent autonomy and shares the general-send master with auto-reply."""
     return (os.environ.get("SURPLUS_AUTO_FOLLOWUPS", "false").strip().lower()
             in ("true", "1", "yes", "on"))
 
 
 def follow_up_send_enabled(channel: str = "") -> bool:
-    """Should an automated FOLLOW-UP on THIS channel fire?
+    """Should the BUILT-IN post-accept first follow-up fire on THIS channel?
 
-    DECOUPLED from the general-send master (`automated_send_enabled`): keyed to its
-    own `SURPLUS_AUTO_FOLLOWUPS` switch so the structured follow-up paths can run
-    while general agent-initiated sends stay off / behind the ask-mode guardrail.
-    Reuses the same channel allowlist. Still layered ABOVE the per-host
-    `auto_followups_enabled` toggle and (for post-accept) the provider's
-    `auto_dm_after_accept` gate -- an automated follow-up needs the master here AND
-    the per-host toggle. MANUAL UI sends never pass through here."""
+    Keyed to `SURPLUS_AUTO_FOLLOWUPS` (separate from the general-send master)
+    because this one send is pre-authorized by the host's own action (they sent
+    the invite) and is a built-in product behavior, on for everyone. The later
+    nudge does NOT pass through here -- it shares `automated_send_enabled` with
+    the AI auto-reply (agent autonomy, user-decided). Reuses the same channel
+    allowlist. MANUAL UI sends never pass through here."""
     if not _followups_master_on():
         return False
     allow = _automated_channels()

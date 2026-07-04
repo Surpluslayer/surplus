@@ -11,6 +11,7 @@ Idempotency: dedup by (prospect_id, state, provider_lead_id).
 Unknown events: 200 + applied=false (never crash, never trigger retry storms).
 """
 from __future__ import annotations
+import hmac
 import json
 from typing import Optional
 
@@ -21,17 +22,18 @@ from datetime import datetime, timezone
 
 from .. import models
 from ..db import get_db
+from ..jobs import run_detached
 from ..agents.relationship.spine import relationships
 from ..agents.outreach import compose
 from ..agents.relationship.reply_agent import (
     ReplyDecision, ThreadMessage, decide_reply, should_auto_send,
 )
 from ..agents.relationship.pipeline.send.sender import (
-    automated_send_enabled, follow_up_send_enabled, send_and_log,
+    automated_send_enabled, follow_up_send_enabled, owner_autonomy_mode,
+    send_and_log,
 )
 from ..providers import (
     get_provider,
-    get_provider_for_prospect,
     CanonicalEvent,
     LinkedInProvider,
 )
@@ -133,20 +135,55 @@ def _trigger_auto_dm(
     prospect: models.Prospect,
 ) -> Optional[dict]:
     """For providers where the platform owns the sequence (Unipile), fire
-    the post-accept DM ourselves : from the OWNING USER'S LinkedIn."""
+    the post-accept DM ourselves : from the OWNING USER'S LinkedIn.
+
+    Webhook-RETRY safe by construction (no change needed here). _handle only
+    calls this when _apply_canonical_event returned applied=True, and that
+    function COMMITS the `invite_accepted` OutreachLog BEFORE returning. The
+    log is deduped by (prospect_id, state, provider, provider_lead_id): a
+    Unipile retry of the same invite_accepted (e.g. after a crash mid-DM) hits
+    that dedup, so _apply_canonical_event returns applied=False and this trigger
+    never re-fires. A crash AFTER the accept log commits but BEFORE the DM sent
+    means the DM is (correctly) skipped on retry -- the accept is recorded, and
+    a missed first nudge is safe; a DOUBLE nudge is the failure we must avoid.
+    So the existing OutreachLog dedup already provides the idempotency marker;
+    we intentionally do not add a second one."""
     # Gated on the provider's own gate AND the follow-up-specific master
-    # (SURPLUS_AUTO_FOLLOWUPS, decoupled from the general send master). NOT the
-    # per-host auto_followups_enabled toggle: the post-accept DM completes an
-    # outreach sequence the host already initiated (they sent the invite), so it
-    # is pre-authorized by that action -- unlike the proactive nudge cron, which
-    # does respect the per-host toggle. The post-accept auto-DM rides LinkedIn.
+    # (SURPLUS_AUTO_FOLLOWUPS, decoupled from the general send master): the
+    # post-accept DM completes an outreach sequence the host already initiated
+    # (they sent the invite), so it is pre-authorized by that action. The later
+    # proactive nudge is NOT gated here: it is agent autonomy and shares the
+    # general-send master (SURPLUS_AUTOMATED_SENDS) with the AI auto-reply.
+    # The post-accept auto-DM rides LinkedIn.
     if not provider.auto_dm_after_accept or not follow_up_send_enabled("linkedin"):
+        return None
+
+    # Out-of-order webhook guard: Unipile can deliver the recipient's REPLY
+    # before the invite_accepted event (observed 2026-07-03: reply at 15:01,
+    # accept at 15:36). If they already wrote to us, a canned opener on top of
+    # their warm reply reads tone-deaf; the conversation is live, the human
+    # (or reply agent) owns it now. Same guard the nudge dispatcher uses.
+    if any((getattr(o, "state", "") or "") in ("message_replied", "replied")
+           for o in (getattr(prospect, "outreach", None) or [])):
+        print(f"  [auto_dm] prospect={prospect.id} already replied; "
+              f"skipping post-accept DM", flush=True)
         return None
 
     event = prospect.event
     peers = [p.name for p in event.prospects if p.id != prospect.id and
              p.status in ("approved", "contacted", "rsvp")]
-    msg = compose(prospect, event, peers=peers)
+    # Ground the post-accept DM in the ACTUAL relationship history (prior
+    # conversation from the chat sync, capture notes, meeting facts) exactly
+    # like the scan-path draft does: the outbound-safe compact brief from
+    # relationship_context, never the raw timeline. Fail-soft: a context miss
+    # must never block the built-in first follow-up.
+    rel_ctx = None
+    try:
+        rel_ctx = relationships.relationship_context(
+            prospect, relationships.fetch_interactions(db, prospect))
+    except Exception:  # noqa: BLE001
+        pass
+    msg = compose(prospect, event, peers=peers, relationship_ctx=rel_ctx)
     res = send_and_log(
         db, prospect, msg.message,
         sent_state="message_sent", fallback_provider=provider,
@@ -224,9 +261,27 @@ async def _handle(request: Request, db: Session, provider: LinkedInProvider) -> 
 
     applied, reason, prospect = _apply_canonical_event(db, provider, canonical)
 
+    # A live provider makes the follow-up path do real network work: an LLM
+    # compose/decide plus an outbound provider send. Doing that inline holds the
+    # webhook response open for many seconds, and Unipile RETRIES a slow webhook
+    # -- which re-drives this handler and risks duplicate work / a retry storm.
+    # So for a live provider we DETACH the follow-up onto its own session/thread
+    # and return the 200 immediately. The idempotency marker that makes this
+    # retry-safe (the invite_accepted / message_replied OutreachLog committed by
+    # _apply_canonical_event above) is already in place before we detach.
+    #
+    # In dry-run (tests + local), compose returns instantly and nothing is sent,
+    # so we keep the fast inline path -- the response still carries the concrete
+    # auto_dm / ai_reply result the callers assert on.
+    detach = not getattr(provider, "dry_run", False)
+
     auto_dm = None
     if applied and prospect is not None and canonical.state == "invite_accepted":
-        auto_dm = _trigger_auto_dm(db, provider, prospect)
+        if detach:
+            run_detached(_detached_auto_dm, prospect.id)
+            auto_dm = {"detached": True}
+        else:
+            auto_dm = _trigger_auto_dm(db, provider, prospect)
 
     ai_reply = None
     if applied and prospect is not None and canonical.state == "message_replied":
@@ -234,7 +289,13 @@ async def _handle(request: Request, db: Session, provider: LinkedInProvider) -> 
         # a "circling back" to someone who already replied.
         from ..agents.relationship.followup_scheduler import cancel_pending_followups
         cancel_pending_followups(db, prospect.id, reason="replied")
-        ai_reply = _handle_ai_reply(db, provider, prospect, canonical)
+        if detach:
+            # Snapshot the inbound body: the canonical event is not carried into
+            # the detached session, so pass the fields the reply path needs.
+            run_detached(_detached_ai_reply, prospect.id, canonical.body or "")
+            ai_reply = {"detached": True}
+        else:
+            ai_reply = _handle_ai_reply(db, provider, prospect, canonical)
 
     return {
         "ok": True,
@@ -246,6 +307,42 @@ async def _handle(request: Request, db: Session, provider: LinkedInProvider) -> 
         "auto_dm": auto_dm,
         "ai_reply": ai_reply,
     }
+
+
+def _detached_auto_dm(db: Session, prospect_id: int) -> None:
+    """Detached body for the live-provider post-accept auto-DM (jobs.run_detached
+    owns `db`). Re-derives the provider and re-loads the prospect on this session,
+    then reuses the same inline helper. Fail-soft: run_detached logs and swallows.
+
+    Retry-safe: the invite_accepted OutreachLog is already committed by the time
+    this is scheduled, and _trigger_auto_dm's send is deduped on that log, so a
+    Unipile webhook retry cannot double-send."""
+    prospect = db.get(models.Prospect, prospect_id)
+    if prospect is None:
+        return
+    _trigger_auto_dm(db, get_provider(), prospect)
+
+
+def _detached_ai_reply(db: Session, prospect_id: int, inbound_body: str) -> None:
+    """Detached body for the live-provider AI reply (jobs.run_detached owns
+    `db`). Rebuilds the canonical event from the snapshotted inbound body and
+    reuses the same inline helper."""
+    prospect = db.get(models.Prospect, prospect_id)
+    if prospect is None:
+        return
+    provider = get_provider()
+    # _handle_ai_reply only reads .body and .state off the canonical event; the
+    # other fields are filled to satisfy the frozen dataclass contract.
+    canonical = CanonicalEvent(
+        event_id=prospect.event_id,
+        prospect_id=prospect_id,
+        state="message_replied",
+        provider=getattr(provider, "name", "unipile"),
+        provider_lead_id=None,
+        ts=datetime.now(timezone.utc),
+        body=inbound_body,
+    )
+    _handle_ai_reply(db, provider, prospect, canonical)
 
 
 def _last_chat_id(prospect: models.Prospect) -> Optional[str]:
@@ -314,7 +411,13 @@ def _handle_ai_reply(
 
     # AI auto-reply rides the inbound thread's transport (Unipile messaging =
     # LinkedIn today; WhatsApp/email set their own channel as they land).
-    if should_auto_send(decision, prior_auto) and automated_send_enabled("linkedin"):
+    # Unattended fire needs the FULL gate stack: the agent's own decision
+    # (should_auto_send), the env master (ops kill switch), AND the owning
+    # user's autonomy_mode == 'auto'. Any other mode keeps the existing
+    # behavior: the draft stages as a PendingReply for approval.
+    if (should_auto_send(decision, prior_auto)
+            and automated_send_enabled("linkedin")
+            and owner_autonomy_mode(host) == "auto"):
         print(f"  [ai_reply] gate PASS → auto-sending")
         return _auto_send_reply(db, provider, prospect, decision)
     print(f"  [ai_reply] gate BLOCK → queueing (class={decision.classification} "
@@ -405,12 +508,16 @@ async def brightdata_webhook(request: Request, db: Session = Depends(get_db),
     from ..providers import brightdata
     from ..agents.relationship import updates_engine
 
+    # Fail CLOSED, like the Unipile verifier: no secret configured -> reject, so
+    # an attacker can't forge profile/post "updates" written onto any contact
+    # matched by linkedin_url. Set BRIGHTDATA_WEBHOOK_SECRET to enable the feed.
     secret = brightdata.webhook_secret()
-    if secret:
-        auth = (request.headers.get("authorization")
-                or request.headers.get("Authorization") or "").strip()
-        if auth != f"Bearer {secret}":
-            raise HTTPException(status_code=401, detail="bad webhook secret")
+    if not secret:
+        raise HTTPException(status_code=503, detail="brightdata webhook not configured")
+    auth = (request.headers.get("authorization")
+            or request.headers.get("Authorization") or "").strip()
+    if not hmac.compare_digest(auth, f"Bearer {secret}"):
+        raise HTTPException(status_code=401, detail="bad webhook secret")
 
     try:
         payload = await request.json()

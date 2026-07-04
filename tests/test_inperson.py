@@ -43,15 +43,30 @@ def db(env):
         session.close()
 
 
+@pytest.fixture(autouse=True)
+def _inline_scan_worker(monkeypatch, db):
+    """/scan's slow half (resolve + enrich + compose) runs detached in prod
+    (jobs.run_detached -> finish_scan_capture on its own session). Run it
+    inline on the TEST session so scans stay synchronous + deterministic here;
+    the fast-path/pending contract itself is covered by
+    test_scan_returns_fast_with_pending_draft."""
+    from backend.routes import inperson
+
+    def _inline(fn, *args, prefer_modal=False, **kwargs):
+        fn(db, *args, **kwargs)
+        return "local"
+
+    monkeypatch.setattr(inperson, "run_detached", _inline)
+
+
 @pytest.fixture
 def user(db):
-    """A fully connected + paid user so the send gate passes (incl. the per-host
-    follow-up toggle, now part of the auto-DM / follow-up gate)."""
+    """A fully connected + paid user so the send gate passes. (The legacy
+    per-user auto_followups_enabled column no longer gates sends.)"""
     u = models.User(
         name="Operator", email="op@example.com",
         unipile_account_id="user_acct", linkedin_status="active",
         paid_at=datetime.now(timezone.utc),
-        auto_followups_enabled=True,
     )
     db.add(u); db.commit()
     return u
@@ -231,11 +246,15 @@ def test_scan_resolve_failure_stores_pending_and_flags(db, user, monkeypatch):
                linkedin_url="https://www.linkedin.com/in/ghosted",
                source="scan"),
         db, user)
-    assert out["resolve_failed"] is True              # never 500
     p = db.query(models.Prospect).one()
     assert p.status == "pending"
-    assert p.linkedin_provider_id is None
+    assert p.linkedin_provider_id is None             # never 500, never resolved
+    # The row-level flag (provider id still missing after the detached worker
+    # ran) is the durable "retry resolve" signal.
     assert out["prospect"]["resolve_failed"] is True
+    # A resolve failure must NOT sink the draft : compose still ran.
+    assert p.draft_status == "ready"
+    assert p.draft_note and p.draft_message
 
 
 def test_scan_rejects_unowned_event(db, user):
@@ -502,8 +521,7 @@ def test_channel_allowlist_routes_auto_fire(monkeypatch):
 
 def test_master_flag_off_blocks_auto_dm(db, user, monkeypatch):
     """FOLLOW-UP kill switch: with SURPLUS_AUTO_FOLLOWUPS=false the post-accept
-    auto-DM does NOT fire, even though the provider's own gate + per-host toggle
-    are on."""
+    auto-DM does NOT fire, even though the provider's own gate is on."""
     monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")
     monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "false")
     from backend.providers.unipile import UnipileProvider
@@ -799,3 +817,171 @@ def test_linkedin_start_no_longer_requires_payment(db, monkeypatch):
     import json
     payload = json.loads(bytes(resp.body))
     assert payload["url"] == "https://unipile.test/hosted/abc"
+
+
+def test_compose_inperson_carries_saved_send_link(db, user, monkeypatch):
+    """Deterministic demo-link wiring: an in-person compose always carries the
+    host's reusable saved_send_link in the DM (template path included). The
+    connect note stays tight (300 cap): the link belongs in the DM only."""
+    monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")
+    from backend.agents.outreach import compose
+    user.saved_send_link = "https://calendly.com/host/15min"
+    db.commit()
+    ip_event = db.get(models.Event, _make_event(db, user)["event_id"])
+    p = models.Prospect(
+        event_id=ip_event.id, identity="maya-w", name="Maya Rodriguez",
+        role="Staff Engineer", company="Acme",
+        linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+        note="the latency demo")
+    db.add(p); db.commit()
+    msg = compose(p, ip_event)
+    assert "https://calendly.com/host/15min" in msg.message
+    assert "calendly.com" not in (msg.note or "")
+
+# ── /scan fast path : pending draft + poll endpoint ─────────────────────────
+
+def test_scan_returns_fast_with_pending_draft(db, user, monkeypatch):
+    """The scan response must come back BEFORE the slow half runs : draft
+    fields pending, and the detached worker (run explicitly here, as the
+    thread would) flips the poll endpoint to ready with the composed copy."""
+    from backend.routes import inperson
+
+    dispatched = []
+    monkeypatch.setattr(
+        inperson, "run_detached",
+        lambda fn, *a, **k: (dispatched.append((fn, a)), "local")[1])
+
+    ev = _make_event(db, user)
+    out = inperson.scan_capture(
+        inperson.ScanIn(event_id=ev["event_id"],
+                        linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+                        source="scan", note="from Ottawa"),
+        db, user)
+    pid = out["prospect"]["prospect_id"]
+    assert out["draft_status"] == "pending"
+    assert out["draft_note"] == "" and out["draft_message"] == ""
+    # Nothing slow ran on the request path : no provider id yet.
+    p = db.get(models.Prospect, pid)
+    assert p.linkedin_provider_id is None
+    assert p.draft_status == "pending"
+    # The offline handle heuristic still names the person immediately.
+    assert out["prospect"]["name"] == "Maya Rodriguez"
+
+    poll = inperson.scan_draft(pid, db, user)
+    assert poll["status"] == "pending"
+    assert poll["note"] == "" and poll["message"] == ""
+
+    # Exactly one detached job was queued; run it like the worker would.
+    assert len(dispatched) == 1
+    fn, args = dispatched[0]
+    assert fn is inperson.finish_scan_capture and args == (pid,)
+    fn(db, *args)
+
+    poll = inperson.scan_draft(pid, db, user)
+    assert poll["status"] == "ready"
+    assert poll["note"] and poll["message"]
+    assert "Ottawa" in poll["note"]                    # composed FROM the fun fact
+    db.refresh(p)
+    assert p.linkedin_provider_id == "dry_li_maya-rodriguez"
+
+
+def test_scan_draft_poll_is_owner_scoped(db, user):
+    from fastapi import HTTPException
+    from backend.routes.inperson import scan_capture, scan_draft, ScanIn
+    ev = _make_event(db, user)
+    out = scan_capture(ScanIn(event_id=ev["event_id"],
+                              linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+                              source="scan"), db, user)
+    pid = out["prospect"]["prospect_id"]
+    other = models.User(name="Other", unipile_account_id="x")
+    db.add(other); db.commit()
+    with pytest.raises(HTTPException) as ei:
+        scan_draft(pid, db, other)
+    assert ei.value.status_code == 404
+    # The owner reads it fine (inline worker already composed it).
+    poll = scan_draft(pid, db, user)
+    assert poll["status"] == "ready" and poll["message"]
+
+
+def test_scan_draft_failed_when_worker_crashes(db, user, monkeypatch):
+    """A compose crash in the detached worker must flip draft_status to
+    'failed' (the UI falls back to hand-typed copy), never raise."""
+    from backend.routes import inperson
+
+    def _boom(*a, **k):
+        raise RuntimeError("llm exploded")
+    monkeypatch.setattr(inperson, "compose", _boom)
+
+    ev = _make_event(db, user)
+    out = inperson.scan_capture(
+        inperson.ScanIn(event_id=ev["event_id"],
+                        linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+                        source="scan"),
+        db, user)
+    pid = out["prospect"]["prospect_id"]
+    poll = inperson.scan_draft(pid, db, user)
+    assert poll["status"] == "failed"
+    assert poll["note"] == "" and poll["message"] == ""
+
+
+def test_send_skips_connection_refresh_when_fresh(db, user, monkeypatch):
+    """A connection status checked seconds ago must NOT trigger another live
+    Unipile relation check on send (the 10s GET was on every send's critical
+    path). A stale/unknown status still refreshes."""
+    from datetime import timedelta
+    from backend.routes.inperson import scan_capture, send_capture, ScanIn, SendIn
+    from backend.agents.relationship.pipeline.send import flow as send_flow
+
+    calls = []
+    real_refresh = send_flow._refresh_connection_status
+
+    def _spy(provider, prospect):
+        calls.append(prospect.id)
+        return real_refresh(provider, prospect)
+    monkeypatch.setattr(send_flow, "_refresh_connection_status", _spy)
+
+    ev = _make_event(db, user)
+    scan_capture(ScanIn(event_id=ev["event_id"],
+                        linkedin_url="https://www.linkedin.com/in/maya-rodriguez",
+                        source="scan", name="Maya"), db, user)
+    p = db.query(models.Prospect).one()
+
+    # Fresh check (just stamped) : the refresh is skipped.
+    p.connection_status = "not_connected"
+    p.connection_checked_at = datetime.now(timezone.utc)
+    db.commit()
+    out = send_capture(p.id, _req(), SendIn(note="hi"), db, user)
+    assert out["path_taken"] == "cold"
+    assert calls == []
+
+    # Stale check : the live refresh runs again.
+    p.connection_checked_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    db.commit()
+    send_capture(p.id, _req(), SendIn(note="hi again"), db, user)
+    assert calls == [p.id]
+
+
+def test_auto_dm_skipped_when_reply_arrived_before_accept(db, user, monkeypatch):
+    """Out-of-order webhooks: if the recipient's reply landed BEFORE the
+    invite_accepted event (observed in prod 2026-07-03), the post-accept
+    auto-DM must NOT fire a canned opener on top of their warm reply."""
+    monkeypatch.setenv("OUTREACH_COMPOSE_DISABLE", "1")
+    monkeypatch.setenv("SURPLUS_AUTO_FOLLOWUPS", "true")
+    from backend.providers.unipile import UnipileProvider
+    from backend.routes.webhooks import _trigger_auto_dm
+
+    ip_event = db.get(models.Event, _make_event(db, user)["event_id"])
+    p = models.Prospect(
+        event_id=ip_event.id, identity="gab-c", name="Gabriel Covington",
+        role="Founder", company="Taco Tech",
+        linkedin_url="https://www.linkedin.com/in/gabriel-covington",
+        linkedin_provider_id="dry_li_gab", note="agents and context windows")
+    db.add(p); db.flush()
+    db.add(models.OutreachLog(prospect_id=p.id, channel="linkedin",
+                              state="message_replied",
+                              body="Great meeting you as well!"))
+    db.commit(); db.refresh(p)
+
+    provider = UnipileProvider(dry_run=True, account_id="operator_acct")
+    assert _trigger_auto_dm(db, provider, p) is None
+    assert [o for o in p.outreach if o.state in ("message_sent", "dry_run_queued")] == []

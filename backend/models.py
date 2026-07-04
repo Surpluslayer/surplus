@@ -198,6 +198,17 @@ class Prospect(Base):
     connection_status: Mapped[str] = mapped_column(String(20), default="unknown")
     connection_checked_at: Mapped[Optional[datetime]] = mapped_column(default=None)
 
+    # In-person draft state. /scan answers fast (one DB round-trip) and the
+    # slow half (resolve + enrichment + compose) runs detached, persisting the
+    # composed copy HERE so the phone UI can poll for it. NULL draft_status is
+    # the norm for web-discovered prospects (they compose at send time).
+    #   "pending" -> the detached worker is still drafting
+    #   "ready"   -> draft_note / draft_message hold the composed copy
+    #   "failed"  -> the worker errored; the operator types their own copy
+    draft_status: Mapped[Optional[str]] = mapped_column(String(12), default=None)
+    draft_note: Mapped[Optional[str]] = mapped_column(String(400), default=None)
+    draft_message: Mapped[Optional[str]] = mapped_column(Text, default=None)
+
     # Lazy link to the cross-event Contact spine (the relationship graph). NULL
     # is the norm and fully supported : a Prospect is the per-event record; the
     # Contact is the durable person across events. Set opportunistically when a
@@ -590,11 +601,28 @@ class User(Base):
     # Connection health : flipped to "disconnected" if Unipile webhook fires
     # CREDENTIALS / DISCONNECTED. Re-auth flips it back to "active".
     linkedin_status: Mapped[str] = mapped_column(String(20), default="active")
+    # Watermark for the incremental LinkedIn DM sync (linkedin_chat_sync):
+    # stamped to a sync's START time on a clean pass, so the next run only
+    # pulls chats/messages newer than it. NULL = never synced (full scan).
+    linkedin_chat_synced_at: Mapped[Optional[datetime]] = mapped_column(default=None)
     # True for throwaway /demo-link users (one minted per visit). Set at mint so
     # every real query can filter them out and the hourly cron can purge stale
     # ones. Kept in the users table (the demo runs on the real auth/book stack),
     # but cleanly separated by this flag rather than the email-domain convention.
     is_demo: Mapped[bool] = mapped_column(default=False, index=True)
+    # Per-user AUTONOMY CONTROL over AGENT-INITIATED sends (the due-nudge
+    # dispatch + the AI auto-reply). One of 'off' | 'ask' | 'auto':
+    #   off  = agent drafts; nothing agent-initiated sends (nudges hold in
+    #          the queue, replies stage as PendingReply).
+    #   ask  = same holding mechanics as off; the Today surface lists what is
+    #          waiting for a one-tap confirm (the difference is the surface,
+    #          not the gate).
+    #   auto = agent-initiated sends fire unattended, still under the env
+    #          master (SURPLUS_AUTOMATED_SENDS) as the ops kill switch.
+    # Manual sends (send-now / schedule / approve) never consult this. The
+    # built-in post-accept first follow-up has its own master
+    # (SURPLUS_AUTO_FOLLOWUPS) and does not consult this either.
+    autonomy_mode: Mapped[str] = mapped_column(String(8), default="off")
 
     # ─── Email channel (Unipile GOOGLE / MICROSOFT account) ─────────────
     # A SECOND Unipile account on the same workspace, pointing at the user's
@@ -649,11 +677,12 @@ class User(Base):
     # lets us invalidate the cache when voice_examples change.
     voice_profile: Mapped[str] = mapped_column(Text, default="")
 
-    # Opt-in toggle for the "Gmail Schedule Send" auto follow-up feature. When
-    # False (the default), sending a first DM does NOT auto-stage a scheduled
-    # follow-up : the host has not asked us to. Flipped via the followups
-    # settings route. Gated in agents/followup_scheduler.stage_followup so the
-    # whole feature is off for a user until they explicitly turn it on.
+    # LEGACY / ungated: superseded by the env-level send-automation gates
+    # (SURPLUS_AUTO_FOLLOWUPS for the built-in post-accept follow-up,
+    # SURPLUS_AUTOMATED_SENDS for nudge + AI auto-reply). Its settings routes
+    # and UI toggle are gone, so nothing writes it anymore. Kept to avoid
+    # schema churn; a few relationships.py approve/schedule paths still read
+    # it (always False for new users).
     auto_followups_enabled: Mapped[bool] = mapped_column(default=False)
 
     # ─── First-time-user onboarding (in-person coachmark tour) ──────────
@@ -1047,8 +1076,13 @@ class ContactIdentity(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), index=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    # CASCADE: an identity is meaningless without its Contact and its owning
+    # User; both delete paths (Contact-bulk-delete, User merge/cleanup) rely on
+    # the DB to drop these children so no delete throws a ForeignKeyViolation.
+    contact_id: Mapped[int] = mapped_column(
+        ForeignKey("contacts.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True)
     # "email" | "phone" | "linkedin".
     kind: Mapped[str] = mapped_column(String(20), index=True)
     # The NORMALIZED identity value (lowercased email, last-10-digit phone,
@@ -1079,8 +1113,12 @@ class ContactFact(Base):
     """
     __tablename__ = "contact_facts"
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), index=True)
+    # CASCADE: a fact is per-contact memory owned by a user; it dies with either
+    # parent so Contact/User delete paths cascade cleanly (no FK violation).
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    contact_id: Mapped[int] = mapped_column(
+        ForeignKey("contacts.id", ondelete="CASCADE"), index=True)
     # Fact type, e.g. "birthday" | "based_in" | "interest" | "works_on" |
     # "mutual" | "upcoming_travel". Free-form but conventional.
     key: Mapped[str] = mapped_column(String(60), index=True)
@@ -1167,9 +1205,13 @@ class OutgoingMessage(Base):
     __tablename__ = "outgoing_messages"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    # CASCADE on BOTH parents: an outgoing message is send history owned by a
+    # user and (optionally) tied to a contact; it dies with either so the
+    # User-merge/cleanup and Contact-bulk-delete paths cascade without a FK error.
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True)
     contact_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("contacts.id"), default=None, index=True)
+        ForeignKey("contacts.id", ondelete="CASCADE"), default=None, index=True)
     channel: Mapped[str] = mapped_column(String(20))          # whatsapp|linkedin|email|imessage|sms
     to_handle: Mapped[Optional[str]] = mapped_column(String(200), default=None)  # phone/email for device sends
     body: Mapped[str] = mapped_column(Text, default="")
@@ -1199,12 +1241,17 @@ class Job(Base):
     # UUID hex string : generated app-side so the route can hand it back before
     # the worker has touched the DB. String PK keeps it dialect-portable.
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
-    event_id: Mapped[int] = mapped_column(ForeignKey("events.id"), index=True)
-    # Owner, for the poll-auth check. Nullable to tolerate operator/legacy paths.
-    user_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("users.id"), default=None, index=True
+    # Nullable : user-scoped jobs (e.g. import_conversations) have no event.
+    event_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("events.id"), default=None, index=True
     )
-    # "prospect" (search) | "match".
+    # Owner, for the poll-auth check. Nullable to tolerate operator/legacy paths.
+    # CASCADE: a user's jobs are ephemeral work records that die with the user
+    # (User merge/cleanup) rather than orphaning; NULL rows are unaffected.
+    user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), default=None, index=True
+    )
+    # "prospect" (search) | "match" | "import_conversations".
     kind: Mapped[str] = mapped_column(String(20))
     # queued -> running -> done | error.
     status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
@@ -1281,7 +1328,10 @@ class ConnectedAccount(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    # CASCADE: a connected account is per-user credential state; it dies with
+    # the user so the User merge/cleanup delete cascades without a FK violation.
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True)
     provider: Mapped[str] = mapped_column(String(40), index=True)        # "google"
     account_email: Mapped[str] = mapped_column(String(200), default="")
     access_token: Mapped[str] = mapped_column(Text, default="")
@@ -1310,8 +1360,10 @@ class EmailAccount(Base):
     __tablename__ = "email_accounts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # CASCADE: a connected mailbox is per-user credential state; it dies with
+    # the user so the User merge/cleanup delete cascades without a FK violation.
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id"), index=True, nullable=False)
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     # "google" / "outlook" -- best-effort provider label for the UI tile.
     provider: Mapped[str] = mapped_column(String(40), default="")
     # The mailbox address Unipile reports (e.g. "daniel@gmail.com"). Display.

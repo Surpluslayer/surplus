@@ -591,6 +591,11 @@ def set_decision(
     return _applicant_out(applicant)
 
 
+# Ceiling on rows a single CSV export materializes. Above any real Luma export;
+# guards the request path against a runaway import streaming an unbounded CSV.
+_EXPORT_MAX_ROWS = 5000
+
+
 @router.get("/{event_id}/triage/export.csv")
 def export_decisions_csv(
     event_id: int,
@@ -602,8 +607,24 @@ def export_decisions_csv(
     the sponsor). Includes both raw applicant fields and the audit trail :
     system_recommendation, human_decision, reviewer_notes, reviewed_at."""
     ev = get_owned_event(event_id, user, db)
+    # Eager-load evaluation + decision in two extra queries instead of the
+    # lazy 2N+1 that iterating ev.applicants and touching a.evaluation /
+    # a.decision per row would fire. On a 500+ row Luma export that N+1 is
+    # slow enough to trip the edge timeout (a 524 on a plain CSV download).
+    # Bounded too: a runaway import can't stream an unbounded CSV from the
+    # request path.
+    rows = (
+        db.query(models.Applicant)
+        .filter(models.Applicant.event_id == ev.id)
+        .options(
+            selectinload(models.Applicant.evaluation),
+            selectinload(models.Applicant.decision),
+        )
+        .limit(_EXPORT_MAX_ROWS)
+        .all()
+    )
     rows = sorted(
-        ev.applicants,
+        rows,
         key=lambda a: (
             -(a.evaluation.fit_score if a.evaluation else -1),
             a.created_at,

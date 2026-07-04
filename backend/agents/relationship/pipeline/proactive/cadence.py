@@ -90,6 +90,21 @@ def due_contacts(db, user_id: int, *, now: Optional[datetime] = None,
     update_index = relationships.prefetch_activity_updates_by_contact(db, contacts)
     snoozed = _snoozed_contact_ids(db, user_id, now=now)
 
+    # Pre-product cutoff: the chat syncs backfill YEARS of history, and a
+    # conversation that ended before the host even joined surplus is context,
+    # not a to-do. A contact whose last touch predates the host's account is
+    # skipped until a product-era touch moves it forward -- EXCEPT when the
+    # host starred them (VIP = an explicit "keep this one warm").
+    product_start = None
+    try:
+        from ..... import models as _models
+        owner = db.get(_models.User, user_id)
+        product_start = getattr(owner, "created_at", None)
+        if product_start is not None and product_start.tzinfo is None:
+            product_start = product_start.replace(tzinfo=timezone.utc)
+    except Exception:  # noqa: BLE001 : anchor is best-effort, never sinks the feed
+        product_start = None
+
     out: list[dict] = []
     for c in contacts:
         if c.id in snoozed:
@@ -100,6 +115,9 @@ def due_contacts(db, user_id: int, *, now: Optional[datetime] = None,
             continue  # never touched -> not a maintenance candidate
         if lt.tzinfo is None:                       # naive rows -> assume UTC
             lt = lt.replace(tzinfo=timezone.utc)
+        if (product_start is not None and lt < product_start
+                and not bool(getattr(c, "vip", False))):
+            continue  # relationship predates surplus -> history, not maintenance
         days_since = (now - lt).days
         cad = cadence_days(c, s)
         if days_since + max(within_days, 0) < cad:

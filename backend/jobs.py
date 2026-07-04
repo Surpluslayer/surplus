@@ -53,6 +53,53 @@ def use_modal() -> bool:
 # seeds dropped). Modal isn't reachable / USE_MODAL off -> a local daemon thread,
 # same shape as the old hand-rolled one. Best-effort: never raises into the caller.
 # --------------------------------------------------------------------------- #
+# ── Local-job concurrency cap ────────────────────────────────────────────────
+# The local fallback used to spawn an unbounded daemon thread per job: a burst
+# of on-connect syncs could run many multi-minute jobs at once and starve the
+# request path (each job briefly checks DB connections out of the shared pool).
+# A module-level semaphore caps how many local jobs RUN concurrently; extras
+# queue up in their (cheap, sleeping) threads until a slot frees. Modal-
+# dispatched jobs are unaffected. Env-tunable: LOCAL_JOBS_MAX_CONCURRENT
+# (default 4). The semaphore is built lazily so tests can reset it after
+# changing the env.
+
+_local_jobs_sem = None
+_local_jobs_sem_lock = None
+
+
+def _local_jobs_semaphore():
+    """The process-wide local-job semaphore, built on first use from
+    LOCAL_JOBS_MAX_CONCURRENT (default 4, floor 1)."""
+    import threading
+    global _local_jobs_sem, _local_jobs_sem_lock
+    if _local_jobs_sem_lock is None:
+        _local_jobs_sem_lock = threading.Lock()
+    with _local_jobs_sem_lock:
+        if _local_jobs_sem is None:
+            raw = (os.environ.get("LOCAL_JOBS_MAX_CONCURRENT") or "").strip()
+            try:
+                n = max(1, int(raw)) if raw else 4
+            except ValueError:
+                n = 4
+            _local_jobs_sem = threading.Semaphore(n)
+        return _local_jobs_sem
+
+
+def _run_local_job(job_name: str, target, *args, **kwargs) -> None:
+    """Run one local background job under the concurrency cap: acquire a slot
+    (queueing, never dropping), run, release in finally. This is the thread
+    body every local daemon-thread job goes through."""
+    sem = _local_jobs_semaphore()
+    if not sem.acquire(blocking=False):
+        print(f"  [jobs] local job {job_name} waiting for a slot "
+              f"(LOCAL_JOBS_MAX_CONCURRENT reached)", flush=True)
+        sem.acquire()
+    try:
+        target(*args, **kwargs)
+    finally:
+        sem.release()
+
+
 def _fn_path(fn) -> str:
     """Dotted import path 'module.qualname' for a top-level callable, so the
     Modal worker can re-import and run it."""
@@ -95,7 +142,9 @@ def run_detached(fn, *args, prefer_modal: bool = False, **kwargs) -> str:
 
     import threading
     threading.Thread(
-        target=execute_detached, args=(fn_path, *args), kwargs=kwargs,
+        target=_run_local_job,
+        args=(f"detached-{fn.__name__}", execute_detached, fn_path, *args),
+        kwargs=kwargs,
         name=f"detached-{fn.__name__}", daemon=True,
     ).start()
     return "local"
@@ -155,8 +204,9 @@ def dispatch_triage(background_tasks, event_id: int, *,
 # execute_*_job are the single source of truth for the work; BOTH the local
 # path (BackgroundTask) and the Modal path (modal_jobs.run_*_job) call them.
 # --------------------------------------------------------------------------- #
-def new_job(db, *, event_id: int, user_id, kind: str):
-    """Insert a queued Job and return it (committed so the id is durable)."""
+def new_job(db, *, event_id: int | None, user_id, kind: str):
+    """Insert a queued Job and return it (committed so the id is durable).
+    event_id is None for user-scoped jobs (e.g. import_conversations)."""
     from . import models
     job = models.Job(
         id=uuid.uuid4().hex,
@@ -252,6 +302,60 @@ async def execute_match_job(job_id: str) -> None:
             pass
     finally:
         db.close()
+
+
+# ─── LinkedIn conversation import (Book seeding) ────────────────────────────
+# POST /api/relationships/import-conversations used to run the whole import
+# inline in the request : up to scan_cap(80) chats x 3 sequential Unipile GETs
+# each (thread + attendee + profile resolve, 12s timeout apiece) before the
+# response could return. It's now a Job : the route inserts a queued Job row
+# and dispatches THIS worker via run_detached; the frontend polls
+# GET /api/relationships/import-conversations/{job_id}. While scanning, the
+# worker writes {"scanned", "found"} progress into result_json so the poll can
+# show live movement; on completion result_json carries the final import stats.
+
+def execute_import_conversations(db, job_id: str, want: int = 15) -> None:
+    """Run one user's LinkedIn conversation import against a Job row. Fits the
+    run_detached contract (fn(db, *args) on a fresh session). Never raises."""
+    import json
+    from . import models
+    from .agents.relationship.spine.relationships import import_conversation_contacts
+
+    job = db.get(models.Job, job_id)
+    if job is None:
+        print(f"  [jobs] import_conversations job {job_id} NOT FOUND")
+        return
+    try:
+        job.status = "running"
+        db.commit()
+        user = db.get(models.User, job.user_id) if job.user_id else None
+        if user is None:
+            _finish(db, job, error="user not found")
+            return
+
+        def _on_progress(scanned: int, found: int) -> None:
+            # Progress beats land during the scan phase, BEFORE any Contact
+            # rows are staged on this session, so the commit only flushes the
+            # Job row. Best-effort : a progress hiccup must not kill the run.
+            try:
+                job.result_json = json.dumps(
+                    {"scanned": scanned, "found": found})
+                db.commit()
+            except Exception:  # noqa: BLE001
+                db.rollback()
+
+        result = import_conversation_contacts(
+            db, user, want=want, on_progress=_on_progress)
+        _finish(db, job, result_json=json.dumps(result))
+        print(f"  [jobs] import_conversations job {job_id} done: {result}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [jobs] import_conversations job {job_id} FAILED: "
+              f"{type(exc).__name__}: {exc}")
+        db.rollback()
+        try:
+            _finish(db, job, error=f"{type(exc).__name__}: {exc}")
+        except Exception:  # noqa: BLE001
+            db.rollback()
 
 
 # ─── Scale tripwire ───────────────────────────────────────────────────────
@@ -409,7 +513,9 @@ def dispatch_whatsapp_first_sync(user_id: int) -> str:
 
     import threading
     threading.Thread(
-        target=execute_whatsapp_first_sync, args=(user_id,),
+        target=_run_local_job,
+        args=(f"whatsapp-first-sync-{user_id}",
+              execute_whatsapp_first_sync, user_id),
         name=f"whatsapp-first-sync-{user_id}", daemon=True,
     ).start()
     return "local"

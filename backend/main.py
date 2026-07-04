@@ -16,7 +16,10 @@ from .env_loader import load_env
 
 load_env()
 
-from fastapi import FastAPI, Request
+import hmac
+import os
+from fastapi import FastAPI, Request, Header, Depends
+from fastapi import Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,23 +32,109 @@ from .routes import (
     auth, google_login, microsoft_login, password_auth, account_email,
     billing, demo, webhooks, admin,
     # relationship side (the phone-first "book" / CRM)
-    book, relationships, inperson, followups, integrations, messages,
+    book, relationships, inperson, followups, integrations, messages, settings,
     # events side (the desktop event-ROI pipeline)
     events, pipeline, matching, roi, triage, curation, jobs,
+    # infra: token-gated Unipile pass-through for :443-only egress sandboxes
+    internal_relay,
 )
 
 
 @asynccontextmanager
+def _validate_startup_config() -> list[str]:
+    """Check the env vars the app actually READS are present + well-formed, and
+    log a loud banner for anything missing. This is the boot-time counterpart to
+    the /api/health config warnings: config drift (PORT silently vanished on
+    2026-07-03 and caused a 30-min outage) should be screamed at startup, not
+    discovered when a user hits a broken flow. In prod (DATABASE_URL set) a
+    missing takeover-critical secret is fatal; other gaps are logged and run
+    degraded so a single missing integration key does not black out the app."""
+    prod = bool((os.environ.get("DATABASE_URL") or "").strip())
+    def _missing(name: str) -> bool:
+        return not (os.environ.get(name) or "").strip()
+
+    fatal, degraded = [], []
+    # Fatal in prod: without these, auth/data are broken or insecure.
+    if prod and len((os.environ.get("SURPLUS_OAUTH_STATE_SECRET") or "").strip()) < 32:
+        fatal.append("SURPLUS_OAUTH_STATE_SECRET (<32 bytes: signs reset tokens)")
+    # Degraded: the app runs, but a whole feature is dark. Surface loudly.
+    for name, feature in (
+        ("UNIPILE_DSN", "LinkedIn/email/WhatsApp"),
+        ("UNIPILE_API_KEY", "LinkedIn/email/WhatsApp"),
+        ("ANTHROPIC_API_KEY", "all AI drafting"),
+        ("ADMIN_TOKEN", "cron + admin ops + deep health"),
+    ):
+        if _missing(name):
+            degraded.append(f"{name} ({feature} disabled)")
+
+    if fatal:
+        banner = "STARTUP CONFIG FATAL: " + "; ".join(fatal)
+        print("=" * 70 + f"\n  {banner}\n" + "=" * 70, flush=True)
+        raise RuntimeError(banner)  # fail fast, loudly, in prod
+    if degraded:
+        print("=" * 70, flush=True)
+        for d in degraded:
+            print(f"  [startup] CONFIG WARNING: {d}", flush=True)
+        print("=" * 70, flush=True)
+    else:
+        print("  [startup] config validated: all critical env present.", flush=True)
+    return degraded
+
+
+def _init_db_resilient() -> None:
+    """Run init_db(), retrying on a TRANSIENT DB error at boot.
+
+    Railway's Postgres TCP proxy intermittently drops rapid successive
+    connections; if that blip hits the very first connection init_db needs,
+    an unguarded init_db() raises and the whole process crashes. With
+    restartPolicyMaxRetries the container could burn through every retry on
+    the same short-lived blip and stay HARD DOWN until a human redeploys.
+
+    Retry a handful of times with linear backoff (~1,2,3,4,5s = 15s total,
+    well inside the healthcheck window) so a transient proxy drop self-heals.
+    A genuinely dead / misconfigured DB still surfaces: after the last attempt
+    we let the error propagate and boot fails loudly, as it should.
+    """
+    import time as _t
+
+    from sqlalchemy.exc import OperationalError, DBAPIError
+    attempts = 5
+    for i in range(1, attempts + 1):
+        try:
+            init_db()
+            return
+        except (OperationalError, DBAPIError) as exc:
+            if i == attempts:
+                print(f"  [startup] init_db failed after {attempts} attempts: {exc}",
+                      flush=True)
+                raise
+            print(f"  [startup] init_db attempt {i}/{attempts} hit a transient DB "
+                  f"error, retrying in {i}s: {exc}", flush=True)
+            _t.sleep(i)
+
+
 async def lifespan(app: FastAPI):
-    init_db()
+    _validate_startup_config()
+    _init_db_resilient()
     # One-shot backfill for User rows created before the
     # _extract_profile_fields camelCase fix. Idempotent — re-runs are no-ops.
     try:
+        import asyncio as _asyncio
+
         from .routes.auth import backfill_user_dedup_keys
-        await backfill_user_dedup_keys()
+
+        async def _backfill_quietly():
+            try:
+                await backfill_user_dedup_keys()
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [startup] backfill_user_dedup_keys failed: {exc}")
+
+        # Fire-and-forget: this makes Unipile HTTP calls, and BOOT MUST NEVER
+        # WAIT ON THE NETWORK -- the healthcheck window is unforgiving and a
+        # hung upstream must not keep uvicorn from accepting.
+        _asyncio.get_running_loop().create_task(_backfill_quietly())
     except Exception as exc:  # noqa: BLE001
-        # Don't let a backfill hiccup block startup; log and continue.
-        print(f"  [startup] backfill_user_dedup_keys failed: {exc}")
+        print(f"  [startup] backfill scheduling failed: {exc}")
     # In-process updates scheduler (replaces the external GitHub-Actions cron):
     # a daemon thread that periodically runs the tiered "what's new" sweep. It's
     # claim-guarded so multiple workers/replicas don't double-fire.
@@ -57,6 +146,34 @@ async def lifespan(app: FastAPI):
     yield
 
 
+# DB pool exhaustion (a burst of long-running background work checking out
+# every connection) must degrade to a RETRIABLE 503, not a bare 500: the
+# frontend's request wrapper auto-retries transient statuses, so a spike shows
+# up as a ~1.5s delay instead of "Internal Server Error" (2026-07-01 incident:
+# QueuePool limit reached -> /api/auth/me 500 on a phone mid-connect).
+from sqlalchemy.exc import TimeoutError as _SAPoolTimeout
+from fastapi.responses import JSONResponse as _JSONResponse
+
+
+# Process start time (monotonic wall clock). Exposed on /api/health as
+# uptime_seconds: a value that keeps resetting to near-zero across polls means
+# the container is crash-looping (ON_FAILURE restarts) even while each
+# individual probe returns 200 -- the silent-restart signature that a plain
+# healthcheck misses. This is how the NEXT outage leaves a fingerprint.
+import time as _time
+_PROC_START = _time.time()
+
+# Last CPU sample for the deep-health CPU gauge. cgroup exposes only CUMULATIVE
+# CPU time, so a percentage needs two readings over a wall-clock interval. We
+# stash (cumulative_cpu_seconds, monotonic_ts) here and diff against it on the
+# NEXT deep call -- no sampling sleep, no subprocess, so reading CPU adds no
+# measurable load. The monitor polls every ~5 min, so the reported number is the
+# average CPU utilisation over that window. Per-process (each worker has its own
+# module state) but cpu.stat is the whole container's, so any worker's reading
+# reflects the container. First call after boot returns null (no prior sample).
+_CPU_SAMPLE: dict = {}
+
+
 app = FastAPI(
     title="surplus · event ROI engine",
     description="AI prospecting, autonomous outreach, symbiotic matching, and "
@@ -64,6 +181,15 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(_SAPoolTimeout)
+async def _pool_exhausted_503(request: Request, exc: _SAPoolTimeout):
+    return _JSONResponse(
+        status_code=503,
+        content={"detail": "The server is momentarily busy. Please retry."},
+        headers={"Retry-After": "2", "Cache-Control": "no-store"},
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -132,6 +258,7 @@ app.include_router(relationships.router)   # contact spine, star/VIP, imports, u
 app.include_router(inperson.router)        # phone capture (QR / paste / manual)
 app.include_router(messages.router)        # message capture (context in) + send queue
 app.include_router(followups.router)       # scheduled follow-up queue
+app.include_router(settings.router)        # per-user settings (autonomy mode)
 app.include_router(integrations.router)    # OAuth source connectors (Google ...)
 
 # ── EVENTS side: the desktop event-ROI pipeline (www.surpluslayer.com) ───────
@@ -142,6 +269,7 @@ app.include_router(roi.router)             # 05 ROI ledger
 app.include_router(triage.router)          # inbound applicant triage
 app.include_router(curation.router)        # event attendee curation
 app.include_router(jobs.router)            # async job dispatch + poll
+app.include_router(internal_relay.router)  # token-gated Unipile relay (sandbox egress)
 
 
 # NB: previously had a verbose 500 exception handler here that leaked
@@ -386,7 +514,8 @@ def join_demo_request(payload: _DemoRequest):
 
 
 @app.get("/api/health", tags=["meta"])
-def health(deep: bool = False):
+def health(deep: bool = False,
+           x_admin_token: str = Header(default=None, alias="X-Admin-Token")):
     """API discovery JSON. Moved from `/` so the frontend can own `/`.
 
     Railway's healthcheck hits this on an interval and RESTARTS the container if
@@ -455,9 +584,136 @@ def health(deep: bool = False):
     # when the DB query fails so the healthcheck stays a 200.
     last_webhook_paid_at = None
     pending_replies_count = None
+    # Deep diagnostics (pool/memory/db_ping/config warnings) are operator-only:
+    # they reveal which integrations are configured and internal pressure. Gate
+    # behind the admin token so ?deep=1 is not an unauthenticated info leak.
+    if deep:
+        _exp = (os.environ.get("ADMIN_TOKEN") or "").strip()
+        deep = bool(_exp and x_admin_token
+                    and hmac.compare_digest(x_admin_token, _exp))
+    db_pool_stats = None
+    mem_stats = None
+    cpu_stats = None
+    db_ping_ms = None
+    warnings: list[str] = []  # leading indicators: things to fix BEFORE they page
     if deep:
         # Only on explicit ?deep=1 : never on the platform healthcheck path, so
         # DB-pool exhaustion can't fail the healthcheck and trigger a restart.
+        # Pool pressure gauge: watch checked_out approach size+overflow BEFORE
+        # requests start 503ing (the 2026-07-01 exhaustion gave no warning).
+        try:
+            _pool = ENGINE.pool
+            _out, _cap = _pool.checkedout(), _pool.size() + _pool.overflow()
+            _pct = round(100 * _out / _cap, 1) if _cap else 0.0
+            db_pool_stats = {"size": _pool.size(), "checked_out": _out,
+                             "overflow": _pool.overflow(),
+                             "capacity": _cap, "used_pct": _pct}
+            if _pct >= 80:
+                warnings.append(f"db_pool {_pct}% used ({_out}/{_cap}) -- exhaustion imminent")
+        except Exception:  # noqa: BLE001 -- SQLite/NullPool lacks these
+            db_pool_stats = None
+
+        # Container memory headroom (cgroup v2). OOM at WEB_CONCURRENCY=1 with
+        # heavy imports is a silent-restart cause a 200-check misses entirely.
+        try:
+            cur = int(open("/sys/fs/cgroup/memory.current").read().strip())
+            mx_raw = open("/sys/fs/cgroup/memory.max").read().strip()
+            mx = int(mx_raw) if mx_raw != "max" else 0
+            mpct = round(100 * cur / mx, 1) if mx else None
+            mem_stats = {"used_mb": round(cur / 1e6, 1),
+                         "limit_mb": round(mx / 1e6, 1) if mx else None,
+                         "used_pct": mpct}
+            if mpct is not None and mpct >= 85:
+                warnings.append(f"memory {mpct}% of limit -- OOM restart risk")
+        except Exception:  # noqa: BLE001 -- non-linux / no cgroup
+            mem_stats = None
+
+        # Container CPU headroom (cgroup v2). The EARLY-WARNING for "we are
+        # approaching the ceiling of the current worker/replica count" : sustained
+        # high CPU is the signal to scale UP before requests start queuing and
+        # 524ing. Cost is two tiny file reads + arithmetic -- no sampling sleep,
+        # no subprocess -- so this does NOT add load. cpu.stat gives cumulative
+        # usage_usec; we percentage it against the container's allocated cores
+        # over the interval since the last deep call (null on the first call).
+        try:
+            _usage_usec = None
+            for _line in open("/sys/fs/cgroup/cpu.stat"):
+                if _line.startswith("usage_usec"):
+                    _usage_usec = int(_line.split()[1])
+                    break
+            # Allocated cores from the cgroup quota (cpu.max = "<quota> <period>";
+            # "max" = unshaped, fall back to the host core count).
+            _qraw = open("/sys/fs/cgroup/cpu.max").read().split()
+            if _qraw and _qraw[0] != "max":
+                _ncpu = max(int(_qraw[0]) / int(_qraw[1]), 0.01)
+            else:
+                _ncpu = float(os.cpu_count() or 1)
+            _now = _time.time()
+            if _usage_usec is not None:
+                # Average CPU since boot: computable from a SINGLE reading
+                # (cumulative usage / elapsed / cores), so used_pct is never null
+                # even on the very first call or when the load balancer routes
+                # this call to a replica that has no prior sample. Robust but
+                # coarse (whole-life average).
+                _up = max(_now - _PROC_START, 0.001)
+                _avg = round(100 * (_usage_usec / 1e6) / (_up * _ncpu), 1)
+                _avg = max(0.0, min(_avg, 100.0))
+                # Windowed CPU since the last deep call: sharper / more recent,
+                # but only available once this process has a prior sample.
+                _prev = _CPU_SAMPLE.get("usage_usec")
+                _prev_ts = _CPU_SAMPLE.get("ts")
+                _win_pct = None
+                _wall = None
+                if _prev is not None and _prev_ts is not None and _now > _prev_ts:
+                    _cpu_secs = (_usage_usec - _prev) / 1e6
+                    _wall = _now - _prev_ts
+                    _win_pct = max(0.0, min(
+                        round(100 * _cpu_secs / (_wall * _ncpu), 1), 100.0))
+                # Prefer the windowed (recent) number; fall back to since-boot.
+                _cpct = _win_pct if _win_pct is not None else _avg
+                cpu_stats = {"cores": round(_ncpu, 2),
+                             "used_pct": _cpct,
+                             "window_pct": _win_pct,
+                             "avg_since_boot_pct": _avg,
+                             "window_s": round(_wall, 1) if _wall else None}
+                if _cpct >= 60:
+                    _over = (f"over {round(_wall)}s" if _wall
+                             else f"avg since boot ({round(_up)}s)")
+                    warnings.append(
+                        f"cpu {_cpct}% of {round(_ncpu,2)} cores {_over} "
+                        f"-- sustained load, consider scaling")
+                _CPU_SAMPLE["usage_usec"] = _usage_usec
+                _CPU_SAMPLE["ts"] = _now
+        except Exception:  # noqa: BLE001 -- non-linux / no cgroup
+            cpu_stats = None
+
+        # DB round-trip latency: a climbing number is the early tell of the
+        # flaky Railway PG proxy or a saturated DB before it starts erroring.
+        try:
+            from sqlalchemy import text as _t
+            # Warm the pool first so we time QUERY latency, not the one-time
+            # connect+TLS+auth to the cross-region Railway PG proxy (that setup
+            # alone is ~600ms and is not a health signal). Threshold is generous
+            # (1500ms) because a leading indicator should flag a DB that is
+            # REALLY degrading, not normal cross-region latency (a 500ms warn
+            # false-alarmed on the very first real monitor run, 2026-07-03).
+            with ENGINE.connect() as _c:
+                _c.execute(_t("SELECT 1"))              # warm
+                _t0 = _time.time()
+                _c.execute(_t("SELECT 1"))              # measured
+                db_ping_ms = round((_time.time() - _t0) * 1000, 1)
+            if db_ping_ms >= 1500:
+                warnings.append(f"db_ping {db_ping_ms}ms -- DB slow/degrading")
+        except Exception as _e:  # noqa: BLE001
+            warnings.append(f"db_ping FAILED: {type(_e).__name__}")
+
+        # Config drift guard: a required prod secret going missing (PORT did,
+        # 2026-07-03) is a leading indicator of an outage. Surface it here so
+        # the monitor can alert BEFORE the missing value breaks a flow.
+        for _var in ("DATABASE_URL", "SURPLUS_OAUTH_STATE_SECRET",
+                     "UNIPILE_DSN", "UNIPILE_API_KEY", "ANTHROPIC_API_KEY"):
+            if not (os.environ.get(_var) or "").strip():
+                warnings.append(f"required config missing: {_var}")
         try:
             from sqlalchemy import text
             with ENGINE.connect() as conn:
@@ -493,6 +749,7 @@ def health(deep: bool = False):
         # value that hasn't changed after a deploy means the build was a full
         # cache hit / stale source — i.e. your new code did NOT ship.
         "build_time": build_time,
+        "uptime_seconds": round(_time.time() - _PROC_START, 1),
         # Which BookApp bundle is in this image + whether it's the redesign.
         # frontend_has_redesign==false with a fresh build_time => the BACKEND
         # rebuilt but the FRONTEND stage was served from cache (stale dist).
@@ -502,6 +759,11 @@ def health(deep: bool = False):
         # value confirms a fresh deploy landed even if GIT_SHA wasn't passed.
         "image_ref": os.environ.get("FLY_IMAGE_REF"),
         "db_dialect": db_dialect,
+        "db_pool": db_pool_stats,
+        "memory": mem_stats,
+        "cpu": cpu_stats,
+        "db_ping_ms": db_ping_ms,
+        "warnings": warnings,  # non-empty => fix before it becomes an outage
         "db_url_set": bool((os.environ.get("DATABASE_URL") or "").strip()),
         "integrations": integrations,
         "last_paid_at": last_webhook_paid_at,
@@ -512,8 +774,17 @@ def health(deep: bool = False):
     }
 
 
+
+def __admin_dep(x_admin_token=Header(default=None, alias="X-Admin-Token")):
+    """Gate the operator diagnostics endpoints (billed upstream calls) behind
+    the admin token, 404-on-miss like routes/admin. Unauthenticated access was
+    a cost-DoS + integration-config disclosure (security review H-2)."""
+    from .routes.admin import _require_admin_token
+    return _require_admin_token(x_admin_token)
+
+
 @app.get("/api/diagnostics/anthropic", tags=["meta"])
-def anthropic_diagnostics():
+def anthropic_diagnostics(_: None = Depends(__admin_dep)):
     """
     Tests outbound connectivity to api.anthropic.com from inside the
     container. Useful when prospecting is silently returning 0 candidates
@@ -571,6 +842,7 @@ def anthropic_diagnostics():
 
 @app.get("/api/diagnostics/exa/discover", tags=["meta"])
 def exa_discover_probe(
+    _: None = Depends(__admin_dep),
     source: str = "linkedin",
     role: str = "ML platform engineer",
     seniority: str = "Senior",
@@ -662,7 +934,7 @@ def _exa_raw_results(source: str, icp: dict, max_candidates: int) -> list:
 
 
 @app.get("/api/diagnostics/exa", tags=["meta"])
-def exa_diagnostics():
+def exa_diagnostics(_: None = Depends(__admin_dep)):
     """
     Tests outbound connectivity to api.exa.ai from inside the container.
     Useful when /prospect is silently returning 0 LinkedIn candidates :

@@ -1,0 +1,92 @@
+name: uptime
+# External health monitor. Pings prod every 5 minutes from GitHub's runners
+# (a genuinely external vantage point, unlike the app monitoring itself). On a
+# real outage the job FAILS, which sends GitHub's "workflow failed" email to
+# watchers, and it captures the deploy state so the next outage leaves evidence
+# instead of only a screenshot from someone's phone.
+#
+# This is a BACKSTOP. GitHub scheduled crons drift and can be auto-disabled on
+# repo inactivity (surplus learned this the hard way with followups.yml), so a
+# dedicated external monitor (UptimeRobot / BetterStack free tier -> phone push)
+# should be the PRIMARY. This one is free, in-repo, and needs no third party.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # every 5 minutes
+  workflow_dispatch: {}
+
+concurrency:
+  group: uptime
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Probe prod health (custom + railway domains, with retries)"
+        run: |
+          set -u
+          CUSTOM="https://event.surpluslayer.com/api/health"
+          RAILWAY="https://surplus-production.up.railway.app/api/health"
+
+          # A single dropped packet is not an outage: require TWO consecutive
+          # failures ~20s apart before declaring down, to kill flake alerts.
+          check() {
+            local url="$1" code
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$url" || echo 000)
+            echo "$code"
+          }
+
+          fail=0
+          for attempt in 1 2; do
+            c=$(check "$CUSTOM")
+            r=$(check "$RAILWAY")
+            echo "attempt $attempt: custom=$c railway=$r"
+            # Healthy if EITHER domain answers 2xx (isolates a Cloudflare-only
+            # blip from a real backend outage).
+            if [ "${c:0:1}" = "2" ] || [ "${r:0:1}" = "2" ]; then
+              fail=0
+              break
+            fi
+            fail=1
+            [ "$attempt" = "1" ] && sleep 20
+          done
+
+          if [ "$fail" = "1" ]; then
+            echo "::error::surplus prod is DOWN: neither domain returned 2xx across 2 attempts."
+            echo "--- last response bodies (truncated) ---"
+            curl -s --max-time 15 "$CUSTOM"  | head -c 500 || true; echo
+            curl -s --max-time 15 "$RAILWAY" | head -c 500 || true; echo
+            exit 1
+          fi
+          echo "prod healthy."
+
+      - name: "Leading indicators (fail before an outage: pool/memory/db-latency/config)"
+        if: always()
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+        run: |
+          set -u
+          if [ -z "${ADMIN_TOKEN:-}" ]; then
+            echo "ADMIN_TOKEN secret not set; skipping deep checks"; exit 0
+          fi
+          BASE="https://surplus-production.up.railway.app"
+          body=$(curl -s --max-time 20 "$BASE/api/health?deep=1" -H "X-Admin-Token: $ADMIN_TOKEN")
+          echo "$body" | jq -c '{db_pool, memory, cpu, db_ping_ms, uptime_seconds}' || {
+            echo "::warning::could not parse deep health"; exit 0; }
+
+          # Collect warnings: the app's own list, plus a crash-loop tell.
+          warns=$(echo "$body" | jq -r '(.warnings // [])[]' 2>/dev/null)
+          up=$(echo "$body" | jq -r '.uptime_seconds // empty' 2>/dev/null)
+          if [ -n "${up:-}" ] && awk "BEGIN{exit !($up < 120)}"; then
+            warns="$warns
+          uptime only ${up}s -- possible crash loop"
+          fi
+
+          if [ -n "$(echo "$warns" | tr -d '[:space:]')" ]; then
+            echo "$warns" | while IFS= read -r w; do
+              [ -n "$(echo "$w" | tr -d '[:space:]')" ] && echo "::error::LEADING INDICATOR: $w"
+            done
+            exit 1
+          fi
+          echo "all leading indicators green."

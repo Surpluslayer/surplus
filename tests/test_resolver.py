@@ -70,3 +70,33 @@ def test_resolve_by_text_empty_without_key(monkeypatch):
     """No EXA_API_KEY -> [] so the caller can fall back to 'type the link'."""
     monkeypatch.delenv("EXA_API_KEY", raising=False)
     assert resolver.resolve_by_text("Maya Rodriguez", "Eng", "Acme") == []
+
+
+def test_resolve_by_url_soft_fails_on_degraded_provider(monkeypatch):
+    """A live provider that raises (throttled / down) must NOT propagate a 500
+    out of resolve_by_url: it returns confidence='failed' so the caller degrades
+    gracefully and the send path can re-resolve lazily later."""
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+
+    class _BoomProvider:
+        def resolve_linkedin_user(self, url):
+            raise RuntimeError("unipile 503")
+
+    out = resolver.resolve_by_url("https://www.linkedin.com/in/maya/", _BoomProvider())
+    assert out["confidence"] == "failed"
+    assert out["provider_id"] is None
+    assert "RuntimeError" in out["error"]
+    assert out["linkedin_url"].endswith("/in/maya")
+
+
+def test_resolve_by_url_high_confidence_on_healthy_provider(monkeypatch):
+    """Happy path is unchanged: a healthy provider yields confidence='high'."""
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+
+    class _OkProvider:
+        def resolve_linkedin_user(self, url):
+            return "li_123"
+
+    out = resolver.resolve_by_url("https://www.linkedin.com/in/maya/", _OkProvider())
+    assert out["confidence"] == "high"
+    assert out["provider_id"] == "li_123"

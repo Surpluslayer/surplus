@@ -96,7 +96,12 @@ def db():
 
 
 def test_snooze_suppresses_then_expires_then_unsnooze(db, monkeypatch):
-    u = models.User(name="Host", email="h@x.com", unipile_account_id="a1")
+    # Backdate the host past the touch below: cadence now skips relationships
+    # whose last touch predates the host's account (pre-product history is
+    # context, not maintenance) unless starred, and this test exercises the
+    # SNOOZE mechanics, not that cutoff.
+    u = models.User(name="Host", email="h@x.com", unipile_account_id="a1",
+                    created_at=datetime.now(timezone.utc) - timedelta(days=500))
     db.add(u); db.commit()
     c1 = models.Contact(user_id=u.id, primary_identity_key="li:a", name="A")
     c2 = models.Contact(user_id=u.id, primary_identity_key="li:b", name="B")
@@ -122,3 +127,39 @@ def test_snooze_suppresses_then_expires_then_unsnooze(db, monkeypatch):
     cadence.snooze_contact(db, u.id, c1.id, days=30, now=now)
     assert cadence.unsnooze_contact(db, u.id, c1.id) is True
     assert due_ids(now) == {c1.id, c2.id}                 # cleared -> back immediately
+
+
+def test_pre_product_history_is_not_due_unless_vip(db, monkeypatch):
+    """Synced history from before the host joined surplus must not surface as
+    'overdue for a touch' -- it is context, not a to-do. Starring (VIP) is an
+    explicit 'keep this one warm', so it re-enables cadence for that contact."""
+    now = datetime(2026, 6, 27, tzinfo=timezone.utc)
+    # Host joined 30 days ago; both touches below predate the account.
+    u = models.User(name="Host", email="h2@x.com", unipile_account_id="a2",
+                    created_at=now - timedelta(days=30))
+    db.add(u); db.commit()
+    old = models.Contact(user_id=u.id, primary_identity_key="li:old", name="Old")
+    star = models.Contact(user_id=u.id, primary_identity_key="li:star", name="Star",
+                          vip=True)
+    db.add_all([old, star]); db.commit()
+    monkeypatch.setattr(cadence.relationships, "list_contacts", lambda db, uid: [old, star])
+    monkeypatch.setattr(cadence.relationships, "prefetch_interactions_by_prospect",
+                        lambda db, cs: {})
+    monkeypatch.setattr(cadence.relationships, "prefetch_activity_updates_by_contact",
+                        lambda db, cs: {})
+    monkeypatch.setattr(cadence.relationships, "contact_summary",
+                        lambda db, c, ii, au: {"contact_id": c.id, "name": c.name,
+                                               "relationship_stage": "captured",
+                                               "last_touch_at": now - timedelta(days=400)})
+    ids = {r["contact_id"] for r in cadence.due_contacts(db, u.id, now=now)}
+    assert old.id not in ids          # pre-product history: skipped
+    assert star.id in ids             # VIP: explicitly kept warm
+
+    # A product-era touch re-enables cadence once it goes stale again.
+    monkeypatch.setattr(cadence.relationships, "contact_summary",
+                        lambda db, c, ii, au: {"contact_id": c.id, "name": c.name,
+                                               "relationship_stage": "captured",
+                                               "last_touch_at": now - timedelta(days=20)})
+    later = now + timedelta(days=200)
+    ids = {r["contact_id"] for r in cadence.due_contacts(db, u.id, now=later)}
+    assert old.id in ids              # touched after joining -> maintained again

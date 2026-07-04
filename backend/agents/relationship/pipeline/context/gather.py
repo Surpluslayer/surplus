@@ -174,6 +174,18 @@ def gather_contact_context(
                 key=lambda m: str(m.get("when") or ""))
 
     facts = apply_to_facts(_relationship_facts(db, contact), prior_full)
+    # The host's reusable scheduling / demo link, surfaced as a CONTEXT FACT so
+    # the drafting harness can include it verbatim when a message proposes
+    # finding a time. Context capture only -- whether/when to use it is the
+    # harness's call (messages that already agreed a time should not carry it).
+    try:
+        from ..... import models as _models
+        _owner = db.get(_models.User, user_id)
+        _link = (getattr(_owner, "saved_send_link", None) or "").strip()
+        if _link:
+            facts["scheduling_link"] = _link
+    except Exception:  # noqa: BLE001 -- a link miss must never break drafting
+        pass
     summary = dict(relationships.contact_summary(db, contact))
     summary["next_step"] = facts.get("next_step")
 

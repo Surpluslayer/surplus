@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session as DbSession
@@ -82,7 +82,13 @@ def _seed_conversations_and_voice(db, user_id: int) -> None:
     LinkedIn DM conversations into the Book, then learn their voice. Top-level so
     the Modal durable path can resolve it. `db` is the run_detached-owned session
     used for the import; the voice sync opens its OWN second session (the import
-    may have committed/closed work on `db`). Idempotent + best-effort."""
+    may have committed/closed work on `db`). Idempotent + best-effort.
+
+    Session lifecycle: import_conversation_contacts releases db's pooled
+    connection before its minutes-long Unipile walk (see its docstring), so
+    this job never pins a connection across network I/O. The voice sync's
+    single bounded fetch (8 sent messages) is the only network done while its
+    own short session is open."""
     from ..agents.relationship.spine.relationships import import_conversation_contacts
     from ..models import User as _User
     try:
@@ -112,9 +118,24 @@ def _autoimport_conversations(user_id: int) -> None:
     """Background: seed the Book from the user's genuine LinkedIn DM conversations
     right after they connect, so the spine isn't empty. DURABLE (prefer_modal) so
     a deploy mid-seed doesn't drop it. Idempotent + best-effort; never blocks or
-    fails the auth response."""
+    fails the auth response.
+
+    Two complementary passes, both idempotent:
+      1. the conversation seed (contacts + voice from the most active chats), and
+      2. the FULL LinkedIn chat sync (message bodies into each contact's
+         timeline, the context the drafter reads) -- same magic-moment pattern
+         as the WhatsApp first sync: connect -> the book fills itself, no
+         waiting for the 6h gathering sweep."""
     from ..jobs import run_detached
     run_detached(_seed_conversations_and_voice, user_id, prefer_modal=True)
+    try:
+        from ..agents.relationship.linkedin_chat_sync import dispatch_linkedin_chat_sync
+        runner = dispatch_linkedin_chat_sync(user_id, incremental=False)
+        print(f"  [auth.linkedin] dispatched first chat sync user.id={user_id} "
+              f"runner={runner}")
+    except Exception as exc:  # noqa: BLE001 -- seeding must never fail the connect
+        print(f"  [auth.linkedin] first chat sync dispatch failed "
+              f"user.id={user_id}: {type(exc).__name__}: {exc}")
 
 
 def _email_first_sync(db, user_id: int) -> None:
@@ -909,6 +930,11 @@ async def linkedin_callback(
         auth_state.status = "callback_upserted"
         db.commit()
 
+        # This branch means the WEBHOOK no-op'd (no `name` echo), so the seed
+        # never ran: fire it from here instead. Idempotent, so the rare case
+        # where both paths dispatch is safe (skip-by-message-id).
+        _autoimport_conversations(user.id)
+
         # Fire-and-forget : delete the orphan Unipile account that the
         # dedup migrated AWAY from. Done after commit so a Unipile delete
         # failure can't rollback the user-attachment. Best-effort.
@@ -990,17 +1016,30 @@ async def linkedin_callback(
 #      AuthState so the Integrations tile shows Connected immediately,
 #      then redirect into the app.
 
-def _email_create_body(dsn: str, expires: str, state_token: str,
-                       base: str, failure_url: str) -> dict:
-    """Hosted-auth create body for the email channel. Mirrors _create_body
-    but with the mail providers and the email webhook/callback URLs.
+# Map a frontend provider hint to Unipile's hosted-auth provider tokens.
+# Unipile's token for Microsoft mail is "OUTLOOK" (the docs prose says
+# "Microsoft" but the API schema rejects "MICROSOFT" with invalid_parameters,
+# verified against the live API). An empty/unknown hint offers BOTH, so the
+# generic "connect email" button keeps showing Unipile's provider picker.
+def _email_providers_for(hint: str) -> list[str]:
+    h = (hint or "").strip().lower()
+    if h in ("outlook", "microsoft", "m365", "office365"):
+        return ["OUTLOOK"]
+    if h in ("google", "gmail", "workspace"):
+        return ["GOOGLE"]
+    return ["GOOGLE", "OUTLOOK"]
 
-    NOTE: Unipile's provider token for Microsoft mail is "OUTLOOK" — the
-    docs prose says "Microsoft" but the API schema rejects "MICROSOFT"
-    with errors/invalid_parameters (verified against the live API)."""
+
+def _email_create_body(dsn: str, expires: str, state_token: str,
+                       base: str, failure_url: str,
+                       providers: Optional[list[str]] = None) -> dict:
+    """Hosted-auth create body for the email channel. Mirrors _create_body
+    but with the mail providers and the email webhook/callback URLs. A caller
+    can pass a single-provider list (e.g. ["OUTLOOK"]) to mint a one-tap
+    Outlook or Gmail link; default offers both."""
     return {
         "type": "create",
-        "providers": ["GOOGLE", "OUTLOOK"],
+        "providers": providers or ["GOOGLE", "OUTLOOK"],
         "api_url": dsn,
         "expiresOn": expires,
         "success_redirect_url": f"{base}/api/auth/email/callback?state={state_token}",
@@ -1034,12 +1073,17 @@ def _extract_mailbox_address(account_data: dict) -> Optional[str]:
 @router.post("/email/start")
 async def email_start(
     request: Request,
+    provider: str = "",
     db: DbSession = Depends(get_db),
     user: User = Depends(current_user),
 ) -> JSONResponse:
     """Mint a hosted-auth link for connecting the signed-in user's mailbox.
     Auth required : the email seat always attaches to an existing account,
-    so anonymous callers have nothing to attach it to."""
+    so anonymous callers have nothing to attach it to.
+
+    Optional ?provider=outlook (or google) mints a one-tap single-provider
+    link; omitted, Unipile shows both Gmail and Outlook. Outlook goes fully
+    through Unipile hosted auth, so no separate Microsoft/Azure app is needed."""
     dsn, api_key = _ensure_unipile_configured()
 
     state_token = secrets.token_urlsafe(32)
@@ -1054,7 +1098,8 @@ async def email_start(
 
     status_code, data = await _post_hosted_link(
         dsn, api_key,
-        _email_create_body(dsn, expires, state_token, base, failure_url))
+        _email_create_body(dsn, expires, state_token, base, failure_url,
+                           providers=_email_providers_for(provider)))
     url = (data or {}).get("url")
     if status_code >= 400 or not url:
         print(f"  [auth.email] hosted link failed status={status_code} "
@@ -1478,6 +1523,13 @@ def triage_signup(
 
 # ─── 4. /me: who is signed in? ────────────────────────────────────
 
+def _autonomy_mode(user) -> str:
+    """The user's normalized autonomy mode for the /me payload. Thin local
+    wrapper so /me does not import the send pipeline at module load."""
+    from ..agents.relationship.pipeline.send.sender import owner_autonomy_mode
+    return owner_autonomy_mode(user)
+
+
 @router.get("/me")
 def me(user: User = Depends(current_user),
        db: DbSession = Depends(get_db)) -> JSONResponse:
@@ -1552,7 +1604,132 @@ def me(user: User = Depends(current_user),
         "onboarding_status": getattr(user, "onboarding_status", "") or "",
         "onboarding_step": getattr(user, "onboarding_step", 0) or 0,
         "saved_send_link": getattr(user, "saved_send_link", None),
+        # Per-user autonomy control ('off' | 'ask' | 'auto', normalized). The
+        # SPA reads this to render the Account setting and, in 'ask' mode, the
+        # Today "Waiting for your OK" queue. Written via PUT /api/settings.
+        "autonomy_mode": _autonomy_mode(user),
     })
+
+
+# ─── Plugin session token + cross-context bootstrap ──────────────────
+#
+# The Chrome extension embeds the in-person Book as an iframe pointed at
+# event.surpluslayer.com. Under Chrome storage-partitioning, that iframe's
+# cookie jar is keyed to the EXTENSION origin, NOT shared with a standalone
+# event.surpluslayer.com tab. So the extension's service-worker fetches (which
+# ride the extension's partitioned cookie jar) and the embedded iframe can end
+# up authenticated as a different account than (or no account at all, vs) the
+# user's first-party web tab.
+#
+# Fix: let the extension hold ONE plugin session token (Bearer) and replay it
+# into the iframe so BOTH contexts resolve to the same User:
+#
+#   1. POST /plugin/token   (cookie- OR bearer-authenticated)
+#        Mints a client="plugin" Session for the signed-in user and returns its
+#        token. The extension caches it and sends it as `Authorization: Bearer`
+#        on every service-worker API call.
+#   2. GET  /token-bootstrap?token=<plugin_token>&next=/
+#        Same-origin GET the extension points the iframe at FIRST. It validates
+#        the token against the Session table and, if live, sets the first-party
+#        surplus_session cookie to that token IN THE IFRAME'S PARTITION, then
+#        303s to `next`. After this the BookApp in the iframe is the same account
+#        as the extension's Bearer calls -- no reliance on a shared cookie jar.
+#
+# Security notes:
+#   - /plugin/token requires an already-authenticated caller (current_user); it
+#     never mints a session for an anonymous request. It only re-issues a token
+#     for the user you're already signed in as.
+#   - /token-bootstrap only ever ADOPTS an existing, non-revoked, unexpired
+#     session token -- it cannot create a session or escalate. The cookie it
+#     sets is HttpOnly + Secure (prod) + SameSite=Lax, same as every other
+#     session cookie, and `next` is constrained to a same-origin path so it
+#     can't be turned into an open redirect or used to set a cookie on a
+#     foreign host.
+#   - Tokens are opaque 32-byte secrets; we never log their value.
+
+
+@router.post("/plugin/token")
+def plugin_token(
+    db: DbSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> JSONResponse:
+    """Mint (or re-issue) a client="plugin" session token for the signed-in
+    user. The extension caches this and uses it as a Bearer token for its
+    service-worker API calls AND replays it into the embedded Book iframe via
+    /token-bootstrap so both contexts share one account.
+
+    Auth required: this only ever issues a token for the user you're already
+    authenticated as (cookie or existing Bearer). It cannot be used to obtain a
+    session for someone else."""
+    sess = create_session(db, user, client="plugin")
+    return JSONResponse({"token": sess.session_token, "user_id": user.id})
+
+
+@router.get("/token-bootstrap")
+def token_bootstrap(
+    request: Request,
+    token: str = Query(...),
+    next: str = Query("/"),
+    db: DbSession = Depends(get_db),
+) -> RedirectResponse:
+    """Adopt an existing session token into the FIRST-PARTY cookie for THIS
+    browsing context (the extension points its Book iframe here first). Sets
+    surplus_session to `token` only if it resolves to a live session, then
+    redirects to `next` (same-origin path only). Never creates or escalates a
+    session -- it only mirrors an already-valid token into the cookie jar of
+    the partitioned iframe so the SPA authenticates as the same user.
+
+    On a bad/expired/revoked token we DON'T set a cookie and just bounce to
+    `next` so the SPA falls through to its normal signed-out sign-in screen."""
+    # Constrain `next` to a same-origin path so this can't be turned into an
+    # open redirect (and the cookie we set always belongs to our own host).
+    safe_next = next if (isinstance(next, str) and next.startswith("/")
+                         and not next.startswith("//")) else "/"
+
+    user = _load_user_by_session(db, (token or "").strip() or None)
+    host = request_browser_host(request)
+    resp = RedirectResponse(safe_next, status_code=303)
+    if user is not None:
+        # Mirror the valid plugin token into the first-party session cookie for
+        # this (iframe) partition. Same cookie attributes as every other login.
+        set_session_cookie(resp, (token or "").strip(), host=host)
+        _make_cookie_partition_friendly(resp)
+    return resp
+
+
+def _make_cookie_partition_friendly(resp: Response) -> None:
+    """Make the surplus_session Set-Cookie usable inside a PARTITIONED
+    third-party iframe (the extension's embedded Book).
+
+    Modern Chrome (3rd-party-cookie phase-out) won't STORE an unpartitioned
+    cookie set in a third-party frame. CHIPS fixes this: a cookie marked
+    `Partitioned` (which requires `Secure` and `SameSite=None`) is stored in a
+    jar keyed to the top-level (extension) origin -- exactly the context the
+    iframe runs in. Starlette 0.38 has no `partitioned=` kwarg, so we rewrite
+    the header we just set.
+
+    Only applied over HTTPS (the cookie is Secure): `Partitioned` is invalid
+    without Secure, and local-http dev keeps the plain Lax cookie (no
+    partitioning needed there -- the dev iframe is same-site). This ONLY touches
+    the bootstrap response; the normal first-party login cookie is unchanged.
+    """
+    cookies = resp.raw_headers  # list[tuple[bytes, bytes]]
+    rewritten = []
+    for name, value in cookies:
+        if name.lower() == b"set-cookie" and value.lstrip().lower().startswith(
+            SESSION_COOKIE.lower().encode() + b"="
+        ) and b"secure" in value.lower():
+            v = value
+            # Flip SameSite=Lax -> None (required for a cross-site partitioned
+            # cookie to be sent inside the iframe), then append Partitioned.
+            v = v.replace(b"SameSite=lax", b"SameSite=None").replace(
+                b"SameSite=Lax", b"SameSite=None")
+            if b"partitioned" not in v.lower():
+                v = v + b"; Partitioned"
+            rewritten.append((name, v))
+        else:
+            rewritten.append((name, value))
+    resp.raw_headers[:] = rewritten
 
 
 # ─── Onboarding tour state ─────────────────────────────────────────
@@ -1675,10 +1852,16 @@ def logout(
     response: Response,
     request: Request,
     db: DbSession = Depends(get_db),
+    authorization: Optional[str] = Header(default=None),
 ) -> JSONResponse:
-    token = request.cookies.get(SESSION_COOKIE)
-    if token:
-        revoke_session(db, token)
+    # Revoke whichever transport the caller used. The web app sends the cookie;
+    # the extension (partitioned cookie jar) signs out via its plugin Bearer
+    # token, so honor that too -- otherwise an extension sign-out would leave
+    # the plugin session live and the iframe could re-adopt it.
+    from ..auth import _bearer_token
+    for token in (request.cookies.get(SESSION_COOKIE), _bearer_token(authorization)):
+        if token:
+            revoke_session(db, token)
     from ..hosts import request_browser_host
     clear_session_cookie(response, host=request_browser_host(request))
     return JSONResponse({"ok": True})

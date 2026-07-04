@@ -7,9 +7,15 @@ drafted body + a suggested send time. These routes let the host review that
 queue and decide what actually happens:
 
     GET   /api/followups              list the host's follow-ups
+    GET   /api/followups/pending      the "waiting for your OK" queue: rows
+                                      that are DUE but held by the autonomy
+                                      gate (mode != 'auto' or env master off)
     PATCH /api/followups/{id}         edit the body and/or reschedule send_at
     POST  /api/followups/{id}/cancel  cancel a pending follow-up
-    POST  /api/followups/{id}/send-now  dispatch immediately
+    POST  /api/followups/{id}/skip    cancel with reason "skipped" (the ask
+                                      mode decline, paired with send-now)
+    POST  /api/followups/{id}/send-now  dispatch immediately (the ask mode
+                                      one-tap confirm reuses this)
 
 Every route is owner-scoped through the follow-up's prospect -> event -> user,
 so one host can never see or touch another host's queue (404 on not-owned,
@@ -27,7 +33,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..agents.relationship.pipeline.send.sender import send_followup
 from ..auth import current_user
-from ..db import get_db
+from ..db import ENGINE, get_db
 from ..providers import get_provider
 
 router = APIRouter(prefix="/api/followups", tags=["followups"])
@@ -52,15 +58,6 @@ class FollowupPatch(BaseModel):
     """Edit a pending follow-up. Both fields optional : send just what changes."""
     body: Optional[str] = None
     send_at: Optional[datetime] = None
-
-
-class FollowupSettings(BaseModel):
-    """The host's auto-follow-up preference."""
-    auto_followups_enabled: bool
-
-
-class FollowupSettingsPatch(BaseModel):
-    enabled: bool
 
 
 def _as_aware(dt: datetime) -> datetime:
@@ -99,32 +96,6 @@ def _owned_followup(db: Session, followup_id: int,
     return row
 
 
-@router.get("/settings", response_model=FollowupSettings)
-def get_followup_settings(
-    user: models.User = Depends(current_user),
-):
-    """Whether this host has the auto-schedule-follow-up feature turned on."""
-    return FollowupSettings(
-        auto_followups_enabled=bool(getattr(user, "auto_followups_enabled", False)))
-
-
-@router.put("/settings", response_model=FollowupSettings)
-def set_followup_settings(
-    patch: FollowupSettingsPatch,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(current_user),
-):
-    """Turn auto-SEND of follow-ups on or off for this host. Off by default.
-
-    Follow-up drafts are always staged when a first DM goes out regardless of
-    this flag : it only controls whether the dispatch cron sends them. Off ->
-    drafts wait in the queue for a manual send-now; on -> they send at send_at.
-    Turning it off does NOT cancel anything already queued."""
-    user.auto_followups_enabled = bool(patch.enabled)
-    db.commit()
-    return FollowupSettings(auto_followups_enabled=user.auto_followups_enabled)
-
-
 @router.get("", response_model=list[FollowupOut])
 def list_followups(
     status: Optional[str] = "scheduled",
@@ -145,6 +116,53 @@ def list_followups(
         q = q.filter(models.Prospect.event_id == event_id)
     rows = q.order_by(models.ScheduledFollowup.send_at.asc()).all()
     return [_to_out(r) for r in rows]
+
+
+class PendingOut(BaseModel):
+    """One row of the ask-mode "Waiting for your OK" queue."""
+    id: int
+    prospect_id: int
+    name: str
+    message: str
+    send_at: datetime
+    channel: str
+
+
+@router.get("/pending", response_model=list[PendingOut])
+def list_pending_followups(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """The signed-in user's due-but-held follow-ups: rows still `scheduled`
+    whose send_at has passed, i.e. what the dispatcher held because the
+    autonomy gate is closed (mode 'off'/'ask', or the env master off). The
+    ask-mode Today surface renders these for a one-tap Send / Skip.
+
+    Follow-ups only: pending AGENT REPLIES (PendingReply) have no user-scoped
+    read today (the approve flow is admin-only in routes/admin.py), so they
+    are deliberately not exposed here."""
+    now = datetime.now(timezone.utc)
+    rows = (db.query(models.ScheduledFollowup)
+              .join(models.Prospect,
+                    models.ScheduledFollowup.prospect_id == models.Prospect.id)
+              .join(models.Event, models.Prospect.event_id == models.Event.id)
+              .filter(models.Event.user_id == user.id,
+                      models.ScheduledFollowup.status == "scheduled")
+              .order_by(models.ScheduledFollowup.send_at.asc())
+              .all())
+    out: list[PendingOut] = []
+    for r in rows:
+        if _as_aware(r.send_at) > now:
+            continue
+        out.append(PendingOut(
+            id=r.id,
+            prospect_id=r.prospect_id,
+            name=getattr(r.prospect, "name", "") or "",
+            message=r.body,
+            send_at=r.send_at,
+            channel=(getattr(r, "channel", "") or "linkedin"),
+        ))
+    return out
 
 
 @router.patch("/{followup_id}", response_model=FollowupOut)
@@ -191,6 +209,26 @@ def cancel_followup(
     return _to_out(row)
 
 
+@router.post("/{followup_id}/skip", response_model=FollowupOut)
+def skip_followup(
+    followup_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """The ask-mode decline: cancel a held follow-up so it never sends,
+    recorded distinctly (reason "skipped") from a queue-screen cancel
+    (reason "user"). Owner-scoped 404 like every other route here."""
+    row = _owned_followup(db, followup_id, user)
+    if row.status != "scheduled":
+        raise HTTPException(409, f"follow-up is {row.status}, cannot skip")
+    row.status = "cancelled"
+    row.cancel_reason = "skipped"
+    row.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(row)
+    return _to_out(row)
+
+
 @router.post("/{followup_id}/send-now", response_model=FollowupOut)
 def send_followup_now(
     followup_id: int,
@@ -210,7 +248,25 @@ def send_followup_now(
     if not text:
         raise HTTPException(400, "follow-up body is empty")
 
+    # ── Atomic claim : make the manual send-now and the cron mutually exclusive
+    # on this row. Re-fetch under a row lock (Postgres) and re-check the status:
+    # if the cron (or a double-tap) already flipped it to sending/sent/failed
+    # since _owned_followup read it, 409 instead of sending a second copy. Then
+    # flip "scheduled" -> "sending" and COMMIT before the network send, so the
+    # cron's _due_followups (status=="scheduled" only) can never re-pick it.
+    q = db.query(models.ScheduledFollowup).filter(
+        models.ScheduledFollowup.id == followup_id)
+    if ENGINE.dialect.name == "postgresql":
+        q = q.with_for_update()
+    locked = q.one()
+    if locked.status != "scheduled":
+        raise HTTPException(409, f"follow-up is {locked.status}, cannot send")
     now = datetime.now(timezone.utc)
+    locked.status = "sending"
+    locked.updated_at = now
+    db.commit()
+    row = locked
+
     try:
         res = send_followup(
             db, prospect, text,

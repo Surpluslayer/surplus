@@ -16,7 +16,7 @@ function _friendly(status, text) {
   // Never echo a raw error body at the user : gateway/edge failures ship whole
   // HTML pages (Cloudflare's 524 template) that are noise in an error chip.
   const isHtml = /^\s*</.test(text || "");
-  if (TRANSIENT.has(status)) return "The server took too long — try again in a moment.";
+  if (TRANSIENT.has(status)) return "The server took too long. Try again in a moment.";
   if (isHtml) return `Request failed (${status}).`;
   return `${status} : ${(text || "").slice(0, 240)}`;
 }
@@ -51,7 +51,7 @@ async function consumeSSE(path, body, { handlers = {}, stallMs = 45000 } = {}) {
     stallTimer = setTimeout(() => { stalled = true; controller.abort(); }, stallMs);
   };
   const stallError = () =>
-    new Error("the connection went quiet and was closed — try asking again");
+    new Error("The connection went quiet and was closed. Try asking again.");
 
   armWatchdog();
   try {
@@ -114,11 +114,21 @@ async function consumeSSE(path, body, { handlers = {}, stallMs = 45000 } = {}) {
 
 async function request(path, opts = {}) {
   const method = (opts.method || "GET").toUpperCase();
-  const tries = method === "GET" ? 2 : 1; // reads retry once; writes never auto-repeat
+  // Reads retry once. Writes never auto-repeat UNLESS the caller marks the
+  // call retriable (idempotent POSTs like the auth-start endpoints, which just
+  // mint a fresh state token): one LTE blip on a Connect tap should not dead-end
+  // in "Couldn't reach the server" when a retry would open the hosted auth.
+  const tries = (method === "GET" || opts.retriable) ? 2 : 1;
   let lastErr = null;
   for (let attempt = 0; attempt < tries; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, 1500));
     let res;
+    // Bound every request so a black-holed connection (proxy died, wifi dropped
+    // without a reset) can't leave a spinner stuck forever. 30s is well under
+    // Cloudflare's 100s edge cap ; a timeout is treated as a network drop, so
+    // reads retry and writes get the same friendly message.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000);
     try {
       res = await fetch(path, {
         // include cookies on every call : the surplus_session cookie carries
@@ -126,14 +136,18 @@ async function request(path, opts = {}) {
         // SPA + API at one origin) and in dev (Vite proxies /api → :8000).
         credentials: "same-origin",
         headers: { "content-type": "application/json", ...(opts.headers || {}) },
+        signal: controller.signal,
         ...opts,
       });
     } catch (e) {
-      // Network drop / deploy blip : retriable for reads, friendly either way.
-      lastErr = new Error("Couldn't reach the server — check your connection.");
+      // Network drop / deploy blip / 30s timeout : retriable for reads,
+      // friendly either way.
+      lastErr = new Error("Couldn't reach the server. Check your connection and try again.");
       lastErr.status = 0;
       lastErr.body = null;
       continue;
+    } finally {
+      clearTimeout(timer);
     }
     if (!res.ok) {
       // errorFromResponse() builds the friendly message and surfaces .status
@@ -153,7 +167,7 @@ async function request(path, opts = {}) {
       // cut mid-response (container restart during a deploy). Safari surfaces
       // this as the cryptic "The string did not match the expected pattern."
       // Treat it as transient — reads retry, writes get a friendly message.
-      lastErr = new Error("The connection dropped mid-response — try again.");
+      lastErr = new Error("The connection dropped mid-response. Try again.");
       lastErr.status = 0;
       lastErr.body = null;
       continue;
@@ -354,6 +368,11 @@ export const api = {
     request("/api/inperson/scan", {
       method: "POST", body: JSON.stringify(body),
     }),
+  // Poll the detached draft for one capture : /scan returns fast with
+  // draft_status "pending"; the composed note + first message land here.
+  // -> { status: "pending"|"ready"|"failed", note, message, name, ... }
+  inpersonScanDraft: (prospectId) =>
+    request(`/api/inperson/scan/${prospectId}/draft`),
   // CRM list of every capture on this in_person event.
   inpersonCaptures: (eventId) =>
     request(`/api/inperson/events/${eventId}/captures`),
@@ -383,7 +402,7 @@ export const api = {
   // Streaming twin of relationshipChat: opens the SSE endpoint and invokes the
   // callbacks as frames arrive so the UI can reveal each drafted person the
   // moment the agent stages it. Callbacks: onMeta({auto_send_enabled}),
-  // onProposal(proposal), onDone({summary, auto_send_enabled}), onError({message}).
+  // onProposal(proposal), onDone({summary, auto_send_enabled, network_hits}), onError({message}).
   // Resolves when the stream closes. Nothing is sent — proposals are staged only.
   relationshipChatStream: (message, { onMeta, onProposal, onDone, onError } = {}) =>
     consumeSSE("/api/relationships/chat/stream", { message }, {
@@ -403,23 +422,31 @@ export const api = {
     }),
   // Schedule a chat-drafted follow-up (Gmail-style). `sendAt` is an ISO string
   // for a future fire time, or null to send now. Returns { status: "sent" |
-  // "scheduled", send_at?, auto_send_enabled?, ... }. The auto-send toggle still
-  // gates whether a SCHEDULED row auto-fires; send-now always sends.
+  // "scheduled", send_at?, auto_send_enabled?, ... }. A SCHEDULED row only
+  // auto-fires when server-side send automation is on; send-now always sends.
   scheduleContactFollowup: (contactId, message, sendAt = null) =>
     request(`/api/relationships/contacts/${contactId}/schedule`, {
       method: "POST",
       body: JSON.stringify({ message, send_at: sendAt }),
     }),
 
-  // ── scheduled follow-ups : per-user auto-message preference ──
-  // Whether a follow-up is auto-staged when a first DM goes out. Off by
-  // default; the host opts in. Returns { auto_followups_enabled }.
-  getFollowupSettings: () => request("/api/followups/settings"),
-  setFollowupSettings: (enabled) =>
-    request("/api/followups/settings", {
+  // Per-user settings. Autonomy mode governs agent-initiated sends:
+  // "off" (surplus drafts, you send), "ask" (surplus lines up sends and asks
+  // you), "auto" (surplus sends on its own, under the ops master switch).
+  getSettings: () => request("/api/settings"),
+  setAutonomyMode: (mode) =>
+    request("/api/settings", {
       method: "PUT",
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify({ autonomy_mode: mode }),
     }),
+  // Ask-mode queue: the signed-in user's due-but-held follow-ups, waiting for
+  // a one-tap confirm on Today. Send = the existing send-now endpoint; Skip
+  // cancels the row with reason "skipped".
+  pendingFollowups: () => request("/api/followups/pending"),
+  sendFollowupNow: (id) =>
+    request(`/api/followups/${id}/send-now`, { method: "POST" }),
+  skipFollowup: (id) =>
+    request(`/api/followups/${id}/skip`, { method: "POST" }),
 
   // meta
   health: () => request("/api/health"),
@@ -436,28 +463,36 @@ export const api = {
       body: JSON.stringify({ password, current_password }),
     }),
   // returns { url } : frontend sets window.location = url to begin the flow
-  startLinkedinAuth: () => request("/api/auth/linkedin/start", { method: "POST" }),
+  startLinkedinAuth: () => request("/api/auth/linkedin/start", { method: "POST", retriable: true }),
   // Native app variant: callback deep-links the session token back to the app
   // (see lib/nativeAuth.js) instead of redirecting the web SPA.
   startLinkedinAuthMobile: () =>
     request("/api/auth/linkedin/start?mobile=1", { method: "POST" }),
   // Connect the signed-in user's mailbox (Gmail/Outlook) as a second Unipile
   // seat. Returns { url } — redirect the browser there; the hosted page does
-  // the OAuth and bounces back with the Integrations tile flipped.
-  startEmailAuth: () => request("/api/auth/email/start", { method: "POST" }),
+  // the OAuth and bounces back with the Integrations tile flipped. Pass
+  // "outlook" or "google" for a one-tap single-provider link; omit for both.
+  startEmailAuth: (provider) =>
+    request("/api/auth/email/start" + (provider ? `?provider=${encodeURIComponent(provider)}` : ""),
+            { method: "POST", retriable: true }),
   // Connect the signed-in user's WhatsApp as a Unipile CLOUD seat (like the
   // email/LinkedIn seats, not a device companion). Returns { url } — redirect
   // the browser there; the hosted page does the WhatsApp pairing and bounces
   // back with the Connections tile flipped.
-  startWhatsappAuth: () => request("/api/auth/whatsapp/start", { method: "POST" }),
+  startWhatsappAuth: () => request("/api/auth/whatsapp/start", { method: "POST", retriable: true }),
   // Star / unstar a contact — starred contacts are monitored more often by the
   // updates engine. Pass vip true/false to set, or omit to toggle server-side.
   starContact: (id, vip) =>
     request(`/api/relationships/contacts/${id}/star`,
             { method: "POST", body: JSON.stringify({ vip }) }),
   // Seed the Book from the user's genuine LinkedIn DM conversations.
+  // Queues a background job -> { job_id, status: "queued" }; poll
+  // importConversationsStatus until status is "done" (result: {imported,
+  // considered, reason?}) or "error".
   importConversations: () =>
     request("/api/relationships/import-conversations", { method: "POST" }),
+  importConversationsStatus: (jobId) =>
+    request(`/api/relationships/import-conversations/${jobId}`),
 
   // Email channel on a contact (TEST surface; see EmailTestPanel)
   setContactEmail: (id, email) =>
@@ -517,8 +552,8 @@ export const api = {
   // Streaming twin of bookAsk: emits the ranked people the instant selection
   // finishes, then each drafted card as it completes -- with a heartbeat, so the
   // connection is never silent and Cloudflare's 100s read timeout (the 524) can't
-  // fire. Callbacks: onStatus({phase,name}), onPeople({people,answer}),
-  // onPerson({index,contact_id,name,draft}), onDone({total_s,count}),
+  // fire. Callbacks: onStatus({phase,name}), onPeople({people,answer,network_hits}),
+  // onPerson({index,contact_id,name,draft}), onDone({total_s,count,network_hits}),
   // onError({detail}). Resolves when the stream closes.
   bookAskStream: (query, { onStatus, onPeople, onToken, onPerson, onDone, onError } = {}) =>
     consumeSSE("/api/book/ask/stream", { query }, {

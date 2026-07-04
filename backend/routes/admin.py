@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session, selectinload
 from .. import models
 from ..agents.relationship.pipeline.send.sender import send_and_log, send_followup
 from ..auth import _as_aware_utc
-from ..db import get_db
+from ..db import ENGINE, get_db
 from ..providers import (
     LinkedInProvider,
     get_provider,
@@ -77,6 +77,16 @@ class MergeUsersBody(BaseModel):
     dry_run: bool = True
 
 
+class DedupContactsBody(BaseModel):
+    """Merge same-person duplicate Contacts. `user_id` scopes to one owner (omit
+    to sweep EVERY user). dry_run defaults True : preview the groups + a name
+    sample before anything is merged. Only STRONG-identity duplicates (shared
+    normalized email / linkedin / phone) are auto-merged; name-only collisions are
+    reported separately for review, never merged."""
+    user_id: Optional[int] = None
+    dry_run: bool = True
+
+
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
@@ -106,18 +116,28 @@ def _due_followups(db: Session) -> list[models.ScheduledFollowup]:
     defensive reply re-check don't fan out into per-row queries.
     """
     now = datetime.now(timezone.utc)
-    rows = (db.query(models.ScheduledFollowup)
-              .filter(models.ScheduledFollowup.status == "scheduled")
-              .options(
-                  selectinload(models.ScheduledFollowup.prospect)
-                  .selectinload(models.Prospect.outreach),
-                  selectinload(models.ScheduledFollowup.prospect)
-                  .selectinload(models.Prospect.event)
-                  .selectinload(models.Event.user))
-              .all())
+    q = (db.query(models.ScheduledFollowup)
+           .filter(models.ScheduledFollowup.status == "scheduled",
+                   models.ScheduledFollowup.send_at <= now)
+           .options(
+               selectinload(models.ScheduledFollowup.prospect)
+               .selectinload(models.Prospect.outreach),
+               selectinload(models.ScheduledFollowup.prospect)
+               .selectinload(models.Prospect.event)
+               .selectinload(models.Event.user)))
+    # Cross-replica claim: on Postgres, SELECT ... FOR UPDATE SKIP LOCKED lets
+    # each replica lock a DISJOINT set of due rows, so two overlapping dispatch
+    # passes never both pick the same row. SQLite has no such lock (single-writer
+    # anyway), so the FOR UPDATE is Postgres-only; the real double-send guard is
+    # the status flip to "sending" committed BEFORE the network send (below).
+    if ENGINE.dialect.name == "postgresql":
+        q = q.with_for_update(skip_locked=True)
+    rows = q.all()
     due: list[models.ScheduledFollowup] = []
     for r in rows:
         send_at = _as_aware_utc(r.send_at)
+        # Defensive : the DB filter already applied send_at <= now, but a naive
+        # stored value could round-trip oddly, so keep the explicit guard.
         if send_at is None or send_at > now:
             continue
         due.append(r)
@@ -130,17 +150,31 @@ def _replied_since_staging(prospect: models.Prospect) -> bool:
 
 
 def _auto_send_enabled(prospect: models.Prospect, channel: str = "linkedin") -> bool:
-    """Whether the cron should auto-send this prospect's follow-up on `channel`.
+    """Whether the dispatcher should auto-send this prospect's NUDGE on `channel`.
 
-    The first follow-up is a BUILT-IN feature (product decision 2026-07-01): it
-    fires for every host, no per-user opt-in. The only gate left is the ops kill
-    switch -- SURPLUS_AUTO_FOLLOWUPS + its channel allowlist (separate from the
-    general-send master, so follow-ups run while general agent-initiated sends
-    stay off / behind the ask-mode guardrail). A reply still cancels the row,
-    and stale rows expire instead of sending (see the dispatch loop).
+    Product taxonomy (2026-07-01): the nudge ("checking in" after no reply) is
+    agent-initiated autonomy, NOT a built-in -- so it shares ONE gate stack with
+    the AI auto-reply. An unattended send needs BOTH layers:
+
+      1. the env master (SURPLUS_AUTOMATED_SENDS + channel allowlist), the
+         ops kill switch, AND
+      2. the OWNING USER's autonomy_mode == 'auto' (per-user opt-in; 'off'
+         and 'ask' both hold -- 'ask' just surfaces the held queue in the UI
+         for a one-tap confirm).
+
+    Only the post-accept FIRST follow-up stays built-in (SURPLUS_AUTO_FOLLOWUPS,
+    in webhooks._trigger_auto_dm). Gate closed -> due nudges HOLD in the queue
+    for a manual send-now. A reply still cancels; stale rows expire (dispatch
+    loop).
     """
-    from ..agents.relationship.pipeline.send.sender import follow_up_send_enabled
-    return follow_up_send_enabled(channel)
+    from ..agents.relationship.pipeline.send.sender import (
+        automated_send_enabled,
+        owner_autonomy_mode,
+    )
+    if not automated_send_enabled(channel):
+        return False
+    owner = getattr(getattr(prospect, "event", None), "user", None)
+    return owner_autonomy_mode(owner) == "auto"
 
 
 def _fire_followup_booking(db, prospect, booking_payload, text: str) -> None:
@@ -170,9 +204,36 @@ def run_followups(
 ) -> dict:
     """Dispatch every scheduled follow-up whose send time has arrived.
 
-    Designed for frequent cron (e.g. every 5-15 min) : sends are idempotent
-    because each row flips to `sent`/`cancelled`/`failed` the moment it's
-    processed, so a row is never sent twice even if two runs overlap.
+    Thin admin-token wrapper around dispatch_due_followups so an external
+    cron (GitHub Actions) can still fire it; the PRIMARY dispatcher is the
+    in-process scheduler thread (updates_scheduler), which calls the core
+    directly every minute for punctual sends. Idempotent either way: each
+    row flips to `sent`/`cancelled`/`failed` the moment it's processed, so
+    overlapping runs never double-send.
+    """
+    return dispatch_due_followups(db)
+
+
+def dispatch_due_followups(db: Session) -> dict:
+    """Core dispatch pass: send every scheduled follow-up whose send_at has
+    arrived. Callable from the route (external cron) AND the in-process
+    scheduler thread.
+
+    Double-send safe. Two passes:
+
+      PASS 1 (claim, one commit, still under the FOR UPDATE SKIP LOCKED row
+      locks from _due_followups): classify each due row. Terminal non-send
+      outcomes (no-prospect, replied, stale, held, empty-body) get their final
+      status now; rows that WILL send are flipped "scheduled" -> "sending".
+      The single commit persists all of this AND releases the row locks. After
+      it, every to-send row is claimed as "sending", so no overlapping dispatch
+      (cron re-fire, second replica) and no racing manual send-now can re-pick
+      it : both only ever act on status=="scheduled".
+
+      PASS 2 (send, commit per row): the actual network send for each claimed
+      row, flipping "sending" -> "sent" | "failed". A crash between the two
+      passes leaves the row "sending" (never "scheduled"), so it is never
+      resent -- it is safely inspectable/recoverable, not silently double-fired.
     """
     fallback_provider = get_provider()
     due = _due_followups(db)
@@ -183,6 +244,8 @@ def run_followups(
     cancelled: list[dict] = []
     held: list[dict] = []
 
+    # ── PASS 1 : classify + claim, then one commit (releases the row locks). ──
+    to_send: list[models.ScheduledFollowup] = []
     for row in due:
         prospect = row.prospect
         if prospect is None or prospect.event is None:
@@ -214,10 +277,11 @@ def run_followups(
                               "reason": "stale"})
             continue
 
-        # Auto-send gate : the draft is staged regardless, but the cron only
-        # dispatches it when the host turned auto-send ON. Off -> leave it
-        # `scheduled` so it waits for a manual send-now. Don't cancel : the
-        # host may flip the toggle on, or send it themselves, later.
+        # Auto-send gate : the draft is staged regardless, but the dispatcher
+        # only fires it when the general-send master (SURPLUS_AUTOMATED_SENDS +
+        # channel allowlist) is on. Off -> leave it `scheduled` so it waits for
+        # a manual send-now. Don't cancel : automation may come on, or the host
+        # may send it themselves, later.
         if not _auto_send_enabled(prospect, (getattr(row, "channel", "") or "linkedin")):
             held.append({"followup_id": row.id, "prospect_id": prospect.id})
             continue
@@ -230,6 +294,22 @@ def run_followups(
             failed.append({"followup_id": row.id, "error": "empty body"})
             continue
 
+        # Claim: flip "scheduled" -> "sending" so nothing else re-picks it once
+        # the commit below lands. The network send happens in PASS 2.
+        row.status = "sending"
+        row.updated_at = now
+        to_send.append(row)
+
+    # Single commit: persists the terminal transitions AND the "sending" claims,
+    # and releases the FOR UPDATE SKIP LOCKED locks. From here the claimed rows
+    # are off-limits to any other dispatch / manual send-now (they filter on
+    # status=="scheduled").
+    db.commit()
+
+    # ── PASS 2 : network send for each claimed row (commit per row). ──────────
+    for row in to_send:
+        prospect = row.prospect
+        text = (row.body or "").strip()
         try:
             res = send_followup(
                 db, prospect, text,
@@ -241,6 +321,7 @@ def run_followups(
             row.status = "failed"
             row.cancel_reason = f"{type(exc).__name__}"
             row.updated_at = now
+            db.commit()
             failed.append({"followup_id": row.id, "prospect_id": prospect.id,
                            "error": f"{type(exc).__name__}: {exc}"})
             continue
@@ -249,6 +330,7 @@ def run_followups(
             row.status = "failed"
             row.cancel_reason = "send_error"
             row.updated_at = now
+            db.commit()
             failed.append({"followup_id": row.id, "prospect_id": prospect.id,
                            "error": res.error})
             continue
@@ -261,10 +343,9 @@ def run_followups(
         # implicitly by reaching here (auto-send is ON). Never fails the send.
         _fire_followup_booking(db, prospect, getattr(row, "booking_payload", None),
                                text)
+        db.commit()
         sent.append({"followup_id": row.id, "prospect_id": prospect.id,
                      "state": res.state, "dry_run": res.dry_run})
-
-    db.commit()
 
     return {
         "due": len(due),
@@ -713,6 +794,11 @@ def merge_users(
     for attr in keys_to_backfill:
         setattr(dst, attr, getattr(src, attr))
 
+    # The MOVE children (events/contacts/interactions/sessions/auth-state) were
+    # re-pointed to the survivor above and so are no longer src's. The remaining
+    # DIE-with-user children (ContactIdentity, ContactFact, OutgoingMessage, Job,
+    # ConnectedAccount, EmailAccount) carry ON DELETE CASCADE, so deleting src
+    # drops them in the DB instead of throwing a ForeignKeyViolation.
     db.delete(src)
     db.commit()
 
@@ -723,3 +809,319 @@ def merge_users(
         "keys_backfilled": keys_to_backfill,
         "survivor": _user_summary(db, dst),
     }
+
+
+# ── Gathering : LinkedIn chat sync trigger + prospect->contact backfill ──
+
+
+class LinkedInSyncBody(BaseModel):
+    """Omit user_id to dispatch for EVERY user with an active LinkedIn seat.
+    incremental=False forces a full re-scan (dedup makes it write-idempotent)."""
+    user_id: Optional[int] = None
+    incremental: bool = True
+
+
+@router.post("/sync-linkedin-chats")
+def sync_linkedin_chats_route(
+    body: Optional[LinkedInSyncBody] = None,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """On-demand LinkedIn DM sync. Dispatches DURABLY (jobs.run_detached: Modal
+    run_detached_job when USE_MODAL, else a local daemon thread that owns its
+    session) -- never inside this request's lifecycle. Idempotent by Unipile
+    message id, incremental by users.linkedin_chat_synced_at."""
+    from ..agents.relationship.linkedin_chat_sync import dispatch_linkedin_chat_sync
+
+    body = body or LinkedInSyncBody()
+    if body.user_id is not None:
+        user = db.get(models.User, body.user_id)
+        if user is None:
+            raise HTTPException(404, "Not Found")
+        users = [user]
+    else:
+        users = (db.query(models.User)
+                 .filter(models.User.unipile_account_id.isnot(None),
+                         models.User.linkedin_status == "active")
+                 .order_by(models.User.id.asc())
+                 .all())
+    dispatched = []
+    for u in users:
+        runner = dispatch_linkedin_chat_sync(u.id, incremental=body.incremental)
+        dispatched.append({"user_id": u.id, "runner": runner})
+    return {"dispatched": dispatched, "count": len(dispatched)}
+
+
+@router.post("/backfill-contact-links")
+def backfill_contact_links(
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """Link every Prospect with contact_id NULL to its durable Contact via the
+    existing relationships.link_contact (idempotent + fail-soft), owned by the
+    prospect's event's user. Without the link, those prospects' conversations
+    are invisible to the relationship layer. Safe to re-run: already-linked
+    rows aren't selected, and link_contact never duplicates a Contact."""
+    from ..agents.relationship.spine.relationships import link_contact
+
+    rows = (db.query(models.Prospect)
+            .filter(models.Prospect.contact_id.is_(None))
+            .order_by(models.Prospect.id.asc())
+            .all())
+    linked = skipped = failed = 0
+    for p in rows:
+        owner_id = getattr(getattr(p, "event", None), "user_id", None)
+        if not owner_id:
+            skipped += 1  # ownerless event: nobody's book to link into
+            continue
+        contact = link_contact(db, p, owner_id)
+        if contact is not None:
+            linked += 1
+        else:
+            failed += 1  # no strong identity (or link error): stays contact-less
+    print(f"  [admin.backfill] contact links: linked={linked} "
+          f"skipped={skipped} failed={failed}", flush=True)
+    return {"linked": linked, "skipped": skipped, "failed": failed}
+
+
+class CleanupEmailContactsBody(BaseModel):
+    """Delete contacts whose ONLY footprint is the email-sync import :
+    inbound-only promotional/newsletter senders that were minted as contacts
+    before the two-way filter existed. dry_run defaults True so the operator
+    previews the counts + a name sample before anything is touched."""
+    dry_run: bool = True
+
+
+@router.post("/cleanup-email-contacts")
+def cleanup_email_contacts(
+    body: CleanupEmailContactsBody,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """Remove email-sync-only junk contacts from every user's book.
+
+    A contact is deletable ONLY when ALL of these hold:
+      (a) it was created by the email sync (primary_identity_key = "em:...")
+      (b) zero linked prospects
+      (c) its interactions are exactly the single source_type="email_sync"
+          rollup (nothing manual, no notes, no other channels)
+      (d) no outbound correspondence recorded (rollup meta n_out == 0) and no
+          queued/sent OutgoingMessage rows
+      (e) not VIP, no manually linked email thread, no ContactFact memory,
+          no ContactIdentity rows (another system touched the person)
+    plus the extra guard: the address looks automated (junk local part) OR
+    the no-outbound test held. Anything uncertain (unparseable rollup meta)
+    is kept and counted, never deleted. The real run deletes the contact and
+    its email_sync rollup row only."""
+    import json as _json
+
+    from ..agents.relationship.email_sync import is_junk_address
+
+    candidates = (db.query(models.Contact)
+                  .filter(models.Contact.primary_identity_key.like("em:%"))
+                  .order_by(models.Contact.id.asc())
+                  .all())
+    to_delete: list[tuple[models.Contact, models.RelationshipInteraction]] = []
+    kept = 0
+    kept_by: dict[str, int] = {}
+
+    def _keep(reason: str) -> None:
+        nonlocal kept
+        kept += 1
+        kept_by[reason] = kept_by.get(reason, 0) + 1
+
+    for c in candidates:
+        rollups = [i for i in c.interactions if i.source_type == "email_sync"]
+        others = [i for i in c.interactions if i.source_type != "email_sync"]
+        if len(rollups) != 1 or others:        # (c) : any other touch = real
+            _keep("other_interactions")
+            continue
+        if c.vip or c.email_thread_id:         # (e) : starred / host-linked
+            _keep("vip_or_thread")
+            continue
+        if c.prospects:                        # (b) : event pipeline knows them
+            _keep("prospect_linked")
+            continue
+        if db.query(models.ContactFact).filter_by(contact_id=c.id).count():
+            _keep("facts")
+            continue
+        # Identity guard, PRECISE: the spine writes an email identity row for
+        # every contact this very sync creates, so "has any identity row" kept
+        # 122/165 pure junk rows on the first prod dry-run. Only an identity of
+        # ANOTHER kind (linkedin / phone) marks the person as known elsewhere.
+        if (db.query(models.ContactIdentity)
+                .filter(models.ContactIdentity.contact_id == c.id)
+                .filter(models.ContactIdentity.kind != "email")
+                .count()):
+            _keep("non_email_identity")
+            continue
+        if db.query(models.OutgoingMessage).filter_by(contact_id=c.id).count():
+            _keep("outgoing_messages")
+            continue
+        try:                                   # (d) : rollup says inbound-only
+            n_out = int(_json.loads(rollups[0].meta_json or "{}").get("n_out") or 0)
+        except (ValueError, TypeError):
+            _keep("unparseable_meta")          # uncertain -> keep, never guess
+            continue
+        if n_out > 0:
+            _keep("has_outbound")
+            continue
+        # Extra guard (explicit, so a future reorder can't drop it): automated
+        # local part OR the no-outbound test must hold before deletion.
+        if not (is_junk_address(c.email or "") or n_out == 0):
+            _keep("guard_mismatch")
+            continue
+        to_delete.append((c, rollups[0]))
+
+    if body.dry_run:
+        return {"dry_run": True, "would_delete": len(to_delete), "kept": kept,
+                "kept_by": kept_by,
+                "sample": [(c.name or c.email or f"contact:{c.id}")
+                           for c, _r in to_delete[:20]]}
+
+    for c, rollup in to_delete:
+        # The child rows the sync wrote must go with the contact (FK). The DB now
+        # ON DELETE CASCADEs these when the contact is deleted, but we clear them
+        # explicitly too (belt-and-suspenders + keeps the ORM identity map sane):
+        #   - ContactIdentity : em: identity rows (no non-em identities by here)
+        #   - ContactFact     : per-contact facts (was the missing delete -> FK 500)
+        (db.query(models.ContactIdentity)
+           .filter(models.ContactIdentity.contact_id == c.id)
+           .delete(synchronize_session=False))
+        (db.query(models.ContactFact)
+           .filter(models.ContactFact.contact_id == c.id)
+           .delete(synchronize_session=False))
+        db.delete(rollup)
+        db.delete(c)
+    db.commit()
+    print(f"  [admin.cleanup-email-contacts] deleted={len(to_delete)} "
+          f"kept={kept} kept_by={kept_by}", flush=True)
+    return {"dry_run": False, "deleted": len(to_delete), "kept": kept,
+            "kept_by": kept_by}
+
+
+def _backfill_identities_from_rows(db: Session, user_id: int) -> int:
+    """Mirror every Contact's OWN strong fields (email / phone / linkedin) into the
+    ContactIdentity table for one owner, so pre-hook rows (created before the
+    creation-path linked all identities) become linkable by the merge engine.
+    Idempotent (record_identity is a no-op on an existing (kind,value)). Returns the
+    number of identity rows added/seen. Fail-soft per contact."""
+    from ..agents.relationship import identity as _identity
+
+    added = 0
+    # Track keys already staged this sweep : when TWO pre-hook contacts carry the
+    # SAME email (exactly the duplicate we are here to collapse), record_identity's
+    # lookup can't see the sibling row staged moments ago (autoflush is off), so
+    # without this guard the second insert would trip the (user,kind,value) unique.
+    # Skipping the second is correct : one identity row is enough to bridge them.
+    staged: set = set()
+    contacts = (db.query(models.Contact)
+                .filter(models.Contact.user_id == user_id).all())
+    for c in contacts:
+        for kind, value in _identity.identities_of_contact(c):
+            if (kind, value) in staged:
+                continue
+            try:
+                row = _identity.record_identity(
+                    db, contact=c, kind=kind, value=value,
+                    source="backfill",
+                    is_primary=bool(c.primary_identity_key
+                                    and c.primary_identity_key.strip().lower()
+                                    .startswith({"email": "em:", "linkedin": "li:",
+                                                 "phone": "ph:"}.get(kind, ""))))
+                if row is not None:
+                    added += 1
+                    staged.add((kind, value))
+                    db.flush()  # make it visible to the next lookup
+            except Exception:  # noqa: BLE001 : one bad contact never sinks the sweep
+                db.rollback()
+                continue
+    db.flush()
+    return added
+
+
+@router.post("/dedup-contacts")
+def dedup_contacts(
+    body: DedupContactsBody,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """Merge same-person duplicate Contacts using the ContactIdentity-backed merge
+    engine (agents/relationship/identity.py).
+
+    This catches the em-vs-li case: an email-sync contact (em:<hash>) and a
+    LinkedIn contact (li:<slug>) for the same person. The engine groups by SHARED
+    strong identity (normalized email / linkedin / phone) via union-find over the
+    ContactIdentity table; a "bridge" row carrying identities of BOTH pulls the two
+    into one group. Because pre-hook rows may not have all their identities
+    mirrored into ContactIdentity yet, we BACKFILL each contact's own strong fields
+    into ContactIdentity first, THEN group -- so a row that carries both an email
+    and a linkedin bridges the two single-dimension dups.
+
+    CONSERVATIVE: a group is only auto-merged when its members share a STRONG
+    identity. Contacts that merely share a display NAME (no shared email/linkedin/
+    phone) are NEVER merged here -- different people share names -- they are
+    reported separately under `name_only_review` for a human to decide.
+
+    Survivor: the RICHEST row wins (most interactions / prospects / facts / outgoing
+    messages; VIP is unioned onto it; ties -> oldest, then lowest id).
+
+    Body: {user_id?: int, dry_run: bool=true}. dry_run=true previews only.
+    """
+    from ..agents.relationship import identity as _identity
+
+    if body.user_id is not None:
+        user_ids = [body.user_id]
+    else:
+        user_ids = [row[0] for row in db.query(models.User.id).all()]  # every owner
+
+    total_would = 0
+    total_merged = 0
+    groups_sample: list[list[str]] = []
+    name_only_review: list[list[str]] = []
+
+    for uid in user_ids:
+        # 1) make pre-existing rows linkable, then group + merge on STRONG identity.
+        _backfill_identities_from_rows(db, uid)
+        report = _identity.backfill_merge(db, uid, apply=not body.dry_run)
+        for cl in report.get("clusters", []):
+            ids = cl.get("contact_ids", [])
+            names = [
+                (c.name or c.primary_identity_key or f"contact:{c.id}")
+                for c in db.query(models.Contact)
+                .filter(models.Contact.id.in_(ids)).all()
+            ]
+            if len(groups_sample) < 25:
+                groups_sample.append(sorted(names))
+        # 2) name-only collisions are REPORTED, never auto-merged.
+        for rc in _identity.find_review_candidates(db, uid):
+            ids = rc.get("contact_ids", [])
+            names = [
+                (c.name or c.primary_identity_key or f"contact:{c.id}")
+                for c in db.query(models.Contact)
+                .filter(models.Contact.id.in_(ids)).all()
+            ]
+            if len(name_only_review) < 25:
+                name_only_review.append(sorted(names))
+        would = report.get("would_merge", 0)
+        total_would += would
+        if not body.dry_run:
+            total_merged += would
+
+    if body.dry_run:
+        db.rollback()  # discard the identity backfill staged for preview only
+
+    result = {
+        "dry_run": body.dry_run,
+        "user_ids": user_ids,
+        "groups": groups_sample,
+        "name_only_review": name_only_review,
+    }
+    if body.dry_run:
+        result["would_merge"] = total_would
+    else:
+        result["merged"] = total_merged
+    print(f"  [admin.dedup-contacts] dry_run={body.dry_run} "
+          f"users={len(user_ids)} would/merged={total_would} "
+          f"name_only={len(name_only_review)}", flush=True)
+    return result

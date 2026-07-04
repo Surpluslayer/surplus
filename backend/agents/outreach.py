@@ -14,6 +14,7 @@ agents/outreach.py : stage 03b, message composition + simulated funnel.
 from __future__ import annotations
 import asyncio
 import os
+import re
 import random
 import time
 from dataclasses import dataclass
@@ -21,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 from .. import config
 from ..jsonx import extract_json
-from ..providers.base import strip_call_asks, strip_em_dashes
+from ..providers.base import URL_RE, strip_call_asks, strip_em_dashes
 from . import voice
 
 
@@ -415,7 +416,7 @@ def _compose_template(prospect, host_bio, framing) -> Message:
     """Deterministic fallback : the original template-based composition,
     minus the peer-reveal line (kept aligned with the LLM path, which no
     longer names peers either)."""
-    first = (prospect.name or "there").split()[0]
+    first = ((prospect.name or "").strip().split() or ["there"])[0]
     domain = (prospect.works_on or "your space").replace("-", " ")
 
     note_body = (
@@ -438,6 +439,38 @@ def _compose_template(prospect, host_bio, framing) -> Message:
             f"there's a clear fit on this side of the room."]
     msg_lines += ["", "Worth a closer look? Happy to share details."]
     return Message(note=note, message="\n".join(msg_lines).strip())
+
+
+def resolve_send_link(prospect, event):
+    """The scheduling / demo URL this send should carry, if any.
+
+    Priority: an explicit URL in the capture's next_step, else the host's
+    reusable saved_send_link (captured once, reused on every future send).
+    Guarded getattr chain: in background compose paths event.user can be a
+    detached ORM instance, and a link miss must never break compose.
+    """
+    step = (getattr(prospect, "next_step", None) or "")
+    m = URL_RE.search(step)
+    if m:
+        return m.group(0).rstrip(".,;)")
+    try:
+        owner = getattr(event, "user", None)
+        link = (getattr(owner, "saved_send_link", None) or "").strip()
+        return link or None
+    except Exception:  # noqa: BLE001 -- detached session / missing rel: fail soft
+        return None
+
+
+def ensure_send_link(text, link):
+    """Deterministic guarantee that the outbound DM carries the send link.
+
+    The compose prompt asks the model to weave the link in naturally; when it
+    does, this is a no-op. When the model drops it (the coin flip behind
+    "the demo link never sends"), append it as a short closing line."""
+    t = (text or "").strip()
+    if not link or link in t:
+        return t
+    return f"{t}\n\nIf it is easier, here is a link to grab a time: {link}"
 
 
 def compose(
@@ -474,8 +507,14 @@ def compose(
     # it : crucially the webhook auto-DM path (_trigger_auto_dm -> compose) so
     # an in-person prospect's post-accept DM is warm, not a cold re-pitch.
     in_person = (getattr(event, "kind", "") or "") == "in_person"
+    # The scheduling / demo link this send should carry (next_step URL, else
+    # the host's reusable saved_send_link). Woven by the LLM via the framing
+    # below AND guaranteed deterministically in _finish -- prompt rules alone
+    # are exactly how links used to go missing.
+    send_link = resolve_send_link(prospect, event) if in_person else None
     framing = (_framing_inperson(event, getattr(prospect, "note", None),
-                                 getattr(prospect, "next_step", None))
+                                 getattr(prospect, "next_step", None),
+                                 send_link=send_link)
                if in_person else _framing(event))
 
     def _template() -> Message:
@@ -489,8 +528,16 @@ def compose(
         return Message(note=strip_call_asks(strip_em_dashes(msg.note)),
                        message=strip_call_asks(strip_em_dashes(msg.message)))
 
+    def _finish(msg: Message) -> Message:
+        # Hygiene first, then the deterministic link guarantee (the appended
+        # line must not be subject to the strips; URL clauses survive the
+        # send-gate strip too via its URL exemption).
+        cleaned = _clean(msg)
+        return Message(note=cleaned.note,
+                       message=ensure_send_link(cleaned.message, send_link))
+
     if (os.environ.get("OUTREACH_COMPOSE_DISABLE") or "").strip().lower() not in ("", "0", "false", "no"):
-        return _clean(_template())
+        return _finish(_template())
 
     llm = _compose_via_claude(prospect, event, host_bio, framing,
                               voice_examples_raw=voice_examples_raw,
@@ -498,8 +545,8 @@ def compose(
     if llm is not None:
         note, message = llm
         # Hard-cap the note even if the model went over : LinkedIn rejects >300.
-        return _clean(Message(note=_truncate_note(note), message=message))
-    return _clean(_template())
+        return _finish(Message(note=_truncate_note(note), message=message))
+    return _finish(_template())
 
 
 def _event_label(event) -> str:
@@ -510,7 +557,8 @@ def _event_label(event) -> str:
 
 
 def _framing_inperson(event, note: str | None = None,
-                      next_step: str | None = None) -> str:
+                      next_step: str | None = None,
+                      send_link: str | None = None) -> str:
     """Warm 'we just met' framing for the in-person scan-to-connect flow.
 
     The operator has ALREADY met this person face to face, so the note/DM read
@@ -542,6 +590,11 @@ def _framing_inperson(event, note: str | None = None,
         parts.append(
             f"For the first message, propose THIS specific next step: {next_step}. "
             "Work it in naturally as the closing ask (include any link verbatim).")
+    send_link = (send_link or "").strip()
+    if send_link and send_link not in next_step:
+        parts.append(
+            f"Include this exact scheduling link once in the first message as "
+            f"part of the closing ask, copied verbatim, never altered: {send_link}")
     return " ".join(parts)
 
 
@@ -550,7 +603,7 @@ def _compose_inperson_template(prospect, event) -> Message:
     as the fallback when the LLM call fails. Reads as a post-meeting note and
     weaves in prospect.note when present. Connection note is run through
     _truncate_note so it always fits LinkedIn's connect-request cap."""
-    first = (prospect.name or "there").split()[0]
+    first = ((prospect.name or "").strip().split() or ["there"])[0]
     label = _event_label(event)
     note = (getattr(prospect, "note", None) or "").strip()
     # Drop a conversational lead-in the operator may have typed ("we talked
@@ -621,7 +674,7 @@ def compose_followup(prospect, event, prior_message: str | None = None) -> str:
     and the event framing. `prior_message` (the first DM text) only shifts the
     opener to acknowledge a prior touch : the template can't summarize free
     text, so the real first-message grounding happens in the LLM path."""
-    first = (prospect.name or "there").split()[0]
+    first = ((prospect.name or "").strip().split() or ["there"])[0]
     framing = _framing(event)
     hook = _followup_hook(prospect)
     opener = (f"Hey {first} : circling back on the {event.format.lower()}."

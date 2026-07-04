@@ -363,6 +363,17 @@ def run_sweep(db, *, user_id: int | None = None, limit: int = 40) -> dict:
         # fall through to Exa if the trigger didn't take
 
     # --- Exa fallback (synchronous, account-safe) --------------------------
+    # Each contact is an Exa search + an LLM extraction: seconds of network work.
+    # Over a full run (up to ~200 contacts) that is MINUTES. We must not hold one
+    # pooled DB connection open across that whole span -- pool_size is small
+    # (5+3 per worker), and a couple of concurrent sweeps that each pin a
+    # connection for minutes starves the pool and 503s the whole worker.
+    #
+    # So commit PER CONTACT: SQLAlchemy checks the connection back into the pool
+    # on commit and re-acquires it lazily on the next query, so the connection is
+    # released across the network-bound gap between contacts instead of held for
+    # the entire loop. Behavior is unchanged (find_updates writes the same rows);
+    # the per-contact commit boundary also means partial progress survives a crash.
     emitted = 0
     for c in contacts:
         try:
@@ -370,10 +381,11 @@ def run_sweep(db, *, user_id: int | None = None, limit: int = 40) -> dict:
                 emitted += 1
                 # autodraft fires inside _emit now (covers every watcher).
             c.watched_at = _now()
+            db.commit()
         except Exception as exc:  # noqa: BLE001
+            db.rollback()
             print(f"  [updates] exa contact={c.id} failed: "
                   f"{type(exc).__name__}: {exc}", flush=True)
-    db.commit()
     return _record_sweep({"due": len(contacts), "mode": "exa", "emitted": emitted})
 
 

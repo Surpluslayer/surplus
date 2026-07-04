@@ -472,6 +472,7 @@ def link_contact(db, prospect, owner_user_id: int):
     contact-less, which every flow supports). Never raises."""
     from .... import models
     from ....triage.enrichment_cache import identity_keys
+    from .. import identity as _identity
     try:
         if getattr(prospect, "contact_id", None) is not None:
             return db.get(models.Contact, prospect.contact_id)
@@ -483,10 +484,20 @@ def link_contact(db, prospect, owner_user_id: int):
         if not keys:
             return None
         primary = keys[0]
+        # Every strong identity the prospect implies -- so a capture links to a
+        # contact already known from the OTHER channel instead of forking a dup.
+        idents = _identity.strong_identities(
+            email=_clean(getattr(prospect, "email", None)) or "",
+            linkedin_url=_clean(getattr(prospect, "linkedin_url", None)) or "",
+            linkedin_public_id=_clean(getattr(prospect, "linkedin_provider_id", None)) or "",
+        )
 
         contact = (db.query(models.Contact)
                      .filter_by(user_id=owner_user_id, primary_identity_key=primary)
                      .first())
+        if contact is None:
+            contact = _identity.lookup_contact_by_identities(
+                db, user_id=owner_user_id, identities=idents)
         if contact is None:
             contact = models.Contact(
                 user_id=owner_user_id,
@@ -502,6 +513,8 @@ def link_contact(db, prospect, owner_user_id: int):
         elif getattr(prospect, "vip", False) and not contact.vip:
             contact.vip = True  # a starred capture promotes an existing contact
 
+        _identity.register_identities(db, contact=contact, identities=idents,
+                                      source="capture", primary_key=primary)
         prospect.contact_id = contact.id
         db.commit()
         db.refresh(contact)
@@ -511,22 +524,39 @@ def link_contact(db, prospect, owner_user_id: int):
         return None
 
 
-def import_conversation_contacts(db, user, want: int = 15) -> dict:
+def import_conversation_contacts(db, user, want: int = 15,
+                                 on_progress=None) -> dict:
     """Seed the Book from the user's genuine LinkedIn DM conversations.
 
     Pulls the most-recent people the user is in a real two-way conversation with
     (they replied AND heard back -- not cold inbound/ads), via THEIR OWN connected
     Unipile account (never the host's, so it's ban-safe and it's their own data).
     Creates/dedupes Contact rows keyed on the LinkedIn slug. Idempotent: re-runs
-    only add genuinely new people. Returns a small status dict; never raises."""
+    only add genuinely new people. Returns a small status dict; never raises.
+
+    `on_progress(scanned, found)` (optional) is forwarded to the provider's
+    chat walk so a background Job can surface live progress while the slow
+    Unipile paging runs (this is the hot loop: up to scan_cap chats x 3
+    sequential HTTP calls each).
+
+    Session lifecycle contract: the inputs (account id, user id) are read up
+    front and db's pooled connection is RELEASED (via commit) before the
+    minutes-long Unipile walk, so the walk never pins a connection. The
+    dedup + upsert afterwards is one short DB-only transaction."""
     import os
     from .... import models
     from ....providers.unipile import UnipileProvider
     from ....triage.enrichment_cache import identity_keys
+    from .. import identity as _identity
 
     acct = _clean(getattr(user, "unipile_account_id", None))
     if not acct:
         return {"imported": 0, "considered": 0, "reason": "no linkedin account"}
+    user_id = user.id
+    # Inputs are captured; release the pooled connection before the long
+    # network walk. Commit (not rollback) so any caller-pending work is
+    # preserved rather than discarded; by contract nothing of ours is staged.
+    db.commit()
     try:
         prov = UnipileProvider(
             dsn=os.environ.get("UNIPILE_DSN"),
@@ -534,26 +564,49 @@ def import_conversation_contacts(db, user, want: int = 15) -> dict:
             account_id=acct,
             dry_run=True,  # read-only calls ignore dry_run; never sends
         )
-        people = prov.list_active_conversation_contacts(want=want)
+        people = prov.list_active_conversation_contacts(
+            want=want, on_progress=on_progress)
     except Exception as exc:  # noqa: BLE001
         return {"imported": 0, "considered": 0, "reason": f"{type(exc).__name__}: {exc}"}
 
-    imported = 0
+    # Batch the dedup lookups : ONE query covering every candidate identity
+    # key instead of a per-person round-trip. Dedup semantics are unchanged
+    # (same user_id + primary_identity_key match), and the local map also
+    # covers two batch rows resolving to the same key (autoflush is off, so
+    # the old per-row queries would have missed a just-staged sibling).
+    keyed: list[tuple[dict, str, str]] = []   # (person, url, primary_key)
     for p in people:
+        url = _clean(p.get("linkedin_url"))
+        if not url:
+            continue
+        keys = identity_keys(email="", linkedin_url=url)
+        if not keys:
+            continue
+        keyed.append((p, url, keys[0]))
+    existing: dict = {}
+    if keyed:
+        rows = (db.query(models.Contact)
+                .filter(models.Contact.user_id == user_id,
+                        models.Contact.primary_identity_key.in_(
+                            {k for _, _, k in keyed}))
+                .all())
+        existing = {c.primary_identity_key: c for c in rows}
+
+    imported = 0
+    for p, url, primary in keyed:
         try:
-            url = _clean(p.get("linkedin_url"))
-            if not url:
-                continue
-            keys = identity_keys(email="", linkedin_url=url)
-            if not keys:
-                continue
-            primary = keys[0]
-            contact = (db.query(models.Contact)
-                       .filter_by(user_id=user.id, primary_identity_key=primary)
-                       .first())
+            idents = _identity.strong_identities(
+                linkedin_url=url,
+                linkedin_public_id=_clean(p.get("linkedin_public_id")) or "")
+            contact = existing.get(primary)
+            if contact is None:
+                # Also look up by ANY identity (via the ContactIdentity index) so a
+                # DM import links to a contact already known from email, not a dup.
+                contact = _identity.lookup_contact_by_identities(
+                    db, user_id=user_id, identities=idents)
             if contact is None:
                 contact = models.Contact(
-                    user_id=user.id,
+                    user_id=user_id,
                     primary_identity_key=primary,
                     name=_clean(p.get("name")),
                     linkedin_url=url,
@@ -561,6 +614,7 @@ def import_conversation_contacts(db, user, want: int = 15) -> dict:
                     headline=_clean(p.get("headline")),
                 )
                 db.add(contact)
+                existing[primary] = contact
                 imported += 1
             else:
                 # backfill thin fields on an existing contact
@@ -570,6 +624,10 @@ def import_conversation_contacts(db, user, want: int = 15) -> dict:
                     contact.headline = _clean(p.get("headline"))
                 if not contact.linkedin_public_id and p.get("linkedin_public_id"):
                     contact.linkedin_public_id = _clean(p.get("linkedin_public_id"))
+                existing[primary] = contact
+            _identity.register_identities(db, contact=contact, identities=idents,
+                                          source="linkedin_profile",
+                                          primary_key=primary)
         except Exception as exc:  # noqa: BLE001 : one bad person never sinks the import
             print(f"  [import_conversations] skipped one: {type(exc).__name__}: {exc}",
                   flush=True)

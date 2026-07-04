@@ -26,6 +26,15 @@ def _env(monkeypatch):
     monkeypatch.delenv("EXA_API_KEY", raising=False)
     from backend import rate_limit
     rate_limit._WINDOWS.clear()   # demo-mint quota must not leak across tests
+    # /scan's slow half runs detached in prod; run it inline (own session,
+    # same DB) so these TestClient flows stay synchronous + deterministic.
+    from backend import jobs
+    from backend.routes import inperson
+
+    def _inline(fn, *args, prefer_modal=False, **kwargs):
+        jobs.execute_detached(jobs._fn_path(fn), *args, **kwargs)
+        return "local"
+    monkeypatch.setattr(inperson, "run_detached", _inline)
     reset_db()
     yield
 

@@ -87,6 +87,16 @@ _CALL_ASK_RE = re.compile(
 )
 
 
+# A clause carrying an explicit URL is a LINK the system (or host) chose to
+# attach -- a scheduling / demo / Zoom link -- not a prose "call ask" to
+# sanitize. Without this exemption, \bzoom\b in _CALL_ASK_RE silently ate
+# whole clauses containing Zoom meeting URLs from booking drafts (part of
+# the "the demo link never sends" bug, fixed 2026-07-01).
+# Public: also reused by agents/outreach.resolve_send_link (one URL regex,
+# one definition).
+URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+
+
 def strip_call_asks(text: Optional[str]) -> Optional[str]:
     """Remove any call ask from outbound copy, surgically.
 
@@ -94,6 +104,9 @@ def strip_call_asks(text: Optional[str]) -> Optional[str]:
     that proposes a call, keeping the rest. If a whole sentence is nothing but
     a call ask, drop the sentence. A trailing '?' left behind by removing the
     asking clause is downgraded to '.' so we don't end on a dangling question.
+
+    Clauses containing an explicit URL are ALWAYS kept: an attached link is
+    deliberate, never sanitized away.
 
     Returns the text unchanged when no call ask is present (byte-for-byte)."""
     if not text or not _CALL_ASK_RE.search(text):
@@ -105,7 +118,8 @@ def strip_call_asks(text: Optional[str]) -> Optional[str]:
         term = m.group(1) if m else ""
         core = sent[: m.start()] if m else sent
         clauses = [c.strip() for c in core.split(",")]
-        kept = [c for c in clauses if c and not _CALL_ASK_RE.search(c)]
+        kept = [c for c in clauses
+                if c and (URL_RE.search(c) or not _CALL_ASK_RE.search(c))]
         if not kept:
             continue  # the whole sentence was the call ask
         # If the dropped clause was the one carrying the '?', the survivors
