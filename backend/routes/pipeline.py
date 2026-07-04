@@ -37,11 +37,11 @@ from __future__ import annotations
 import csv
 import io
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
+from .. import jobs, models, schemas
 from ..auth import (
     current_user,
     get_owned_event,
@@ -516,43 +516,78 @@ def send_direct_message(
     }
 
 
-@router.post("/{event_id}/check-connections")
+def _run_check_connections(db: Session, event_id: int) -> None:
+    """Detached worker for POST /events/{id}/check-connections.
+
+    Refresh connection_status for every "unknown" prospect on the event that has
+    a linkedin_url : one Unipile call each. Runs OFF the request path on its own
+    session and commits after EACH prospect, so a large approved pool can neither
+    exceed the Cloudflare edge timeout nor pin a pooled DB connection across the
+    whole run of network calls (same failure class as the updates-sweep fix).
+
+    The durable result is the connection_status column itself; the UI polls
+    GET /events/{id}/prospects to watch it settle. Owner-scoping was already
+    enforced by the route before scheduling, so this loads the event by id and
+    resolves the read-only preview provider from its owner.
+    """
+    ev = db.get(models.Event, event_id)
+    if ev is None:
+        print(f"  [check-connections] event {event_id} NOT FOUND")
+        return
+    provider = get_preview_provider(getattr(ev, "user", None))
+
+    checked = 0
+    for p in ev.prospects:
+        if p.connection_status != "unknown" or not p.linkedin_url:
+            continue
+        _refresh_connection_status(provider, p)
+        db.commit()  # free the pooled connection between provider calls
+        checked += 1
+    print(f"  [check-connections] event {event_id} refreshed "
+          f"{checked} prospect(s)")
+
+
+@router.post("/{event_id}/check-connections", status_code=202)
 def check_connections(
     event_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: models.User = Depends(current_user),
 ):
-    """Bulk-refresh connection_status for every prospect in this event whose
-    status is currently "unknown". Designed to be called once when the
-    auto-outreach screen loads so button labels render correctly.
+    """Schedule a bulk refresh of connection_status for every "unknown"
+    prospect in this event (one Unipile call each) and return immediately.
+    Designed to be called once when the auto-outreach screen loads so button
+    labels render correctly.
+
+    Detached on purpose: inline, the per-prospect provider calls can exceed the
+    Cloudflare edge timeout (524) on a large approved pool and pin a pooled DB
+    connection across the whole run. jobs.run_detached hands the work to
+    _run_check_connections on its OWN session (committing per prospect); the
+    client polls GET /events/{id}/prospects and watches connection_status settle.
+    Returns 202 with the counts it will process.
 
     Re-checks are NOT free : one Unipile API call per prospect : so already-
     classified rows are skipped. To force a recheck, hit /invite which always
     calls _refresh_connection_status.
     """
     ev = get_owned_event(event_id, user, db)
-    provider = get_preview_provider(user)
 
-    updated: list[dict] = []
-    skipped = 0
-    for p in ev.prospects:
-        if p.connection_status != "unknown":
-            skipped += 1
-            continue
-        if not p.linkedin_url:
-            continue
-        status = _refresh_connection_status(provider, p)
-        updated.append({
-            "prospect_id": p.id,
-            "name": p.name,
-            "connection_status": status,
-        })
-    db.commit()
+    # Count the work up front WITHOUT touching the network : ev.prospects is
+    # already loaded, so these are in-memory scans, not provider calls.
+    queued = sum(
+        1 for p in ev.prospects
+        if p.connection_status == "unknown" and p.linkedin_url
+    )
+    skipped = sum(1 for p in ev.prospects if p.connection_status != "unknown")
+
+    runner = jobs.run_detached(background_tasks, _run_check_connections, ev.id)
     return {
-        "event_id": event_id,
-        "checked": len(updated),
+        "event_id": ev.id,
+        "status": "scheduled",
+        "queued": queued,
         "skipped": skipped,
-        "results": updated,
+        "runner": runner,
+        "poll": f"/events/{ev.id}/prospects",
     }
 
 

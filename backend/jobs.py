@@ -74,6 +74,48 @@ def dispatch_triage(background_tasks, event_id: int, *,
     return "local"
 
 
+def run_detached(background_tasks, worker, *args,
+                 modal_fn: str | None = None, **kwargs) -> str:
+    """Fire-and-forget a worker that manages its OWN DB session. Returns
+    'modal' or 'local'.
+
+    Like dispatch_triage this splits Modal-vs-local, but for request/ack routes
+    that write their result straight onto the domain rows (which the client then
+    polls) rather than returning it inline or onto a Job row. Use it when a
+    handler would otherwise loop over many rows making one network call each :
+    detaching keeps the request off the Cloudflare edge timeout and off the
+    request's pooled DB connection.
+
+    Modal only when USE_MODAL AND a `modal_fn` name is given AND the spawn
+    succeeds; otherwise a local FastAPI BackgroundTask. The worker is invoked as
+    worker(db, *args, **kwargs) with a fresh SessionLocal that run_detached opens
+    and closes. Committing is the WORKER's job : it should commit incrementally
+    so it never pins the pooled connection across a long run of network calls.
+    """
+    if modal_fn and use_modal() and _spawn_modal(modal_fn, *args, **kwargs):
+        return "modal"
+    background_tasks.add_task(_run_with_session, worker, *args, **kwargs)
+    return "local"
+
+
+def _run_with_session(worker, *args, **kwargs) -> None:
+    """Open a fresh SessionLocal, run `worker(db, *args, **kwargs)`, always close.
+
+    Detached tasks run AFTER the response is sent, when the request's own
+    Depends(get_db) session is already closed : they must never borrow it.
+    Errors are logged, not raised : there's no client left to receive them.
+    """
+    from .db import SessionLocal
+    db = SessionLocal()
+    try:
+        worker(db, *args, **kwargs)
+    except Exception as exc:  # noqa: BLE001
+        name = getattr(worker, "__name__", repr(worker))
+        print(f"  [jobs] detached {name} FAILED: {type(exc).__name__}: {exc}")
+    finally:
+        db.close()
+
+
 # --------------------------------------------------------------------------- #
 # Async Job model for the heavy outbound stages (search / match).
 #
