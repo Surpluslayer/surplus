@@ -570,11 +570,10 @@ def enrich_book_ask(
 
     if nr.hits:
         out["network_hits"] = [h.as_dict() for h in nr.hits]
-        summary = network_summary_from_hits(nr.hits, steer)
         if not out.get("people"):
-            out["answer"] = summary
+            out["answer"] = ""
         else:
-            out["answer"] = f"{summary} From your book: {out.get('answer') or ''}".strip()
+            out["answer"] = (out.get("answer") or "").strip()
         return out
 
     # Network-shaped ask but no LinkedIn hits — surface why, don't fake emptiness.

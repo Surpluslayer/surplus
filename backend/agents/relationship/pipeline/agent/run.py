@@ -46,7 +46,6 @@ from ..context.network_search import (
     NetworkSearchResult,
     detect_network_intent,
     format_network_block,
-    network_summary_from_hits,
     search_linkedin_network,
 )
 from ..context.reconcile import reconcile_next_step
@@ -1059,7 +1058,7 @@ def run_relationship_agent_concurrent(
 
     if not contacts:
         if network_result.hits:
-            result.summary = network_summary_from_hits(network_result.hits, steer)
+            result.summary = ""
             result.stop_reason = "network_only"
             return result
         if network_result.error:
@@ -1237,10 +1236,8 @@ def run_relationship_agent_concurrent(
     _trace(f"triage selected {len(clean)} of {len(contacts)} contacts to draft "
            f"(cap MAX_DEEP_DIVES={MAX_DEEP_DIVES})")
     if not clean:
-        if network_result.hits and not closing:
-            result.summary = network_summary_from_hits(network_result.hits, steer)
-        elif network_result.hits and closing:
-            result.summary = _strip_dashes(closing)
+        if network_result.hits:
+            result.summary = ""
         else:
             result.summary = (
                 closing or "Everyone looks warm right now, nothing urgent to draft."

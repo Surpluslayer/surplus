@@ -850,7 +850,7 @@ function FollowupChat() {
               </div>
             ) : (
               <div>
-                {t.text && (
+                {t.text && !(t.networkHits || []).length && (
                   <div style={{ background: C.bg, color: C.ink, borderRadius: 12,
                                 padding: "10px 14px", fontSize: 13.5,
                                 lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
