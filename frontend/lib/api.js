@@ -552,8 +552,8 @@ export const api = {
   // Streaming twin of bookAsk: emits the ranked people the instant selection
   // finishes, then each drafted card as it completes -- with a heartbeat, so the
   // connection is never silent and Cloudflare's 100s read timeout (the 524) can't
-  // fire. Callbacks: onStatus({phase,name}), onPeople({people,answer}),
-  // onPerson({index,contact_id,name,draft}), onDone({total_s,count}),
+  // fire. Callbacks: onStatus({phase,name}), onPeople({people,answer,network_hits}),
+  // onPerson({index,contact_id,name,draft}), onDone({total_s,count,network_hits}),
   // onError({detail}). Resolves when the stream closes.
   bookAskStream: (query, { onStatus, onPeople, onToken, onPerson, onDone, onError } = {}) =>
     consumeSSE("/api/book/ask/stream", { query }, {

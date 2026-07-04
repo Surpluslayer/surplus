@@ -120,6 +120,35 @@ def test_connector_fanout_merges_paths(db, monkeypatch):
     assert any(h.via_connector == "" for h in res.hits)
 
 
+def test_enrich_book_ask_replaces_book_only_answer():
+    user = SimpleNamespace(unipile_account_id="acct1")
+    contacts = [SimpleNamespace(name="Ella Hoffmann", id=1, linkedin_public_id="ella")]
+    book_answer = {
+        "answer": "No 2nd degree founders in NYC identified in your book.",
+        "people": [],
+    }
+
+    def fake_search(**kwargs):
+        return [{
+            "name": "Alex Kim",
+            "public_identifier": "alexkim",
+            "headline": "Founder in NYC",
+            "network_distance": "DISTANCE_2",
+        }]
+
+    out = ns.enrich_book_ask(
+        user,
+        "2nd degree founders in NYC",
+        contacts,
+        book_answer,
+        search_fn=fake_search,
+    )
+    assert len(out["network_hits"]) == 1
+    assert out["network_hits"][0]["name"] == "Alex Kim"
+    assert "Alex Kim" in out["answer"]
+    assert "in your book" not in out["answer"].lower()
+
+
 def test_search_dedupes_roster_and_via_connector(db, monkeypatch):
     u = _user(db)
     ev = _event(db, u)
