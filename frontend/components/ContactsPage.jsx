@@ -700,6 +700,7 @@ function FollowupChat() {
     const pending = [];          // proposals streamed but not yet shown
     let streamDone = false;      // true once the SSE stream closes
     let summaryText = null;      // closing line, shown after the last card
+    let networkHits = [];        // extended-network / referral paths
 
     const pump = (async () => {
       // First card lands fast; subsequent ones are spaced by REVEAL_MS.
@@ -724,7 +725,10 @@ function FollowupChat() {
         // Queue each staged person; the pump reveals them one-by-one.
         onProposal: (p) => { if (p.kind === "draft_message") pending.push(p); },
         // Closing line lands last, under the cards it summarizes.
-        onDone: (d) => { summaryText = d.summary || null; },
+        onDone: (d) => {
+          summaryText = d.summary || null;
+          networkHits = Array.isArray(d.network_hits) ? d.network_hits : [];
+        },
         onError: (e) => {
           setTurns((t) => [...t, { role: "agent",
             text: `Sorry — ${e.message || "something went wrong"}`, proposals: [] }]);
@@ -732,8 +736,12 @@ function FollowupChat() {
       });
       streamDone = true;
       await pump;                // drain the remaining cards one-by-one
-      if (summaryText)
-        setTurns((t) => [...t, { role: "agent", text: summaryText }]);
+      if (summaryText || networkHits.length)
+        setTurns((t) => [...t, {
+          role: "agent",
+          text: summaryText || null,
+          networkHits,
+        }]);
     } catch (e) {
       streamDone = true;
       await pump.catch(() => {});
@@ -808,12 +816,13 @@ function FollowupChat() {
            style={{ maxHeight: 420, overflowY: "auto", padding: "14px 16px" }}>
         {turns.length === 0 && (
           <div style={{ color: C.muted, fontSize: 13.5, lineHeight: 1.5 }}>
-            Ask me who's gone quiet, who just changed jobs, or who's worth a
-            ping — I'll read your history and draft a message for each.
+            Ask me who's gone quiet, who in your extended network matches a
+            company or role, or who's worth a ping — I'll read your history
+            and surface warm intro paths when I can.
             <div style={{ display: "flex", gap: 8, marginTop: 12,
                           flexWrap: "wrap" }}>
               {["Who should I follow up with?",
-                "Who recently changed roles?",
+                "Who in my 2nd degree works at Cursor?",
                 "Draft pings for anyone going cold"].map((s) => (
                 <button key={s} onClick={() => ask(s)}
                         style={{ background: C.chipBg, color: C.chipInk,
@@ -852,6 +861,9 @@ function FollowupChat() {
                   <ProposalCard key={`${p.contact_id}-${p.text.slice(0,12)}`}
                                 proposal={p} auto={t.auto} />
                 ))}
+                {(t.networkHits || []).map((h, hi) => (
+                  <NetworkHitCard key={`${h.linkedin_slug || h.name}-${hi}`} hit={h} />
+                ))}
               </div>
             )}
           </div>
@@ -887,6 +899,56 @@ function FollowupChat() {
       </div>
     </div>
    </>
+  );
+}
+
+// One extended-network prospect surfaced by the agent (2nd/3rd degree or via a
+// connector). Read-only in v1 — no draft/send until they're in the book.
+function NetworkHitCard({ hit }) {
+  const url = hit.linkedin_url
+    || (hit.linkedin_slug ? `https://www.linkedin.com/in/${hit.linkedin_slug}` : null);
+  const path = hit.via_connector
+    ? `Ask ${hit.via_connector} for an intro`
+    : (hit.network_degree ? `${hit.network_degree}° connection` : "Extended network");
+
+  return (
+    <div style={{ marginTop: 10, border: `1px solid ${C.line}`,
+                  borderRadius: 12, padding: "12px 14px", background: "#fafbff" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8,
+                        flexWrap: "wrap", marginBottom: 4 }}>
+            <span style={{ fontWeight: 700, color: C.ink, fontSize: 13.5 }}>
+              {hit.name || "Unknown"}
+            </span>
+            <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: 0.3,
+                           textTransform: "uppercase", color: "#6d28d9" }}>
+              network match
+            </span>
+          </div>
+          {hit.headline && (
+            <div style={{ fontSize: 12.5, color: C.muted, lineHeight: 1.45,
+                          marginBottom: 6 }}>
+              {hit.headline}
+            </div>
+          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 6,
+                        fontSize: 12, color: C.faint }}>
+            <Link2 size={13} />
+            <span>{path}</span>
+          </div>
+        </div>
+        {url && (
+          <a href={url} target="_blank" rel="noopener noreferrer"
+             style={{ flex: "none", fontSize: 12, fontWeight: 600,
+                      color: C.accent, textDecoration: "none",
+                      padding: "6px 10px", borderRadius: 8,
+                      border: `1px solid ${C.line}`, background: "#fff" }}>
+            LinkedIn
+          </a>
+        )}
+      </div>
+    </div>
   );
 }
 

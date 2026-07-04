@@ -42,8 +42,16 @@ from ..context.gather import (
     gather_contact_context,
     thread_from_timeline,
 )
+from ..context.network_search import (
+    NetworkSearchResult,
+    detect_network_intent,
+    format_network_block,
+    network_summary_from_hits,
+    search_linkedin_network,
+)
 from ..context.reconcile import reconcile_next_step
 from .... import voice
+from ..... import models
 from ....agent_loop import DEFAULT_MODEL, _block_type, run_agent
 from .....providers.base import strip_em_dashes
 
@@ -259,6 +267,7 @@ class RelationshipAgentResult:
     steps: int = 0
     stop_reason: str = ""
     error: Optional[str] = None
+    network_hits: list[dict] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -267,6 +276,7 @@ class RelationshipAgentResult:
             "steps": self.steps,
             "stop_reason": self.stop_reason,
             "error": self.error,
+            "network_hits": list(self.network_hits),
             "proposals": [
                 {"kind": p.kind, "contact_id": p.contact_id,
                  "contact_name": p.contact_name, "text": p.text,
@@ -801,8 +811,11 @@ Examples:
 - "Who did I mark for follow-up?" means nominate people marked for follow-up.
 - "Any investors?" means nominate people the provided data identifies as investors.
 - "Who should I reconnect with?" means nominate people with stale, warm, prior-engagement, or update-based reasons shown in the data.
+- "Who do I know at X?" / "2nd-degree founders" / "connections of Ella" means answer from NETWORK SEARCH RESULTS when that section is present (see below).
 
-Do not use outside knowledge. Do not search. Do not guess based on someone's name, company, title, or background unless the provided data supports it.
+Do not use outside knowledge. Do not search on your own. Do not guess based on someone's name, company, title, or background unless the provided data supports it.
+
+When a NETWORK SEARCH RESULTS section is present, those people are NOT in the contact list (no contact_id). Do NOT add them to selections. Instead, name the most relevant matches in your closing line with their degree and via_connector when shown — the via_connector is who the host should ask for a warm intro. Prefer hits that have a via_connector (referral path) over anonymous 2nd-degree matches. You may still nominate existing contacts from the roster when they also match the host's request.
 
 When there is no specific host request, or the request is open-ended, use the default triage rules below.
 
@@ -1031,7 +1044,28 @@ def run_relationship_agent_concurrent(
 
     contacts = relationships.list_contacts(db, user_id)
     result.contacts_seen = len(contacts)
+    steer = (instruction or "").strip()
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if user:
+        network_result = search_linkedin_network(user, steer, contacts)
+    elif detect_network_intent(steer):
+        network_result = NetworkSearchResult(
+            error="Connect LinkedIn to search your extended network.",
+        )
+    else:
+        network_result = NetworkSearchResult()
+    if network_result.hits:
+        result.network_hits = [h.as_dict() for h in network_result.hits]
+
     if not contacts:
+        if network_result.hits:
+            result.summary = network_summary_from_hits(network_result.hits, steer)
+            result.stop_reason = "network_only"
+            return result
+        if network_result.error:
+            result.summary = network_result.error
+            result.stop_reason = "network_error"
+            return result
         result.summary = "No contacts yet — nothing to work."
         result.stop_reason = "empty"
         return result
@@ -1116,7 +1150,6 @@ def run_relationship_agent_concurrent(
         "Use only the provided data. Do not invent updates, interest, warmth, "
         "or reasons to reconnect."
     )
-    steer = (instruction or "").strip()
     if steer:
         triage_prompt = (
             f"The host asked: \"{steer}\"\n\n"
@@ -1136,6 +1169,19 @@ def run_relationship_agent_concurrent(
             "answer what they asked in one short conversational sentence.\n\n"
             "Use only the provided data. Do not invent updates, interest, "
             "warmth, or reasons to reconnect."
+        )
+
+    network_block = format_network_block(network_result)
+    if network_block:
+        triage_prompt += (
+            f"\n\n{network_block}\n\n"
+            "NETWORK SEARCH RULES: people in NETWORK SEARCH RESULTS are outside "
+            "your contact list — never put them in selections (no contact_id). "
+            "If the host asked about extended network / intros / referrals / "
+            "2nd or 3rd degree / mutuals / connections of someone, your closing "
+            "MUST summarize the best matches from NETWORK SEARCH RESULTS by name, "
+            "degree, and via_connector when shown. Lead with warm referral paths "
+            "(rows with via_connector) and say who to ask for an intro."
         )
 
     t_run = time.monotonic()
@@ -1191,7 +1237,14 @@ def run_relationship_agent_concurrent(
     _trace(f"triage selected {len(clean)} of {len(contacts)} contacts to draft "
            f"(cap MAX_DEEP_DIVES={MAX_DEEP_DIVES})")
     if not clean:
-        result.summary = closing or "Everyone looks warm right now, nothing urgent to draft."
+        if network_result.hits and not closing:
+            result.summary = network_summary_from_hits(network_result.hits, steer)
+        elif network_result.hits and closing:
+            result.summary = _strip_dashes(closing)
+        else:
+            result.summary = (
+                closing or "Everyone looks warm right now, nothing urgent to draft."
+            )
         result.stop_reason = "end_turn"
         _trace(f"run done (nothing to draft) in {time.monotonic()-t_run:.1f}s")
         return result

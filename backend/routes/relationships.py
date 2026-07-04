@@ -904,7 +904,8 @@ def relationship_chat_stream(
             if worker_user is not None:
                 _record_relationship_usage(db, worker_user, res)
             q.put(("done", {"summary": res.summary or "Done.",
-                            "auto_send_enabled": auto}))
+                            "auto_send_enabled": auto,
+                            "network_hits": list(res.network_hits)}))
         except Exception as exc:  # noqa: BLE001 : surface to the client, don't 500 mid-stream
             q.put(("error", {"message": str(exc)}))
         finally:
