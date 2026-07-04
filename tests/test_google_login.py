@@ -140,16 +140,33 @@ def test_bearer_token_parsing():
     assert auth_mod._bearer_token(None) is None
 
 
-# ── auto-connect: login also connects the provider's data ─────────────────────
-def test_login_requests_data_scopes_and_offline(monkeypatch):
+# ── incremental auth: login is identity-only; data scopes come from the connector ──
+def test_login_is_identity_only_incremental_auth(monkeypatch):
+    """Sign-in requests identity scopes only (no sensitive scopes -> no "unverified
+    app" warning at login). The data scopes are asked in-context by the Connections
+    connector flow, whose include_granted_scopes merges the grants."""
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "cid")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "sec")
     monkeypatch.setenv("SURPLUS_OAUTH_STATE_SECRET", "s")
     url = google_login.authorize_url(redirect_uri="https://x/cb")
-    # login consent now also covers calendar + contacts (auto-connect) + offline refresh
-    assert "calendar.events" in url and "contacts.readonly" in url
-    assert "access_type=offline" in url
-    assert "gmail" not in url                      # Gmail stays on Unipile (no CASA)
+    assert "calendar.events" not in url and "contacts.readonly" not in url
+    assert "access_type=offline" not in url    # identity needs no refresh token
+    assert "prompt=consent" not in url         # returning users sign in silently
+    assert "include_granted_scopes=true" in url  # merges with connector grants
+    assert "gmail" not in url                  # Gmail stays on Unipile (no CASA)
+
+
+def test_auto_connect_skips_identity_only_grant(db):
+    """An identity-only grant must NOT create a ConnectedAccount -- it carries no data
+    access, and a row would falsely flip the Connections screen to "connected"."""
+    from backend.routes._oauth_login import _auto_connect
+    u = find_or_create_google_user(db, sub="G9", email="i@x.com", name="I")
+    _auto_connect(db, user_id=u.id, provider="google", email="i@x.com",
+                  tokens={"access_token": "at", "expires_in": 3600,
+                          "scope": "openid email profile"})
+    acct = (db.query(models.ConnectedAccount)
+            .filter_by(user_id=u.id, provider="google").first())
+    assert acct is None
 
 
 def test_auto_connect_saves_connected_account(db):

@@ -21,11 +21,27 @@ def _redirect_uri(request: Request, provider: str) -> str:
     return f"{_surplus_base_url(request)}/api/auth/{provider}/callback"
 
 
+# Scopes that only prove identity. A grant containing nothing beyond these carries no
+# DATA access, so saving a ConnectedAccount for it would falsely flip the Connections
+# screen to "connected" (google_connected checks row existence) with a token that can't
+# sync anything.
+_IDENTITY_SCOPES = frozenset({
+    "openid", "email", "profile",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+})
+
+
 def _auto_connect(db, *, user_id: int, provider: str, email: str, tokens: dict) -> None:
-    """Save a ConnectedAccount from the login tokens, so signing in ALSO connects the
-    provider's data (Google -> calendar/contacts; Microsoft -> mail/calendar). Best-effort:
-    a save hiccup must never break sign-in."""
+    """Save a ConnectedAccount from the login tokens when the grant actually carries
+    DATA scopes (Microsoft login requests mail/calendar, so it auto-connects; Google
+    login is identity-only under incremental auth, so it saves nothing and the
+    Connections screen offers the in-context connect instead). Best-effort: a save
+    hiccup must never break sign-in."""
     try:
+        granted = set((tokens.get("scope") or "").split())
+        if granted and not (granted - _IDENTITY_SCOPES):
+            return  # identity-only grant: nothing to connect
         if tokens.get("access_token") or tokens.get("refresh_token"):
             oauth.save_tokens(db, user_id=user_id, provider=provider,
                               account_email=email or "", tokens=tokens)

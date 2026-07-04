@@ -18,7 +18,6 @@ import urllib.parse
 import httpx
 
 from . import oauth
-from .providers import GOOGLE as _CFG
 
 _STATE_TTL = 600   # seconds a sign-in state stays valid (matches the connect flow)
 
@@ -26,10 +25,13 @@ PROVIDER = "google"
 _AUTH = "https://accounts.google.com/o/oauth2/v2/auth"
 _TOKEN = "https://oauth2.googleapis.com/token"
 _USERINFO = "https://openidconnect.googleapis.com/v1/userinfo"
-# Login requests profile + the SAME data scopes the connector uses, so signing in with
-# Google ALSO auto-connects calendar + contacts (one consent -> login + data). Deduped,
-# order-preserving. (Gmail stays via Unipile; it's not in _CFG.scopes.)
-_SCOPES = " ".join(dict.fromkeys(("openid", "email", "profile", *_CFG.scopes)))
+# INCREMENTAL AUTH: login asks for IDENTITY ONLY (non-sensitive scopes), so sign-in
+# never shows Google's "unverified app" warning and doesn't depend on sensitive-scope
+# verification. The data scopes (calendar.events, contacts.readonly — see
+# providers.GOOGLE.scopes) are asked IN CONTEXT by the Connections screen's connector
+# flow (/api/integrations/google/connect), which sends include_granted_scopes=true so
+# the grants merge onto one consent. (Gmail stays via Unipile, not a Google scope.)
+_SCOPES = "openid email profile"
 
 
 def _client_id() -> str:
@@ -61,10 +63,9 @@ def authorize_url(*, redirect_uri: str, client: str = "web",
         "response_type": "code",
         "scope": _SCOPES,
         "state": state,
-        # offline + consent: we save a ConnectedAccount on callback (auto-connect data),
-        # so we need a refresh token for background sync. consent guarantees it's returned.
-        "access_type": "offline",
-        "prompt": "consent",
+        # Identity-only login needs no refresh token (data sync tokens come from the
+        # connector flow), so no access_type=offline and no prompt=consent — returning
+        # users sign in silently instead of re-approving a consent screen every time.
         "include_granted_scopes": "true",
     }
     return _AUTH + "?" + urllib.parse.urlencode(params)
