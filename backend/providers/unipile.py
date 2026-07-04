@@ -567,6 +567,61 @@ class UnipileProvider(LinkedInProvider):
                 out["birthdate"] = {"month": int(month), "day": int(day)}
         return out
 
+    def search_people(
+        self,
+        *,
+        keywords: str = "",
+        network_distance: Optional[list[int]] = None,
+        connections_of: Optional[list[str]] = None,
+        limit: int = 15,
+    ) -> list[dict]:
+        """POST /api/v1/linkedin/search — people search on the connected account.
+
+        `network_distance` uses numeric degrees ([2], [3]) — not DISTANCE_2 strings.
+        `connections_of` expects Unipile member/provider ids (ACoAA...), not slugs.
+        Read-only; returns [] on dry-run or missing creds."""
+        if self._dry_run:
+            return []
+        if not (self.api_key and self.dsn and self.account_id):
+            return []
+        body: dict = {
+            "api": "classic",
+            "category": "people",
+            "limit": max(1, min(int(limit), 25)),
+        }
+        kw = (keywords or "").strip()
+        if kw:
+            body["keywords"] = kw
+        if network_distance:
+            body["network_distance"] = list(network_distance)
+        if connections_of:
+            body["connections_of"] = list(connections_of)
+        import httpx
+        url = f"{self.dsn}/api/v1/linkedin/search"
+        headers = {
+            "X-API-KEY": self.api_key,
+            "accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                resp = client.post(
+                    url, headers=headers,
+                    params={"account_id": self.account_id},
+                    json=body,
+                )
+        except Exception as exc:  # noqa: BLE001 : search is best-effort
+            print(f"  [unipile.search_people] skipped: {type(exc).__name__}: {exc}")
+            return []
+        if resp.status_code >= 400:
+            print(f"  [unipile.search_people] {resp.status_code}: {resp.text[:200]}")
+            return []
+        try:
+            data = resp.json() if resp.text else {}
+        except Exception:
+            return []
+        return list(data.get("items") or [])
+
     def linkedin_raw(
         self,
         *,

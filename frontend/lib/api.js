@@ -305,7 +305,7 @@ export const api = {
   // Streaming twin of relationshipChat: opens the SSE endpoint and invokes the
   // callbacks as frames arrive so the UI can reveal each drafted person the
   // moment the agent stages it. Callbacks: onMeta({auto_send_enabled}),
-  // onProposal(proposal), onDone({summary, auto_send_enabled}), onError({message}).
+  // onProposal(proposal), onDone({summary, auto_send_enabled, network_hits}), onError({message}).
   // Resolves when the stream closes. Nothing is sent — proposals are staged only.
   relationshipChatStream: async (message, { onMeta, onProposal, onDone, onError } = {}) => {
     // Stall watchdog. The server emits a keepalive comment every ~10s even
