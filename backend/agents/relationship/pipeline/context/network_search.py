@@ -408,6 +408,10 @@ def search_linkedin_network(
 
     if getattr(prov, "_dry_run", False) and search_fn is None:
         out.skipped_reason = "dry_run"
+        out.error = (
+            "LinkedIn network search is off in this environment. "
+            "Set UNIPILE_DRY_RUN=false on the server."
+        )
         return out
 
     degrees = parse_degrees(steer)
@@ -573,8 +577,17 @@ def enrich_book_ask(
             out["answer"] = f"{summary} From your book: {out.get('answer') or ''}".strip()
         return out
 
-    # Network-shaped ask but no LinkedIn hits — don't imply "in your book" only.
+    # Network-shaped ask but no LinkedIn hits — surface why, don't fake emptiness.
+    if nr.skipped_reason == "dry_run":
+        out["answer"] = nr.error or (
+            "LinkedIn network search is off in this environment."
+        )
+        return out
+    if nr.skipped_reason == "no_intent":
+        return out
     ans = (out.get("answer") or "").strip()
     if ans and ("in your book" in ans.lower() or "identified in your book" in ans.lower()):
+        out["answer"] = network_summary_from_hits([], steer)
+    elif not nr.hits and detect_network_intent(steer):
         out["answer"] = network_summary_from_hits([], steer)
     return out
