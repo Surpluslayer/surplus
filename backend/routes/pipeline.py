@@ -8,6 +8,30 @@ signed-in user's connected LinkedIn : NOT the env-var operator account.
 The env-var operator account remains the fallback for webhook handlers
 (see routes/webhooks.py : webhooks have no session cookie, so they trace
 the owning user via Prospect → Event → User).
+
+SYNCHRONOUS vs ASYNC (edge safety)
+----------------------------------
+Three handlers here run the heavy stages (LLM + provider fan-out over the
+whole pool) INLINE in the request path and return the full result body:
+
+    POST /events/{id}/prospect  -> PipelineResult
+    POST /events/{id}/outreach  -> OutreachRunResult
+    POST /events/{id}/run       -> PipelineResult
+
+On a real-sized pool these exceed the Cloudflare edge timeout (524). They are
+deliberately RETAINED, but are OPERATOR / TEST ONLY and MUST NOT be fronted by
+the CDN:
+  - the browser UI drives prospecting through the non-blocking job endpoints in
+    routes/jobs.py (POST /prospect/async + /match/async, job_id + poll), and
+    does outreach one prospect at a time via /prospects/{pid}/invite|dm : it
+    never calls the batch sync routes;
+  - /outreach and /run keep a confirm_live_batch human-in-the-loop guard for
+    intentional synchronous operator runs (curl / REPL on a small pool);
+  - tests/test_api.py drives the pipeline through these routes to assert on the
+    inline PipelineResult / OutreachRunResult contract.
+
+If you need these from the UI or behind the edge, call the /async variants;
+do NOT wire the sync routes to a Cloudflare-fronted path.
 """
 from __future__ import annotations
 import csv
@@ -51,6 +75,10 @@ async def prospect_only(
     """
     Stage 02 + 03a only: fan-out + score + threshold. No outreach.
 
+    SYNCHRONOUS / operator-only : runs inline and can trip the edge 524 on a
+    real-sized pool. The UI uses POST /{event_id}/prospect/async (routes/jobs.py)
+    instead; keep this off any CDN-fronted path. See module docstring.
+
     Marks every prospect 'approved' or 'below'. Idempotent : wipes prior
     prospects (and their outreach + conversions) first.
 
@@ -74,6 +102,11 @@ def outreach_only(
 ):
     """
     Stage 03b only: provider-backed outreach for everyone 'approved'.
+
+    SYNCHRONOUS / operator-only : batch provider fan-out runs inline and can
+    trip the edge 524 on a real-sized pool. The UI sends per-prospect via
+    /prospects/{pid}/invite|dm and never calls this batch route; keep it off any
+    CDN-fronted path. See module docstring.
 
     SAFETY: in LIVE mode this fires real LinkedIn invites to every approved
     prospect at once, FROM THE SIGNED-IN USER'S LINKEDIN. We require
@@ -119,6 +152,11 @@ async def run(
 ):
     """
     Convenience: /prospect + /outreach back-to-back. Idempotent.
+
+    SYNCHRONOUS / operator-only : runs both heavy stages inline, so it is the
+    most likely of the three to trip the edge 524. No async equivalent : the UI
+    composes the flow from /prospect/async + per-prospect sends. Keep off any
+    CDN-fronted path. See module docstring.
 
     Same SAFETY guard as /outreach : in LIVE mode this fires real invites
     to every approved prospect at once. Pass ?confirm_live_batch=true to

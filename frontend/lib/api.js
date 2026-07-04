@@ -145,6 +145,10 @@ export const api = {
 
   // 03 outreach (provider-backed; DRY_RUN by default)
   previewOutreach: (id) => request(`/events/${id}/outreach/preview`),
+  // NOTE: batch /outreach is a SYNCHRONOUS operator-only route (can trip the
+  // edge 524 on a real pool) and is unused by the UI, which sends per-prospect
+  // via sendInvite / sendDirectMessage below. Left here for parity/manual use;
+  // do not wire it into the auto-outreach screen.
   runOutreach: (id) => request(`/events/${id}/outreach`, { method: "POST" }),
   getOutreachLog: (id) => request(`/events/${id}/outreach/log`),
 
@@ -170,7 +174,10 @@ export const api = {
   checkConnections: (eid) =>
     request(`/events/${eid}/check-connections`, { method: "POST" }),
 
-  // convenience : full pipeline in one call (BLOCKED in live without confirm)
+  // convenience : full pipeline in one call (BLOCKED in live without confirm).
+  // SYNCHRONOUS operator-only route : runs both heavy stages inline and can trip
+  // the edge 524. Unused by the UI (which uses runProspect async + per-prospect
+  // sends); kept for manual/parity use only.
   runPipeline: (id) => request(`/events/${id}/run`, { method: "POST" }),
 
   // 04 matching
