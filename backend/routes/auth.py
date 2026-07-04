@@ -1016,17 +1016,30 @@ async def linkedin_callback(
 #      AuthState so the Integrations tile shows Connected immediately,
 #      then redirect into the app.
 
-def _email_create_body(dsn: str, expires: str, state_token: str,
-                       base: str, failure_url: str) -> dict:
-    """Hosted-auth create body for the email channel. Mirrors _create_body
-    but with the mail providers and the email webhook/callback URLs.
+# Map a frontend provider hint to Unipile's hosted-auth provider tokens.
+# Unipile's token for Microsoft mail is "OUTLOOK" (the docs prose says
+# "Microsoft" but the API schema rejects "MICROSOFT" with invalid_parameters,
+# verified against the live API). An empty/unknown hint offers BOTH, so the
+# generic "connect email" button keeps showing Unipile's provider picker.
+def _email_providers_for(hint: str) -> list[str]:
+    h = (hint or "").strip().lower()
+    if h in ("outlook", "microsoft", "m365", "office365"):
+        return ["OUTLOOK"]
+    if h in ("google", "gmail", "workspace"):
+        return ["GOOGLE"]
+    return ["GOOGLE", "OUTLOOK"]
 
-    NOTE: Unipile's provider token for Microsoft mail is "OUTLOOK" — the
-    docs prose says "Microsoft" but the API schema rejects "MICROSOFT"
-    with errors/invalid_parameters (verified against the live API)."""
+
+def _email_create_body(dsn: str, expires: str, state_token: str,
+                       base: str, failure_url: str,
+                       providers: Optional[list[str]] = None) -> dict:
+    """Hosted-auth create body for the email channel. Mirrors _create_body
+    but with the mail providers and the email webhook/callback URLs. A caller
+    can pass a single-provider list (e.g. ["OUTLOOK"]) to mint a one-tap
+    Outlook or Gmail link; default offers both."""
     return {
         "type": "create",
-        "providers": ["GOOGLE", "OUTLOOK"],
+        "providers": providers or ["GOOGLE", "OUTLOOK"],
         "api_url": dsn,
         "expiresOn": expires,
         "success_redirect_url": f"{base}/api/auth/email/callback?state={state_token}",
@@ -1060,12 +1073,17 @@ def _extract_mailbox_address(account_data: dict) -> Optional[str]:
 @router.post("/email/start")
 async def email_start(
     request: Request,
+    provider: str = "",
     db: DbSession = Depends(get_db),
     user: User = Depends(current_user),
 ) -> JSONResponse:
     """Mint a hosted-auth link for connecting the signed-in user's mailbox.
     Auth required : the email seat always attaches to an existing account,
-    so anonymous callers have nothing to attach it to."""
+    so anonymous callers have nothing to attach it to.
+
+    Optional ?provider=outlook (or google) mints a one-tap single-provider
+    link; omitted, Unipile shows both Gmail and Outlook. Outlook goes fully
+    through Unipile hosted auth, so no separate Microsoft/Azure app is needed."""
     dsn, api_key = _ensure_unipile_configured()
 
     state_token = secrets.token_urlsafe(32)
@@ -1080,7 +1098,8 @@ async def email_start(
 
     status_code, data = await _post_hosted_link(
         dsn, api_key,
-        _email_create_body(dsn, expires, state_token, base, failure_url))
+        _email_create_body(dsn, expires, state_token, base, failure_url,
+                           providers=_email_providers_for(provider)))
     url = (data or {}).get("url")
     if status_code >= 400 or not url:
         print(f"  [auth.email] hosted link failed status={status_code} "

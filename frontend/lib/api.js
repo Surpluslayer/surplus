@@ -470,8 +470,11 @@ export const api = {
     request("/api/auth/linkedin/start?mobile=1", { method: "POST" }),
   // Connect the signed-in user's mailbox (Gmail/Outlook) as a second Unipile
   // seat. Returns { url } — redirect the browser there; the hosted page does
-  // the OAuth and bounces back with the Integrations tile flipped.
-  startEmailAuth: () => request("/api/auth/email/start", { method: "POST", retriable: true }),
+  // the OAuth and bounces back with the Integrations tile flipped. Pass
+  // "outlook" or "google" for a one-tap single-provider link; omit for both.
+  startEmailAuth: (provider) =>
+    request("/api/auth/email/start" + (provider ? `?provider=${encodeURIComponent(provider)}` : ""),
+            { method: "POST", retriable: true }),
   // Connect the signed-in user's WhatsApp as a Unipile CLOUD seat (like the
   // email/LinkedIn seats, not a device companion). Returns { url } — redirect
   // the browser there; the hosted page does the WhatsApp pairing and bounces

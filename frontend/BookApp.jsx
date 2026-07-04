@@ -1117,19 +1117,30 @@ function ConnectionsScreen({ user, onBack }) {
                        connected={acct.status === "active"}
                        onConnect={() => connect(api.startEmailAuth, "email")} />
             ))}
-            <ConnRow icon={<Mail size={21} />} name="Add another email"
-                     sub="Gmail or Outlook"
+            <ConnRow icon={<Mail size={21} />} name="Add Gmail"
+                     sub="Connect a Google mailbox"
                      connected={false}
-                     onConnect={() => connect(api.startEmailAuth, "email")} />
+                     onConnect={() => connect(() => api.startEmailAuth("google"), "Gmail")} />
+            <ConnRow icon={<Mail size={21} />} name="Add Outlook"
+                     sub="Connect a Microsoft 365 / Outlook mailbox"
+                     connected={false}
+                     onConnect={() => connect(() => api.startEmailAuth("outlook"), "Outlook")} />
           </>
         ) : (
-          // Legacy / no-mailbox fallback : the original single Gmail row.
-          <ConnRow icon={<Mail size={21} />} name="Gmail"
-                   sub={emailOn && user?.email_account_address
-                     ? `Connected as ${user.email_account_address}`
-                     : "Tracks replies, sends your drafts"}
-                   connected={emailOn}
-                   onConnect={() => connect(api.startEmailAuth, "Gmail")} />
+          // No mailbox yet : explicit Gmail + Outlook connect rows. Both go
+          // through Unipile hosted auth (no separate Microsoft/Azure app).
+          <>
+            <ConnRow icon={<Mail size={21} />} name="Gmail"
+                     sub={emailOn && user?.email_account_address
+                       ? `Connected as ${user.email_account_address}`
+                       : "Tracks replies, sends your drafts"}
+                     connected={emailOn}
+                     onConnect={() => connect(() => api.startEmailAuth("google"), "Gmail")} />
+            <ConnRow icon={<Mail size={21} />} name="Outlook"
+                     sub="Microsoft 365 / Outlook : tracks replies, sends your drafts"
+                     connected={false}
+                     onConnect={() => connect(() => api.startEmailAuth("outlook"), "Outlook")} />
+          </>
         )}
         <ConnRow icon={<MessageCircle size={21} />} name="WhatsApp"
                  sub={whatsappOn
