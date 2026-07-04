@@ -156,8 +156,7 @@ def test_enrich_book_ask_replaces_book_only_answer():
     )
     assert len(out["network_hits"]) == 1
     assert out["network_hits"][0]["name"] == "Alex Kim"
-    assert "Alex Kim" in out["answer"]
-    assert "in your book" not in out["answer"].lower()
+    assert out["answer"] == ""
 
 
 def test_search_dedupes_roster_and_via_connector(db, monkeypatch):
@@ -239,7 +238,7 @@ def test_agent_injects_network_block_into_triage(db, monkeypatch):
     prompt = recorded[0]["messages"][0]["content"]
     assert "NETWORK SEARCH RESULTS" in prompt
     assert "Karthik Sridharan" in prompt
-    assert "Karthik" in res.summary
+    assert res.summary == ""
 
 
 def test_agent_network_only_without_contacts(db, monkeypatch):
@@ -267,5 +266,5 @@ def test_agent_network_only_without_contacts(db, monkeypatch):
         client=client,
     )
     assert res.stop_reason == "network_only"
-    assert "Alex Kim" in res.summary
-    assert res.network_hits[0]["linkedin_slug"] == "alexkim"
+    assert res.summary == ""
+    assert res.network_hits[0]["name"] == "Alex Kim"

@@ -1376,7 +1376,9 @@ function AskBar({ variant, onOpen, onDraft }) {
 
       {res && (
         <div className="bk-answer">
-          <div className="bk-answer-text">{res.answer}</div>
+          {res.answer && !(res.networkHits || []).length && (
+            <div className="bk-answer-text">{res.answer}</div>
+          )}
           {(res.people || []).length > 0 && (
             <div className="bk-answer-people">
               {res.people.map((p, i) => (
