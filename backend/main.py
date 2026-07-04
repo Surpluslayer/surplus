@@ -236,6 +236,84 @@ def extension_privacy():
     return HTMLResponse(_EXTENSION_PRIVACY_HTML)
 
 
+_APP_PRIVACY_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>surplus — Privacy Policy</title>
+<style>
+ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+ max-width:720px;margin:48px auto;padding:0 20px;color:#1b1e22;line-height:1.6}
+ h1{font-weight:800;letter-spacing:-.03em} h2{margin-top:28px;font-size:18px}
+ .upd{color:#99a0a8;font-size:14px} a{color:#2f6df6} code{background:#f1f3f6;padding:1px 5px;border-radius:5px}
+</style></head><body>
+<h1>surplus — Privacy Policy</h1>
+<p class="upd">Last updated: July 1, 2026</p>
+<p>surplus (surpluslayer.com) helps you keep up with your professional
+relationships: it organizes the people you know, drafts outreach for you, and
+keeps your follow-ups on track. This policy explains what data surplus handles
+and how.</p>
+<h2>Information we collect</h2>
+<ul>
+<li><b>Account information.</b> Your name, email address, and sign-in
+credentials (via Google, Microsoft, or an email + password you set).</li>
+<li><b>Contacts and relationships.</b> People you capture or import — names,
+titles, companies, LinkedIn profile URLs, email addresses, and notes you add.</li>
+<li><b>Connected services.</b> When you connect an account (Google, Microsoft,
+LinkedIn via Unipile, Calendly, and similar), surplus accesses the data needed
+for the features you use — for example calendar events to schedule and record
+meetings, and your contacts to build your relationship book.</li>
+<li><b>Messages.</b> Drafts surplus writes for you and conversations you sync,
+so drafting can be grounded in your real relationship history.</li>
+</ul>
+<h2>How we use Google user data</h2>
+<p>If you sign in with Google or connect a Google account, surplus requests:</p>
+<ul>
+<li><b>Basic profile (openid, email, profile)</b> — to create and identify
+your account.</li>
+<li><b>Calendar events (calendar.events)</b> — to schedule meetings you ask
+surplus to book and to reflect meetings in your relationship timeline.</li>
+<li><b>Contacts, read-only (contacts.readonly)</b> — to import your address
+book into your relationship book so surplus can help you keep up with those
+people.</li>
+</ul>
+<p>surplus's use of information received from Google APIs adheres to the
+<a href="https://developers.google.com/terms/api-services-user-data-policy">Google
+API Services User Data Policy</a>, including the Limited Use requirements.
+Google user data is used only to provide the user-facing features described
+above; it is never sold, never used for advertising, and never transferred to
+third parties except as required to provide these features or comply with law.
+We do not use Google user data to train generalized AI or machine-learning
+models.</p>
+<h2>How we use your data generally</h2>
+<ul>
+<li>To provide surplus's features: your relationship book, drafted messages,
+reminders, and scheduling.</li>
+<li>We do <b>not</b> sell your data. We do <b>not</b> share it with advertisers.</li>
+<li>Service providers that process data on our behalf (hosting, email
+delivery, the Unipile messaging API, AI drafting providers) are used only to
+operate surplus.</li>
+</ul>
+<h2>Storage, retention, and deletion</h2>
+<p>Your data is stored on our hosting provider's infrastructure and retained
+while your account is active. You can disconnect any connected service at any
+time from Settings, which stops further syncing. To delete your account and
+its data, contact us at the address below and we will remove it.</p>
+<h2>Security</h2>
+<p>Data is transmitted over HTTPS and stored with access controls. OAuth
+tokens are stored server-side and never exposed to other users.</p>
+<h2>Contact</h2>
+<p>Questions or deletion requests:
+<a href="mailto:support@surpluslayer.com">support@surpluslayer.com</a></p>
+</body></html>"""
+
+
+@app.get("/privacy", include_in_schema=False)
+def app_privacy():
+    """App-level privacy policy (Google OAuth verification + stores require a
+    policy hosted on the app's own domain)."""
+    return HTMLResponse(_APP_PRIVACY_HTML)
+
+
 # --- Marketing landing page (join.surpluslayer.com) -----------------------
 # Ported in-app from the old standalone roi-engine FastAPI service, whose
 # Postgres dependency at startup made the whole site 502 when the DB blipped.
