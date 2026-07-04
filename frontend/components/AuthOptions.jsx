@@ -6,7 +6,7 @@
 // has demo/paid pre-flight). On success the session cookie is set; we reload so
 // /api/auth/me re-renders into the signed-in app.
 import React, { useState } from "react";
-import { Loader2, ArrowRight, AlertCircle } from "lucide-react";
+import { Loader2, ArrowRight, AlertCircle, Eye, EyeOff } from "lucide-react";
 import { api } from "../lib/api.js";
 import { isNativeApp, nativeOAuthLogin } from "../lib/nativeAuth.js";
 
@@ -34,6 +34,7 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);   // reveal-password toggle
   const [busy, setBusy] = useState(false);
   const [oauthBusy, setOauthBusy] = useState(null); // "google" | "microsoft"
   const [error, setError] = useState(null);
@@ -208,9 +209,17 @@ export default function AuthOptions({ onSignedIn, defaultMode = "signup" }) {
         )}
         <input className="authopts-in" type="email" value={email} required placeholder="you@anywhere.com"
                onChange={(e) => setEmail(e.target.value)} />
-        <input className="authopts-in" type="password" value={password} required
-               placeholder={mode === "signup" ? "Password (8+ characters)" : "Password"}
-               onChange={(e) => setPassword(e.target.value)} />
+        <div className="authopts-pw">
+          <input className="authopts-in" type={showPw ? "text" : "password"} value={password} required
+                 style={{ paddingRight: 42 }}
+                 placeholder={mode === "signup" ? "Password (8+ characters)" : "Password"}
+                 onChange={(e) => setPassword(e.target.value)} />
+          <button type="button" className="authopts-pw-toggle" tabIndex={-1}
+                  onClick={() => setShowPw((v) => !v)}
+                  aria-label={showPw ? "Hide password" : "Show password"}>
+            {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
+          </button>
+        </div>
         <button type="submit" className="authopts-submit" disabled={busy || !!oauthBusy || !canSubmit}>
           {busy ? <><Loader2 className="spin" size={16} /> {mode === "signup" ? "Creating account…" : "Signing in…"}</>
                 : <>{mode === "signup" ? "Create account" : "Sign in"} <ArrowRight size={16} /></>}
@@ -253,6 +262,14 @@ const AUTHOPTS_CSS = `
   background:#fff; color:#1b1e22; font:inherit; font-size:14px; box-sizing:border-box;
 }
 .authopts-in:focus { outline:none; border-color:#2f6df6; box-shadow:0 0 0 3px #eaf1fe; }
+.authopts-pw { position:relative; }
+.authopts-pw-toggle {
+  position:absolute; top:50%; right:8px; transform:translateY(-50%);
+  display:flex; align-items:center; justify-content:center;
+  width:28px; height:28px; padding:0; border:0; border-radius:6px;
+  background:transparent; color:#6b7280; cursor:pointer;
+}
+.authopts-pw-toggle:hover { color:#1b1e22; background:#f2f4f7; }
 .authopts-submit {
   display:flex; align-items:center; justify-content:center; gap:8px;
   width:100%; padding:11px 14px; border:0; border-radius:10px; margin-top:2px;
