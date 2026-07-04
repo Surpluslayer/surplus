@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..agents.relationship import book as book_agent
 from ..agents.relationship.spine import relationships as rel_agent
+from ..agents.relationship.pipeline.context.network_search import enrich_book_ask
 from ..auth import current_user
 from ..db import get_db
 
@@ -473,12 +474,14 @@ def ask(body: AskIn, db: Session = Depends(get_db),
     _t = time.monotonic()
     res = book_agent.ask_agent(book, q)        # selection only: draft=null
     t_select = time.monotonic() - _t
+    contacts_orm = rel_agent.list_contacts(db, user.id)
+    res = enrich_book_ask(user, q, contacts_orm, res)
     people = res.get("people") or []
     # Backfill each selected person with a real voice + thread draft via the ONE
     # shared composer. Resolve Contact ORMs ONCE (list_contacts is expensive),
     # then fan the drafts out concurrently. Cards still show drafts inline.
     _t = time.monotonic()
-    orm_by_id = {str(c.id): c for c in rel_agent.list_contacts(db, user.id)}
+    orm_by_id = {str(c.id): c for c in contacts_orm}
     t_orm = time.monotonic() - _t
     by_name = {(c.get("name") or "").strip().lower(): c for c in book}
     jobs, idxs = [], []
@@ -553,16 +556,23 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
             wuser = wdb.query(models.User).get(user_id)
             events.put(("status", {"phase": "selecting"}))
             book = _load_book(wdb, wuser)
+            contacts_orm = rel_agent.list_contacts(wdb, user_id)
             res = book_agent.ask_agent(book, q)          # selection (Haiku, gated)
+            res = enrich_book_ask(wuser, q, contacts_orm, res)
             people = res.get("people") or []
-            orm_by_id = {str(c.id): c for c in rel_agent.list_contacts(wdb, user_id)}
+            network_hits = res.get("network_hits") or []
+            orm_by_id = {str(c.id): c for c in contacts_orm}
             by_name = {(c.get("name") or "").strip().lower(): c for c in book}
             for p in people:
                 bd = by_name.get((p.get("name") or "").strip().lower())
                 if bd and bd.get("id"):
                     p["contact_id"] = bd["id"]
             # Show the ranked list NOW (drafts fill in next) -- first paint ~3s.
-            events.put(("people", {"people": people, "answer": res.get("answer")}))
+            events.put(("people", {
+                "people": people,
+                "answer": res.get("answer"),
+                "network_hits": network_hits,
+            }))
             # Draft the top few, emitting each as it lands. Build DB contexts
             # SERIALLY (session not thread-safe), then fan the pure-LLM calls out.
             inline = max(0, int(os.environ.get("ASK_INLINE_DRAFTS", "6")))
@@ -619,7 +629,8 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
                         except Exception:  # noqa: BLE001 : one bad draft must not sink the stream
                             pass
             events.put(("done", {"total_s": round(time.monotonic() - t0, 1),
-                                 "count": len(people)}))
+                                 "count": len(people),
+                                 "network_hits": network_hits}))
             _trace(f"POST /ask/stream user={user_id} q={q!r} -> {len(people)} people "
                    f"in {time.monotonic()-t0:.1f}s (streamed)")
         except Exception as exc:  # noqa: BLE001

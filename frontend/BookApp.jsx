@@ -19,6 +19,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Sparkles, ArrowUp, ArrowRight, Star, LayoutDashboard, Plus, BookText, Loader2, X,
+  Link2,
   ChevronLeft, ChevronRight, ChevronDown, MapPin, QrCode, Link2, Search, Send,
   Mail, Calendar, Plug, CreditCard, LogOut, CheckCircle2, Mic,
 } from "lucide-react";
@@ -905,13 +906,13 @@ function AddScreen({ user, onAccount, onAdded }) {
 
 // Match the relationship-agent chat's suggested "bubbles" (event-host framing).
 const CHIPS = ["Reach out to my sales prospects",
-               "Schedule calls with leads",
-               "Follow up with people from the event"];
+               "Who do I know at Cursor?",
+               "2nd degree founders in NYC"];
 
 function AskBar({ variant, onOpen, onDraft }) {
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
-  const [res, setRes] = useState(null);   // {answer, people}
+  const [res, setRes] = useState(null);   // {answer, people, networkHits}
   const [err, setErr] = useState("");
   const [phase, setPhase] = useState("");  // live "thinking / drafting X…" label
 
@@ -927,8 +928,12 @@ function AskBar({ variant, onOpen, onDraft }) {
         onStatus: ({ phase: ph, name }) =>
           setPhase(ph === "drafting" ? `Drafting ${name || "…"}` :
                    ph === "selecting" ? "Finding who to follow up with…" : "Thinking…"),
-        onPeople: ({ people, answer }) =>
-          setRes({ answer: answer || "", people: people || [] }),
+        onPeople: ({ people, answer, network_hits }) =>
+          setRes({
+            answer: answer || "",
+            people: people || [],
+            networkHits: network_hits || [],
+          }),
         onToken: ({ index, t }) =>     // each card types out live
           setRes((r) => {
             if (!r || !r.people[index]) return r;
@@ -1005,8 +1010,38 @@ function AskBar({ variant, onOpen, onDraft }) {
               ))}
             </div>
           )}
+          {(res.networkHits || []).length > 0 && (
+            <div className="bk-answer-network">
+              {res.networkHits.map((h, i) => (
+                <NetworkHitCard key={`${h.linkedin_slug || h.name}-${i}`} hit={h} />
+              ))}
+            </div>
+          )}
           <button className="bk-link" onClick={() => { setRes(null); setQ(""); }}>Clear</button>
         </div>
+      )}
+    </div>
+  );
+}
+
+function NetworkHitCard({ hit }) {
+  const url = hit.linkedin_url
+    || (hit.linkedin_slug ? `https://www.linkedin.com/in/${hit.linkedin_slug}` : null);
+  const path = hit.via_connector
+    ? `Ask ${hit.via_connector} for an intro`
+    : (hit.network_degree ? `${hit.network_degree}° connection` : "Extended network");
+
+  return (
+    <div className="bk-network-hit">
+      <div className="bk-network-main">
+        <div className="bk-ap-name">{hit.name || "Unknown"}</div>
+        {hit.headline && <div className="bk-ap-reason">{hit.headline}</div>}
+        <div className="bk-network-path"><Link2 size={12} /> {path}</div>
+      </div>
+      {url && (
+        <a className="bk-network-link" href={url} target="_blank" rel="noopener noreferrer">
+          LinkedIn
+        </a>
       )}
     </div>
   );
@@ -1623,6 +1658,13 @@ const BOOK_CSS = `
 .bk-answer-people{margin-top:10px; display:flex; flex-direction:column; gap:8px;}
 .bk-answer-person{display:flex; align-items:flex-start; justify-content:space-between; gap:10px;
   background:var(--bg); border:.5px solid var(--line); border-radius:var(--r-md); padding:9px 11px;}
+.bk-answer-network{margin-top:10px; display:flex; flex-direction:column; gap:8px;}
+.bk-network-hit{display:flex; align-items:flex-start; justify-content:space-between; gap:10px;
+  background:#fafbff; border:.5px solid rgba(109,40,217,.15); border-radius:var(--r-md); padding:9px 11px;}
+.bk-network-main{flex:1; min-width:0;}
+.bk-network-path{display:flex; align-items:center; gap:5px; font-size:12px; color:var(--faint); margin-top:4px;}
+.bk-network-link{flex:none; font-size:12px; font-weight:600; color:var(--accent); text-decoration:none;
+  padding:6px 10px; border-radius:8px; border:.5px solid var(--line); background:#fff;}
 .bk-ap-name{font-size:13px; font-weight:500; color:var(--ink);}
 .bk-ap-reason{font-size:12px; color:var(--muted); margin-top:1px;}
 .bk-ap-draft{font-size:12px; color:var(--muted); font-style:italic; margin-top:4px; line-height:1.4;}

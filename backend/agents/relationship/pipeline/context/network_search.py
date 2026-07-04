@@ -541,3 +541,40 @@ def network_summary_from_hits(hits: list[NetworkHit], instruction: str = "") -> 
         if connectors:
             tail = f" Ask {connectors[0]} for an intro first."
     return f"{lead}: " + "; ".join(parts) + "." + tail
+
+
+def enrich_book_ask(
+    user: Any,
+    query: str,
+    contacts: list[Any],
+    book_answer: dict,
+    *,
+    search_fn: Any = None,
+) -> dict:
+    """Merge LinkedIn network hits into a BookApp /ask response."""
+    out = dict(book_answer or {})
+    out.setdefault("people", [])
+    out["network_hits"] = []
+    steer = (query or "").strip()
+    if not detect_network_intent(steer):
+        return out
+
+    nr = search_linkedin_network(user, steer, contacts, search_fn=search_fn)
+    if nr.error and not nr.hits:
+        out["answer"] = nr.error
+        return out
+
+    if nr.hits:
+        out["network_hits"] = [h.as_dict() for h in nr.hits]
+        summary = network_summary_from_hits(nr.hits, steer)
+        if not out.get("people"):
+            out["answer"] = summary
+        else:
+            out["answer"] = f"{summary} From your book: {out.get('answer') or ''}".strip()
+        return out
+
+    # Network-shaped ask but no LinkedIn hits — don't imply "in your book" only.
+    ans = (out.get("answer") or "").strip()
+    if ans and ("in your book" in ans.lower() or "identified in your book" in ans.lower()):
+        out["answer"] = network_summary_from_hits([], steer)
+    return out
