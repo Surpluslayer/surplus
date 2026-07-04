@@ -20,7 +20,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Sparkles, ArrowUp, ArrowRight, Star, LayoutDashboard, Plus, BookText, Loader2, X,
   Link2,
-  ChevronLeft, ChevronRight, ChevronDown, MapPin, QrCode, Link2, Search, Send,
+  ChevronLeft, ChevronRight, ChevronDown, MapPin, QrCode, Search, Send,
   Mail, Calendar, Plug, CreditCard, LogOut, CheckCircle2, Mic, Video, MessageCircle,
   KeyRound,
 } from "lucide-react";
