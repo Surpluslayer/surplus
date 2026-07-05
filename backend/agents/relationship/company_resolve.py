@@ -570,7 +570,8 @@ def resolve_contact(db, contact, *,
 
 # ── backfill ─────────────────────────────────────────────────────────────────
 
-def backfill(db, user_id: Optional[int] = None, dry_run: bool = True) -> dict:
+def backfill(db, user_id: Optional[int] = None, dry_run: bool = True,
+             limit: Optional[int] = None, offset: int = 0) -> dict:
     """Sweep existing Contacts through resolve_contact and report.
 
     dry_run=True (the default, matching identity.py's safety contract)
@@ -579,18 +580,31 @@ def backfill(db, user_id: Optional[int] = None, dry_run: bool = True) -> dict:
     commits at the end. Memberships land with source="backfill" so a bad
     sweep stays auditable and reversible.
 
+    limit/offset page the sweep (ordered by contact id, so pages are stable):
+    a whole-book run over HTTP can outlive Cloudflare's ~100s proxy ceiling,
+    so callers batch. resolve_contact is idempotent, which makes pages safely
+    re-runnable and resumable. `remaining` in the report says what's left
+    past this page.
+
     Returns::
-        {"total": n, "resolved_strong": n, "resolved_name": n,
+        {"total": n, "remaining": n, "resolved_strong": n, "resolved_name": n,
          "pending_review": n, "skipped_no_signal": n, "companies_created": n,
          "sample": [(contact_name, company_name, via, confidence), ...]}
     """
     q = db.query(models.Contact).order_by(models.Contact.id)
     if user_id is not None:
         q = q.filter(models.Contact.user_id == user_id)
+    matched = q.count()
+    if offset:
+        q = q.offset(offset)
+    if limit is not None:
+        q = q.limit(limit)
     contacts = q.all()
 
     companies_before = db.query(models.Company).count()
-    report = {"total": len(contacts), "resolved_strong": 0,
+    report = {"total": matched,
+              "remaining": max(0, matched - offset - len(contacts)),
+              "resolved_strong": 0,
               "resolved_name": 0, "pending_review": 0,
               "skipped_no_signal": 0, "companies_created": 0, "sample": []}
 
