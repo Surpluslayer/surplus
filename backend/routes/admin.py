@@ -1252,6 +1252,8 @@ def backfill_accounts(
     user_id: Optional[int] = None,
     execute: bool = False,
     allow_llm: bool = False,
+    limit: Optional[int] = 100,
+    offset: int = 0,
     db: Session = Depends(get_db),
     _: None = Depends(_require_admin_token),
 ):
@@ -1275,7 +1277,9 @@ def backfill_accounts(
         cr._anthropic_available = lambda: False
         try:
             return company_resolve.backfill(db, user_id=user_id,
-                                            dry_run=not execute)
+                                            dry_run=not execute,
+                                            limit=limit, offset=offset)
         finally:
             cr._anthropic_available = orig
-    return company_resolve.backfill(db, user_id=user_id, dry_run=not execute)
+    return company_resolve.backfill(db, user_id=user_id, dry_run=not execute,
+                                    limit=limit, offset=offset)
