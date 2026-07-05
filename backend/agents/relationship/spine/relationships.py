@@ -69,10 +69,14 @@ def _as_aware(dt: Optional[datetime]) -> Optional[datetime]:
 
 
 def _clean(val: Any) -> Optional[str]:
-    """Trimmed non-empty string, else None."""
+    """Trimmed non-empty string, else None. Also strips ASCII control
+    characters: LinkedIn display names occasionally carry them (a prod
+    contact literally had one in their name), and one raw 0x00-0x1F in a
+    stored string breaks every strict JSON consumer of every response
+    that ever serializes it."""
     if val is None:
         return None
-    s = str(val).strip()
+    s = "".join(ch for ch in str(val) if ch >= " " or ch == "\t").strip()
     return s or None
 
 

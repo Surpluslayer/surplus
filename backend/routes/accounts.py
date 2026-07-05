@@ -72,7 +72,15 @@ def list_accounts(tier: Optional[str] = None, q: Optional[str] = None,
         query = query.filter(models.Account.tier == tier)
 
     summaries = []
+    dirty = False
     for account in query.all():
+        # Lazy rollup: accounts born from a bulk backfill land with NULL
+        # strength/last-touch (the backfill deliberately skips per-account
+        # recompute to stay inside its HTTP batch window). First list view
+        # heals them, so the tab never shows a graph of empty chips.
+        if account.strength_score is None or not account.contact_count:
+            accounts_read.recompute_rollups(db, account)
+            dirty = True
         s = accounts_read.account_summary(db, account, user.id)
         if s is None:
             continue
@@ -91,6 +99,8 @@ def list_accounts(tier: Optional[str] = None, q: Optional[str] = None,
           is not None else -1.0),
         (s["company"]["canonical_name"] or "").lower(),
     ))
+    if dirty:
+        db.commit()
     return {"accounts": summaries}
 
 
