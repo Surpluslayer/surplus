@@ -101,13 +101,52 @@ class Base(DeclarativeBase):
     """Declarative base for all ORM models."""
 
 
+def _rls_enabled() -> bool:
+    return (os.environ.get("SURPLUS_RLS_ENABLED") or "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def set_rls_user(db, user_id: int) -> None:
+    """Scope this request's DB connection to `user_id` so Postgres Row-Level
+    Security returns only that user's rows. No-op unless SURPLUS_RLS_ENABLED and
+    Postgres. Harmless when the app still connects as a superuser (RLS bypassed);
+    it only bites once the connection role is a non-bypass one (surplus_app).
+
+    set_config (parameterized) instead of a literal SET so the uid can't be
+    injected. Session-scoped (is_local=false) so it survives commits within the
+    request; get_db RESETS it before the pooled connection is handed to the next.
+    """
+    if not _rls_enabled() or ENGINE.dialect.name != "postgresql":
+        return
+    from sqlalchemy import text
+    db.execute(text("SELECT set_config('app.user_id', :uid, false)"),
+               {"uid": str(int(user_id))})
+
+
+def reset_rls_user(db) -> None:
+    """Clear the RLS scope before the pooled connection is reused by another
+    request (otherwise the next request would inherit this user's scope)."""
+    if not _rls_enabled() or ENGINE.dialect.name != "postgresql":
+        return
+    from sqlalchemy import text
+    try:
+        db.execute(text("SELECT set_config('app.user_id', '', false)"))
+    except Exception:  # noqa: BLE001 -- a broken txn must not block session close
+        pass
+
+
 def get_db():
-    """FastAPI dependency : yields a session, always closes it."""
+    """FastAPI dependency : yields a session, always closes it. On release it
+    clears any RLS scope set during the request so a pooled connection can't leak
+    one user's scope into the next."""
     db = SessionLocal()
     try:
         yield db
     finally:
-        db.close()
+        try:
+            reset_rls_user(db)
+        finally:
+            db.close()
 
 
 def _is_benign_migration_error(exc: Exception) -> bool:
