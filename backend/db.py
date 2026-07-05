@@ -195,6 +195,9 @@ def init_db() -> None:
         # set). Appending it also bumps the schema revision so create_all picks
         # up the new tenant_keys table on existing databases.
         _migrate_encrypt_connected_account_tokens,
+        # Bumps the schema revision so create_all picks up the deletion_audit
+        # table (Phase 3 deletion audit log) on existing databases.
+        _migrate_deletion_audit,
         # Runs LAST : re-points existing User/Contact child FKs to ON DELETE
         # CASCADE so the delete paths (merge/cleanup) stop 500ing on Postgres.
         _migrate_fk_cascade,
@@ -355,6 +358,15 @@ def _migrate_encrypt_connected_account_tokens() -> None:
             print(f"  [init_db] encrypted tokens on {changed} connected_accounts row(s)")
     finally:
         db.close()
+
+
+def _migrate_deletion_audit() -> None:
+    """Ensure the deletion_audit table exists (Phase 3 deletion audit log). It's
+    a new table, so create_all (which runs before this loop) creates it; this
+    migration exists so appending it bumps the schema revision and create_all
+    re-runs on already-stamped databases."""
+    from . import models  # noqa: F401  (registers DeletionAudit for create_all)
+    return
 
 
 def _migrate_user_linkedin_chat_synced_at() -> None:

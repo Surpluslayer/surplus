@@ -33,6 +33,8 @@ from .routes import (
     billing, demo, webhooks, admin,
     # relationship side (the phone-first "book" / CRM)
     book, relationships, inperson, followups, integrations, messages, settings,
+    # shared: data-subject rights (export / delete)
+    privacy,
     # events side (the desktop event-ROI pipeline)
     events, pipeline, matching, roi, triage, curation, jobs,
     # infra: token-gated Unipile pass-through for :443-only egress sandboxes
@@ -273,6 +275,7 @@ app.include_router(inperson.router)        # phone capture (QR / paste / manual)
 app.include_router(messages.router)        # message capture (context in) + send queue
 app.include_router(followups.router)       # scheduled follow-up queue
 app.include_router(settings.router)        # per-user settings (autonomy mode)
+app.include_router(privacy.router)         # data-subject rights: export / delete
 app.include_router(integrations.router)    # OAuth source connectors (Google ...)
 
 # ── EVENTS side: the desktop event-ROI pipeline (www.surpluslayer.com) ───────
