@@ -222,6 +222,33 @@ def run_followups(
     return dispatch_due_followups(db)
 
 
+@router.post("/run-retention-purge", status_code=200)
+def run_retention_purge(
+    dry_run: bool = True,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Purge ephemeral rows (expired sessions, old finished jobs) past their
+    category TTL. No-op unless SURPLUS_RETENTION_ENABLED. `dry_run=true` (the
+    default) only reports what WOULD be purged, so this is safe to poke."""
+    from .. import retention
+    return retention.run_purge_sweep(db, dry_run=dry_run)
+
+
+@router.post("/delete-user", status_code=200)
+def admin_delete_user(
+    user_id: int,
+    reason: str = "",
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Admin-initiated full deletion (support handling a customer's delete
+    request). Returns per-category counts as the deletion confirmation, and
+    writes a metadata-only DeletionAudit row. Irreversible."""
+    from .. import retention
+    return retention.delete_user_data(db, user_id, actor="admin", reason=reason)
+
+
 def dispatch_due_followups(db: Session) -> dict:
     """Core dispatch pass: send every scheduled follow-up whose send_at has
     arrived. Callable from the route (external cron) AND the in-process

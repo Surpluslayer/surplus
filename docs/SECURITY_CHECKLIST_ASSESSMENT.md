@@ -206,6 +206,24 @@ silently reintroduce an E2E claim.
 
 ---
 
+## Phase 3 — Data retention (assessment + what shipped)
+
+The DB already hard-deletes via FK CASCADE (the demo-user purge uses it). This
+phase adds offboarding, an audit trail, and a purge engine. *(Code items
+implemented in the retention PR; the rest need a retention schedule / infra.)*
+
+| Item | Status | Notes |
+|------|--------|-------|
+| `[sell]` Category-level TTLs / scheduled purge jobs | 🟡 ENGINE SHIPPED, config-gated | `backend/retention.run_purge_sweep` + `POST /admin/run-retention-purge`. **OFF by default**, dry-run reports what it would purge. Only touches **ephemeral** rows (expired/revoked sessions, old finished jobs) — never contact/message content. Set `SURPLUS_RETENTION_*` periods + `SURPLUS_RETENTION_ENABLED=1` to activate. **Decision needed:** the content-retention schedule (if content should ever be time-purged vs. kept-while-active). |
+| `[sell]` Soft-delete → hard-delete pipeline | 🔴 NOT DONE | The app has no soft-delete (no `deleted_at` columns); deletes are immediate hard-deletes. A grace-window soft-delete is a separate, larger change. Offboarding delete below is a direct hard-delete. |
+| Explicit backup retention window | 🏗️ INFRA | Railway-managed; set + document the window (e.g. 30d) and the deletion-lag-into-backups. Not in-repo. |
+| `[sell]` Offboarding: full export + full delete | ✅ IMPLEMENTED | `GET /api/me/export` (secret-free JSON dump) + `DELETE /api/me?confirm=true` (full self-delete). `backend/retention.export_user_data` / `delete_user_data`. |
+| Deletion confirmation available to customers | ✅ IMPLEMENTED | Both delete paths return per-category counts as the confirmation; `POST /admin/delete-user` lets support run it on request. |
+| Deletion audit log (metadata only) | ✅ IMPLEMENTED | `DeletionAudit` table — who/when/counts, **no content** (`subject_user_id` is deliberately not a FK so the audit outlives the deleted row). |
+| Deletion propagates to subprocessors | 🟡 PARTIAL | `delete_user_data` best-effort revokes the user's Unipile account(s). LLM side is covered by ZDR (contractual); OAuth-token revocation beyond deleting the row is a follow-up. |
+
+---
+
 ## One-glance scorecard
 
 | Item | | Status |

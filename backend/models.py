@@ -1382,6 +1382,22 @@ class ConnectedAccount(Base):
     updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
 
 
+class DeletionAudit(Base):
+    """A metadata-only record that a deletion happened (Phase 3: deletion audit
+    log). Records WHO was deleted, by whom, when, and per-category row counts —
+    deliberately NO deleted content, so the audit trail itself can't become a
+    copy of the data it attests was erased. `subject_user_id` is intentionally
+    NOT a foreign key: the row it refers to is gone, and the audit must survive."""
+    __tablename__ = "deletion_audit"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subject_user_id: Mapped[int] = mapped_column(index=True)
+    actor: Mapped[str] = mapped_column(String(20), default="self")  # self|admin|purge
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    counts_json: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
+
+
 class TenantKey(Base):
     """One wrapped data-encryption key (DEK) per tenant, for application-level
     field encryption (see `backend/crypto.py`).
