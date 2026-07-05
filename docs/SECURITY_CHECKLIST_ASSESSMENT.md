@@ -279,3 +279,41 @@ this PR.)*
 **Phase 2 ship order:** disclose subprocessors + DPA/ZDR (contractual) →
 redaction layer (`[sell]`, code) → tenant-isolation audit + test (`[gate]`) →
 confirm/lock logging policy.
+
+---
+
+## Phase 4 — Access, monitoring, resilience (assessment + what shipped)
+
+This phase splits, like the others, into **code-fixable** items (shipped here,
+with tests) and **infra/process** items (documented, needing a console action or
+a calendar commitment). The centerpiece is the access-audit trail; the admin
+surface also gains RBAC (least privilege) and an optional network second factor.
+
+| # | Item | Status | Evidence / Gap |
+|---|------|--------|----------------|
+| 1 | **[gate]** Enforced MFA on all internal & admin access | 🟡 CODE HARDENING + 🏗️ INFRA | True TOTP/WebAuthn MFA on the **human consoles** (Railway, Cloudflare, GitHub, Google Workspace) is an account setting — **enforce it there** and capture evidence. The app's own admin surface is a machine **shared token** (`X-Admin-Token`), which can't do TOTP; the defensible in-repo hardening shipped: an optional **IP allowlist** (`ADMIN_IP_ALLOWLIST`, a network second factor, fail-closed when set — `backend/audit.ip_allowed`), the **least-privilege token split** (item 2), and **denied-access auditing** (item 3) so a probe of the admin surface is visible. **Gap:** per-human admin identities (vs. one shared token) is a larger change — documented, not built. |
+| 2 | **[sell]** Role-based access control, least privilege | ✅ ENGINE SHIPPED | Two dimensions. **App data plane:** already least-privilege per-`User` — every event-scoped route goes through `auth.get_owned_event` and LLM context through `tenant_guard.assert_owned_by` (Phase 2), so no user reads another's rows. **Admin plane (new):** a role split in `routes/admin._admin_role` — `ADMIN_TOKEN` → `admin` (full), optional `ADMIN_READONLY_TOKEN` → `readonly` (read-only endpoints only). Mutating endpoints require the full role; a monitoring/dashboard consumer carries a token that **mechanically cannot** delete a user or purge data. **Gap:** still token-roles, not per-identity RBAC (see item 1). |
+| 3 | Audit logging of who accessed what & when | ✅ IMPLEMENTED | New `AuditLog` table + `backend/audit.py` (`record` / `client_ip`). Wired into the admin gate (`_check_admin`) so **every** privileged access — allowed **and denied** — writes a metadata-only row: actor (role label, never a token), action (`METHOD /path`), outcome, source IP, reason. Readable at `GET /admin/audit-log` (filter `?outcome=denied` for the probe signal), reachable by the least-privilege read token. Metadata-only by construction (mirrors `DeletionAudit`) — no bodies/secrets. Tested (`tests/test_audit.py`). **Gap:** currently covers the admin/privileged surface; extending to per-user data-access events is a follow-up. |
+| 4 | Secure SDLC: code review + dependency/vulnerability scanning | ✅ IMPLEMENTED | **Code review + tests:** `.github/workflows/ci.yml` already gates the full pytest suite on every PR to `main`. **Dependency scanning (new):** `.github/dependabot.yml` (pip + npm + github-actions, weekly + security advisories). **Vulnerability scanning (new):** `.github/workflows/security-scan.yml` — `pip-audit` (backend), `npm audit` (frontend), and **CodeQL** static analysis (python + JS/TS) into the Security tab, on push/PR + weekly. The two dependency-audit steps ship **report-only** (`continue-on-error`): the current tree has pre-existing advisories whose fixes are major-version bumps (starlette, cryptography, python-multipart; vite, @capacitor/cli→node-tar) out of scope for the PR introducing the scanner — dependabot raises those fix PRs; flip the steps to blocking once triaged. **Gap:** enabling **branch protection / required review** is a GitHub repo setting (infra) — turn it on so CI + review are *required*, not just present. |
+| 5 | Schedule an independent penetration test (annual) | ⚪ PROCESS / 🔴 TO SCHEDULE | Not a code item. **Plan:** engage a reputable firm for a **first** external pen test **before onboarding paying firm data**, then annually; scope = the public app + the admin surface + the OAuth/token seams. Feed findings back as tracked issues. Assign an owner + a date. |
+| 6 | Tested backups + written DR / BCP plan | 🟡 DOC SHIPPED, drill pending | **Written DR/BCP shipped:** `docs/DISASTER_RECOVERY.md` — RTO/RPO targets, failure-scenario→response table, a Postgres→app **restore runbook**, and a **quarterly backup-test procedure** with a drill log. It flags the crown-jewel recovery risk: **the KEK must be backed up independently of the DB**, else a restored DB yields undecryptable OAuth-token ciphertext. **Gap (infra/process):** confirm Railway's backup cadence + at-rest encryption, back the KEK up independently, and **run the first restore drill** (the doc's pass/fail gate) — targets become commitments only once timed. |
+
+### Phase 4 scorecard
+
+| Item | | Status |
+|------|--|--------|
+| MFA on internal/admin access `[gate]` | 1 | 🟡 IP-allowlist + token-split + denied-audit shipped; human-console MFA is infra |
+| RBAC, least privilege `[sell]` | 2 | ✅ per-`User` data plane + admin read/write token split (`routes/admin`) |
+| Audit logging (who/what/when) | 3 | ✅ `AuditLog` + `backend/audit.py`, admin gate + `GET /admin/audit-log` |
+| Secure SDLC (review + dep/vuln scan) | 4 | ✅ CI tests + dependabot + pip-audit/npm-audit/CodeQL |
+| Independent pen test (annual) | 5 | 🔴 schedule (process; before paying data) |
+| Tested backups + DR/BCP | 6 | 🟡 DR/BCP doc + drill procedure shipped; run the first drill (infra) |
+
+**Remaining:** enforce console MFA + turn on branch protection (infra settings) →
+back up the KEK independently and **run the first restore drill** → schedule the
+annual pen test → (follow-up) extend the audit trail to per-user data-access
+events and move to per-identity admin RBAC.
+
+**New env (all optional, behaviour unchanged until set):**
+`ADMIN_READONLY_TOKEN` (least-privilege read-only admin token),
+`ADMIN_IP_ALLOWLIST` (comma-separated IPs/CIDRs pinning the admin surface).

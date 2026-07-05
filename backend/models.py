@@ -1398,6 +1398,38 @@ class DeletionAudit(Base):
     created_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
 
 
+class AuditLog(Base):
+    """Access-audit trail (Phase 4: access, monitoring, resilience) — who did
+    what, when, from where, and whether it was allowed or denied.
+
+    METADATA ONLY, like `DeletionAudit`: it deliberately stores no request
+    bodies, tokens, or crown-jewel content, so the audit trail can never become
+    a copy of the data it exists to protect. `actor` is a ROLE label
+    ("admin" / "admin:readonly" / "anon"), not a secret.
+
+    The single writer is `backend.audit.record`, called from the privileged
+    admin surface (`routes/admin.py`) on BOTH allowed and denied accesses — so a
+    burst of `outcome="denied"` rows is a probe signal an operator can see at a
+    glance via `GET /admin/audit-log`. `subject_user_id`-style content is never
+    stored; `target` is an opaque label like "user:123"."""
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Role label of the caller ("admin" | "admin:readonly" | "anon"), never a token.
+    actor: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # The operation, e.g. "POST /admin/delete-user".
+    action: Mapped[str] = mapped_column(String(160), default="")
+    # Optional opaque subject label, e.g. "user:123". No content.
+    target: Mapped[str] = mapped_column(String(160), default="")
+    # "allowed" | "denied" -- denied rows are the monitoring signal.
+    outcome: Mapped[str] = mapped_column(String(16), default="allowed", index=True)
+    # Best-effort client IP (CF-Connecting-IP / first X-Forwarded-For hop).
+    source_ip: Mapped[str] = mapped_column(String(64), default="")
+    # Short, secret-free reason/context (e.g. "ip_not_allowlisted").
+    detail: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
+
+
 class TenantKey(Base):
     """One wrapped data-encryption key (DEK) per tenant, for application-level
     field encryption (see `backend/crypto.py`).

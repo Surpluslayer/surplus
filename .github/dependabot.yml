@@ -1,0 +1,38 @@
+# Dependabot: automated dependency + vulnerability updates (Phase 4 secure SDLC).
+#
+# Keeps the three dependency surfaces patched so a known-CVE package doesn't sit
+# in prod unnoticed between manual bumps:
+#   - pip           : the backend (requirements.txt at repo root)
+#   - npm           : the frontend SPA (frontend/)
+#   - github-actions: the CI/uptime/cron workflows' pinned action versions
+#
+# Weekly cadence (not daily) to keep PR noise low; security updates from GitHub's
+# advisory database are raised as soon as they're known regardless of schedule.
+# Grouped minor/patch bumps so routine updates land as one reviewable PR each.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "security"]
+    groups:
+      backend-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "security", "frontend"]
+    groups:
+      frontend-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies", "ci"]

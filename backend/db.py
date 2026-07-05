@@ -198,6 +198,9 @@ def init_db() -> None:
         # Bumps the schema revision so create_all picks up the deletion_audit
         # table (Phase 3 deletion audit log) on existing databases.
         _migrate_deletion_audit,
+        # Bumps the schema revision so create_all picks up the audit_log table
+        # (Phase 4 access-audit trail) on existing databases.
+        _migrate_audit_log,
         # Runs LAST : re-points existing User/Contact child FKs to ON DELETE
         # CASCADE so the delete paths (merge/cleanup) stop 500ing on Postgres.
         _migrate_fk_cascade,
@@ -366,6 +369,15 @@ def _migrate_deletion_audit() -> None:
     migration exists so appending it bumps the schema revision and create_all
     re-runs on already-stamped databases."""
     from . import models  # noqa: F401  (registers DeletionAudit for create_all)
+    return
+
+
+def _migrate_audit_log() -> None:
+    """Ensure the audit_log table exists (Phase 4 access-audit trail). New table,
+    so create_all makes it; appending this migration bumps the schema revision so
+    create_all re-runs on already-stamped databases (same pattern as
+    _migrate_deletion_audit)."""
+    from . import models  # noqa: F401  (registers AuditLog for create_all)
     return
 
 

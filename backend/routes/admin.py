@@ -20,11 +20,11 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
 
-from .. import models
+from .. import audit, models
 from ..agents.relationship.pipeline.send.sender import send_and_log, send_followup
 from ..auth import _as_aware_utc
 from ..db import ENGINE, get_db
@@ -98,18 +98,107 @@ class CleanupEmailNoiseBody(BaseModel):
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-def _require_admin_token(x_admin_token: Optional[str] = Header(default=None)) -> None:
-    """Constant-time compare the X-Admin-Token header against ADMIN_TOKEN env.
+def _admin_role(token: Optional[str]) -> Optional[str]:
+    """Resolve an X-Admin-Token to a ROLE (constant-time), or None if it matches
+    no configured token. This is the least-privilege split (checklist: RBAC):
 
-    Returns 404 (not 401/403) on missing-or-wrong, matching the demo route's
-    no-fingerprinting posture : an attacker scanning shouldn't learn this
-    endpoint exists.
+      ADMIN_TOKEN           -> "admin"     (full: read + every mutating op)
+      ADMIN_READONLY_TOKEN  -> "readonly"  (read-only endpoints ONLY)
+
+    So a high-frequency, low-trust consumer (an uptime monitor, a status
+    dashboard) can carry a token that is mechanically unable to hit a
+    destructive endpoint — losing it can't delete a user or purge data.
+    ADMIN_READONLY_TOKEN is optional; unset means only the full token exists.
     """
-    expected = (os.environ.get("ADMIN_TOKEN") or "").strip()
-    if not expected:
+    if not token:
+        return None
+    full = (os.environ.get("ADMIN_TOKEN") or "").strip()
+    if full and hmac.compare_digest(token, full):
+        return "admin"
+    ro = (os.environ.get("ADMIN_READONLY_TOKEN") or "").strip()
+    if ro and hmac.compare_digest(token, ro):
+        return "readonly"
+    return None
+
+
+def _check_admin(*, need_write: bool, x_admin_token: Optional[str],
+                 request: Optional[Request], db: Optional[Session]) -> str:
+    """Shared admin gate for both privilege levels. Enforces, in order:
+
+      1. Some admin token is configured at all (else 404, no fingerprint).
+      2. The presented token maps to a role (else denied).
+      3. Write endpoints require the FULL "admin" role (readonly is rejected).
+      4. Optional IP allowlist (network second factor) — see backend.audit.
+
+    Every outcome, allowed or DENIED, is written to the audit log (who / what /
+    when / from where), then a denial raises 404 — same no-fingerprinting
+    posture as before, now observable. Returns the resolved role on success.
+    """
+    ip = audit.client_ip(request)
+    action = (f"{request.method} {request.url.path}" if request is not None
+              else "admin")
+    role = _admin_role(x_admin_token)
+
+    any_configured = bool((os.environ.get("ADMIN_TOKEN") or "").strip()
+                          or (os.environ.get("ADMIN_READONLY_TOKEN") or "").strip())
+
+    detail = ""
+    allowed = True
+    if not any_configured:
+        # No admin surface configured: behave as if the route doesn't exist and
+        # don't bother auditing (nothing to protect / a fresh dev box).
         raise HTTPException(404, "Not Found")
-    if not x_admin_token or not hmac.compare_digest(x_admin_token, expected):
+    if role is None:
+        allowed, detail = False, "bad_token"
+    elif need_write and role != "admin":
+        allowed, detail = False, "insufficient_role"
+    elif not audit.ip_allowed(ip):
+        allowed, detail = False, "ip_not_allowlisted"
+
+    audit.record(
+        db,
+        actor=f"admin:{role}" if role else "anon",
+        action=action,
+        outcome="allowed" if allowed else "denied",
+        source_ip=ip,
+        detail=detail,
+    )
+    if not allowed:
         raise HTTPException(404, "Not Found")
+    return role or "admin"
+
+
+def _require_admin_token(
+    x_admin_token: Optional[str] = Header(default=None),
+    request: Request = None,
+    db: Session = Depends(get_db),
+) -> None:
+    """Full-admin (write) gate for the mutating admin endpoints.
+
+    Constant-time compares X-Admin-Token against ADMIN_TOKEN and requires the
+    full "admin" role; readonly tokens are rejected here. Returns 404 (not
+    401/403) on missing-or-wrong, matching the demo route's no-fingerprinting
+    posture : an attacker scanning shouldn't learn this endpoint exists. Every
+    access (allowed or denied) is audited.
+
+    Backward-compatible: still importable/callable with just the token (as
+    main.py does); when called outside a request the audit write no-ops.
+    """
+    _check_admin(need_write=True, x_admin_token=x_admin_token,
+                 request=request, db=db)
+
+
+def _require_admin_readonly(
+    x_admin_token: Optional[str] = Header(default=None),
+    request: Request = None,
+    db: Session = Depends(get_db),
+) -> str:
+    """Read-only admin gate (least privilege). Accepts EITHER the full admin
+    token or the read-only token, so a monitoring/dashboard consumer provisioned
+    with ADMIN_READONLY_TOKEN can reach observability endpoints (e.g.
+    GET /admin/audit-log) but nothing mutating. Returns the resolved role."""
+    return _check_admin(need_write=False, x_admin_token=x_admin_token,
+                        request=request, db=db)
 
 
 def _due_followups(db: Session) -> list[models.ScheduledFollowup]:
@@ -1274,3 +1363,39 @@ def cleanup_email_noise(
           f"{would_remove if body.dry_run else removed} demoted={demoted}",
           flush=True)
     return result
+
+
+# ─── Access audit log (Phase 4: monitoring) ─────────────────────────────
+
+class AuditLogOut(BaseModel):
+    """One metadata-only audit row (see backend.audit / models.AuditLog)."""
+    id: int
+    actor: str
+    action: str
+    target: str
+    outcome: str
+    source_ip: str
+    detail: str
+    created_at: datetime
+
+
+@router.get("/audit-log", response_model=list[AuditLogOut], tags=["admin"])
+def admin_audit_log(
+    limit: int = 100,
+    outcome: Optional[str] = None,
+    role: str = Depends(_require_admin_readonly),
+    db: Session = Depends(get_db),
+) -> list[models.AuditLog]:
+    """Recent access-audit rows, newest first — "who accessed what and when".
+
+    Read-only: reachable with the full admin token OR the least-privilege
+    read-only token, so an operator dashboard can surface the trail (and the
+    `denied` probe signal) without carrying a token that could mutate anything.
+    Filter with `?outcome=denied` to see just refused attempts. Metadata only;
+    there is no content to leak here by construction.
+    """
+    q = db.query(models.AuditLog)
+    if outcome in ("allowed", "denied"):
+        q = q.filter(models.AuditLog.outcome == outcome)
+    limit = max(1, min(limit, 1000))
+    return (q.order_by(models.AuditLog.id.desc()).limit(limit).all())
