@@ -91,13 +91,15 @@ def test_inbound_only_sender_creates_nothing(db):
                                    fetch_page=lambda c: {"items": mails,
                                                          "cursor": None})
     assert stats["contacts_created"] == 0
-    assert stats["skipped_no_outbound"] == 2
+    assert stats["skipped_inbound_only"] == 2
     assert db.query(models.Contact).count() == 0
     assert db.query(models.RelationshipInteraction).count() == 0
 
 
-def test_outbound_recipient_creates_contact(db):
-    """Someone the user WROTE to is real correspondence: contact + rollup."""
+def test_one_way_outbound_becomes_pending_not_a_contact(db):
+    """Highest-signal rule: writing to someone with NO reply yet does NOT book a
+    contact (that is the noise the old n_out>=1 gate let in). It records a
+    pending-outreach marker so a future reply can promote it."""
     u = _user(db)
     mails = [
         _mail(("host@gmail.com", "Host"), [("leo@acme.com", "Leo Park")],
@@ -106,13 +108,37 @@ def test_outbound_recipient_creates_contact(db):
     stats = es.sync_email_contacts(db, u, dsn="d", api_key="k",
                                    fetch_page=lambda c: {"items": mails,
                                                          "cursor": None})
+    assert stats["contacts_created"] == 0
+    assert stats["pending_created"] == 1
+    assert db.query(models.Contact).count() == 0
+    p = db.query(models.EmailPendingOutreach).one()
+    assert p.address == "leo@acme.com" and p.name == "Leo Park"
+    assert p.last_out_at is not None
+
+
+def test_delayed_reply_promotes_pending_to_contact(db):
+    """The week-later case: outbound with no reply becomes pending; when the
+    reply lands on a LATER sync -- even if the original email is no longer in the
+    window -- the pending marker promotes into a real contact and is deleted."""
+    u = _user(db)
+    # Sync 1: you emailed Leo, no reply -> pending, no contact.
+    es.sync_email_contacts(db, u, dsn="d", api_key="k", fetch_page=lambda c: {
+        "items": [_mail(("host@gmail.com", "Host"), [("leo@acme.com", "Leo Park")],
+                        date="2026-06-07T10:00:00Z", role="sent", pid="m1")],
+        "cursor": None})
+    assert db.query(models.EmailPendingOutreach).count() == 1
+    assert db.query(models.Contact).count() == 0
+
+    # Sync 2: ONLY Leo's reply is in the window (the original outbound aged out).
+    stats = es.sync_email_contacts(db, u, dsn="d", api_key="k", fetch_page=lambda c: {
+        "items": [_mail(("leo@acme.com", "Leo Park"), [("host@gmail.com", "Host")],
+                        date="2026-06-14T09:00:00Z", pid="m2")],
+        "cursor": None})
+    assert stats["promoted_from_pending"] == 1
     assert stats["contacts_created"] == 1
-    assert stats["skipped_no_outbound"] == 0
+    assert db.query(models.EmailPendingOutreach).count() == 0   # marker consumed
     c = db.query(models.Contact).one()
-    assert c.email == "leo@acme.com" and c.name == "Leo Park"
-    r = (db.query(models.RelationshipInteraction)
-         .filter_by(contact_id=c.id, source_type="email_sync").one())
-    assert r.direction == "out"
+    assert c.email == "leo@acme.com"
 
 
 def test_promotional_local_parts_are_junk():
@@ -158,7 +184,7 @@ def test_existing_contact_rollup_still_updates_on_inbound_only(db):
                                                          "cursor": None})
     assert stats["contacts_created"] == 0
     assert stats["contacts_updated"] == 1
-    assert stats["skipped_no_outbound"] == 0
+    assert stats["skipped_inbound_only"] == 0
     assert db.query(models.Contact).count() == 1
     r = (db.query(models.RelationshipInteraction)
          .filter_by(contact_id=c.id, source_type="email_sync").one())

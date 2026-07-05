@@ -39,7 +39,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from ... import models
@@ -88,6 +89,15 @@ _MAX_RECIPIENTS = 5
 # of a busy inbox without hammering Unipile.
 _PAGE_SIZE = 100
 _MAX_PAGES = 4
+
+
+def _pending_stale_days() -> int:
+    """Drop a pending-outreach marker that has gone this long with no reply, so
+    the pre-contact holding area stays bounded. Env-tunable; default 90 days."""
+    try:
+        return max(1, int(os.environ.get("SURPLUS_PENDING_OUTREACH_STALE_DAYS", "90")))
+    except ValueError:
+        return 90
 
 _ROLLUP_SOURCE = "email_sync"
 
@@ -214,7 +224,9 @@ def sync_email_contacts(
 
     stats = {"scanned": 0, "people": 0, "contacts_created": 0,
              "contacts_updated": 0, "skipped_junk": 0,
-             "skipped_promotional": 0, "skipped_no_outbound": 0,
+             "skipped_promotional": 0, "skipped_inbound_only": 0,
+             "pending_created": 0, "pending_updated": 0,
+             "promoted_from_pending": 0, "pending_expired": 0,
              "error": None}
 
     # Injected fetcher : single-source path (unchanged behavior for tests /
@@ -342,14 +354,48 @@ def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
         if contact is None:
             contact = _identity.lookup_contact_by_identities(
                 db, user_id=user.id, identities=idents)
-        # TWO-WAY FILTER: only mint a NEW contact when the user has written to
-        # this address at least once in the scan window (the outbound set).
-        # Inbound-only senders (newsletters, promos, cold inbound) are skipped
-        # entirely: no contact, no rollup. An EXISTING contact still gets its
-        # rollup refreshed below, so real relationships are never orphaned.
-        if contact is None and a["n_out"] == 0:
-            stats["skipped_no_outbound"] += 1
+        # HIGHEST-SIGNAL GATE: a brand-new address is booked as a CONTACT only on
+        # CONFIRMED reciprocity -- you emailed them AND heard back. Everything
+        # else is held back so connecting a mailbox stops grabbing everyone:
+        #   * two-way in this window (n_out>=1 AND n_in>=1)          -> contact
+        #   * inbound now + a pending marker from earlier outreach   -> contact
+        #     (the DELAYED-REPLY case: robust even if your original email has
+        #      aged out of the 400-message scan window -- the marker persists)
+        #   * one-way outbound, no reply yet                         -> PENDING
+        #     (recorded in email_pending_outreach, NOT a contact; a later reply
+        #      promotes it, and it can power a "no reply in N days" nudge)
+        #   * pure inbound (newsletters, cold inbound you ignore)    -> noise
+        # An EXISTING contact always gets its rollup refreshed below.
+        two_way = a["n_out"] >= 1 and a["n_in"] >= 1
+        pending = (db.query(models.EmailPendingOutreach)
+                   .filter_by(user_id=user.id, address=addr).first())
+        if contact is None and not (two_way or (a["n_in"] >= 1 and pending is not None)):
+            if a["n_out"] >= 1:
+                # One-way outbound, no reply yet: record/refresh the pending
+                # marker (NOT a contact) so a future reply can promote it.
+                if pending is None:
+                    db.add(models.EmailPendingOutreach(
+                        user_id=user.id, address=addr,
+                        name=_clean(a["name"]) or None,
+                        first_out_at=a["last_out"], last_out_at=a["last_out"]))
+                    stats["pending_created"] += 1
+                else:
+                    if a["last_out"] and (pending.last_out_at is None
+                                          or a["last_out"] > pending.last_out_at):
+                        pending.last_out_at = a["last_out"]
+                    if not pending.name and a["name"]:
+                        pending.name = _clean(a["name"])
+                    stats["pending_updated"] += 1
+            else:
+                stats["skipped_inbound_only"] += 1
             continue
+        # We have (or will create) a contact. A pending marker has done its job:
+        # a reply just PROMOTED it, or a contact already existed on this address.
+        # Either way, drop the marker so it can't linger or double-count.
+        if pending is not None:
+            db.delete(pending)
+            if contact is None:
+                stats["promoted_from_pending"] += 1
         stats["people"] += 1
         if contact is None:
             contact = models.Contact(
@@ -403,12 +449,31 @@ def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
             "last_out": a["last_out"].isoformat() if a["last_out"] else None,
         })
 
-    db.commit()
+    db.commit()  # persist the loop's contacts + pending markers first
+
+    # Expire pending outreach that never earned a reply, in its OWN short
+    # transaction so a hiccup here can't roll back the work above. Keeps the
+    # holding area bounded and stops stale "waiting on a reply" markers nagging.
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=_pending_stale_days())
+        stats["pending_expired"] = (
+            db.query(models.EmailPendingOutreach)
+            .filter(models.EmailPendingOutreach.user_id == user.id,
+                    models.EmailPendingOutreach.last_out_at.isnot(None),
+                    models.EmailPendingOutreach.last_out_at < cutoff)
+            .delete(synchronize_session=False)) or 0
+        db.commit()
+    except Exception:  # noqa: BLE001 : expiry is best-effort
+        db.rollback()
+
     log.info(
-        "email_sync mailbox=%s created=%s updated=%s "
-        "skipped_promotional=%s skipped_no_outbound=%s",
+        "email_sync mailbox=%s created=%s updated=%s promoted=%s pending=%s "
+        "skipped_inbound=%s skipped_promo=%s expired=%s",
         own or "?", stats["contacts_created"], stats["contacts_updated"],
-        stats["skipped_promotional"], stats["skipped_no_outbound"])
+        stats["promoted_from_pending"],
+        stats["pending_created"] + stats["pending_updated"],
+        stats["skipped_inbound_only"], stats["skipped_promotional"],
+        stats["pending_expired"])
     return stats
 
 

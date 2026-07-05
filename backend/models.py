@@ -1099,6 +1099,41 @@ class ContactIdentity(Base):
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
 
+class EmailPendingOutreach(Base):
+    """A person the user has EMAILED but not yet heard back from : a pending,
+    PRE-contact signal.
+
+    The email sync does NOT mint a Contact for a one-way outbound (that is how
+    connecting a mailbox used to grab everyone you ever emailed once: forms,
+    receipts, group-CC blasts, cold sends). Instead it records the outreach
+    here. When a REPLY later arrives -- even weeks later, even after the original
+    email has aged out of the 400-message scan window -- the sync sees the
+    inbound, finds this row, and PROMOTES it into a real Contact, then deletes
+    it. A relationship is only booked once reciprocity actually happens.
+
+    Rows that never earn a reply expire (SURPLUS_PENDING_OUTREACH_STALE_DAYS), so
+    this holding area never grows unbounded. Also the natural backing for a
+    "you reached out to X N days ago, no reply yet" nudge.
+
+    DEDUP KEY : UniqueConstraint(user_id, address) -- one pending row per person
+    per owner. CASCADE on both FKs so User/Contact delete paths never throw."""
+    __tablename__ = "email_pending_outreach"
+    __table_args__ = (
+        UniqueConstraint("user_id", "address", name="uq_pending_outreach_user_addr"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # NORMALIZED (lowercased) recipient email -- the same key email_sync groups on.
+    address: Mapped[str] = mapped_column(String(320), index=True)
+    name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    # When we FIRST and LAST wrote to them (for the stale-expiry + the nudge copy).
+    first_out_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    last_out_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
 class ContactFact(Base):
     """One typed piece of context about a contact : the per-contact MEMORY that
     any source (LinkedIn, WhatsApp, calendar, email, manual, enrichment) writes

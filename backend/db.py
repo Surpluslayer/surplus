@@ -181,6 +181,7 @@ def init_db() -> None:
         _migrate_job_event_id_nullable,
         _migrate_user_linkedin_chat_synced_at,
         _migrate_user_autonomy_mode,
+        _migrate_email_pending_outreach,
         # Runs LAST : re-points existing User/Contact child FKs to ON DELETE
         # CASCADE so the delete paths (merge/cleanup) stop 500ing on Postgres.
         _migrate_fk_cascade,
@@ -1569,6 +1570,23 @@ _CASCADE_FKS: list[tuple[str, str, str]] = [
     ("connected_accounts", "user_id", "users"),
     ("email_accounts", "user_id", "users"),
 ]
+
+
+def _migrate_email_pending_outreach() -> None:
+    """Create the email_pending_outreach table on an EXISTING DB.
+
+    create_all makes missing tables on a fresh DB, but the schema-rev sentinel
+    skips create_all once the stored rev is current, so a brand-new table on a
+    prod DB that is already at-rev would never appear. Adding this migration
+    bumps len(migrations) (so the sentinel re-runs create_all) AND explicitly
+    creates just this table -- checkfirst makes it idempotent and a no-op once
+    it exists. Two replicas can race the CREATE; swallow the loser's error."""
+    from . import models
+    try:
+        models.EmailPendingOutreach.__table__.create(ENGINE, checkfirst=True)
+    except Exception as exc:  # noqa: BLE001 : replica race / already exists
+        print(f"  [migrate] email_pending_outreach create: "
+              f"{type(exc).__name__}: {exc}", flush=True)
 
 
 def _migrate_fk_cascade() -> None:
