@@ -201,6 +201,7 @@ export default function BookApp() {
   } else if (tab === "book") {
     screen = <BookView feed={feed} err={err} user={user} onReload={load}
                        onAccount={() => setRoute({ name: "account" })}
+                       onAdd={() => goTab("add")}
                        onOpen={openDetail} onDraft={openDraft} />;
   } else if (tab === "add") {
     screen = <AddScreen user={user}
@@ -209,6 +210,7 @@ export default function BookApp() {
   } else {
     screen = <TodayView feed={feed} err={err} user={user} onReload={load}
                         onAccount={() => setRoute({ name: "account" })}
+                        onAdd={() => goTab("add")}
                         onOpen={openDetail} onDraft={openDraft} />;
   }
 
@@ -230,15 +232,10 @@ export default function BookApp() {
           </div>
         ) : null}
         {screen}
-        <nav className="bk-nav">
+        <nav className="bk-nav bk-nav-2">
           <button className={"bk-nav-item" + (activeNav === "today" ? " on" : "")}
                   onClick={() => goTab("today")}>
             <LayoutDashboard size={19} /><span>Today</span>
-          </button>
-          <button data-onb="add"
-                  className={"bk-nav-add" + (activeNav === "add" ? " on" : "")}
-                  onClick={() => goTab("add")} aria-label="Add contact">
-            <span className="bk-fab"><Plus size={22} /></span><span>Add</span>
           </button>
           <button data-onb="book"
                   className={"bk-nav-item" + (activeNav === "book" ? " on" : "")}
@@ -298,6 +295,21 @@ function Avatar({ user, feed, onAccount }) {
             title={user?.name || ""}>
       {_initials(user?.name || feed?.advisor_name)}
     </button>
+  );
+}
+
+// Small "+" in the topbar : capture is no longer the product's focus, so Add
+// moved out of the bottom nav (which is now just Today / Book) to a quiet
+// header action. Opens the same AddScreen.
+function TopbarActions({ user, feed, onAdd, onAccount }) {
+  return (
+    <div className="bk-topbar-actions">
+      <button className="bk-topadd" onClick={onAdd} aria-label="Add contact"
+              title="Add contact">
+        <Plus size={18} />
+      </button>
+      <Avatar user={user} feed={feed} onAccount={onAccount} />
+    </div>
   );
 }
 
@@ -369,7 +381,7 @@ function WaitingForOk({ user }) {
   );
 }
 
-function TodayView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
+function TodayView({ feed, err, user, onReload, onAccount, onAdd, onOpen, onDraft }) {
   const updates = feed?.updates || [];
   const needs = feed?.needs_outreach || [];
 
@@ -394,7 +406,7 @@ function TodayView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
           <p className="bk-eyebrow">{_today_long()}</p>
           <p className="bk-display">Your book today</p>
         </div>
-        <Avatar user={user} feed={feed} onAccount={onAccount} />
+        <TopbarActions user={user} feed={feed} onAdd={onAdd} onAccount={onAccount} />
       </header>
 
       <AskBar variant="bar" onOpen={onOpen} onDraft={onDraft} />
@@ -466,7 +478,7 @@ const FILTERS = [
 const TAG_LABEL = { sales: "Sales", hiring: "Hiring", investor: "Investor",
                     partner: "Partner", follow_up: "Follow-up" };
 
-function BookView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
+function BookView({ feed, err, user, onReload, onAccount, onAdd, onOpen, onDraft }) {
   const [filter, setFilter] = useState("all");
   const [expanded, setExpanded] = useState(false);
   const [q, setQ] = useState("");
@@ -540,7 +552,7 @@ function BookView({ feed, err, user, onReload, onAccount, onOpen, onDraft }) {
         <span className="bk-display bk-display--row">
           Your book <span className="bk-count-lg">{roster.length}</span>
         </span>
-        <Avatar user={user} feed={feed} onAccount={onAccount} />
+        <TopbarActions user={user} feed={feed} onAdd={onAdd} onAccount={onAccount} />
       </header>
 
       <div className="bk-ask-wrap" data-onb="search">
@@ -1927,6 +1939,11 @@ const BOOK_CSS = `
 .bk-avatar{width:28px; height:28px; border-radius:50%; background:var(--accent-bg);
   color:var(--accent); display:flex; align-items:center; justify-content:center;
   font-size:12px; font-weight:500; flex:none; border:0; cursor:pointer; font-family:var(--font-ui);}
+.bk-topbar-actions{display:flex; align-items:center; gap:10px; flex:none;}
+.bk-topadd{width:28px; height:28px; border-radius:50%; background:none; color:var(--faint);
+  display:flex; align-items:center; justify-content:center; border:.5px solid var(--line);
+  cursor:pointer; flex:none; padding:0;}
+.bk-topadd:hover{color:var(--accent); border-color:var(--accent);}
 
 /* agent ask bar (Today) */
 .bk-ask-wrap{padding:0 18px; margin-bottom:20px;}
