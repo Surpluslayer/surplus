@@ -43,6 +43,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # backend code
 COPY backend/ ./backend/
 
+# Alembic migrations (run before boot only when USE_ALEMBIC=1; see startCommand)
+COPY alembic.ini ./
+COPY alembic/ ./alembic/
+
 # built frontend
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 

@@ -35,3 +35,4 @@ bcrypt>=4.1,<6
 # cryptography: application-level field encryption (backend/crypto.py) --
 # AES-256-GCM envelope encryption for OAuth tokens at rest, per-tenant DEK.
 cryptography>=41,<46
+alembic==1.13.3
