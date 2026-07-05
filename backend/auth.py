@@ -349,6 +349,13 @@ def current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not signed in",
         )
+    # Scope this request's DB connection to the user so Postgres RLS enforces
+    # per-user isolation (no-op unless SURPLUS_RLS_ENABLED + a non-superuser
+    # connection role). The session lookup above is intentionally BEFORE this:
+    # the sessions/users tables are not under RLS, so we can resolve identity
+    # first, then clamp everything the request touches afterward.
+    from .db import set_rls_user
+    set_rls_user(db, user.id)
     return user
 
 
