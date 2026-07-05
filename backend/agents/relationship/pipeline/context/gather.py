@@ -11,6 +11,7 @@ from ...spine import relationships
 from .reconcile import DEFAULT_RECENT_MESSAGES, apply_to_facts
 from .summary import window_and_summarize
 from .... import voice
+from ..... import redaction, tenant_guard
 from .....integrations.unipile_config import unipile_creds
 
 # Timeline rows that carry host<->contact conversation (not system/metadata).
@@ -152,6 +153,9 @@ def gather_contact_context(
     merge_email: bool = True,
 ) -> dict[str, Any]:
     """One gather pass: timeline, full thread, windowed thread, spine facts."""
+    # Cross-tenant guard: refuse to assemble a contact that belongs to another
+    # user into this user's LLM context ([gate] tenant isolation).
+    tenant_guard.assert_owned_by(user_id, contact, kind="contact")
     name = (getattr(contact, "name", None) or "there").strip() or "there"
 
     try:
@@ -243,7 +247,8 @@ def gather_contact_context(
 
 
 def as_agent_context(gathered: dict) -> dict:
-    """Phase-2 decision model view."""
+    """Phase-2 decision model view. PII-minimized: this dict is bound for the
+    LLM (never the UI), so identifiers in the thread text are scrubbed."""
     out = {
         "summary": gathered.get("summary") or {},
         "events": gathered.get("events") or [],
@@ -253,12 +258,12 @@ def as_agent_context(gathered: dict) -> dict:
     }
     if gathered.get("thread_summary"):
         out["thread_summary"] = gathered["thread_summary"]
-    return out
+    return redaction.scrub_obj(out)
 
 
 def as_composer_context(gathered: dict) -> dict:
-    """Shared follow-up composer view."""
-    return {
+    """Shared follow-up composer view. PII-minimized (LLM-bound, not UI)."""
+    return redaction.scrub_obj({
         "name": gathered.get("name"),
         "company": gathered.get("company"),
         "role": gathered.get("role"),
@@ -271,4 +276,4 @@ def as_composer_context(gathered: dict) -> dict:
         "store_optional": gathered.get("store_optional") or [],
         "store_provenance": gathered.get("store_provenance") or [],
         "voice_block": gathered.get("voice_block") or "",
-    }
+    })
