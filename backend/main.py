@@ -459,6 +459,94 @@ def app_privacy():
     return HTMLResponse(_APP_PRIVACY_HTML)
 
 
+# --- Trust / security posture page ------------------------------------------
+# States the REAL data-protection boundary (checklist honesty guardrail): what
+# is encrypted where, per-tenant isolation, and — explicitly — that AI-processed
+# content is decrypted transiently server-side and is NOT end-to-end encrypted.
+# Pure static serve, zero DB dependency. Source of truth mirrors SECURITY.md.
+#
+# NOTE: the "application-level field encryption with per-tenant keys" claim is
+# literally true only once SURPLUS_ENCRYPTION_KEK is provisioned (see
+# backend/crypto.py) — enable the key before publishing this page publicly.
+_TRUST_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>surplus — Trust & Security</title>
+<style>
+ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+ max-width:760px;margin:48px auto;padding:0 20px;color:#1b1e22;line-height:1.6}
+ h1{font-weight:800;letter-spacing:-.03em} h2{margin-top:30px;font-size:19px}
+ .upd{color:#99a0a8;font-size:14px} a{color:#2f6df6}
+ code{background:#f1f3f6;padding:1px 5px;border-radius:5px}
+ .box{background:#f7f9fc;border:1px solid #e3e8ef;border-radius:10px;padding:14px 18px;margin:18px 0}
+ ul{padding-left:22px}
+</style></head><body>
+<h1>Trust &amp; Security</h1>
+<p class="upd">Last updated: July 5, 2026</p>
+
+<p>This page describes how surplus protects your data and, just as importantly,
+where the real boundaries are. We would rather be precise than impressive.</p>
+
+<h2>Encryption in transit</h2>
+<ul>
+  <li>All traffic to surplus is served over <strong>TLS 1.3 (fallback 1.2)</strong>, with HSTS.</li>
+  <li>Connections to our database and to every third-party service we call are encrypted in transit.</li>
+</ul>
+
+<h2>Encryption at rest</h2>
+<ul>
+  <li>Databases, disks, and backups are <strong>encrypted at rest</strong> by our infrastructure provider.</li>
+  <li>The most sensitive fields (e.g. connected-account credentials) are additionally encrypted at the <strong>application layer</strong> before they are written, using <strong>per-tenant keys</strong> so one firm's data cannot be decrypted with another firm's key.</li>
+</ul>
+
+<h2>Tenant isolation</h2>
+<p>Each firm's data is isolated. Context assembled for AI features is built only
+from your own records — one firm's data can never enter another firm's request.</p>
+
+<h2>AI processing — the honest boundary</h2>
+<div class="box">
+<p><strong>surplus is not end-to-end encrypted for AI-processed content.</strong>
+To draft messages and answer questions, our servers must decrypt the relevant
+content and send it, over TLS, to our AI provider. It is briefly in plaintext
+in memory during processing.</p>
+</div>
+<ul>
+  <li>We <strong>minimize</strong> what we send: identifiers like emails, phone numbers, and card/SSN patterns are stripped from content before it reaches the model — we send only what the task needs.</li>
+  <li>Our AI provider processes requests under a commercial agreement; your content is not used to train models.</li>
+</ul>
+
+<h2>Data retention &amp; deletion</h2>
+<ul>
+  <li>You can <strong>export</strong> all of your data at any time.</li>
+  <li>You can <strong>delete</strong> your account and all associated data; deletion also revokes connected third-party access. We keep a metadata-only record that a deletion occurred (never its contents).</li>
+</ul>
+
+<h2>Subprocessors</h2>
+<p>We share data with the following providers only as needed to run the service:</p>
+<ul>
+  <li><strong>Anthropic</strong> — AI model (drafting, Q&amp;A)</li>
+  <li><strong>Unipile</strong> — LinkedIn / WhatsApp / email connectivity</li>
+  <li><strong>Bright Data</strong> — public-profile enrichment</li>
+  <li><strong>Exa</strong> — web search</li>
+  <li><strong>Resend</strong> — transactional email</li>
+  <li><strong>Stripe</strong> — billing</li>
+  <li><strong>Google / Microsoft</strong> — sign-in, mail &amp; calendar (when you connect them)</li>
+  <li><strong>Zoom</strong> — meeting links (when connected)</li>
+  <li><strong>Railway</strong> — hosting &amp; database &nbsp;•&nbsp; <strong>Cloudflare</strong> — edge / TLS &nbsp;•&nbsp; <strong>Modal</strong> — batch jobs</li>
+</ul>
+
+<h2>Contact</h2>
+<p>Security questions or to report a vulnerability: <a href="mailto:support@surpluslayer.com">support@surpluslayer.com</a>.</p>
+</body></html>"""
+
+
+@app.get("/trust", include_in_schema=False)
+@app.get("/security", include_in_schema=False)
+def trust_page():
+    """Public trust/security posture. Static, DB-free."""
+    return HTMLResponse(_TRUST_HTML)
+
+
 # --- Marketing landing page (join.surpluslayer.com) -----------------------
 # Ported in-app from the old standalone roi-engine FastAPI service, whose
 # Postgres dependency at startup made the whole site 502 when the DB blipped.
