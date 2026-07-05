@@ -346,3 +346,22 @@ def test_backfill_scopes_to_user(db, user):
 
     report = cr.backfill(db, user_id=user.id, dry_run=True)
     assert report["total"] == 1
+
+
+def test_spine_clean_strips_control_characters():
+    """A LinkedIn display name with a raw control character must never reach
+    the DB: one stored 0x01 breaks every strict JSON consumer downstream."""
+    from backend.agents.relationship.spine.relationships import _clean
+    assert _clean("Jane\x01 Doe\x00") == "Jane Doe"
+    assert _clean("  ok\tname  ") == "ok\tname"
+    assert _clean("\x1f") is None
+
+
+def test_extract_employer_collapses_newlines():
+    """Multi-line headlines must never mint a company name containing a raw
+    newline (one reached prod and broke strict JSON consumers)."""
+    from backend.agents.relationship.company_resolve import (
+        extract_employer_from_headline)
+    got = extract_employer_from_headline(
+        "Partner at Meridian\nCapital | investing", allow_llm=False)
+    assert got == "Meridian Capital"

@@ -303,3 +303,18 @@ def test_overlay_404_on_non_owned(db):
         acc_route.upsert_overlay(acct.id, OverlayIn(rejected=True),
                                  db=db, user=other)
     assert e.value.status_code == 404
+
+
+def test_list_lazily_heals_null_rollups(db):
+    """Accounts born from a bulk backfill land with NULL rollups; the first
+    list view must recompute them so the tab never renders empty chips."""
+    u, co, acct, *_ = _seed(db)
+    acct.strength_score = None
+    acct.contact_count = 0
+    db.commit()
+    out = acc_route.list_accounts(db=db, user=u)
+    row = next(a for a in out["accounts"] if a["id"] == acct.id)
+    assert row["rollups"]["contact_count"] > 0
+    assert row["rollups"]["strength_score"] is not None
+    db.refresh(acct)
+    assert acct.contact_count > 0

@@ -189,7 +189,11 @@ def _clean_employer(raw: str) -> Optional[str]:
     """Trim a regex capture down to a plausible company name, or None. Splits
     off a spaced-dash tail ("Acme - building the future" -> "Acme") without
     touching in-name hyphens ("Coca-Cola" survives)."""
-    s = re.split(r"\s+[–-]\s+", (raw or "").strip())[0].strip(" .,;:!·")
+    # Collapse whitespace runs (incl. newlines from multi-line headlines)
+    # FIRST: a canonical_name with a raw \n in it shipped to prod once and
+    # broke every strict JSON reader of every response that carried it.
+    flat = re.sub(r"\s+", " ", (raw or "")).strip()
+    s = re.split(r"\s+[–-]\s+", flat)[0].strip(" .,;:!·")
     if len(s) < 2 or len(s) > 80:
         return None
     if normalize_company_name(s) in _NOT_EMPLOYERS:
