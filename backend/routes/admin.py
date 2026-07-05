@@ -1399,3 +1399,35 @@ def admin_audit_log(
         q = q.filter(models.AuditLog.outcome == outcome)
     limit = max(1, min(limit, 1000))
     return (q.order_by(models.AuditLog.id.desc()).limit(limit).all())
+@router.post("/backfill-accounts")
+def backfill_accounts(
+    user_id: Optional[int] = None,
+    execute: bool = False,
+    allow_llm: bool = False,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """Run the account-layer backfill (docs/accounts-architecture.md §3) from
+    INSIDE the deployment, where Postgres is milliseconds away — running the
+    CLI script over the public DB URL takes 10+ minutes of WAN round-trips for
+    one user's book, which is how this endpoint earned its existence.
+
+    Default is a DRY RUN (reports what it would do, then rolls back) with the
+    LLM disabled (deterministic paths only — domain keys, exact names, headline
+    regex). Pass execute=true to write, allow_llm=true to let ambiguous names
+    hit the disambiguator (slower; background-gated). Gated by ADMIN_TOKEN like
+    every ops verb here."""
+    from ..agents.relationship import company_resolve
+
+    if not allow_llm:
+        # The resolver checks availability per call; masking the key for this
+        # request's duration keeps the run deterministic without env surgery.
+        import backend.agents.relationship.company_resolve as cr
+        orig = cr._anthropic_available
+        cr._anthropic_available = lambda: False
+        try:
+            return company_resolve.backfill(db, user_id=user_id,
+                                            dry_run=not execute)
+        finally:
+            cr._anthropic_available = orig
+    return company_resolve.backfill(db, user_id=user_id, dry_run=not execute)
