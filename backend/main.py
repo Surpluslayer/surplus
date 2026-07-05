@@ -230,6 +230,20 @@ _API_PATH_PREFIXES = (
 async def no_store_for_api(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
+
+    # Security headers on every response. HSTS tells browsers to only ever
+    # reach us over HTTPS (checklist: "Enable HSTS"). Only emit it on HTTPS
+    # requests — TLS terminates at Cloudflare, so trust its X-Forwarded-Proto —
+    # so a plain-http local dev origin doesn't pin localhost to https. 2y +
+    # includeSubDomains covers event./www./join./apex; add `; preload` only
+    # after confirming every subdomain is HTTPS-only.
+    is_https = (request.url.scheme == "https"
+                or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https")
+    if is_https:
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+
     if any(path.startswith(p) for p in _API_PATH_PREFIXES):
         response.headers["Cache-Control"] = (
             "no-store, no-cache, must-revalidate, private"

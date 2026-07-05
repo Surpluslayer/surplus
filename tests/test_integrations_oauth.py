@@ -128,3 +128,53 @@ def test_get_valid_token_no_refresh_token_marks_error(db):
     db.commit()
     assert oauth.get_valid_access_token(db, row) is None
     assert row.status == "error"
+
+
+# ── encryption at rest (per-tenant DEK) ────────────────────────────────────────
+@pytest.fixture
+def kek(monkeypatch):
+    """Enable field encryption with a test KEK; clear the process DEK cache so
+    each in-memory DB starts clean (the cache is keyed by tenant_id only)."""
+    from backend import crypto
+    monkeypatch.setenv("SURPLUS_ENCRYPTION_KEK",
+                       "dGVzdC1rZXktMzItYnl0ZXMtZm9yLXVuaXQtdGVzdHMxMg==")
+    crypto._dek_cache.clear()
+    yield
+    crypto._dek_cache.clear()
+
+
+def test_tokens_encrypted_at_rest_but_usable(db, kek):
+    row = oauth.save_tokens(db, user_id=1, provider="google", account_email="a@x.com",
+                            tokens={"access_token": "AT1", "refresh_token": "RT1",
+                                    "expires_in": 3600})
+    # stored ciphertext, not plaintext
+    assert row.access_token.startswith("enc:v1:")
+    assert row.refresh_token.startswith("enc:v1:")
+    assert "AT1" not in row.access_token and "RT1" not in row.refresh_token
+    # a per-tenant key was minted + wrapped
+    tk = db.query(models.TenantKey).filter_by(tenant_id=1).one()
+    assert tk.wrapped_dek and "AT1" not in tk.wrapped_dek
+    # but callers get plaintext back
+    assert oauth.get_valid_access_token(db, row) == "AT1"
+
+
+def test_refresh_reencrypts_new_access_token(db, kek, monkeypatch):
+    row = oauth.save_tokens(db, user_id=2, provider="google", account_email="b@x.com",
+                            tokens={"access_token": "OLD", "refresh_token": "RT",
+                                    "expires_in": 3600})
+    row.token_expiry = datetime.now(timezone.utc) - timedelta(minutes=5)
+    db.commit()
+    monkeypatch.setattr(oauth.httpx, "post",
+                        lambda *a, **k: _Resp({"access_token": "NEW", "expires_in": 3600}))
+    assert oauth.get_valid_access_token(db, row) == "NEW"
+    assert row.access_token.startswith("enc:v1:") and "NEW" not in row.access_token
+
+
+def test_legacy_plaintext_token_readable_after_kek_enabled(db, kek):
+    # simulate a row written before the KEK existed (raw plaintext in the column)
+    row = models.ConnectedAccount(user_id=3, provider="google", account_email="c@x.com",
+                                  access_token="PLAINAT", refresh_token="PLAINRT",
+                                  token_expiry=datetime.now(timezone.utc) + timedelta(hours=1))
+    db.add(row); db.commit()
+    # decrypt_for sniffs the missing prefix and passes it through unchanged
+    assert oauth.get_valid_access_token(db, row) == "PLAINAT"

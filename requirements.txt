@@ -31,3 +31,7 @@ stripe==11.4.1
 # the version validated against the deployed surplus-jobs app.
 modal==1.2.6
 bcrypt>=4.1,<6
+
+# cryptography: application-level field encryption (backend/crypto.py) --
+# AES-256-GCM envelope encryption for OAuth tokens at rest, per-tenant DEK.
+cryptography>=41,<46

@@ -1353,9 +1353,12 @@ class ConnectedAccount(Base):
     today; Zoom etc. later) that surplus polls for relationship context. One row per
     (user, provider, account_email). Holds the refreshable OAuth tokens.
 
-    SECURITY (v1): access_token / refresh_token are stored in PLAINTEXT --
-    `cryptography` isn't a dependency yet. BEFORE any production use, encrypt both at
-    rest (Fernet keyed off an env secret). Tracked as a hardening follow-up."""
+    SECURITY: access_token / refresh_token are encrypted at rest with a
+    per-tenant DEK (see `backend/crypto.py`) at the sole read/write seam
+    (`integrations/oauth.py`: `save_tokens` / `get_valid_access_token`). Values
+    are stored as `enc:v1:...` once `SURPLUS_ENCRYPTION_KEK` is set; without a
+    KEK they stay plaintext and `_migrate_encrypt_connected_account_tokens`
+    backfills existing rows when the KEK is provisioned."""
     __tablename__ = "connected_accounts"
     __table_args__ = (
         UniqueConstraint("user_id", "provider", "account_email",
@@ -1377,6 +1380,29 @@ class ConnectedAccount(Base):
     last_synced_at: Mapped[Optional[datetime]] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
+
+
+class TenantKey(Base):
+    """One wrapped data-encryption key (DEK) per tenant, for application-level
+    field encryption (see `backend/crypto.py`).
+
+    `wrapped_dek` is the tenant's random 32-byte DEK, itself encrypted
+    (AES-256-GCM) under the process's key-encryption key (KEK). The KEK lives in
+    the environment / a KMS, never in this table, so a DB leak yields only
+    wrapped keys. Per-tenant DEKs mean one tenant's key cannot decrypt another's
+    data — the cryptographic isolation the checklist calls for.
+
+    `tenant_id` == `User.id` in v1 (there is no Org/Firm entity yet). It is
+    named `tenant_id` rather than `user_id` on purpose: if multi-seat firms
+    later share one key, this can point at an Org row without a data re-encrypt
+    or a column rename."""
+    __tablename__ = "tenant_keys"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(unique=True, index=True)
+    wrapped_dek: Mapped[str] = mapped_column(Text, default="")
+    key_version: Mapped[int] = mapped_column(default=1)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
 
 class EmailAccount(Base):

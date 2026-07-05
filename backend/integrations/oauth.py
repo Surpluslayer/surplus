@@ -21,7 +21,7 @@ from typing import Optional
 
 import httpx
 
-from .. import models
+from .. import crypto, models
 from .providers import ProviderConfig, get_provider
 
 _STATE_TTL = 600        # signed-state lifetime (s)
@@ -172,10 +172,12 @@ def save_tokens(db, *, user_id: int, provider: str, account_email: str,
         row = models.ConnectedAccount(user_id=user_id, provider=provider,
                                       account_email=account_email)
         db.add(row)
+    # Encrypt at rest with the tenant's DEK (no-op pass-through until a KEK is
+    # configured). tenant == user_id in v1.
     if tokens.get("access_token"):
-        row.access_token = tokens["access_token"]
+        row.access_token = crypto.encrypt_for(user_id, tokens["access_token"], db)
     if tokens.get("refresh_token"):
-        row.refresh_token = tokens["refresh_token"]
+        row.refresh_token = crypto.encrypt_for(user_id, tokens["refresh_token"], db)
     row.token_expiry = _expiry_from(tokens)
     if tokens.get("scope"):
         row.scopes = tokens["scope"]
@@ -201,24 +203,28 @@ def get_valid_access_token(db, row, *, now: Optional[datetime] = None,
     refresh_token when needed (and persisting it). None when it can't be refreshed
     (no refresh_token / provider error) -> the caller treats the account as needing
     reconnection (status flips to 'error')."""
+    # Tokens are encrypted at rest (per-tenant DEK); decrypt for use. Legacy
+    # plaintext rows pass through unchanged (see crypto.decrypt_for).
     if not _is_expired(row, now=now):
-        return row.access_token or None
-    if not row.refresh_token:
+        return crypto.decrypt_for(row.user_id, row.access_token, db) or None
+    refresh = crypto.decrypt_for(row.user_id, row.refresh_token, db)
+    if not refresh:
         row.status = "error"
         if commit:
             db.commit()
         return None
     try:
-        tokens = refresh_access_token(row.provider, refresh_token=row.refresh_token)
+        tokens = refresh_access_token(row.provider, refresh_token=refresh)
     except Exception:  # noqa: BLE001 : a refresh failure must not crash the caller
         row.status = "error"
         if commit:
             db.commit()
         return None
-    if tokens.get("access_token"):
-        row.access_token = tokens["access_token"]
+    access = tokens.get("access_token")
+    if access:
+        row.access_token = crypto.encrypt_for(row.user_id, access, db)
     row.token_expiry = _expiry_from(tokens)
     row.status = "active"
     if commit:
         db.commit()
-    return row.access_token or None
+    return access or None
