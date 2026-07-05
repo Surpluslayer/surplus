@@ -518,6 +518,17 @@ def link_contact(db, prospect, owner_user_id: int):
         prospect.contact_id = contact.id
         db.commit()
         db.refresh(contact)
+        # Account layer: resolve this person's company membership at link time.
+        # Deterministic-only on the request path (allow_llm=False — the LLM
+        # name-disambiguation pass belongs to the background backfill/sweep,
+        # never a capture request). Best-effort: a resolver failure must never
+        # break the link that just committed.
+        try:
+            from ..company_resolve import resolve_contact
+            resolve_contact(db, contact, source="enrichment", allow_llm=False)
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
         return contact
     except Exception:  # noqa: BLE001
         db.rollback()
