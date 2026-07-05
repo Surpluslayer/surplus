@@ -24,6 +24,31 @@
 
 ---
 
+## Update — implemented (2026-07-05, follow-up PR)
+
+The assessment below is the original baseline. Since then the **code-fixable
+Phase 1 items** have been implemented:
+
+- ✅ **Application-level field encryption engine** — `backend/crypto.py`:
+  AES-256-GCM envelope encryption with a **per-tenant DEK** wrapped under a KEK.
+  Adds the `TenantKey` table (`tenant_id` == `User.id` in v1, named so it can
+  later point at an Org). `cryptography` is now a dependency.
+- ✅ **OAuth tokens encrypted at rest** (the `[gate]` risk) — wired at the sole
+  seam `integrations/oauth.py` (`save_tokens` / `get_valid_access_token`).
+  `_migrate_encrypt_connected_account_tokens` backfills existing plaintext rows.
+- ✅ **HSTS** (+ `X-Content-Type-Options: nosniff`) in `main.py`, HTTPS-gated.
+- ✅ **Postgres TLS** — `sslmode` (default `require`) on the engine, via `DB_SSLMODE`.
+- 🟡 **Keys in KMS** — KEK loads from `SURPLUS_ENCRYPTION_KEK` (env) today, with
+  `crypto._load_kek` as the single seam to swap in a real KMS/HSM.
+
+**Rollout is zero-risk:** with no `SURPLUS_ENCRYPTION_KEK` set, encryption is a
+pass-through (behavior unchanged); decryption sniffs the `enc:v1:` prefix so
+legacy plaintext keeps reading during the migration window. Encryption turns on
+the moment the KEK env var is provisioned. Per-tenant vs. per-Org keying is
+still the one open **product decision** (item 9) — v1 ships per-`User`.
+
+---
+
 ## Executive summary
 
 **The honest headline is good news, then two real gaps.**
@@ -186,17 +211,53 @@ silently reintroduce an E2E claim.
 | Item | | Status |
 |------|--|--------|
 | TLS 1.3 public endpoints `[gate]` | 1 | 🏗️ verify in Cloudflare |
-| HSTS | 2 | 🔴 missing (trivial fix) |
-| Internal service TLS | 3 | 🟡 Postgres hop needs `sslmode` |
+| HSTS | 2 | ✅ implemented (`main.py`, HTTPS-gated) |
+| Internal service TLS | 3 | ✅ Postgres `sslmode=require` (`db.py`) |
 | TLS to subprocessors | 4 | ✅ done (HTTPS everywhere) |
 | KMS on DB/storage/disk `[gate]` | 5 | 🏗️ verify in Railway |
 | Encrypted backups `[gate]` | 6 | 🏗️ verify in Railway |
-| App-level field encryption `[sell]` | 7 | 🔴 missing (no crypto dep) |
-| Keys in KMS not config | 8 | 🔴 missing (no keys yet) |
-| Per-tenant DEK `[sell]` | 9 | 🔴 missing + design decision |
+| App-level field encryption `[sell]` | 7 | ✅ engine shipped (`crypto.py`), applied to OAuth tokens |
+| Keys in KMS not config | 8 | 🟡 KEK via env; `_load_kek` is the KMS seam |
+| Per-tenant DEK `[sell]` | 9 | ✅ per-`User` DEK (Org path documented) |
 | No E2E marketing claim | 10 | ✅ already clean |
-| Trust page documents boundary | 11 | 🔴 missing |
-| *(bonus)* Plaintext OAuth tokens | — | 🔴 real `[gate]` risk — encrypt first |
+| Trust page documents boundary | 11 | 🔴 missing (not in this PR) |
+| *(bonus)* Plaintext OAuth tokens | — | ✅ encrypted at rest (KEK-gated) |
 
-**Ship order:** 11 & 10 (docs) → 2 (HSTS) → OAuth tokens → 7/8/9 (engine) →
-capture 1/5/6 evidence.
+**Remaining:** provision `SURPLUS_ENCRYPTION_KEK` (turns encryption on) → move
+KEK into a real KMS (item 8) → publish the Trust page (item 11) → capture the
+Cloudflare/Railway console evidence (items 1/5/6) → extend field encryption to
+notes/message bodies using the same `crypto.encrypt_for` seam.
+
+---
+
+## Phase 2 — LLM request pipeline (assessment)
+
+This phase is **mostly commercial/contractual** (provider tier, DPA, BAA, ZDR),
+which lives in vendor agreements and account settings — not this repo. The
+code-relevant items are called out below. *(Assessment only; not implemented in
+this PR.)*
+
+### Provider selection & contracts
+
+| Item | Status | Notes |
+|------|--------|-------|
+| `[gate]` API/business tier, never consumer | 🏗️ VENDOR | The app calls Anthropic via the API SDK with `ANTHROPIC_API_KEY` (`agents/llm.py`) — an API account, not a consumer plan. Confirm the account is a commercial/Console org, not a personal Claude.ai subscription. |
+| `[gate]` Commercial terms exclude training | 🏗️ VENDOR | Anthropic's commercial API terms already exclude training on API inputs/outputs by default — confirm in writing for the specific account. |
+| `[sell]` Zero Data Retention | 🏗️ VENDOR | Request ZDR from Anthropic if eligible; no code change beyond not persisting content (see logging below). |
+| `[sell]` Sign a DPA | 🏗️ LEGAL | Execute Anthropic's DPA; repeat for every subprocessor in the list above. |
+| BAA if PHI could flow | 🏗️ LEGAL | Only if targeting med-mal/PI firms; otherwise document that PHI is out of scope. |
+| Disclose provider on subprocessor list | 🔴 DOC | Ties to Trust-page item 11 — publish the subprocessor list already enumerated above. |
+| Data residency (EU/UK) | 🏗️ VENDOR | Regional endpoints (Bedrock/Vertex) if EU/UK firms are in scope; not currently configured. |
+
+### App-side controls (the code items)
+
+| Item | Status | Evidence / Gap |
+|------|--------|----------------|
+| `[sell]` Redaction / PII-minimization before the call | 🔴 MISSING | No pre-send redaction layer exists. Drafting/agent prompts assemble real contact facts + thread text and send them to the model (`agents/relationship/**`, `agents/llm.py`). **Plan:** a `minimize(context)` pass at the prompt-assembly boundary that strips fields the task doesn't need (emails/phones/IDs) before the LLM call. |
+| `[gate]` Tenant isolation in context/RAG assembly | 🟡 VERIFY | Every context read is already scoped by `user_id`/`current_user`, and there is no shared vector store that could bleed across tenants (context is assembled per-request from the caller's own rows). **Gap:** add an explicit assertion/test that no prompt is ever built from another user's rows, so isolation is enforced structurally rather than by convention. Worth a dedicated audit. |
+| Logging policy: don't log prompt/response content | 🟡 VERIFY | Request logging is one line per request (status + duration, `reqlog.py`) and does **not** log bodies. Confirm `metrics.py`/`failure_log.py` and any LLM debug paths never persist prompt/response text; if any do, encrypt + short-TTL them. |
+| Human-in-the-loop before sensitive actions | ✅ MOSTLY | Sends are gated by kill-switches + billing and default to manual approval (`SURPLUS_AUTOMATED_SENDS` OFF by default; ARCHITECTURE.md §6b/§6c). Model output does not auto-fire sends/bookings unless the operator opts into automation. |
+
+**Phase 2 ship order:** disclose subprocessors + DPA/ZDR (contractual) →
+redaction layer (`[sell]`, code) → tenant-isolation audit + test (`[gate]`) →
+confirm/lock logging policy.

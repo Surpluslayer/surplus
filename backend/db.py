@@ -43,6 +43,14 @@ if _RAW_DB_URL:
         except ValueError:
             return default
 
+    # Encrypt the app<->Postgres hop (checklist: "TLS on internal service-to-
+    # service traffic, not just the edge"). Railway's private-network Postgres
+    # accepts SSL; `require` encrypts without cert verification. Overridable via
+    # DB_SSLMODE (set to `verify-full` with a CA for the strongest posture, or
+    # `disable` as an escape hatch if a deploy can't negotiate SSL).
+    _sslmode = (os.environ.get("DB_SSLMODE") or "require").strip()
+    _pg_connect_args = {} if _sslmode in ("", "disable") else {"sslmode": _sslmode}
+
     ENGINE = create_engine(
         DB_URL,
         pool_pre_ping=True,
@@ -50,6 +58,7 @@ if _RAW_DB_URL:
         max_overflow=_int_env("DB_MAX_OVERFLOW", 3),
         pool_timeout=_int_env("DB_POOL_TIMEOUT", 10),
         pool_recycle=300,
+        connect_args=_pg_connect_args,
     )
 else:
     DB_PATH = Path(__file__).parent / "data" / "surplus.db"
@@ -182,6 +191,10 @@ def init_db() -> None:
         _migrate_user_linkedin_chat_synced_at,
         _migrate_user_autonomy_mode,
         _migrate_email_pending_outreach,
+        # Backfill-encrypt OAuth tokens (no-op until SURPLUS_ENCRYPTION_KEK is
+        # set). Appending it also bumps the schema revision so create_all picks
+        # up the new tenant_keys table on existing databases.
+        _migrate_encrypt_connected_account_tokens,
         # Runs LAST : re-points existing User/Contact child FKs to ON DELETE
         # CASCADE so the delete paths (merge/cleanup) stop 500ing on Postgres.
         _migrate_fk_cascade,
@@ -311,6 +324,37 @@ def _migrate_user_password_hash() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(200)"))
+
+
+def _migrate_encrypt_connected_account_tokens() -> None:
+    """Backfill-encrypt plaintext OAuth tokens on connected_accounts once a KEK
+    is configured. No-op when encryption is disabled (no `SURPLUS_ENCRYPTION_KEK`)
+    or the table doesn't exist yet. Idempotent: `crypto.encrypt_for` skips values
+    already prefixed `enc:v1:`, so re-running only touches rows still in
+    plaintext. Batched commit per row keeps a large table from one giant txn."""
+    from sqlalchemy import inspect
+    from . import crypto, models
+    if not crypto.encryption_enabled():
+        return
+    insp = inspect(ENGINE)
+    if "connected_accounts" not in insp.get_table_names():
+        return
+    db = SessionLocal()
+    try:
+        rows = db.query(models.ConnectedAccount).all()
+        changed = 0
+        for row in rows:
+            new_access = crypto.encrypt_for(row.user_id, row.access_token, db)
+            new_refresh = crypto.encrypt_for(row.user_id, row.refresh_token, db)
+            if new_access != row.access_token or new_refresh != row.refresh_token:
+                row.access_token = new_access
+                row.refresh_token = new_refresh
+                changed += 1
+        if changed:
+            db.commit()
+            print(f"  [init_db] encrypted tokens on {changed} connected_accounts row(s)")
+    finally:
+        db.close()
 
 
 def _migrate_user_linkedin_chat_synced_at() -> None:
