@@ -195,16 +195,22 @@ def test_sync_iterates_all_active_mailboxes(db, monkeypatch):
                                 address="me@outlook.com", provider="outlook")
     db.commit()
 
-    # Each mailbox surfaces a DIFFERENT counterpart the user WROTE to (the
-    # two-way filter only mints contacts for outbound correspondence). The
-    # default fetcher is keyed off account_id so we route per mailbox.
+    # Each mailbox surfaces a DIFFERENT two-way counterpart (the gate mints a
+    # contact only on genuine reciprocity: the user wrote to them AND heard
+    # back). The default fetcher is keyed off account_id so we route per mailbox.
     pages = {
         "mail_g": [_mail(("me@gmail.com", "Me"),
                          [("alice@lo91r.com", "Alice")],
-                         date="2026-06-08T10:00:00Z", role="sent", pid="g1")],
+                         date="2026-06-08T10:00:00Z", role="sent", pid="g1"),
+                   _mail(("alice@lo91r.com", "Alice"),
+                         [("me@gmail.com", "Me")],
+                         date="2026-06-09T10:00:00Z", pid="g2")],
         "mail_o": [_mail(("me@outlook.com", "Me"),
                          [("bob@lo91r.com", "Bob")],
-                         date="2026-06-08T10:00:00Z", role="sent", pid="o1")],
+                         date="2026-06-08T10:00:00Z", role="sent", pid="o1"),
+                   _mail(("bob@lo91r.com", "Bob"),
+                         [("me@outlook.com", "Me")],
+                         date="2026-06-09T10:00:00Z", pid="o2")],
     }
 
     def fake_fetch(dsn, api_key, account_id, cursor):
@@ -233,10 +239,12 @@ def test_sync_legacy_fallback_when_no_email_accounts(db):
     db.add(u); db.commit(); db.refresh(u)
     assert models.list_email_accounts(db, u) == []
 
-    # Outbound mail : the two-way filter requires the user to have written
-    # to a counterpart before it becomes a contact.
+    # Two-way thread : the gate mints a contact only on reciprocity (you wrote
+    # to them AND they replied), so include both directions.
     mails = [_mail(("me@gmail.com", "Me"), [("carol@lo91r.com", "Carol")],
-                   date="2026-06-08T10:00:00Z", role="sent", pid="c1")]
+                   date="2026-06-08T10:00:00Z", role="sent", pid="c1"),
+             _mail(("carol@lo91r.com", "Carol"), [("me@gmail.com", "Me")],
+                   date="2026-06-09T10:00:00Z", pid="c2")]
     fetch = lambda cursor: {"items": mails, "cursor": None}  # noqa: E731
     stats = es.sync_email_contacts(db, u, dsn="d", api_key="k",
                                    fetch_page=fetch)

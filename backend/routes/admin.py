@@ -87,6 +87,14 @@ class DedupContactsBody(BaseModel):
     dry_run: bool = True
 
 
+class CleanupEmailNoiseBody(BaseModel):
+    """Remove the one-way email-sync 'contacts' the OLD gate created (anyone you
+    ever emailed once). `user_id` scopes to one owner (omit = every owner).
+    dry_run defaults True : preview the names before anything is touched."""
+    user_id: Optional[int] = None
+    dry_run: bool = True
+
+
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
@@ -1124,4 +1132,118 @@ def dedup_contacts(
     print(f"  [admin.dedup-contacts] dry_run={body.dry_run} "
           f"users={len(user_ids)} would/merged={total_would} "
           f"name_only={len(name_only_review)}", flush=True)
+    return result
+
+
+@router.post("/cleanup-email-noise")
+def cleanup_email_noise(
+    body: CleanupEmailNoiseBody,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """Remove the ONE-WAY email-sync 'contacts' the OLD gate created.
+
+    The old sync minted a Contact for anyone with n_out>=1 (one outbound email
+    EVER), so connecting a mailbox grabbed everyone. The new gate only books
+    genuine two-way threads. This retroactively cleans the book: it finds
+    email-sync contacts whose ONLY footprint is a one-way (n_in==0) email rollup
+    and NOTHING else -- no reply, no LinkedIn identity, no prospect, no facts,
+    not VIP, no other interaction -- and DEMOTES each to a pending-outreach
+    marker (so the 'I reached out' signal survives and a future reply
+    re-promotes them), then deletes the contact.
+
+    CONSERVATIVE: any other signal keeps the contact. Body:
+    {user_id?: int, dry_run: bool=true}. dry_run=true previews the names only.
+    """
+    import json as _json
+    from datetime import datetime as _dt
+
+    from ..agents.relationship.email_sync import _ROLLUP_SOURCE
+
+    if body.user_id is not None:
+        user_ids = [body.user_id]
+    else:
+        user_ids = [row[0] for row in db.query(models.User.id).all()]
+
+    would_remove = removed = demoted = 0
+    sample: list[str] = []
+    kept: dict = {}
+
+    def _keep(reason: str) -> None:
+        kept[reason] = kept.get(reason, 0) + 1
+
+    for uid in user_ids:
+        for c in db.query(models.Contact).filter_by(user_id=uid).all():
+            # 1) Must be an email-sync contact (has the email rollup); else leave alone.
+            rollup = (db.query(models.RelationshipInteraction)
+                      .filter_by(actor_user_id=uid, contact_id=c.id,
+                                 source_type=_ROLLUP_SOURCE).first())
+            if rollup is None:
+                continue
+            try:
+                meta = _json.loads(rollup.meta_json or "{}")
+            except Exception:  # noqa: BLE001
+                meta = {}
+            # 2) Two-way -> a real relationship, keep.
+            if int(meta.get("n_in") or 0) >= 1:
+                _keep("two_way"); continue
+            # 3) Any OTHER signal -> keep.
+            if c.vip:
+                _keep("vip"); continue
+            if db.query(models.Prospect.id).filter_by(contact_id=c.id).first():
+                _keep("prospect"); continue
+            if db.query(models.ContactIdentity.id).filter_by(
+                    user_id=uid, contact_id=c.id, kind="linkedin").first():
+                _keep("linkedin"); continue
+            if db.query(models.ContactFact.id).filter_by(contact_id=c.id).first():
+                _keep("facts"); continue
+            if (db.query(models.RelationshipInteraction.id)
+                    .filter(models.RelationshipInteraction.contact_id == c.id,
+                            models.RelationshipInteraction.source_type != _ROLLUP_SOURCE)
+                    .first()):
+                _keep("other_touch"); continue
+
+            # 4) Pure one-way email noise -> candidate for removal.
+            would_remove += 1
+            if len(sample) < 30:
+                label = c.name or c.email or c.primary_identity_key or f"contact:{c.id}"
+                sample.append(f"{label} <{c.email}>" if c.email else label)
+            if body.dry_run:
+                continue
+            # DEMOTE to a pending-outreach marker (preserve the outreach signal),
+            # then delete the contact (FK cascade drops its rollup + identities).
+            addr = (c.email or "").strip().lower()
+            if addr and "@" in addr and not (
+                    db.query(models.EmailPendingOutreach.id)
+                    .filter_by(user_id=uid, address=addr).first()):
+                lo = None
+                raw = meta.get("last_out")
+                if raw:
+                    try:
+                        lo = _dt.fromisoformat(raw)
+                    except Exception:  # noqa: BLE001
+                        lo = None
+                db.add(models.EmailPendingOutreach(
+                    user_id=uid, address=addr, name=c.name or None,
+                    first_out_at=lo, last_out_at=lo))
+                demoted += 1
+            db.delete(c)
+            removed += 1
+        if not body.dry_run:
+            db.commit()
+
+    if body.dry_run:
+        db.rollback()
+
+    result = {"dry_run": body.dry_run, "user_ids": user_ids,
+              "kept_by": kept, "sample": sample}
+    if body.dry_run:
+        result["would_remove"] = would_remove
+    else:
+        result["removed"] = removed
+        result["demoted_to_pending"] = demoted
+    print(f"  [admin.cleanup-email-noise] dry_run={body.dry_run} "
+          f"users={len(user_ids)} would/removed="
+          f"{would_remove if body.dry_run else removed} demoted={demoted}",
+          flush=True)
     return result

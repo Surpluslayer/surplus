@@ -86,9 +86,12 @@ def test_email_then_linkedin_same_person_by_shared_email_is_one_contact(db):
     profile RESOLVES to the same email must REUSE that contact (registering the
     li: identity onto it), never fork a second row."""
     u = _user(db)
+    # Two-way thread (you wrote, Andrew replied) so the gate mints the em: contact.
     mails = [
         _mail(("host@gmail.com", "Host"), [("andrew@altfest.com", "Andrew Altfest")],
               date="2026-06-01T10:00:00Z", role="sent", pid="m1"),
+        _mail(("andrew@altfest.com", "Andrew Altfest"), [("host@gmail.com", "Host")],
+              date="2026-06-02T10:00:00Z", pid="m2"),
     ]
     es.sync_email_contacts(db, u, dsn="d", api_key="k",
                            fetch_page=lambda cur: {"items": mails, "cursor": None})
