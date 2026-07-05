@@ -34,7 +34,12 @@ def _title(html: str) -> str:
 
 
 def _is_inperson(title: str) -> bool:
-    return "in person" in title.lower()
+    # The in-person surface title is now exactly "surplus" (was
+    # "surplus | in person"); the events/demo surface is "surplus demo". Match
+    # the in-person surface WITHOUT matching "surplus demo" (which contains
+    # "surplus" as a substring). Keep the old "in person" form too for rollbacks.
+    t = title.strip().lower()
+    return t == "surplus" or "in person" in t
 
 
 # ── direct (no proxy) ────────────────────────────────────────────────────────
