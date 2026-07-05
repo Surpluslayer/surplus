@@ -19,7 +19,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Sparkles, ArrowUp, ArrowRight, Star, LayoutDashboard, Plus, BookText, Loader2, X,
-  Link2,
+  Link2, Building2,
   ChevronLeft, ChevronRight, ChevronDown, MapPin, QrCode, Search, Send,
   Mail, Calendar, Plug, CreditCard, LogOut, CheckCircle2, Mic, Video, MessageCircle,
   KeyRound,
@@ -32,6 +32,7 @@ import {
 import { StageChip } from "./components/ContactsPage.jsx";
 import AuthOptions from "./components/AuthOptions.jsx";
 import LinkedInMark from "./components/LinkedInMark.jsx";
+import AccountsTab from "./components/AccountsTab.jsx";
 
 // Demo → real conversion: send the visitor into the connect-first LinkedIn
 // flow (same entry the send-gate uses). The callback returns them to the real
@@ -82,7 +83,7 @@ export default function BookApp() {
   const [user, setUser] = useState(null);       // null=loading, undefined=signed out
   const [feed, setFeed] = useState(null);        // null=loading
   const [err, setErr] = useState("");
-  const [tab, setTab] = useState("today");       // "today" | "add" | "book"
+  const [tab, setTab] = useState("today");       // "today" | "add" | "book" | "accounts"
   const [route, setRoute] = useState(null);      // {name:"detail",row} | {name:"account"} | {name:"connections"} | null
   const [draftFor, setDraftFor] = useState(null);// {name, contact_id, trigger}
 
@@ -203,6 +204,8 @@ export default function BookApp() {
                        onAccount={() => setRoute({ name: "account" })}
                        onAdd={() => goTab("add")}
                        onOpen={openDetail} onDraft={openDraft} />;
+  } else if (tab === "accounts") {
+    screen = <AccountsTab />;
   } else if (tab === "add") {
     screen = <AddScreen user={user}
                         onAccount={() => setRoute({ name: "account" })}
@@ -241,6 +244,10 @@ export default function BookApp() {
                   className={"bk-nav-item" + (activeNav === "book" ? " on" : "")}
                   onClick={() => goTab("book")}>
             <BookText size={19} /><span>Book</span>
+          </button>
+          <button className={"bk-nav-item" + (activeNav === "accounts" ? " on" : "")}
+                  onClick={() => goTab("accounts")}>
+            <Building2 size={19} /><span>Accounts</span>
           </button>
         </nav>
       </div>

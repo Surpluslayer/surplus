@@ -154,6 +154,7 @@ def apply_profile(db, contact: models.Contact, profile: dict) -> list[dict]:
         _store_profile_facts(db, contact, new_company, new_title)
         contact.profile_baselined_at = _now()
         contact.watched_at = _now()
+        _resolve_company_membership(db, contact, source="enrichment")
         return changes
     if _changed(getattr(contact, "company", None), new_company):
         prev = getattr(contact, "company", None)
@@ -170,6 +171,11 @@ def apply_profile(db, contact: models.Contact, profile: dict) -> list[dict]:
         # current-state facts so the reader gets structured company/title without
         # parsing the event log. (Append the event, upsert the fact.)
         _store_profile_facts(db, contact, new_company, new_title)
+        # Account layer: a company change is the membership close/open moment —
+        # the old edge gets ended_at=now, the new company's edge opens. This is
+        # what makes "you now know someone at NewCo / coverage dropped at OldCo"
+        # visible on the account graph. Sweep context, so the LLM may assist.
+        _resolve_company_membership(db, contact, source="job_change_event")
         changes.append(change)
         # autodraft fires inside _emit now (covers every watcher).
     elif new_title and _changed(getattr(contact, "headline", None), new_title):
@@ -190,6 +196,18 @@ def apply_profile(db, contact: models.Contact, profile: dict) -> list[dict]:
         changes.append(change)
     contact.watched_at = _now()
     return changes
+
+
+def _resolve_company_membership(db, contact, source: str) -> None:
+    """Best-effort account-layer resolution from the updates sweep. Never
+    breaks the watch path: the sweep owns the transaction (commit=False
+    semantics like _store_profile_facts), and any resolver error is swallowed
+    after a flush-safe attempt. LLM allowed — this is background work."""
+    try:
+        from .company_resolve import resolve_contact
+        resolve_contact(db, contact, source=source, allow_llm=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _store_profile_facts(db, contact, company: str, title: str) -> None:
