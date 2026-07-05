@@ -72,3 +72,31 @@ Ranked; each has a known fix. Pick up any item independently.
 - Railway's Diagnosis bot auto-merges PRs to main (the "Run automatically" toggle). It treats symptoms (raised healthcheckTimeout). Consider turning it to propose-only.
 - Cloudflare caps responses at ~100s (error 524). Long endpoints must be backgrounded or called via the .up.railway.app domain.
 - `railway service scale REGION=N` needs exact slugs from `railway status --json` (eu=europe-west4-drams3a, us=us-west2).
+
+## Scaling runbook (workers / replicas / the 100-connection ceiling)
+
+Set 2026-07-05: `WEB_CONCURRENCY=2`, `DB_POOL_SIZE=5`, `DB_MAX_OVERFLOW=5` on prod
+AND staging (validated on staging first). Two workers per replica now, so one
+wedged worker no longer drops all traffic on its container.
+
+**The hard constraint is Postgres `max_connections=100.`** The budget is:
+
+    replicas  x  workers/replica  x  (DB_POOL_SIZE + DB_MAX_OVERFLOW)  <=  ~90
+
+Leave headroom (~10) for the Postgres service itself, monitoring, and rolling
+deploys (old + new containers overlap briefly). Current: `2 x 2 x (5+5) = 40`
+max, same ceiling as the old `2 x 1 x (10+10)`. Live usage sits ~18/100.
+
+To scale UP:
+- **More workers**: raise `WEB_CONCURRENCY`, and DROP `DB_POOL_SIZE`/`DB_MAX_OVERFLOW`
+  so the product stays under ~90. E.g. 3 workers -> pool 3 / overflow 3
+  (`2 x 3 x 6 = 36`).
+- **More replicas** (`multiRegionConfig` numReplicas): same math -- more replicas
+  multiply the connection draw, so shrink the per-worker pool in step.
+- Past ~90 total you need a bigger Postgres (raise `max_connections`) or a
+  connection pooler (PgBouncer) in front. Do NOT just bump pools blindly.
+
+Verify after any change:
+- `GET /api/health?deep=1` -> `db_pool.size` reflects the new `DB_POOL_SIZE`.
+- `SELECT count(*) FROM pg_stat_activity` on the Postgres public URL stays < 90.
+- Boot healthy (uptime resets, `warnings: []`).
