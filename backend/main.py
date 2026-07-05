@@ -714,6 +714,19 @@ def health(deep: bool = False,
                      "UNIPILE_DSN", "UNIPILE_API_KEY", "ANTHROPIC_API_KEY"):
             if not (os.environ.get(_var) or "").strip():
                 warnings.append(f"required config missing: {_var}")
+
+        # Email deliverability: a Resend key is set but the from-address is still
+        # the SANDBOX sender (onboarding@resend.dev), which only delivers to the
+        # Resend account owner and 403s every real user. So verification codes /
+        # password resets silently never arrive. Flag it here so it's caught
+        # before users report "I never got my code".
+        _resend_on = bool((os.environ.get("RESEND_API_KEY") or "").strip())
+        _from_addr = (os.environ.get("SURPLUS_FROM_EMAIL") or "").strip()
+        if _resend_on and (not _from_addr or "onboarding@resend.dev" in _from_addr):
+            warnings.append(
+                "email from-address is the Resend sandbox (onboarding@resend.dev) "
+                "-- verification/reset mail only reaches the Resend account owner; "
+                "verify a domain in Resend and set SURPLUS_FROM_EMAIL")
         try:
             from sqlalchemy import text
             with ENGINE.connect() as conn:

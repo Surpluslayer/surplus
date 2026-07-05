@@ -42,5 +42,20 @@ def send_email(*, to: str, subject: str, html: str = "", text: str = "") -> bool
                        json=body, timeout=20)
         r.raise_for_status()
         return True
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        # Surface WHY a send failed instead of silently swallowing it. The most
+        # common prod cause is the Resend SANDBOX sender (onboarding@resend.dev):
+        # it only delivers to your own Resend-account email and 403s every other
+        # recipient, so "no one gets their PIN" is invisible until you log the
+        # provider's response body. Never raises: a mail hiccup must not break
+        # signup/reset.
+        resp = getattr(exc, "response", None)
+        detail = ""
+        if resp is not None:
+            try:
+                detail = f"status={resp.status_code} body={resp.text[:300]}"
+            except Exception:  # noqa: BLE001
+                detail = ""
+        print(f"  [email_sender] send FAILED to={to} from={_from()} "
+              f"err={type(exc).__name__} {detail}", flush=True)
         return False
