@@ -75,14 +75,22 @@ jobs:
           echo "$body" | jq -c '{db_pool, memory, cpu, db_ping_ms, uptime_seconds}' || {
             echo "::warning::could not parse deep health"; exit 0; }
 
-          # Collect warnings: the app's own list, plus a crash-loop tell.
-          warns=$(echo "$body" | jq -r '(.warnings // [])[]' 2>/dev/null)
+          # INFO (never fails the run): known config gaps the app surfaces but
+          # that are not outages -- e.g. the Resend sandbox from-address. Plus a
+          # low post-deploy uptime, which on a SINGLE poll is indistinguishable
+          # from a normal deploy, so it is informational, not a page. A REAL
+          # crash loop takes the app down and is caught by the 2xx probe above.
+          echo "$body" | jq -r '(.info // [])[]' 2>/dev/null | while IFS= read -r i; do
+            [ -n "$(echo "$i" | tr -d '[:space:]')" ] && echo "::notice::INFO: $i"
+          done
           up=$(echo "$body" | jq -r '.uptime_seconds // empty' 2>/dev/null)
           if [ -n "${up:-}" ] && awk "BEGIN{exit !($up < 120)}"; then
-            warns="$warns
-          uptime only ${up}s -- possible crash loop"
+            echo "::notice::INFO: uptime ${up}s (fresh deploy or, if it persists across polls, a crash loop)"
           fi
 
+          # PAGE-worthy only: the app's warnings list = imminent outage
+          # (pool/memory/db-latency). These fail the run so watchers get alerted.
+          warns=$(echo "$body" | jq -r '(.warnings // [])[]' 2>/dev/null)
           if [ -n "$(echo "$warns" | tr -d '[:space:]')" ]; then
             echo "$warns" | while IFS= read -r w; do
               [ -n "$(echo "$w" | tr -d '[:space:]')" ] && echo "::error::LEADING INDICATOR: $w"

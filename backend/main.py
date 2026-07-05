@@ -595,7 +595,8 @@ def health(deep: bool = False,
     mem_stats = None
     cpu_stats = None
     db_ping_ms = None
-    warnings: list[str] = []  # leading indicators: things to fix BEFORE they page
+    warnings: list[str] = []  # PAGE-worthy: imminent outage (pool/memory/db/crash)
+    info: list[str] = []      # known config gaps: surface, do NOT page/fail on
     if deep:
         # Only on explicit ?deep=1 : never on the platform healthcheck path, so
         # DB-pool exhaustion can't fail the healthcheck and trigger a restart.
@@ -723,7 +724,10 @@ def health(deep: bool = False,
         _resend_on = bool((os.environ.get("RESEND_API_KEY") or "").strip())
         _from_addr = (os.environ.get("SURPLUS_FROM_EMAIL") or "").strip()
         if _resend_on and (not _from_addr or "onboarding@resend.dev" in _from_addr):
-            warnings.append(
+            # INFO, not a page: a real (known) deliverability gap, but it does not
+            # take the app down and is fixed operationally (Resend domain), so it
+            # must not fail the uptime monitor every 5 minutes.
+            info.append(
                 "email from-address is the Resend sandbox (onboarding@resend.dev) "
                 "-- verification/reset mail only reaches the Resend account owner; "
                 "verify a domain in Resend and set SURPLUS_FROM_EMAIL")
@@ -776,7 +780,8 @@ def health(deep: bool = False,
         "memory": mem_stats,
         "cpu": cpu_stats,
         "db_ping_ms": db_ping_ms,
-        "warnings": warnings,  # non-empty => fix before it becomes an outage
+        "warnings": warnings,  # PAGE-worthy: non-empty => imminent outage
+        "info": info,          # known config gaps: surface, never page/fail on
         "db_url_set": bool((os.environ.get("DATABASE_URL") or "").strip()),
         "integrations": integrations,
         "last_paid_at": last_webhook_paid_at,
