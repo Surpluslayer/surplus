@@ -768,16 +768,29 @@ function Prospects({ profile, runResult, eventId, onError, onNext, locked = fals
     let cancelled = false;
     (async () => {
       try {
-        const r = await api.checkConnections(eventId);
-        if (cancelled || !r?.results) return;
-        const next = {};
-        for (const row of r.results) {
-          next[row.prospect_id] = row.connection_status;
-        }
-        setConnectionStatusById((s) => ({ ...next, ...s }));  // don't clobber click-time updates
+        // Now a 202 : it SCHEDULES a detached refresh (so a large pool can't
+        // 524 the request). The statuses settle on the server over a few
+        // seconds; poll GET /prospects to pick them up as they land.
+        await api.checkConnections(eventId);
       } catch {
-        // Silent : button just stays as "Reach out" and the server's smart
-        // routing still does the right thing at click time.
+        return;  // Silent : buttons stay "Reach out", smart routing works at click.
+      }
+      for (let i = 0; i < 6 && !cancelled; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        if (cancelled) return;
+        try {
+          const res = await api.getProspects(eventId);
+          const rows = res?.prospects || [];
+          const next = {};
+          for (const p of rows) {
+            if (p.connection_status && p.connection_status !== "unknown") {
+              next[p.id] = p.connection_status;
+            }
+          }
+          if (!cancelled && Object.keys(next).length) {
+            setConnectionStatusById((s) => ({ ...next, ...s }));  // don't clobber click-time updates
+          }
+        } catch { /* keep polling : a blip shouldn't stop the rest */ }
       }
     })();
     return () => { cancelled = true; };
