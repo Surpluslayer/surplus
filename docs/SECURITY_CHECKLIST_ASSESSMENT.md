@@ -138,7 +138,7 @@ encryption, which is the right call for credentials.
 | # | Item | Status | Evidence / Gap |
 |---|------|--------|----------------|
 | 10 | Do **NOT** market end-to-end encryption for AI-processed content | ✅ DONE | No E2E/zero-knowledge/bank-grade claim exists in `frontend/`, `backend/landing/`, `store/`, or `docs/` (grep clean). The server necessarily sees plaintext to call Anthropic (`agents/llm.py`) — consistent with making no E2E claim. **Keep it that way:** add a one-line note to the Trust page draft so a future marketing edit doesn't reintroduce the claim. |
-| 11 | Document the real boundary on a Trust page (encrypted in transit + at rest + per-tenant; plaintext only transient during processing) | 🔴 MISSING | No Trust/Security page exists (no `SECURITY.md`, no trust route; `store/privacy-policy.md` covers only the Chrome extension). **Plan:** publish a Trust page stating: TLS in transit (CF, TLS 1.2+/1.3); encryption at rest (Railway-managed + app-level field encryption once #7 ships); per-User (or per-Org) key isolation once #9 ships; **explicitly** that AI-processed content is decrypted transiently server-side to call the model and is **not** end-to-end encrypted; and the subprocessor list above. Serve it at `/trust` (static, DB-free — mirror the `/landing` pattern in `main.py:459-467`) and/or add a repo `SECURITY.md`. |
+| 11 | Document the real boundary on a Trust page (encrypted in transit + at rest + per-tenant; plaintext only transient during processing) | ✅ IMPLEMENTED | Static, DB-free `/trust` (alias `/security`) in `main.py` + a repo `SECURITY.md`. States TLS in transit, encryption at rest (managed + app-level per-tenant field encryption), tenant isolation, PII minimization, data export/delete, and the subprocessor list — and **explicitly** that AI-processed content is decrypted transiently server-side and is **not** end-to-end encrypted. *Note: the "application-level field encryption" line is literally true once `SURPLUS_ENCRYPTION_KEK` is provisioned — enable the KEK before publishing the page publicly.* |
 
 ---
 
@@ -237,8 +237,8 @@ implemented in the retention PR; the rest need a retention schedule / infra.)*
 | App-level field encryption `[sell]` | 7 | ✅ engine shipped (`crypto.py`), applied to OAuth tokens |
 | Keys in KMS not config | 8 | 🟡 KEK via env; `_load_kek` is the KMS seam |
 | Per-tenant DEK `[sell]` | 9 | ✅ per-`User` DEK (Org path documented) |
-| No E2E marketing claim | 10 | ✅ already clean |
-| Trust page documents boundary | 11 | 🔴 missing (not in this PR) |
+| No E2E marketing claim | 10 | ✅ clean + reinforced on the Trust page |
+| Trust page documents boundary | 11 | ✅ `/trust` (+`/security`) + `SECURITY.md` |
 | *(bonus)* Plaintext OAuth tokens | — | ✅ encrypted at rest (KEK-gated) |
 
 **Remaining:** provision `SURPLUS_ENCRYPTION_KEK` (turns encryption on) → move
