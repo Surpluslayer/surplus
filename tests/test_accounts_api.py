@@ -336,3 +336,16 @@ def test_list_paginates_and_reports_total(db):
     page2 = acc_route.list_accounts(limit=3, offset=3, db=db, user=u)
     ids = {a["id"] for a in out["accounts"]} | {a["id"] for a in page2["accounts"]}
     assert len(ids) == 6
+
+
+def test_batched_page_matches_single_summary(db):
+    """account_summaries_page must produce exactly what account_summary
+    produces row-for-row: it exists only to batch the queries."""
+    from backend.agents.relationship import accounts_read
+    u, co, acct, *_ = _seed(db)
+    accounts = (db.query(models.Account)
+                  .filter(models.Account.owner_id == u.id).all())
+    batched = accounts_read.account_summaries_page(db, accounts, u.id)
+    singles = [accounts_read.account_summary(db, a, u.id) for a in accounts]
+    singles = [x for x in singles if x is not None]
+    assert batched == singles

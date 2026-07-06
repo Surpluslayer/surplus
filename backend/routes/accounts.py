@@ -105,24 +105,24 @@ def list_accounts(tier: Optional[str] = None, q: Optional[str] = None,
     else:
         accounts = ordered.offset(offset).limit(min(limit, 200)).all()
 
-    summaries = []
+    # Lazy rollup heal, page-bounded: accounts born from a bulk backfill can
+    # land with NULL strength/count; healing only the visible page keeps the
+    # request cheap no matter how large the book is.
     dirty = False
     for account in accounts:
-        # Lazy rollup heal, page-bounded: accounts born from a bulk backfill
-        # can land with NULL strength/count; healing only the visible page
-        # keeps the request cheap no matter how large the book is.
         if account.strength_score is None or not account.contact_count:
             accounts_read.recompute_rollups(db, account)
             dirty = True
-        s = accounts_read.account_summary(db, account, user.id)
-        if s is None:
-            continue
-        if q:
-            needle_txt = q.strip().lower()
-            hay = [s["company"]["canonical_name"], *s["member_preview"]]
-            if not any(needle_txt in (v or "").lower() for v in hay):
-                continue
-        summaries.append(s)
+
+    # Batched page assembly (~6 queries total): per-account assembly paid a
+    # cross-region round-trip per query and turned a 60-row page into ~47s.
+    summaries = accounts_read.account_summaries_page(db, accounts, user.id)
+    if q:
+        needle_txt = q.strip().lower()
+        summaries = [s for s in summaries
+                     if any(needle_txt in (v or "").lower()
+                            for v in [s["company"]["canonical_name"],
+                                      *s["member_preview"]])]
 
     # Stable in-page order (the DB pre-ordered; healing may have re-scored).
     summaries.sort(key=lambda s: (
