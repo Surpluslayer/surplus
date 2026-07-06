@@ -64,11 +64,118 @@ function _when(iso) {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+// Email-sync contacts sometimes carry the ADDRESS as their name; showing
+// "jia@surpluslayer.com" as a person reads broken. Display the local part,
+// title-cased, until a real name lands from enrichment.
+function prettyName(name) {
+  const s = (name || "").trim();
+  const m = s.match(/^([a-z0-9._+-]+)@[a-z0-9.-]+\.[a-z]{2,}$/i);
+  if (!m) return s;
+  const local = m[1].replace(/[._+-]+/g, " ").trim();
+  return local.replace(/\b\w/g, (c) => c.toUpperCase()) || s;
+}
+
+// ── team view : who on the org knows whom, per company ──────────────────────
+// The Level-1 team plane (docs/accounts-architecture.md §6): each company row
+// expands into ATTRIBUTED paths — which member owns which relationship —
+// because a merged number without attribution ("2 paths") tells you nothing
+// about who should make the intro. Metadata only: warmth + recency bands,
+// never content.
+function TeamAccounts({ team }) {
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  const [openCid, setOpenCid] = useState(null);
+  const [paths, setPaths] = useState({});   // company_id -> rows | "loading"
+
+  useEffect(() => {
+    let cancelled = false;
+    req(`/api/teams/${team.team_id}/accounts`)
+      .then((r) => {
+        if (cancelled) return;
+        // Strict-profile interlock: {"view_state":"pending"} must survive
+        // normalization, not flatten into an empty list.
+        if (r && !Array.isArray(r) && r.view_state === "pending") setRows(r);
+        else setRows(Array.isArray(r) ? r : (r?.accounts || []));
+      })
+      .catch((e) => { if (!cancelled) setErr(e.message || String(e)); });
+    return () => { cancelled = true; };
+  }, [team.team_id]);
+
+  const toggle = (cid) => {
+    if (openCid === cid) { setOpenCid(null); return; }
+    setOpenCid(cid);
+    if (!paths[cid]) {
+      setPaths((p) => ({ ...p, [cid]: "loading" }));
+      req(`/api/teams/${team.team_id}/companies/${cid}/paths`)
+        .then((r) => setPaths((p) => ({ ...p, [cid]: Array.isArray(r) ? r : (r?.paths || []) })))
+        .catch(() => setPaths((p) => ({ ...p, [cid]: [] })));
+    }
+  };
+
+  if (err) return <div className="bk-err">{err}</div>;
+  if (!rows) return (
+    <div className="bk-loading"><Loader2 className="bk-spin" size={18} /> Loading team view…</div>
+  );
+  if (!Array.isArray(rows)) return (
+    <div className="bk-empty">Team view is pending until conflict setup is finished.</div>
+  );
+
+  return (
+    <div className="bk-group">
+      {rows.map((r) => (
+        <React.Fragment key={r.company_id}>
+          <div className="bk-row bk-row--tap" role="button" tabIndex={0}
+               onClick={() => toggle(r.company_id)}
+               onKeyDown={(e) => { if (e.key === "Enter") toggle(r.company_id); }}>
+            <div className="bk-main">
+              <p className="bk-name">{r.company_name}</p>
+              <p className="bk-sub">
+                {r.member_count === 1 ? "1 of you" : `${r.member_count} of you`}
+                {" · "}
+                {r.path_count === 1 ? "1 path" : `${r.path_count} paths`}
+              </p>
+            </div>
+            <HealthChip status={r.warmth} />
+          </div>
+          {openCid === r.company_id && (
+            <div style={{ padding: "2px 16px 10px" }}>
+              {paths[r.company_id] === "loading" && (
+                <p className="bk-hint"><Loader2 className="bk-spin" size={13} /> Loading paths…</p>
+              )}
+              {Array.isArray(paths[r.company_id]) && paths[r.company_id].map((p, i) => (
+                <p key={i} className="bk-sub" style={{ margin: "6px 0" }}>
+                  <strong>{prettyName(p.member_name)}</strong>
+                  {" knows "}
+                  <strong>{prettyName(p.contact_name)}</strong>
+                  {p.contact_title ? ` (${p.contact_title})` : ""}
+                  {" · "}
+                  <HealthChip status={p.warmth_band} />
+                  {p.last_touch_band && p.last_touch_band !== "never"
+                    ? ` · ${p.last_touch_band}` : ""}
+                </p>
+              ))}
+              {Array.isArray(paths[r.company_id]) && paths[r.company_id].length === 0 && (
+                <p className="bk-hint">No visible paths.</p>
+              )}
+            </div>
+          )}
+        </React.Fragment>
+      ))}
+      {rows.length === 0 && (
+        <div className="bk-empty">No team accounts yet.</div>
+      )}
+    </div>
+  );
+}
+
 export default function AccountsTab() {
   const [accounts, setAccounts] = useState(null);   // null = loading
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
   const [openId, setOpenId] = useState(null);
+
+  const [team, setTeam] = useState(null);           // first org, if any
+  const [view, setView] = useState("mine");         // "mine" | "team"
 
   const load = useCallback(() => {
     setErr("");
@@ -77,6 +184,15 @@ export default function AccountsTab() {
       .catch((e) => setErr(e.message || String(e)));
   }, []);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    // Best-effort: the toggle appears only for org members.
+    req("/api/teams/mine")
+      .then((r) => {
+        const teams = Array.isArray(r) ? r : (r?.teams || []);
+        if (teams.length > 0) setTeam(teams[0]);
+      })
+      .catch(() => {});
+  }, []);
 
   const toggleStar = (a) => {
     const next = !a.starred;
@@ -118,14 +234,40 @@ export default function AccountsTab() {
           )}
         </div>
       </div>
-      <p className="bk-hint">Companies your relationships roll up into</p>
+      {team && (
+        <div style={{ display: "flex", gap: 8, padding: "0 16px 8px" }}>
+          <button type="button"
+                  className={"bk-chip" + (view === "mine" ? " on" : "")}
+                  style={{ cursor: "pointer",
+                           fontWeight: view === "mine" ? 600 : 400 }}
+                  onClick={() => setView("mine")}>
+            My accounts
+          </button>
+          <button type="button"
+                  className={"bk-chip" + (view === "team" ? " on" : "")}
+                  style={{ cursor: "pointer",
+                           fontWeight: view === "team" ? 600 : 400 }}
+                  onClick={() => setView("team")}>
+            {team.name || "Our team"}
+          </button>
+        </div>
+      )}
+      <p className="bk-hint">
+        {view === "team"
+          ? "Who on your team knows people where — tap a company for whose path is whose"
+          : "Companies your relationships roll up into"}
+      </p>
 
-      {err && <div className="bk-err">{err} <button className="bk-link" onClick={load}>Retry</button></div>}
-      {!accounts && !err && (
+      {view === "team" && team && <TeamAccounts team={team} />}
+
+      {view === "mine" && err && (
+        <div className="bk-err">{err} <button className="bk-link" onClick={load}>Retry</button></div>
+      )}
+      {view === "mine" && !accounts && !err && (
         <div className="bk-loading"><Loader2 className="bk-spin" size={18} /> Loading accounts…</div>
       )}
 
-      {accounts && (
+      {view === "mine" && accounts && (
         <div className="bk-group">
           {shown.map((a) => (
             <div key={a.id} className="bk-row bk-row--tap" role="button" tabIndex={0}
@@ -147,7 +289,8 @@ export default function AccountsTab() {
                 <p className="bk-sub">
                   {a.rollups?.contact_count === 1 ? "1 contact"
                     : `${a.rollups?.contact_count ?? 0} contacts`}
-                  {(a.member_preview || []).length > 0 && ` · ${a.member_preview.join(", ")}`}
+                  {(a.member_preview || []).length > 0 &&
+                    ` · ${a.member_preview.map(prettyName).join(", ")}`}
                 </p>
                 {a.objective && <p className="bk-meta">{a.objective}</p>}
               </div>
