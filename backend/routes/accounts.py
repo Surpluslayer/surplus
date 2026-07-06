@@ -16,6 +16,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -59,25 +60,57 @@ class OverlayIn(BaseModel):
 
 @router.get("")
 def list_accounts(tier: Optional[str] = None, q: Optional[str] = None,
+                  limit: int = 60, offset: int = 0,
                   db: Session = Depends(get_db),
                   user: models.User = Depends(current_user)) -> dict:
     """The owner's accounts, starred first then strongest first. `tier`
     filters exactly; `q` matches the (overlay-corrected) company name or a
     previewed member name, case-insensitive. Overlay-rejected groupings are
-    dropped entirely (account_summary returns None for them)."""
-    query = (db.query(models.Account)
-               .filter(models.Account.owner_type == "user",
-                       models.Account.owner_id == user.id))
+    dropped entirely (account_summary returns None for them).
+
+    PAGED AT THE DB (limit default 60, ordered by the materialized starred/
+    strength columns): account_summary costs several queries per account, so
+    summarizing a whole 400-account book in one request took ~60s on prod and
+    timed out the tab. The page summarizes only what the tab can show;
+    `total` carries the full count for the pager. A `q` search widens to the
+    whole book by company name at the DB before summarizing, so search still
+    finds unstarred long-tail accounts."""
+    base = (db.query(models.Account)
+              .filter(models.Account.owner_type == "user",
+                      models.Account.owner_id == user.id))
     if tier:
-        query = query.filter(models.Account.tier == tier)
+        base = base.filter(models.Account.tier == tier)
+    total = base.count()
+
+    ordered = base.order_by(models.Account.starred.desc(),
+                            models.Account.strength_score.desc().nullslast(),
+                            models.Account.id)
+    if q:
+        # Search is hybrid but BOUNDED: company canonical_name matches in SQL
+        # across the whole book, plus member-name matches within the top-200
+        # summarized accounts. (Whole-book member search would re-open the
+        # summarize-everything cost this pagination exists to kill.)
+        needle = f"%{q.strip().lower()}%"
+        sql_hits = (ordered.join(models.Company,
+                                 models.Company.id == models.Account.company_id)
+                           .filter(func.lower(models.Company.canonical_name)
+                                   .like(needle))
+                           .limit(min(limit, 200)).all())
+        scan = ordered.limit(200).all()
+        seen, accounts = set(), []
+        for a in [*sql_hits, *scan]:
+            if a.id not in seen:
+                seen.add(a.id)
+                accounts.append(a)
+    else:
+        accounts = ordered.offset(offset).limit(min(limit, 200)).all()
 
     summaries = []
     dirty = False
-    for account in query.all():
-        # Lazy rollup: accounts born from a bulk backfill land with NULL
-        # strength/last-touch (the backfill deliberately skips per-account
-        # recompute to stay inside its HTTP batch window). First list view
-        # heals them, so the tab never shows a graph of empty chips.
+    for account in accounts:
+        # Lazy rollup heal, page-bounded: accounts born from a bulk backfill
+        # can land with NULL strength/count; healing only the visible page
+        # keeps the request cheap no matter how large the book is.
         if account.strength_score is None or not account.contact_count:
             accounts_read.recompute_rollups(db, account)
             dirty = True
@@ -85,14 +118,13 @@ def list_accounts(tier: Optional[str] = None, q: Optional[str] = None,
         if s is None:
             continue
         if q:
-            needle = q.strip().lower()
+            needle_txt = q.strip().lower()
             hay = [s["company"]["canonical_name"], *s["member_preview"]]
-            if not any(needle in (v or "").lower() for v in hay):
+            if not any(needle_txt in (v or "").lower() for v in hay):
                 continue
         summaries.append(s)
 
-    # Starred first, then strength desc (unscored sinks to the bottom),
-    # then name for a stable order.
+    # Stable in-page order (the DB pre-ordered; healing may have re-scored).
     summaries.sort(key=lambda s: (
         not s["starred"],
         -(s["rollups"]["strength_score"] if s["rollups"]["strength_score"]
@@ -101,7 +133,8 @@ def list_accounts(tier: Optional[str] = None, q: Optional[str] = None,
     ))
     if dirty:
         db.commit()
-    return {"accounts": summaries}
+    return {"accounts": summaries, "total": total,
+            "limit": min(limit, 200), "offset": offset}
 
 
 @router.get("/{account_id}")

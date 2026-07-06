@@ -318,3 +318,21 @@ def test_list_lazily_heals_null_rollups(db):
     assert row["rollups"]["strength_score"] is not None
     db.refresh(acct)
     assert acct.contact_count > 0
+
+
+def test_list_paginates_and_reports_total(db):
+    """The list is DB-paged: a big book returns only the page plus the full
+    count, so the tab request stays cheap at any book size."""
+    u, co, acct, *_ = _seed(db)
+    for i in range(5):
+        c = models.Company(canonical_name=f"Extra {i}")
+        db.add(c); db.commit()
+        db.add(models.Account(owner_type="user", owner_id=u.id,
+                              company_id=c.id))
+        db.commit()
+    out = acc_route.list_accounts(limit=3, db=db, user=u)
+    assert out["total"] == 6
+    assert len(out["accounts"]) == 3
+    page2 = acc_route.list_accounts(limit=3, offset=3, db=db, user=u)
+    ids = {a["id"] for a in out["accounts"]} | {a["id"] for a in page2["accounts"]}
+    assert len(ids) == 6
