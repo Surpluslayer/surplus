@@ -63,6 +63,24 @@ Pick the sending account with `INVESTOR_OUTREACH_USER_EMAIL` when more than one
 user has LinkedIn connected. Add `--all` to include the medium/low-confidence
 rows once you've eyeballed them.
 
+### Recommended first run: a test batch of 5
+
+Before enabling the daily schedule, send a small test batch and confirm the
+invites landed on the right profiles (a wrong-profile match on a common name is
+the one thing you can't undo):
+
+```bash
+# 1. Eyeball the exact matched profiles first (dry-run, never sends):
+python -m scripts.investor_outreach preview --limit 5
+
+# 2. Send just 5 for real, then check LinkedIn that all 5 look right:
+UNIPILE_DRY_RUN=false python -m scripts.investor_outreach send --limit 5
+```
+
+Only after those 5 look correct should you enable the daily cron below (or keep
+running `send --limit 12` by hand). Sends are idempotent, so the 5 already sent
+are never repeated.
+
 ### On a schedule (Modal)
 
 `investor_outreach_sweep` is already registered with `schedule=modal.Period(days=1)`.
