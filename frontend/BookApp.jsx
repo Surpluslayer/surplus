@@ -311,9 +311,9 @@ function Avatar({ user, feed, onAccount }) {
 function TopbarActions({ user, feed, onAdd, onAccount }) {
   return (
     <div className="bk-topbar-actions">
-      <button className="bk-topadd" onClick={onAdd} aria-label="Add contact"
-              title="Add contact">
-        <Plus size={18} />
+      <button className="bk-topcapture" onClick={onAdd} aria-label="Capture"
+              title="Capture">
+        <Plus size={15} /> Capture
       </button>
       <Avatar user={user} feed={feed} onAccount={onAccount} />
     </div>
@@ -1947,10 +1947,11 @@ const BOOK_CSS = `
   color:var(--accent); display:flex; align-items:center; justify-content:center;
   font-size:12px; font-weight:500; flex:none; border:0; cursor:pointer; font-family:var(--font-ui);}
 .bk-topbar-actions{display:flex; align-items:center; gap:10px; flex:none;}
-.bk-topadd{width:28px; height:28px; border-radius:50%; background:none; color:var(--faint);
-  display:flex; align-items:center; justify-content:center; border:.5px solid var(--line);
-  cursor:pointer; flex:none; padding:0;}
-.bk-topadd:hover{color:var(--accent); border-color:var(--accent);}
+.bk-topcapture{display:inline-flex; align-items:center; gap:5px; height:28px; padding:0 11px;
+  border-radius:14px; background:none; color:var(--faint); border:.5px solid var(--line);
+  cursor:pointer; flex:none; font:inherit; font-size:12.5px; font-weight:500;
+  font-family:var(--font-ui);}
+.bk-topcapture:hover{color:var(--accent); border-color:var(--accent);}
 
 /* agent ask bar (Today) */
 .bk-ask-wrap{padding:0 18px; margin-bottom:20px;}
