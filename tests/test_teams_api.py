@@ -492,3 +492,17 @@ def test_pending_review_and_past_edges_do_not_contribute(setup):
     names = {p["contact_name"] for p in paths}
     assert "Pia Old" not in names and "Rex Maybe" not in names
     assert names == {"Jane Doe", "Kate Liu"}
+
+
+def test_members_roster(setup):
+    """Any member sees the roster (names + roles only); non-members get the
+    same 404 as every other team surface; no relationship data in the shape."""
+    s = setup
+    r = s.client.get(f"/api/teams/{s.team}/members", headers=s.hb)
+    assert r.status_code == 200
+    members = r.json()["members"]
+    assert [(m["name"], m["role"]) for m in members] == [
+        ("Daniel", "admin"), ("Cofounder", "member")]
+    assert set(members[0]) == {"user_id", "name", "role", "share_signals"}
+    assert s.client.get(f"/api/teams/{s.team}/members",
+                        headers=s.ho).status_code == 404
