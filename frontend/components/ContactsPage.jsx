@@ -822,7 +822,7 @@ function FollowupChat() {
             <div style={{ display: "flex", gap: 8, marginTop: 12,
                           flexWrap: "wrap" }}>
               {["Who should I follow up with?",
-                "Who in my 2nd degree works at Cursor?",
+                "Who in my 2nd degree works at a company I'm targeting?",
                 "Draft pings for anyone going cold"].map((s) => (
                 <button key={s} onClick={() => ask(s)}
                         style={{ background: C.chipBg, color: C.chipInk,
