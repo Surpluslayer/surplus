@@ -359,9 +359,23 @@ def run_sweep(db, *, user_id: int | None = None, limit: int = 40) -> dict:
     """One scheduled pass. Bright Data primary (async -> trigger now, results
     arrive via webhook), Exa fallback (sync) when Bright Data isn't available.
     Bounded + fail-soft. Returns a small status dict."""
+    # Account-level pass FIRST (rollup refresh + aggregate signals like
+    # account-cooling): it must run even when no individual contact is due,
+    # because account silence is exactly the state where nothing else fires.
+    # Fail-soft: the per-contact sweep never dies on the account pass.
+    try:
+        from .account_signals import account_pass
+        accounts_result = account_pass(db, user_id=user_id)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        accounts_result = {"error": f"{type(exc).__name__}: {exc}"}
+        print(f"  [updates] account pass failed: {accounts_result['error']}",
+              flush=True)
+
     contacts = due_contacts(db, user_id=user_id, limit=limit)
     if not contacts:
-        return _record_sweep({"due": 0, "mode": "none"})
+        return _record_sweep({"due": 0, "mode": "none",
+                              "accounts": accounts_result})
 
     if _brightdata_enabled():
         from ...providers import brightdata
@@ -377,7 +391,9 @@ def run_sweep(db, *, user_id: int | None = None, limit: int = 40) -> dict:
             for c in contacts:
                 c.watched_at = _now()
             db.commit()
-            return _record_sweep({"due": len(contacts), "mode": "brightdata", "triggered": len(urls)})
+            return _record_sweep({"due": len(contacts), "mode": "brightdata",
+                                  "triggered": len(urls),
+                                  "accounts": accounts_result})
         # fall through to Exa if the trigger didn't take
 
     # --- Exa fallback (synchronous, account-safe) --------------------------
@@ -404,7 +420,8 @@ def run_sweep(db, *, user_id: int | None = None, limit: int = 40) -> dict:
             db.rollback()
             print(f"  [updates] exa contact={c.id} failed: "
                   f"{type(exc).__name__}: {exc}", flush=True)
-    return _record_sweep({"due": len(contacts), "mode": "exa", "emitted": emitted})
+    return _record_sweep({"due": len(contacts), "mode": "exa",
+                          "emitted": emitted, "accounts": accounts_result})
 
 
 # --- diagnostics (in-memory, per-replica; for the cutover/validation) -------
