@@ -69,6 +69,8 @@ unchanged (local background task) — so this is a safe, reversible flag.
 """
 from __future__ import annotations
 
+import os
+
 import modal
 
 # --------------------------------------------------------------------------- #
@@ -90,6 +92,13 @@ image = (
     .add_local_file(
         "backend/data/prospect_pool.json",
         "/root/backend/data/prospect_pool.json",
+    )
+    # The curated investor roster read at runtime by
+    # agents/relationship/investor_campaign.py (the batched connection-request
+    # campaign). Same reason as prospect_pool.json: it's a data asset, not .py.
+    .add_local_file(
+        "backend/data/investor_outreach.json",
+        "/root/backend/data/investor_outreach.json",
     )
     # The jobs talk to Exa/Unipile over plain HTTPS via `requests`/SDKs that
     # are already in requirements.txt. Add the backend package last so code
@@ -448,6 +457,59 @@ def updates_sweep() -> dict:
         return {"ran": False, "reason": msg}
     init_db()
     return updates_scheduler.run_claimed_sweep()
+
+
+# --------------------------------------------------------------------------- #
+# 7) INVESTOR OUTREACH : the batched, throttled LinkedIn connection campaign.
+#    Sends a small daily batch of pre-written connection requests to the curated
+#    investor roster (backend/data/investor_outreach.json), routed through the
+#    same guarded send path as every other outreach. Spreading a fixed list over
+#    many days (small cap per run) is the whole point: it keeps invite volume
+#    under LinkedIn's limits and out of burst-spam territory.
+#
+#    DOUBLE-GATED so a deploy never fires it by accident:
+#      * INVESTOR_OUTREACH_ENABLED=true  — else the daily job no-ops.
+#      * UNIPILE_DRY_RUN=false           — else every send is a dry-run preview.
+#    Both must be set (in the surplus-jobs secret) for real invites to go out.
+#    Tune volume with INVESTOR_OUTREACH_DAILY_CAP (default 12) and pick the
+#    sending account with INVESTOR_OUTREACH_USER_EMAIL.
+# --------------------------------------------------------------------------- #
+def _investor_outreach_enabled() -> bool:
+    return (os.environ.get("INVESTOR_OUTREACH_ENABLED", "").strip().lower()
+            in ("1", "true", "yes", "on"))
+
+
+@app.function(
+    image=image,
+    secrets=[secret],
+    timeout=_CRM_TIMEOUT,
+    schedule=modal.Period(days=1),
+)
+def investor_outreach_sweep() -> dict:
+    """Daily: send the next batch of investor connection requests.
+
+    No-ops unless INVESTOR_OUTREACH_ENABLED=true. Honors UNIPILE_DRY_RUN
+    (default dry-run), the daily cap, idempotency, and the confidence gate
+    (auto-sends only high-confidence roster rows). Safe to leave scheduled;
+    it does nothing until explicitly enabled."""
+    if not _investor_outreach_enabled():
+        print("  [modal.investor_outreach] disabled (INVESTOR_OUTREACH_ENABLED unset); no-op")
+        return {"ran": False, "reason": "disabled"}
+
+    from backend.db import SessionLocal, init_db
+    from backend.agents.relationship import investor_campaign as ic
+
+    init_db()
+    db = SessionLocal()
+    try:
+        cap = None  # let run_batch read INVESTOR_OUTREACH_DAILY_CAP
+        summary = ic.run_batch(db, limit=cap, high_only=True)
+    finally:
+        db.close()
+    print(f"  [modal.investor_outreach] dry_run={summary['dry_run']} "
+          f"sent={summary['sent']}/{summary['attempted']} "
+          f"remaining={summary['remaining']}")
+    return summary
 
 
 # --------------------------------------------------------------------------- #
