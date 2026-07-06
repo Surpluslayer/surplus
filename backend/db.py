@@ -203,6 +203,7 @@ def init_db() -> None:
         _migrate_audit_log,
         # Runs LAST : re-points existing User/Contact child FKs to ON DELETE
         # CASCADE so the delete paths (merge/cleanup) stop 500ing on Postgres.
+        _migrate_team_audit_log_table,
         _migrate_fk_cascade,
     ]
 
@@ -1627,17 +1628,46 @@ def _migrate_job_event_id_nullable() -> None:
 # (child_table, fk_column, parent_table). Only orphan-delete children live here
 # -- NOT rows a merge MOVES to a survivor (events/contacts/interactions/sessions
 # are re-pointed by merge_users, never cascade-deleted).
-_CASCADE_FKS: list[tuple[str, str, str]] = [
-    ("contact_identities", "contact_id", "contacts"),
-    ("contact_identities", "user_id", "users"),
-    ("contact_facts", "contact_id", "contacts"),
-    ("contact_facts", "user_id", "users"),
-    ("outgoing_messages", "contact_id", "contacts"),
-    ("outgoing_messages", "user_id", "users"),
-    ("jobs", "user_id", "users"),
-    ("connected_accounts", "user_id", "users"),
-    ("email_accounts", "user_id", "users"),
+# (child, column, parent, action) — action "c" = ON DELETE CASCADE,
+# "n" = ON DELETE SET NULL (compliance rows that must outlive the parent;
+# the migration also drops NOT NULL on those columns so SET NULL can land).
+_CASCADE_FKS: list[tuple[str, str, str, str]] = [
+    ("contact_identities", "contact_id", "contacts", "c"),
+    ("contact_identities", "user_id", "users", "c"),
+    ("contact_facts", "contact_id", "contacts", "c"),
+    ("contact_facts", "user_id", "users", "c"),
+    ("outgoing_messages", "contact_id", "contacts", "c"),
+    ("outgoing_messages", "user_id", "users", "c"),
+    ("jobs", "user_id", "users", "c"),
+    ("connected_accounts", "user_id", "users", "c"),
+    ("email_accounts", "user_id", "users", "c"),
+    # account layer
+    ("account_memberships", "user_id", "users", "c"),
+    ("account_memberships", "contact_id", "contacts", "c"),
+    ("company_overlays", "user_id", "users", "c"),
+    ("team_memberships", "user_id", "users", "c"),
+    ("team_memberships", "team_id", "teams", "c"),
+    ("walls", "team_id", "teams", "c"),
+    ("accounts", "warmest_contact_id", "contacts", "n"),
+    ("walls", "created_by", "users", "n"),
+    ("teams", "created_by", "users", "n"),
+    ("team_audit_log", "team_id", "teams", "c"),
+    ("team_audit_log", "actor_user_id", "users", "n"),
+    ("team_audit_log", "subject_company_id", "companies", "n"),
 ]
+
+
+def _migrate_team_audit_log_table() -> None:
+    """Create team_audit_log on an EXISTING DB (same reason as
+    email_pending_outreach: the schema-rev sentinel skips create_all once the
+    stored rev is current, so a new table needs its own migration; the added
+    migration also bumps len(migrations) so the sentinel re-runs)."""
+    from . import models
+    try:
+        models.TeamAuditLog.__table__.create(ENGINE, checkfirst=True)
+    except Exception as exc:  # noqa: BLE001 : replica race / already exists
+        print(f"  [migrate] team_audit_log create: "
+              f"{type(exc).__name__}: {exc}", flush=True)
 
 
 def _migrate_email_pending_outreach() -> None:
@@ -1677,7 +1707,7 @@ def _migrate_fk_cascade() -> None:
     insp = inspect(ENGINE)
     have = set(insp.get_table_names())
     with ENGINE.begin() as conn:
-        for child, col, parent in _CASCADE_FKS:
+        for child, col, parent, action in _CASCADE_FKS:
             if child not in have or parent not in have:
                 continue
             # Find the single-column FK constraint on child.(col) -> parent.
@@ -1700,10 +1730,17 @@ def _migrate_fk_cascade() -> None:
                 # legacy table without it) : nothing to re-point.
                 continue
             conname, deltype = row[0], row[1]
-            if deltype == "c":
-                continue  # already ON DELETE CASCADE
+            if deltype == action:
+                continue  # already carries the wanted ON DELETE action
+            clause = ("ON DELETE CASCADE" if action == "c"
+                      else "ON DELETE SET NULL")
+            if action == "n":
+                # SET NULL requires the column to be nullable; legacy rows
+                # were created NOT NULL (e.g. walls.created_by).
+                conn.execute(text(
+                    f'ALTER TABLE {child} ALTER COLUMN {col} DROP NOT NULL'))
             conn.execute(text(
                 f'ALTER TABLE {child} DROP CONSTRAINT "{conname}"'))
             conn.execute(text(
                 f'ALTER TABLE {child} ADD CONSTRAINT "{conname}" '
-                f'FOREIGN KEY ({col}) REFERENCES {parent}(id) ON DELETE CASCADE'))
+                f'FOREIGN KEY ({col}) REFERENCES {parent}(id) {clause}'))

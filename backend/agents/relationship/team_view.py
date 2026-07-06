@@ -42,6 +42,14 @@ model_dump()/__dict__ of an ORM row — so a new column on any source table
 can never ride along by accident. No message bodies, facts, notes,
 interaction titles/summaries, raw timestamps, emails, or phones exist
 anywhere downstream of this module.
+
+Every read over these view models is audited at the route layer
+(routes/teams.py -> agents/relationship/audit.write, best-effort so audit
+trouble never takes down a view): who viewed which aggregate, when, with
+RESULT COUNTS only. That contract leans on the Level-1 discipline above —
+because nothing below this docstring emits relationship content, the counts
+the routes log (accounts returned, path rows, search hits) are Class-B
+metadata and safe to persist in TeamAuditLog.detail_json.
 """
 from __future__ import annotations
 
