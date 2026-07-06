@@ -69,10 +69,14 @@ def _as_aware(dt: Optional[datetime]) -> Optional[datetime]:
 
 
 def _clean(val: Any) -> Optional[str]:
-    """Trimmed non-empty string, else None."""
+    """Trimmed non-empty string, else None. Also strips ASCII control
+    characters: LinkedIn display names occasionally carry them (a prod
+    contact literally had one in their name), and one raw 0x00-0x1F in a
+    stored string breaks every strict JSON consumer of every response
+    that ever serializes it."""
     if val is None:
         return None
-    s = str(val).strip()
+    s = "".join(ch for ch in str(val) if ch >= " " or ch == "\t").strip()
     return s or None
 
 
@@ -518,6 +522,17 @@ def link_contact(db, prospect, owner_user_id: int):
         prospect.contact_id = contact.id
         db.commit()
         db.refresh(contact)
+        # Account layer: resolve this person's company membership at link time.
+        # Deterministic-only on the request path (allow_llm=False — the LLM
+        # name-disambiguation pass belongs to the background backfill/sweep,
+        # never a capture request). Best-effort: a resolver failure must never
+        # break the link that just committed.
+        try:
+            from ..company_resolve import resolve_contact
+            resolve_contact(db, contact, source="enrichment", allow_llm=False)
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
         return contact
     except Exception:  # noqa: BLE001
         db.rollback()

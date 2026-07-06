@@ -224,6 +224,10 @@ def decide_reply(
         f"{_format_thread(thread)}\n\n"
         "Produce the JSON decision now."
     )
+    # PII minimization before the content leaves for the LLM (strip email /
+    # phone / SSN / card from the inbound thread; topical substance is kept).
+    from ... import redaction
+    user_message = redaction.scrub_pii(user_message)
 
     t0 = time.time()
     try:

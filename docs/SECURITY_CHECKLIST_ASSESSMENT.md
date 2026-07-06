@@ -138,7 +138,7 @@ encryption, which is the right call for credentials.
 | # | Item | Status | Evidence / Gap |
 |---|------|--------|----------------|
 | 10 | Do **NOT** market end-to-end encryption for AI-processed content | ✅ DONE | No E2E/zero-knowledge/bank-grade claim exists in `frontend/`, `backend/landing/`, `store/`, or `docs/` (grep clean). The server necessarily sees plaintext to call Anthropic (`agents/llm.py`) — consistent with making no E2E claim. **Keep it that way:** add a one-line note to the Trust page draft so a future marketing edit doesn't reintroduce the claim. |
-| 11 | Document the real boundary on a Trust page (encrypted in transit + at rest + per-tenant; plaintext only transient during processing) | 🔴 MISSING | No Trust/Security page exists (no `SECURITY.md`, no trust route; `store/privacy-policy.md` covers only the Chrome extension). **Plan:** publish a Trust page stating: TLS in transit (CF, TLS 1.2+/1.3); encryption at rest (Railway-managed + app-level field encryption once #7 ships); per-User (or per-Org) key isolation once #9 ships; **explicitly** that AI-processed content is decrypted transiently server-side to call the model and is **not** end-to-end encrypted; and the subprocessor list above. Serve it at `/trust` (static, DB-free — mirror the `/landing` pattern in `main.py:459-467`) and/or add a repo `SECURITY.md`. |
+| 11 | Document the real boundary on a Trust page (encrypted in transit + at rest + per-tenant; plaintext only transient during processing) | ✅ IMPLEMENTED | Static, DB-free `/trust` (alias `/security`) in `main.py` + a repo `SECURITY.md`. States TLS in transit, encryption at rest (managed + app-level per-tenant field encryption), tenant isolation, PII minimization, data export/delete, and the subprocessor list — and **explicitly** that AI-processed content is decrypted transiently server-side and is **not** end-to-end encrypted. *Note: the "application-level field encryption" line is literally true once `SURPLUS_ENCRYPTION_KEK` is provisioned — enable the KEK before publishing the page publicly.* |
 
 ---
 
@@ -206,6 +206,24 @@ silently reintroduce an E2E claim.
 
 ---
 
+## Phase 3 — Data retention (assessment + what shipped)
+
+The DB already hard-deletes via FK CASCADE (the demo-user purge uses it). This
+phase adds offboarding, an audit trail, and a purge engine. *(Code items
+implemented in the retention PR; the rest need a retention schedule / infra.)*
+
+| Item | Status | Notes |
+|------|--------|-------|
+| `[sell]` Category-level TTLs / scheduled purge jobs | 🟡 ENGINE SHIPPED, config-gated | `backend/retention.run_purge_sweep` + `POST /admin/run-retention-purge`. **OFF by default**, dry-run reports what it would purge. Only touches **ephemeral** rows (expired/revoked sessions, old finished jobs) — never contact/message content. Set `SURPLUS_RETENTION_*` periods + `SURPLUS_RETENTION_ENABLED=1` to activate. **Decision needed:** the content-retention schedule (if content should ever be time-purged vs. kept-while-active). |
+| `[sell]` Soft-delete → hard-delete pipeline | 🔴 NOT DONE | The app has no soft-delete (no `deleted_at` columns); deletes are immediate hard-deletes. A grace-window soft-delete is a separate, larger change. Offboarding delete below is a direct hard-delete. |
+| Explicit backup retention window | 🏗️ INFRA | Railway-managed; set + document the window (e.g. 30d) and the deletion-lag-into-backups. Not in-repo. |
+| `[sell]` Offboarding: full export + full delete | ✅ IMPLEMENTED | `GET /api/me/export` (secret-free JSON dump) + `DELETE /api/me?confirm=true` (full self-delete). `backend/retention.export_user_data` / `delete_user_data`. |
+| Deletion confirmation available to customers | ✅ IMPLEMENTED | Both delete paths return per-category counts as the confirmation; `POST /admin/delete-user` lets support run it on request. |
+| Deletion audit log (metadata only) | ✅ IMPLEMENTED | `DeletionAudit` table — who/when/counts, **no content** (`subject_user_id` is deliberately not a FK so the audit outlives the deleted row). |
+| Deletion propagates to subprocessors | 🟡 PARTIAL | `delete_user_data` best-effort revokes the user's Unipile account(s). LLM side is covered by ZDR (contractual); OAuth-token revocation beyond deleting the row is a follow-up. |
+
+---
+
 ## One-glance scorecard
 
 | Item | | Status |
@@ -219,8 +237,8 @@ silently reintroduce an E2E claim.
 | App-level field encryption `[sell]` | 7 | ✅ engine shipped (`crypto.py`), applied to OAuth tokens |
 | Keys in KMS not config | 8 | 🟡 KEK via env; `_load_kek` is the KMS seam |
 | Per-tenant DEK `[sell]` | 9 | ✅ per-`User` DEK (Org path documented) |
-| No E2E marketing claim | 10 | ✅ already clean |
-| Trust page documents boundary | 11 | 🔴 missing (not in this PR) |
+| No E2E marketing claim | 10 | ✅ clean + reinforced on the Trust page |
+| Trust page documents boundary | 11 | ✅ `/trust` (+`/security`) + `SECURITY.md` |
 | *(bonus)* Plaintext OAuth tokens | — | ✅ encrypted at rest (KEK-gated) |
 
 **Remaining:** provision `SURPLUS_ENCRYPTION_KEK` (turns encryption on) → move
@@ -253,11 +271,49 @@ this PR.)*
 
 | Item | Status | Evidence / Gap |
 |------|--------|----------------|
-| `[sell]` Redaction / PII-minimization before the call | 🔴 MISSING | No pre-send redaction layer exists. Drafting/agent prompts assemble real contact facts + thread text and send them to the model (`agents/relationship/**`, `agents/llm.py`). **Plan:** a `minimize(context)` pass at the prompt-assembly boundary that strips fields the task doesn't need (emails/phones/IDs) before the LLM call. |
-| `[gate]` Tenant isolation in context/RAG assembly | 🟡 VERIFY | Every context read is already scoped by `user_id`/`current_user`, and there is no shared vector store that could bleed across tenants (context is assembled per-request from the caller's own rows). **Gap:** add an explicit assertion/test that no prompt is ever built from another user's rows, so isolation is enforced structurally rather than by convention. Worth a dedicated audit. |
+| `[sell]` Redaction / PII-minimization before the call | ✅ IMPLEMENTED | `backend/redaction.py` — `scrub_pii` / `scrub_obj` strip email / phone / SSN / Luhn-valid card identifiers from the LLM-bound context (`as_composer_context` / `as_agent_context`) and the inbound-reply classifier, keeping names/roles/topics/URLs the composer needs. ON by default (`SURPLUS_LLM_REDACTION=0` disables). Conservative patterns; run `messaging_eval` when tuning. *Follow-up: extend to the prospecting/triage/curation prompt builders, which still send functional identifiers.* |
+| `[gate]` Tenant isolation in context/RAG assembly | ✅ IMPLEMENTED | `backend/tenant_guard.assert_owned_by` is called at the top of `gather_contact_context`, so a contact owned by another `user_id` raises `TenantIsolationError` before any prompt is assembled — isolation is now structural, not by-convention. No shared vector store exists (context is per-request from the caller's own rows). Tested incl. a cross-tenant refusal. *Follow-up: add the same guard to any future non-`gather` context path.* |
 | Logging policy: don't log prompt/response content | 🟡 VERIFY | Request logging is one line per request (status + duration, `reqlog.py`) and does **not** log bodies. Confirm `metrics.py`/`failure_log.py` and any LLM debug paths never persist prompt/response text; if any do, encrypt + short-TTL them. |
 | Human-in-the-loop before sensitive actions | ✅ MOSTLY | Sends are gated by kill-switches + billing and default to manual approval (`SURPLUS_AUTOMATED_SENDS` OFF by default; ARCHITECTURE.md §6b/§6c). Model output does not auto-fire sends/bookings unless the operator opts into automation. |
 
 **Phase 2 ship order:** disclose subprocessors + DPA/ZDR (contractual) →
 redaction layer (`[sell]`, code) → tenant-isolation audit + test (`[gate]`) →
 confirm/lock logging policy.
+
+---
+
+## Phase 4 — Access, monitoring, resilience (assessment + what shipped)
+
+This phase splits, like the others, into **code-fixable** items (shipped here,
+with tests) and **infra/process** items (documented, needing a console action or
+a calendar commitment). The centerpiece is the access-audit trail; the admin
+surface also gains RBAC (least privilege) and an optional network second factor.
+
+| # | Item | Status | Evidence / Gap |
+|---|------|--------|----------------|
+| 1 | **[gate]** Enforced MFA on all internal & admin access | 🟡 CODE HARDENING + 🏗️ INFRA | True TOTP/WebAuthn MFA on the **human consoles** (Railway, Cloudflare, GitHub, Google Workspace) is an account setting — **enforce it there** and capture evidence. The app's own admin surface is a machine **shared token** (`X-Admin-Token`), which can't do TOTP; the defensible in-repo hardening shipped: an optional **IP allowlist** (`ADMIN_IP_ALLOWLIST`, a network second factor, fail-closed when set — `backend/audit.ip_allowed`), the **least-privilege token split** (item 2), and **denied-access auditing** (item 3) so a probe of the admin surface is visible. **Gap:** per-human admin identities (vs. one shared token) is a larger change — documented, not built. |
+| 2 | **[sell]** Role-based access control, least privilege | ✅ ENGINE SHIPPED | Two dimensions. **App data plane:** already least-privilege per-`User` — every event-scoped route goes through `auth.get_owned_event` and LLM context through `tenant_guard.assert_owned_by` (Phase 2), so no user reads another's rows. **Admin plane (new):** a role split in `routes/admin._admin_role` — `ADMIN_TOKEN` → `admin` (full), optional `ADMIN_READONLY_TOKEN` → `readonly` (read-only endpoints only). Mutating endpoints require the full role; a monitoring/dashboard consumer carries a token that **mechanically cannot** delete a user or purge data. **Gap:** still token-roles, not per-identity RBAC (see item 1). |
+| 3 | Audit logging of who accessed what & when | ✅ IMPLEMENTED | New `AuditLog` table + `backend/audit.py` (`record` / `client_ip`). Wired into the admin gate (`_check_admin`) so **every** privileged access — allowed **and denied** — writes a metadata-only row: actor (role label, never a token), action (`METHOD /path`), outcome, source IP, reason. Readable at `GET /admin/audit-log` (filter `?outcome=denied` for the probe signal), reachable by the least-privilege read token. Metadata-only by construction (mirrors `DeletionAudit`) — no bodies/secrets. Tested (`tests/test_audit.py`). **Gap:** currently covers the admin/privileged surface; extending to per-user data-access events is a follow-up. |
+| 4 | Secure SDLC: code review + dependency/vulnerability scanning | ✅ IMPLEMENTED | **Code review + tests:** `.github/workflows/ci.yml` already gates the full pytest suite on every PR to `main`. **Dependency scanning (new):** `.github/dependabot.yml` (pip + npm + github-actions, weekly + security advisories). **Vulnerability scanning (new):** `.github/workflows/security-scan.yml` — `pip-audit` (backend), `npm audit` (frontend), and **CodeQL** static analysis (python + JS/TS) into the Security tab, on push/PR + weekly. The two dependency-audit steps ship **report-only** (`continue-on-error`): the current tree has pre-existing advisories whose fixes are major-version bumps (starlette, cryptography, python-multipart; vite, @capacitor/cli→node-tar) out of scope for the PR introducing the scanner — dependabot raises those fix PRs; flip the steps to blocking once triaged. **Gap:** enabling **branch protection / required review** is a GitHub repo setting (infra) — turn it on so CI + review are *required*, not just present. |
+| 5 | Schedule an independent penetration test (annual) | ⚪ PROCESS / 🔴 TO SCHEDULE | Not a code item. **Plan:** engage a reputable firm for a **first** external pen test **before onboarding paying firm data**, then annually; scope = the public app + the admin surface + the OAuth/token seams. Feed findings back as tracked issues. Assign an owner + a date. |
+| 6 | Tested backups + written DR / BCP plan | 🟡 DOC SHIPPED, drill pending | **Written DR/BCP shipped:** `docs/DISASTER_RECOVERY.md` — RTO/RPO targets, failure-scenario→response table, a Postgres→app **restore runbook**, and a **quarterly backup-test procedure** with a drill log. It flags the crown-jewel recovery risk: **the KEK must be backed up independently of the DB**, else a restored DB yields undecryptable OAuth-token ciphertext. **Gap (infra/process):** confirm Railway's backup cadence + at-rest encryption, back the KEK up independently, and **run the first restore drill** (the doc's pass/fail gate) — targets become commitments only once timed. |
+
+### Phase 4 scorecard
+
+| Item | | Status |
+|------|--|--------|
+| MFA on internal/admin access `[gate]` | 1 | 🟡 IP-allowlist + token-split + denied-audit shipped; human-console MFA is infra |
+| RBAC, least privilege `[sell]` | 2 | ✅ per-`User` data plane + admin read/write token split (`routes/admin`) |
+| Audit logging (who/what/when) | 3 | ✅ `AuditLog` + `backend/audit.py`, admin gate + `GET /admin/audit-log` |
+| Secure SDLC (review + dep/vuln scan) | 4 | ✅ CI tests + dependabot + pip-audit/npm-audit/CodeQL |
+| Independent pen test (annual) | 5 | 🔴 schedule (process; before paying data) |
+| Tested backups + DR/BCP | 6 | 🟡 DR/BCP doc + drill procedure shipped; run the first drill (infra) |
+
+**Remaining:** enforce console MFA + turn on branch protection (infra settings) →
+back up the KEK independently and **run the first restore drill** → schedule the
+annual pen test → (follow-up) extend the audit trail to per-user data-access
+events and move to per-identity admin RBAC.
+
+**New env (all optional, behaviour unchanged until set):**
+`ADMIN_READONLY_TOKEN` (least-privilege read-only admin token),
+`ADMIN_IP_ALLOWLIST` (comma-separated IPs/CIDRs pinning the admin surface).

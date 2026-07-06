@@ -1,0 +1,102 @@
+name: security-scan
+# Secure-SDLC gate (Phase 4): dependency/vulnerability scanning + static code
+# analysis. Complements ci.yml (which runs the tests) and dependabot.yml (which
+# raises the fix PRs) — this is the workflow that actually FINDS a known-CVE
+# dependency or a code-level security bug before it ships.
+#
+# Three independent jobs so one flaky scanner doesn't mask the others:
+#   - deps-python : pip-audit against the resolved backend dependency tree
+#   - deps-npm    : npm audit against the frontend tree
+#   - codeql      : GitHub static analysis for python + JS/TS (results land in
+#                   the repo's Security tab as code-scanning alerts)
+#
+# Runs on every push/PR to main (catch a bad bump at review time) and weekly
+# (catch a newly-disclosed CVE in a dependency that hasn't changed).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays 06:17 UTC — off the top-of-hour rush
+  workflow_dispatch: {}
+
+concurrency:
+  group: security-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deps-python:
+    name: "pip-audit (backend)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pip-audit
+        run: python -m pip install --upgrade pip pip-audit
+      # Audit the pinned requirements and print every advisory to the log.
+      # REPORT-ONLY for now (continue-on-error): the current tree has known
+      # pre-existing advisories whose fixes are major-version bumps (starlette,
+      # cryptography, python-multipart, ...) that are out of scope for the PR
+      # introducing this scanner. Dependabot (see .github/dependabot.yml) raises
+      # those fix PRs. FLIP `continue-on-error` to false once the tree is
+      # triaged/clean so a NEW CVE then blocks the merge.
+      - name: pip-audit
+        continue-on-error: true
+        run: pip-audit -r requirements.txt --desc
+
+  deps-npm:
+    name: "npm audit (frontend)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install deps (no scripts)
+        working-directory: frontend
+        run: npm ci --ignore-scripts
+      # Report HIGH/CRITICAL advisories to the log. REPORT-ONLY for now
+      # (continue-on-error): the current tree has pre-existing advisories in dev
+      # tooling (vite, @capacitor/cli→node-tar, ...) whose fixes are breaking
+      # bumps, out of scope for the PR introducing this scanner. Dependabot
+      # raises those fix PRs. FLIP `continue-on-error` to false once triaged.
+      - name: npm audit (high+)
+        continue-on-error: true
+        working-directory: frontend
+        run: npm audit --audit-level=high
+
+  codeql:
+    name: "CodeQL (${{ matrix.language }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["python", "javascript-typescript"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

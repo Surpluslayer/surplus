@@ -1382,6 +1382,54 @@ class ConnectedAccount(Base):
     updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
 
 
+class DeletionAudit(Base):
+    """A metadata-only record that a deletion happened (Phase 3: deletion audit
+    log). Records WHO was deleted, by whom, when, and per-category row counts —
+    deliberately NO deleted content, so the audit trail itself can't become a
+    copy of the data it attests was erased. `subject_user_id` is intentionally
+    NOT a foreign key: the row it refers to is gone, and the audit must survive."""
+    __tablename__ = "deletion_audit"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subject_user_id: Mapped[int] = mapped_column(index=True)
+    actor: Mapped[str] = mapped_column(String(20), default="self")  # self|admin|purge
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    counts_json: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
+
+
+class AuditLog(Base):
+    """Access-audit trail (Phase 4: access, monitoring, resilience) — who did
+    what, when, from where, and whether it was allowed or denied.
+
+    METADATA ONLY, like `DeletionAudit`: it deliberately stores no request
+    bodies, tokens, or crown-jewel content, so the audit trail can never become
+    a copy of the data it exists to protect. `actor` is a ROLE label
+    ("admin" / "admin:readonly" / "anon"), not a secret.
+
+    The single writer is `backend.audit.record`, called from the privileged
+    admin surface (`routes/admin.py`) on BOTH allowed and denied accesses — so a
+    burst of `outcome="denied"` rows is a probe signal an operator can see at a
+    glance via `GET /admin/audit-log`. `subject_user_id`-style content is never
+    stored; `target` is an opaque label like "user:123"."""
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Role label of the caller ("admin" | "admin:readonly" | "anon"), never a token.
+    actor: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # The operation, e.g. "POST /admin/delete-user".
+    action: Mapped[str] = mapped_column(String(160), default="")
+    # Optional opaque subject label, e.g. "user:123". No content.
+    target: Mapped[str] = mapped_column(String(160), default="")
+    # "allowed" | "denied" -- denied rows are the monitoring signal.
+    outcome: Mapped[str] = mapped_column(String(16), default="allowed", index=True)
+    # Best-effort client IP (CF-Connecting-IP / first X-Forwarded-For hop).
+    source_ip: Mapped[str] = mapped_column(String(64), default="")
+    # Short, secret-free reason/context (e.g. "ip_not_allowlisted").
+    detail: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
+
+
 class TenantKey(Base):
     """One wrapped data-encryption key (DEK) per tenant, for application-level
     field encryption (see `backend/crypto.py`).
@@ -1563,3 +1611,228 @@ def upsert_email_account(db, *, user, unipile_account_id, address,
 
     _sync_user_email_mirror(db, user)
     return acct
+
+
+# ============================================================================
+# ACCOUNT LAYER (cross-company relationship graph)
+#
+# Design doc : docs/accounts-architecture.md. The one-line thesis: the company
+# account is a LENS over individual graphs, never a bucket that fills up.
+# Company rows are GLOBAL and hold public data only; everything relationship-
+# flavored stays per-user and is assembled at query time through gates.
+# ============================================================================
+
+
+class Company(Base):
+    """One row per real-world organization, GLOBAL (shared across all users,
+    like MonitoredPerson). Holds PUBLIC data only — never anything derived
+    from a user's messages, notes, or graph. Written only by the enrichment
+    pipeline/resolver: users never mutate these rows directly (corrections
+    live in CompanyOverlay), so one user's bad merge can't corrupt anyone
+    else's graph."""
+    __tablename__ = "companies"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    canonical_name: Mapped[str] = mapped_column(String(200), index=True)
+    primary_domain: Mapped[Optional[str]] = mapped_column(String(160), default=None, index=True)
+    linkedin_company_id: Mapped[Optional[str]] = mapped_column(String(120), default=None)
+    linkedin_slug: Mapped[Optional[str]] = mapped_column(String(160), default=None)
+    # Public enrichment snapshot (industry / headcount band / stage / location),
+    # JSON text — shape owned by the company watcher.
+    enrichment_json: Mapped[str] = mapped_column(Text, default="{}")
+    # Company-watch state (news/fundraise polling), mirroring Contact's watch:
+    # NULL last_news_checked_at = never polled; first poll baselines silently.
+    last_news_checked_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+    seen_signal_ids: Mapped[str] = mapped_column(Text, default="[]")
+    profile_baselined_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+    # Tombstone for merged duplicates: reads should follow to the survivor.
+    merged_into_id: Mapped[Optional[int]] = mapped_column(ForeignKey("companies.id"), default=None)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
+
+
+class CompanyIdentity(Base):
+    """One strong-or-weak identifier -> one Company (mirror of ContactIdentity,
+    global scope). STRONG kinds ("domain", "linkedin_company") auto-link at
+    confidence 1.0. WEAK kind ("name_norm") may PROPOSE a match but never
+    auto-merges — normalized names collide across real companies (the
+    Brittany/Kyndred bug class), so name-only resolution goes through the LLM
+    disambiguator and lands below 1.0."""
+    __tablename__ = "company_identities"
+    __table_args__ = (
+        UniqueConstraint("kind", "value", name="uq_company_identity_value"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
+    # "domain" | "linkedin_company" | "name_norm"
+    kind: Mapped[str] = mapped_column(String(24), index=True)
+    # NORMALIZED value (lowercased domain, lowercased slug/id, normalized name).
+    value: Mapped[str] = mapped_column(String(200), index=True)
+    confidence: Mapped[float] = mapped_column(default=1.0)
+    # "resolver" | "enrichment" | "backfill" | "manual"
+    source: Mapped[str] = mapped_column(String(30), default="resolver")
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
+class CompanyOverlay(Base):
+    """A PER-USER correction on a global Company row ("this is actually Acme
+    Health, not Acme Corp" / fixed name / rejected match). Global rows stay
+    pipeline-owned and read-only to users; overlays are how a user disagrees
+    without corrupting anyone else. Merge-on-read: the account read model
+    applies the viewer's overlay on top of the global row. Overlays double as
+    training signal for the resolver."""
+    __tablename__ = "company_overlays"
+    __table_args__ = (
+        UniqueConstraint("user_id", "company_id", name="uq_company_overlay"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
+    # JSON dict of corrected fields ({"canonical_name": ...}); "{}" = no edits.
+    corrections_json: Mapped[str] = mapped_column(Text, default="{}")
+    # User rejected the resolver's grouping entirely (their contacts should not
+    # be under this company). Memberships for this user+company are ignored.
+    rejected: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
+
+
+class AccountMembership(Base):
+    """PER-USER, TIME-BOUNDED person<->company edge — the load-bearing join of
+    the account layer. Deliberately NOT a company_id column on Contact: a
+    person's affiliation has history, and job changes (close old edge, open
+    new one) are the single most valuable proactive signal. Scoped per-user
+    because "Daniel believes Jane works at Acme" is part of Daniel's graph and
+    may be wrong independently of anyone else's copy."""
+    __tablename__ = "account_memberships"
+    __table_args__ = (
+        UniqueConstraint("user_id", "contact_id", "company_id", "started_at",
+                         name="uq_account_membership"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), index=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
+    role_title: Mapped[Optional[str]] = mapped_column(String(200), default=None)
+    is_current: Mapped[bool] = mapped_column(default=True, index=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+    ended_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+    # "enrichment" | "job_change_event" | "manual" | "backfill"
+    source: Mapped[str] = mapped_column(String(30), default="backfill")
+    # Resolver confidence for the person->company mapping. < the resolver's
+    # auto-link threshold lands as status="pending_review" instead of linked.
+    confidence: Mapped[float] = mapped_column(default=1.0)
+    # "linked" | "pending_review" | "rejected"
+    status: Mapped[str] = mapped_column(String(20), default="linked", index=True)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
+class Account(Base):
+    """A per-OWNER view of a Company — what Contact is for a person, this is
+    for an org. Created lazily the first time a resolved membership lands for
+    that owner+company. owner_type="user" now; "team" rows arrive with the
+    team plane and hold the shared tier/objective while each member's
+    underlying data stays their own. Rollup fields are CACHED (recomputed by
+    the sweep / event hooks), never source of truth."""
+    __tablename__ = "accounts"
+    __table_args__ = (
+        UniqueConstraint("owner_type", "owner_id", "company_id",
+                         name="uq_account_owner_company"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # "user" | "team"
+    owner_type: Mapped[str] = mapped_column(String(10), default="user")
+    owner_id: Mapped[int] = mapped_column(index=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
+    # "key" | "active" | "tracked"
+    tier: Mapped[str] = mapped_column(String(12), default="tracked")
+    starred: Mapped[bool] = mapped_column(default=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    # Free-text goal ("want intro to their platform team") — sharpens the
+    # proactive engine's objective-match play.
+    objective: Mapped[Optional[str]] = mapped_column(Text, default=None)
+    # Sharing level for the team plane: "private" (L0, invisible to team) |
+    # "metadata" (L1, derived aggregates only — the default) | "elevated"
+    # (L2, timeline summaries; only reachable under a collaborative profile).
+    sharing_level: Mapped[str] = mapped_column(String(12), default="metadata")
+    # --- cached rollups (recomputed, never authoritative) -------------------
+    strength_score: Mapped[Optional[float]] = mapped_column(default=None)
+    last_touch_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+    contact_count: Mapped[int] = mapped_column(default=0)
+    warmest_contact_id: Mapped[Optional[int]] = mapped_column(ForeignKey("contacts.id"), default=None)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
+
+
+class Team(Base):
+    """A firm/org whose members share Level-1 relationship metadata through
+    the team plane. The compliance profile is the POLICY layer: it caps what
+    sharing levels are reachable ("strict" = metadata ceiling, Level 2 absent
+    from the UI; "collaborative" = Level 2 available, owner-initiated). The
+    profile caps, never raises — an owner's "private" is respected under every
+    profile. Strictness lives here in config, not in the schema."""
+    __tablename__ = "teams"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    # "collaborative" (default) | "strict"
+    compliance_profile: Mapped[str] = mapped_column(String(16), default="collaborative")
+    # Strict-profile interlock: the team view stays dark until the admin
+    # finishes the conflict import or explicitly skips it (audited).
+    # "live" | "pending"
+    view_state: Mapped[str] = mapped_column(String(10), default="live")
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
+class TeamMembership(Base):
+    """One user's membership in a Team. Nothing is copied on join: the team
+    view is a query-time join over members' per-user graphs, so leaving a
+    team removes the member's edges from the team plane instantly (there is
+    nothing to claw back). share_signals is the per-user kill switch — False
+    drops all of this member's accounts to invisible regardless of levels."""
+    __tablename__ = "team_memberships"
+    __table_args__ = (
+        UniqueConstraint("team_id", "user_id", name="uq_team_member"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    # "admin" | "member"
+    role: Mapped[str] = mapped_column(String(10), default="member")
+    # Per-user kill switch (consent is revocable at any time).
+    share_signals: Mapped[bool] = mapped_column(default=True)
+    joined_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
+class Wall(Base):
+    """An ethical wall (information barrier / conflict screen). For excluded
+    members the walled subject CEASES TO EXIST on the team plane, in BOTH
+    directions: they see nothing about it (not even counts — revealing that a
+    relationship exists can itself be a breach), and their own edges to it are
+    withheld from everyone else's aggregates. Their private book is untouched:
+    walls govern team-plane flow, never personal data. Enforcement is in the
+    query layer BEFORE aggregation, and a wall beats every sharing level.
+    Wall create/modify/delete are themselves audited events."""
+    __tablename__ = "walls"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), index=True)
+    # "company" | "contact" (contact walls key on identity, company on id).
+    subject_kind: Mapped[str] = mapped_column(String(10), default="company")
+    subject_company_id: Mapped[Optional[int]] = mapped_column(ForeignKey("companies.id"), default=None, index=True)
+    # For provisional NAME walls (conflict import fail-safe): the normalized
+    # name string walled before entity resolution completes. Any Company whose
+    # name_norm identity matches is walled. Narrowed on disambiguation.
+    subject_name_norm: Mapped[Optional[str]] = mapped_column(String(200), default=None, index=True)
+    # JSON list of excluded member user ids ("[]" = wall applies to ALL
+    # members, e.g. imported conflicts pending per-member scoping).
+    excluded_user_ids: Mapped[str] = mapped_column(Text, default="[]")
+    reason: Mapped[Optional[str]] = mapped_column(String(300), default=None)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
