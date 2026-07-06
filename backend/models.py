@@ -1688,7 +1688,8 @@ class CompanyOverlay(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True)
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
     # JSON dict of corrected fields ({"canonical_name": ...}); "{}" = no edits.
     corrections_json: Mapped[str] = mapped_column(Text, default="{}")
@@ -1713,8 +1714,10 @@ class AccountMembership(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    contact_id: Mapped[int] = mapped_column(
+        ForeignKey("contacts.id", ondelete="CASCADE"), index=True)
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
     role_title: Mapped[Optional[str]] = mapped_column(String(200), default=None)
     is_current: Mapped[bool] = mapped_column(default=True, index=True)
@@ -1763,7 +1766,8 @@ class Account(Base):
     strength_score: Mapped[Optional[float]] = mapped_column(default=None)
     last_touch_at: Mapped[Optional[datetime]] = mapped_column(default=None)
     contact_count: Mapped[int] = mapped_column(default=0)
-    warmest_contact_id: Mapped[Optional[int]] = mapped_column(ForeignKey("contacts.id"), default=None)
+    warmest_contact_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("contacts.id", ondelete="SET NULL"), default=None)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
 
@@ -1785,7 +1789,10 @@ class Team(Base):
     # finishes the conflict import or explicitly skips it (audited).
     # "live" | "pending"
     view_state: Mapped[str] = mapped_column(String(10), default="live")
-    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    # Nullable + SET NULL: the team (and its compliance history) must
+    # survive its creator's account deletion.
+    created_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
 
@@ -1801,8 +1808,10 @@ class TeamMembership(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), index=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    team_id: Mapped[int] = mapped_column(
+        ForeignKey("teams.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True)
     # "admin" | "member"
     role: Mapped[str] = mapped_column(String(10), default="member")
     # Per-user kill switch (consent is revocable at any time).
@@ -1822,7 +1831,8 @@ class Wall(Base):
     __tablename__ = "walls"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), index=True)
+    team_id: Mapped[int] = mapped_column(
+        ForeignKey("teams.id", ondelete="CASCADE"), index=True)
     # "company" | "contact" (contact walls key on identity, company on id).
     subject_kind: Mapped[str] = mapped_column(String(10), default="company")
     subject_company_id: Mapped[Optional[int]] = mapped_column(ForeignKey("companies.id"), default=None, index=True)
@@ -1834,5 +1844,40 @@ class Wall(Base):
     # members, e.g. imported conflicts pending per-member scoping).
     excluded_user_ids: Mapped[str] = mapped_column(Text, default="[]")
     reason: Mapped[Optional[str]] = mapped_column(String(300), default=None)
-    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    # Nullable + SET NULL: a wall is a compliance record — it must outlive
+    # the admin who created it (and their account deletion).
+    created_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
+class TeamAuditLog(Base):
+    """The team-plane access audit — first-class, because for a legal buyer
+    the audit trail is part of the product, not ops plumbing (design doc §6:
+    "who viewed which aggregate, when, at what level" plus every wall/policy
+    change). Append-only; rows are never updated or deleted by application
+    code. Written by agents/relationship/audit.write() (distinct from the
+    admin-surface AuditLog above, which backend.audit.record owns) — one narrow helper so
+    every event carries the same shape."""
+    __tablename__ = "team_audit_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(
+        ForeignKey("teams.id", ondelete="CASCADE"), index=True)
+    # Who acted/viewed. Nullable + SET NULL: audit rows must outlive the
+    # actor's account — deleting a user never erases the trail.
+    actor_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True, default=None)
+    # What happened: "view_accounts" | "view_paths" | "search" |
+    # "wall_created" | "wall_deleted" | "profile_changed" |
+    # "view_state_changed" | "member_joined" | "member_left" |
+    # "share_signals_changed" | "conflicts_imported" | "conflicts_confirmed" |
+    # "conflicts_skipped" | "audit_viewed"
+    event: Mapped[str] = mapped_column(String(32), index=True)
+    # Subject, when the event has one (a company for walls/paths).
+    subject_company_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("companies.id", ondelete="SET NULL"), default=None)
+    # Compact event detail (result count for reads, reason for walls, old/new
+    # for policy flips). JSON text; NEVER relationship content.
+    detail_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)

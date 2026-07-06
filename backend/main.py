@@ -35,7 +35,7 @@ from .routes import (
     book, relationships, inperson, followups, integrations, messages, settings,
     # shared: data-subject rights (export / delete)
     privacy,
-    accounts, teams,
+    accounts, teams, team_conflicts,
     # events side (the desktop event-ROI pipeline)
     events, pipeline, matching, roi, triage, curation, jobs,
     # infra: token-gated Unipile pass-through for :443-only egress sandboxes
@@ -280,6 +280,7 @@ app.include_router(privacy.router)         # data-subject rights: export / delet
 app.include_router(integrations.router)    # OAuth source connectors (Google ...)
 app.include_router(accounts.router)        # account layer: owner's company view
 app.include_router(teams.router)           # team plane: Level-1 gated aggregates
+app.include_router(team_conflicts.router)   # conflict import (walls-first, audited)
 
 # ── EVENTS side: the desktop event-ROI pipeline (www.surpluslayer.com) ───────
 app.include_router(events.router)          # 01 intake

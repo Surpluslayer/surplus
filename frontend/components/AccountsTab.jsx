@@ -87,20 +87,22 @@ function TeamAccounts({ team, q }) {
   const [openCid, setOpenCid] = useState(null);
   const [paths, setPaths] = useState({});   // company_id -> rows | "loading"
   const [showWalls, setShowWalls] = useState(false);
+  const [showAudit, setShowAudit] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
+  // Reusable so the conflict-setup flow can refetch in place once the team
+  // flips to live (confirm or skip), without remounting the tab.
+  const load = useCallback(() => {
+    setErr("");
     req(`/api/teams/${team.team_id}/accounts`)
       .then((r) => {
-        if (cancelled) return;
         // Strict-profile interlock: {"view_state":"pending"} must survive
         // normalization, not flatten into an empty list.
         if (r && !Array.isArray(r) && r.view_state === "pending") setRows(r);
         else setRows(Array.isArray(r) ? r : (r?.accounts || []));
       })
-      .catch((e) => { if (!cancelled) setErr(e.message || String(e)); });
-    return () => { cancelled = true; };
+      .catch((e) => setErr(e.message || String(e)));
   }, [team.team_id]);
+  useEffect(() => { load(); }, [load]);
 
   const toggle = (cid) => {
     if (openCid === cid) { setOpenCid(null); return; }
@@ -117,9 +119,14 @@ function TeamAccounts({ team, q }) {
   if (!rows) return (
     <div className="bk-loading"><Loader2 className="bk-spin" size={18} /> Loading team view…</div>
   );
-  if (!Array.isArray(rows)) return (
-    <div className="bk-empty">Team view is pending until conflict setup is finished.</div>
-  );
+  if (!Array.isArray(rows)) {
+    // Pending team: admins get the conflict-setup flow (import list, confirm
+    // walls, or skip with a reason); members keep the passive message.
+    if (team.role === "admin") return <ConflictSetup team={team} onLive={load} />;
+    return (
+      <div className="bk-empty">Team view is pending until conflict setup is finished.</div>
+    );
+  }
 
   // The shared search box filters the team view too (company name — the
   // Level-1 list shape has no contact names to match, by design).
@@ -131,16 +138,23 @@ function TeamAccounts({ team, q }) {
   return (
     <div className="bk-group">
       {team.role === "admin" && (
-        <div style={{ padding: "4px 16px 8px" }}>
+        <div style={{ padding: "4px 16px 8px", display: "flex", gap: 14 }}>
           <button type="button" className="bk-link"
                   style={{ border: 0, background: "none", cursor: "pointer",
                            padding: 0, fontSize: 13 }}
                   onClick={() => setShowWalls((v) => !v)}>
             {showWalls ? "Hide walls" : "Manage walls"}
           </button>
+          <button type="button" className="bk-link"
+                  style={{ border: 0, background: "none", cursor: "pointer",
+                           padding: 0, fontSize: 13 }}
+                  onClick={() => setShowAudit((v) => !v)}>
+            {showAudit ? "Hide audit" : "Audit"}
+          </button>
         </div>
       )}
       {showWalls && <WallsPanel team={team} />}
+      {showAudit && team.role === "admin" && <AuditPanel team={team} />}
       {shown.map((r) => (
         <React.Fragment key={r.company_id}>
           <div className="bk-row bk-row--tap" role="button" tabIndex={0}
@@ -311,6 +325,263 @@ function WallsPanel({ team }) {
   );
 }
 
+// ── conflict setup : first-run gate for strict-profile teams ─────────────────
+// While a team's view_state is "pending" the shared plane is dark. The admin
+// either imports the firm's conflict list (one company per line / CSV) and
+// confirms the provisional walls, or explicitly skips with a reason (kept in
+// the audit trail). Both flip the team live; onLive refetches in place.
+function ConflictSetup({ team, onLive }) {
+  const [text, setText] = useState("");
+  const [mapping, setMapping] = useState(null);  // null = nothing imported yet
+  const [counts, setCounts] = useState(null);
+  const [busy, setBusy] = useState("");          // "" | "import" | "confirm" | "skip"
+  const [err, setErr] = useState("");
+
+  // A previous import survives a reload as provisional walls — pick them up so
+  // the confirm button is offered without re-pasting.
+  useEffect(() => {
+    let cancelled = false;
+    req(`/api/teams/${team.team_id}/conflicts`)
+      .then((r) => {
+        if (cancelled || !r) return;
+        const rows = Array.isArray(r)
+          ? r : (r.mapping || r.conflicts || r.walls || r.rows || []);
+        if (Array.isArray(rows) && rows.length > 0) setMapping(rows);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [team.team_id]);
+
+  const doImport = () => {
+    if (!text.trim() || busy) return;
+    setBusy("import"); setErr("");
+    req(`/api/teams/${team.team_id}/conflicts/import`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    })
+      .then((r) => {
+        setMapping(Array.isArray(r) ? r : (r?.mapping || []));
+        setCounts(r && !Array.isArray(r) ? (r.counts || null) : null);
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setBusy(""));
+  };
+
+  const confirm = () => {
+    if (busy) return;
+    setBusy("confirm"); setErr("");
+    req(`/api/teams/${team.team_id}/conflicts/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ confirmed: true }),
+    })
+      .then(() => onLive())
+      .catch((e) => { setErr(e.message || String(e)); setBusy(""); });
+  };
+
+  const skip = () => {
+    if (busy) return;
+    const reason = window.prompt(
+      "Why skip conflict setup for now? A reason is required — it's kept in the audit trail.");
+    if (!reason || !reason.trim()) return;
+    setBusy("skip"); setErr("");
+    req(`/api/teams/${team.team_id}/conflicts/skip`, {
+      method: "POST",
+      body: JSON.stringify({ reason: reason.trim() }),
+    })
+      .then(() => onLive())
+      .catch((e) => { setErr(e.message || String(e)); setBusy(""); });
+  };
+
+  const cell = { padding: "6px 8px", textAlign: "left", verticalAlign: "top" };
+  const countsLine = counts
+    ? Object.entries(counts)
+        .filter(([, v]) => typeof v === "number")
+        .map(([k, v]) => `${v} ${k.replace(/_/g, " ")}`)
+        .join(" · ")
+    : "";
+
+  return (
+    <div style={{ margin: "0 16px 12px", padding: 12, borderRadius: 12,
+                  border: "1px solid rgba(0,0,0,0.08)" }}>
+      <p className="bk-name" style={{ marginBottom: 6 }}>Conflict setup</p>
+      <p className="bk-hint" style={{ marginTop: 0 }}>
+        The team view stays dark until conflicts are handled. Paste your
+        conflict list to raise walls before anyone sees shared warmth, or skip
+        for now with a reason.
+      </p>
+      {err && <div className="bk-err">{err}</div>}
+
+      <textarea className="bk-sheet-body" rows={5}
+                placeholder="Paste your conflict list (one company per line or CSV)"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                style={{ width: "100%", resize: "vertical",
+                         border: "1px solid rgba(0,0,0,0.12)", borderRadius: 8,
+                         padding: "8px 10px" }} />
+      <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+        <button type="button" className="bk-chip"
+                style={{ cursor: "pointer",
+                         opacity: text.trim() && !busy ? 1 : 0.5 }}
+                disabled={!text.trim() || !!busy}
+                onClick={doImport}>
+          {busy === "import" ? "Importing…" : "Import"}
+        </button>
+        {mapping && (
+          <button type="button" className="bk-chip"
+                  style={{ cursor: "pointer", fontWeight: 600,
+                           opacity: busy ? 0.5 : 1 }}
+                  disabled={!!busy}
+                  onClick={confirm}>
+            {busy === "confirm" ? "Confirming…" : "Confirm walls + go live"}
+          </button>
+        )}
+        <button type="button" className="bk-link"
+                style={{ border: 0, background: "none", cursor: "pointer",
+                         padding: 0, fontSize: 13, opacity: busy ? 0.5 : 1 }}
+                disabled={!!busy}
+                onClick={skip}>
+          {busy === "skip" ? "Skipping…" : "Skip for now"}
+        </button>
+      </div>
+
+      {mapping && (
+        <>
+          {countsLine && (
+            <p className="bk-hint" style={{ marginBottom: 0 }}>{countsLine}</p>
+          )}
+          <div style={{ overflowX: "auto", marginTop: 8 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr>
+                  <th className="bk-hint" style={cell}>Line</th>
+                  <th className="bk-hint" style={cell}>Company</th>
+                  <th className="bk-hint" style={cell}>State</th>
+                  <th className="bk-hint" style={cell}>Matched</th>
+                </tr>
+              </thead>
+              <tbody>
+                {mapping.map((m, i) => (
+                  <tr key={i} style={{ borderTop: "1px solid rgba(0,0,0,0.06)" }}>
+                    <td className="bk-sub" style={cell}>{m.line ?? i + 1}</td>
+                    <td className="bk-sub" style={cell}>
+                      <strong>{m.name || m.name_norm || "—"}</strong>
+                    </td>
+                    <td style={cell}>
+                      <span className="bk-chip">{m.state || "?"}</span>
+                    </td>
+                    <td className="bk-sub" style={cell}>
+                      {(m.matched_companies || []).map((c) => c.name).join(", ") || "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {mapping.length === 0 && (
+            <p className="bk-hint">Nothing parsed from that list.</p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── audit viewer : the team's compliance trail ───────────────────────────────
+// Admin-only, newest first. Every wall change, conflict decision, and team
+// view read lands here; the panel is deliberately read-only.
+const AUDIT_PAGE = 30;
+
+function auditEventLabel(event) {
+  const s = (event || "").replace(/[._]+/g, " ").trim();
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : "Event";
+}
+
+// Best-effort humanization of the free-form detail object into one muted line.
+function auditDetailLine(detail) {
+  const d = detail || {};
+  const parts = [];
+  if (d.count != null)
+    parts.push(`${d.count} ${d.count === 1 ? "company" : "companies"} viewed`);
+  if (d.reason) parts.push(String(d.reason));
+  Object.entries(d).forEach(([k, v]) => {
+    if (k === "count" || k === "reason") return;
+    if (v == null || typeof v === "object") return;
+    parts.push(`${k.replace(/_/g, " ")}: ${v}`);
+  });
+  return parts.join(" · ");
+}
+
+function AuditPanel({ team }) {
+  const [rows, setRows] = useState([]);
+  const [total, setTotal] = useState(null);   // null when the API returns a bare list
+  const [loaded, setLoaded] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [done, setDone] = useState(false);    // short page = end, when total unknown
+  const [err, setErr] = useState("");
+
+  const fetchPage = useCallback((offset) => {
+    setLoading(true); setErr("");
+    req(`/api/teams/${team.team_id}/audit?limit=${AUDIT_PAGE}&offset=${offset}`)
+      .then((r) => {
+        const page = Array.isArray(r) ? r : (r?.rows || []);
+        setRows((cur) => (offset === 0 ? page : [...cur, ...page]));
+        if (r && !Array.isArray(r) && typeof r.total === "number") setTotal(r.total);
+        if (page.length < AUDIT_PAGE) setDone(true);
+        setLoaded(true);
+      })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setLoading(false));
+  }, [team.team_id]);
+  useEffect(() => { fetchPage(0); }, [fetchPage]);
+
+  const hasMore = total != null ? rows.length < total : !done;
+
+  return (
+    <div style={{ margin: "0 16px 12px", padding: 12, borderRadius: 12,
+                  border: "1px solid rgba(0,0,0,0.08)" }}>
+      <p className="bk-name" style={{ marginBottom: 6 }}>Audit trail</p>
+      {err && <div className="bk-err">{err}</div>}
+      {!loaded && !err && (
+        <p className="bk-hint"><Loader2 className="bk-spin" size={13} /> Loading audit…</p>
+      )}
+
+      {rows.map((r, i) => {
+        const detail = auditDetailLine(r.detail);
+        return (
+          <div key={r.id ?? i} style={{ padding: "6px 0",
+                                        borderTop: i > 0 ? "1px solid rgba(0,0,0,0.06)" : 0 }}>
+            <p className="bk-sub" style={{ margin: 0 }}>
+              <strong>{auditEventLabel(r.event)}</strong>
+              {r.company?.name ? ` · ${r.company.name}` : ""}
+            </p>
+            <p className="bk-meta" style={{ margin: "2px 0 0" }}>
+              {[prettyName(r.actor?.name) || (r.actor?.user_id != null ? `user ${r.actor.user_id}` : ""),
+                _when(r.at)].filter(Boolean).join(" · ")}
+            </p>
+            {detail && (
+              <p className="bk-meta" style={{ margin: "2px 0 0", opacity: 0.7 }}>{detail}</p>
+            )}
+          </div>
+        );
+      })}
+
+      {loaded && rows.length === 0 && !err && (
+        <p className="bk-hint">No audit events yet.</p>
+      )}
+      {loaded && hasMore && (
+        <button type="button" className="bk-link"
+                style={{ border: 0, background: "none", cursor: "pointer",
+                         padding: 0, fontSize: 13, marginTop: 6,
+                         opacity: loading ? 0.5 : 1 }}
+                disabled={loading}
+                onClick={() => fetchPage(rows.length)}>
+          {loading ? "Loading…" : "Load more"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function AccountsTab() {
   const [accounts, setAccounts] = useState(null);   // null = loading
   const [err, setErr] = useState("");
@@ -346,7 +617,7 @@ export default function AccountsTab() {
   };
 
   if (openId != null) {
-    return <AccountDetail id={openId}
+    return <AccountDetail id={openId} hasTeam={!!team}
                           onBack={() => { setOpenId(null); load(); }} />;
   }
 
@@ -461,11 +732,20 @@ export default function AccountsTab() {
 
 // ── detail panel ─────────────────────────────────────────────────────────────
 
-function AccountDetail({ id, onBack }) {
+// The three per-account sharing levels (docs/accounts-architecture.md §5):
+// what — if anything — the team plane may derive from this account.
+const SHARING_LEVELS = [
+  { value: "private",  label: "Private" },
+  { value: "metadata", label: "Team: warmth only" },
+  { value: "elevated", label: "Team: shared" },
+];
+
+function AccountDetail({ id, onBack, hasTeam }) {
   const [d, setD] = useState(null);
   const [err, setErr] = useState("");
   const [objective, setObjective] = useState("");
   const [saveNote, setSaveNote] = useState("");
+  const [shareNote, setShareNote] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -486,6 +766,21 @@ function AccountDetail({ id, onBack }) {
                     setSaveNote("Saved");
                     setTimeout(() => setSaveNote(""), 1500); })
       .catch(() => setSaveNote("Couldn't save — try again."));
+  };
+
+  // Sharing level PATCHes optimistically; on failure we put the old value
+  // back so the segmented row never lies about what the server holds.
+  const setSharing = (level) => {
+    if (!d || d.sharing_level === level) return;
+    const prev = d.sharing_level;
+    setShareNote("");
+    setD((cur) => (cur ? { ...cur, sharing_level: level } : cur));
+    req(`/api/accounts/${id}`, { method: "PATCH",
+                                 body: JSON.stringify({ sharing_level: level }) })
+      .catch(() => {
+        setD((cur) => (cur ? { ...cur, sharing_level: prev } : cur));
+        setShareNote("Couldn't update sharing — try again.");
+      });
   };
 
   const cov = d?.coverage;
@@ -533,6 +828,28 @@ function AccountDetail({ id, onBack }) {
                       style={{ width: "100%", resize: "vertical" }} />
             {saveNote && <p className="bk-hint" style={{ padding: 0 }}>{saveNote}</p>}
           </div>
+
+          {hasTeam && (
+            <div className="bk-panel">
+              <div className="bk-panel-head"><span>Sharing</span></div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {SHARING_LEVELS.map((lv) => (
+                  <button type="button" key={lv.value}
+                          className={"bk-chip" + (d.sharing_level === lv.value ? " on" : "")}
+                          style={{ cursor: "pointer",
+                                   fontWeight: d.sharing_level === lv.value ? 600 : 400 }}
+                          onClick={() => setSharing(lv.value)}>
+                    {lv.label}
+                  </button>
+                ))}
+              </div>
+              <p className="bk-hint" style={{ padding: 0 }}>
+                Private hides this account from your team entirely. Warmth only
+                shares who/how-warm, never content.
+              </p>
+              {shareNote && <p className="bk-hint" style={{ padding: 0 }}>{shareNote}</p>}
+            </div>
+          )}
 
           <p className="bk-sec-label bk-sec-label--tl">People here</p>
           <div className="bk-group">

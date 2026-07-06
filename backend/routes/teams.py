@@ -36,7 +36,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..agents.relationship import team_view
+from ..agents.relationship import audit, team_view
 from ..auth import current_user
 from ..db import get_db
 
@@ -118,6 +118,28 @@ def _admin_or_403(membership: models.TeamMembership) -> None:
         raise HTTPException(403, "admin role required")
 
 
+def _audit_read(db: Session, *, team_id: int, actor_user_id: int, event: str,
+                subject_company_id: Optional[int] = None,
+                detail: Optional[dict] = None) -> None:
+    """Best-effort audit for the READ path: the row is evidence, the view is
+    the product, so audit trouble (a broken write OR a failed commit) must
+    never 500 a view. Mutations do NOT come through here — they call
+    audit.write() inside their own transaction so the change and its audit
+    row commit or roll back together."""
+    try:
+        audit.write(db, team_id=team_id, actor_user_id=actor_user_id,
+                    event=event, subject_company_id=subject_company_id,
+                    detail=detail, best_effort=True)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        print(f"  [teams.audit] read audit dropped ({event}): "
+              f"{type(exc).__name__}: {exc}", flush=True)
+
+
 def _membership_brief(team: models.Team, m: models.TeamMembership) -> dict:
     return {
         "team_id": team.id,
@@ -181,6 +203,11 @@ def create_team(body: TeamCreate, db: Session = Depends(get_db),
     db.flush()
     m = models.TeamMembership(team_id=team.id, user_id=user.id, role="admin")
     db.add(m)
+    audit.write(db, team_id=team.id, actor_user_id=user.id,
+                event="team_created",
+                detail={"name": team.name,
+                        "compliance_profile": team.compliance_profile,
+                        "view_state": team.view_state})
     db.commit()
     return _membership_brief(team, m)
 
@@ -203,22 +230,31 @@ def patch_team(team_id: int, body: TeamPatch, db: Session = Depends(get_db),
                user: models.User = Depends(current_user)):
     """Admin policy switchboard. Flipping view_state to "live" is the
     conflict-import-done unlock for strict teams; both flips are audited
-    (log line) because policy changes are compliance evidence."""
+    (in-transaction TeamAuditLog rows, old/new values) because policy
+    changes are compliance evidence."""
     team, m = _member_or_404(db, team_id, user)
     _admin_or_403(m)
     if body.compliance_profile is not None:
         profile = body.compliance_profile.strip().lower()
         if profile not in COMPLIANCE_PROFILES:
             raise HTTPException(400, f"compliance_profile must be one of {COMPLIANCE_PROFILES}")
+        old = team.compliance_profile
         team.compliance_profile = profile
+        if old != profile:
+            audit.write(db, team_id=team.id, actor_user_id=user.id,
+                        event="profile_changed",
+                        detail={"old": old, "new": profile})
     if body.view_state is not None:
         state = body.view_state.strip().lower()
         if state not in VIEW_STATES:
             raise HTTPException(400, f"view_state must be one of {VIEW_STATES}")
+        old = team.view_state
         team.view_state = state
+        if old != state:
+            audit.write(db, team_id=team.id, actor_user_id=user.id,
+                        event="view_state_changed",
+                        detail={"old": old, "new": state})
     db.commit()
-    print(f"  [teams.audit] team {team.id} policy set by user {user.id}: "
-          f"profile={team.compliance_profile} view_state={team.view_state}")
     return _membership_brief(team, m)
 
 
@@ -255,6 +291,8 @@ def join_team(team_id: int, body: JoinBody, db: Session = Depends(get_db),
         return _membership_brief(team, existing)
     m = models.TeamMembership(team_id=team.id, user_id=user.id, role="member")
     db.add(m)
+    audit.write(db, team_id=team.id, actor_user_id=user.id,
+                event="member_joined", detail={"role": m.role})
     db.commit()
     return _membership_brief(team, m)
 
@@ -268,9 +306,11 @@ def leave_team(team_id: int, db: Session = Depends(get_db),
     copied, so there is nothing to claw back (the departure guarantee in
     the design doc §6, and the ownership pitch to individual users)."""
     team, m = _member_or_404(db, team_id, user)
+    role = m.role
     db.delete(m)
+    audit.write(db, team_id=team.id, actor_user_id=user.id,
+                event="member_left", detail={"role": role})
     db.commit()
-    print(f"  [teams.audit] user {user.id} left team {team.id}")
     return {"ok": True}
 
 
@@ -282,10 +322,13 @@ def patch_my_membership(team_id: int, body: MemberPatch,
     member's edges out of the pool (consent is revocable) while their
     viewing rights remain — viewing is membership, sharing is consent."""
     team, m = _member_or_404(db, team_id, user)
+    old = bool(m.share_signals)
     m.share_signals = bool(body.share_signals)
+    if m.share_signals != old:
+        audit.write(db, team_id=team.id, actor_user_id=user.id,
+                    event="share_signals_changed",
+                    detail={"old": old, "new": m.share_signals})
     db.commit()
-    print(f"  [teams.audit] user {user.id} set share_signals="
-          f"{m.share_signals} on team {team.id}")
     return _membership_brief(team, m)
 
 
@@ -320,7 +363,11 @@ def team_accounts(team_id: int, db: Session = Depends(get_db),
     a current linked path, as THIS viewer is allowed to see it (walls remove
     companies from lists and counts per-viewer)."""
     team, _ = _member_or_404(db, team_id, user)
-    return team_view.team_accounts(db, team, user.id)
+    res = team_view.team_accounts(db, team, user.id)
+    _audit_read(db, team_id=team.id, actor_user_id=user.id,
+                event="view_accounts",
+                detail={"companies": len(res.get("accounts", []))})
+    return res
 
 
 @router.get("/{team_id}/companies/{company_id}/paths")
@@ -335,6 +382,13 @@ def company_paths(team_id: int, company_id: int,
     res = team_view.company_paths(db, team, user.id, company_id)
     if res is None:
         raise HTTPException(404, "company not found")
+    # subject only when the view is live: on a pending team the company id
+    # was never resolved, so it must not be attributed as a viewed subject.
+    live = res.get("view_state") == "live"
+    _audit_read(db, team_id=team.id, actor_user_id=user.id,
+                event="view_paths",
+                subject_company_id=company_id if live else None,
+                detail={"rows": len(res.get("paths", []))})
     return res
 
 
@@ -343,9 +397,15 @@ def search(team_id: int, q: str = "", db: Session = Depends(get_db),
            user: models.User = Depends(current_user)):
     """Company-name search across the team view. Runs on the gated rollups,
     so walled subjects are unfindable for excluded viewers — not just
-    unlisted."""
+    unlisted. The audited query string is the viewer's own input (never
+    relationship content), so it is safe to store."""
     team, _ = _member_or_404(db, team_id, user)
-    return team_view.search_companies(db, team, user.id, q)
+    res = team_view.search_companies(db, team, user.id, q)
+    _audit_read(db, team_id=team.id, actor_user_id=user.id,
+                event="search",
+                detail={"query": (q or "")[:200],
+                        "hits": len(res.get("results", []))})
+    return res
 
 
 # ─── ethical walls (admin only) ─────────────────────────────────────────────
@@ -413,12 +473,17 @@ def create_wall(team_id: int, body: WallCreate, db: Session = Depends(get_db),
         created_by=user.id,
     )
     db.add(w)
+    db.flush()
+    # Wall create/delete are audited IN the wall's own transaction — the
+    # audit trail is the compliance evidence a firm shows to demonstrate the
+    # screen, so an unaudited wall change must be impossible.
+    audit.write(db, team_id=team.id, actor_user_id=user.id,
+                event="wall_created", subject_company_id=w.subject_company_id,
+                detail={"wall_id": w.id,
+                        "name_norm": w.subject_name_norm,
+                        "excluded_user_ids": body.excluded_user_ids or [],
+                        "reason": w.reason})
     db.commit()
-    # Wall create/modify/delete are audited events — the audit trail is the
-    # compliance evidence a firm shows to demonstrate the screen.
-    print(f"  [teams.audit] wall {w.id} created on team {team.id} by user "
-          f"{user.id}: company={w.subject_company_id} "
-          f"name_norm={w.subject_name_norm!r} excluded={w.excluded_user_ids}")
     return _wall_brief(w)
 
 
@@ -432,8 +497,82 @@ def delete_wall(team_id: int, wall_id: int, db: Session = Depends(get_db),
          .first())
     if w is None:
         raise HTTPException(404, "wall not found")
+    audit.write(db, team_id=team.id, actor_user_id=user.id,
+                event="wall_deleted", subject_company_id=w.subject_company_id,
+                detail={"wall_id": w.id,
+                        "name_norm": w.subject_name_norm,
+                        "reason": w.reason})
     db.delete(w)
     db.commit()
-    print(f"  [teams.audit] wall {wall_id} deleted on team {team.id} "
-          f"by user {user.id}")
     return {"ok": True}
+
+
+# ─── the audit trail (admin only) ────────────────────────────────────────────
+
+AUDIT_PAGE_DEFAULT = 100
+AUDIT_PAGE_MAX = 500
+
+
+@router.get("/{team_id}/audit")
+def team_audit(team_id: int, event: Optional[str] = None,
+               limit: int = AUDIT_PAGE_DEFAULT, offset: int = 0,
+               db: Session = Depends(get_db),
+               user: models.User = Depends(current_user)):
+    """The compliance trail: who viewed which aggregate when, plus every
+    wall/policy/membership change. ADMIN ONLY — the trail itself reveals
+    walls (and therefore conflicts) and members' viewing patterns, so it is
+    as sensitive as the wall list. Newest first, paged, filterable by event.
+    Viewing the audit log is itself audited (best-effort, like the other
+    reads: the row is evidence, the view must not 500 on audit trouble)."""
+    team, m = _member_or_404(db, team_id, user)
+    _admin_or_403(m)
+    limit = max(1, min(int(limit), AUDIT_PAGE_MAX))
+    offset = max(0, int(offset))
+    query = (db.query(models.TeamAuditLog)
+             .filter(models.TeamAuditLog.team_id == team.id))
+    event_filter = (event or "").strip() or None
+    if event_filter:
+        query = query.filter(models.TeamAuditLog.event == event_filter)
+    total = query.count()
+    rows = (query.order_by(models.TeamAuditLog.created_at.desc(),
+                           models.TeamAuditLog.id.desc())
+            .offset(offset).limit(limit).all())
+
+    # Resolve display names in two IN-queries, never per-row.
+    uids = {r.actor_user_id for r in rows if r.actor_user_id is not None}
+    names = {} if not uids else {
+        u.id: (u.name or u.email or f"user {u.id}")
+        for u in db.query(models.User).filter(models.User.id.in_(uids))}
+    cids = {r.subject_company_id for r in rows
+            if r.subject_company_id is not None}
+    companies = {} if not cids else {
+        c.id: c.canonical_name
+        for c in db.query(models.Company).filter(models.Company.id.in_(cids))}
+
+    entries = []
+    for r in rows:
+        try:
+            detail = json.loads(r.detail_json or "{}")
+        except (ValueError, TypeError):
+            detail = {}
+        entries.append({
+            "id": r.id,
+            "at": r.created_at.isoformat() if r.created_at else None,
+            # actor_user_id is SET NULL on user deletion: the trail outlives
+            # the account, so a null actor renders as such rather than 500ing.
+            "actor": None if r.actor_user_id is None else {
+                "user_id": r.actor_user_id,
+                "name": names.get(r.actor_user_id)},
+            "event": r.event,
+            "company": None if r.subject_company_id is None else {
+                "id": r.subject_company_id,
+                "name": companies.get(r.subject_company_id)},
+            "detail": detail,
+        })
+
+    _audit_read(db, team_id=team.id, actor_user_id=user.id,
+                event="audit_viewed",
+                detail={"limit": limit, "offset": offset,
+                        "event": event_filter, "rows": len(entries)})
+    return {"total": total, "limit": limit, "offset": offset,
+            "entries": entries}
