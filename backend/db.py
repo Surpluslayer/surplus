@@ -60,6 +60,28 @@ if _RAW_DB_URL:
         pool_recycle=300,
         connect_args=_pg_connect_args,
     )
+
+    # Request-path engine: lets REQUEST connections use a DIFFERENT role than the
+    # background jobs. Set REQUEST_DATABASE_URL to the non-superuser surplus_app
+    # role and the request path (get_db) connects through it so Postgres RLS
+    # enforces per-user isolation -- while every background job keeps using
+    # SessionLocal/ENGINE (the superuser role, which BYPASSES RLS, so sweeps that
+    # scan all users still work). Unset -> requests reuse ENGINE (no change).
+    _req_url = (os.environ.get("REQUEST_DATABASE_URL") or "").strip()
+    if _req_url.startswith("postgres://"):
+        _req_url = "postgresql://" + _req_url[len("postgres://"):]
+    if _req_url:
+        REQUEST_ENGINE = create_engine(
+            _req_url,
+            pool_pre_ping=True,
+            pool_size=_int_env("DB_POOL_SIZE", 5),
+            max_overflow=_int_env("DB_MAX_OVERFLOW", 3),
+            pool_timeout=_int_env("DB_POOL_TIMEOUT", 10),
+            pool_recycle=300,
+            connect_args=_pg_connect_args,
+        )
+    else:
+        REQUEST_ENGINE = ENGINE
 else:
     DB_PATH = Path(__file__).parent / "data" / "surplus.db"
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -68,8 +90,13 @@ else:
         DB_URL,
         connect_args={"check_same_thread": False},  # FastAPI uses a threadpool
     )
+    REQUEST_ENGINE = ENGINE
 
 SessionLocal = sessionmaker(bind=ENGINE, autoflush=False, autocommit=False)
+# Request path only (get_db). Same as SessionLocal unless REQUEST_DATABASE_URL
+# points requests at a lower-privilege role for RLS (see REQUEST_ENGINE note).
+RequestSessionLocal = sessionmaker(bind=REQUEST_ENGINE, autoflush=False,
+                                   autocommit=False)
 
 
 # SQLite does NOT enforce foreign keys (and therefore ON DELETE CASCADE) unless
@@ -139,7 +166,7 @@ def get_db():
     """FastAPI dependency : yields a session, always closes it. On release it
     clears any RLS scope set during the request so a pooled connection can't leak
     one user's scope into the next."""
-    db = SessionLocal()
+    db = RequestSessionLocal()
     try:
         yield db
     finally:
