@@ -81,11 +81,12 @@ function prettyName(name) {
 // because a merged number without attribution ("2 paths") tells you nothing
 // about who should make the intro. Metadata only: warmth + recency bands,
 // never content.
-function TeamAccounts({ team }) {
+function TeamAccounts({ team, q }) {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState("");
   const [openCid, setOpenCid] = useState(null);
   const [paths, setPaths] = useState({});   // company_id -> rows | "loading"
+  const [showWalls, setShowWalls] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -120,9 +121,27 @@ function TeamAccounts({ team }) {
     <div className="bk-empty">Team view is pending until conflict setup is finished.</div>
   );
 
+  // The shared search box filters the team view too (company name — the
+  // Level-1 list shape has no contact names to match, by design).
+  const needle = (q || "").trim().toLowerCase();
+  const shown = needle
+    ? rows.filter((r) => (r.company_name || "").toLowerCase().includes(needle))
+    : rows;
+
   return (
     <div className="bk-group">
-      {rows.map((r) => (
+      {team.role === "admin" && (
+        <div style={{ padding: "4px 16px 8px" }}>
+          <button type="button" className="bk-link"
+                  style={{ border: 0, background: "none", cursor: "pointer",
+                           padding: 0, fontSize: 13 }}
+                  onClick={() => setShowWalls((v) => !v)}>
+            {showWalls ? "Hide walls" : "Manage walls"}
+          </button>
+        </div>
+      )}
+      {showWalls && <WallsPanel team={team} />}
+      {shown.map((r) => (
         <React.Fragment key={r.company_id}>
           <div className="bk-row bk-row--tap" role="button" tabIndex={0}
                onClick={() => toggle(r.company_id)}
@@ -161,9 +180,133 @@ function TeamAccounts({ team }) {
           )}
         </React.Fragment>
       ))}
+      {shown.length === 0 && rows.length > 0 && (
+        <div className="bk-empty">No team account matches that search.</div>
+      )}
       {rows.length === 0 && (
         <div className="bk-empty">No team accounts yet.</div>
       )}
+    </div>
+  );
+}
+
+// ── walls admin : who is screened from which company ────────────────────────
+// The conflicts-of-interest surface (docs/accounts-architecture.md §6). A wall
+// makes its subject cease to exist on the team plane for the excluded members,
+// in both directions. Admin-only — even READING the wall list is restricted,
+// since who-is-conflicted is itself sensitive.
+function WallsPanel({ team }) {
+  const [walls, setWalls] = useState(null);
+  const [roster, setRoster] = useState([]);
+  const [err, setErr] = useState("");
+  const [name, setName] = useState("");          // company to wall (by name)
+  const [reason, setReason] = useState("");
+  const [excluded, setExcluded] = useState([]);  // user ids; [] = everyone
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(() => {
+    req(`/api/teams/${team.team_id}/walls`)
+      .then((r) => setWalls(Array.isArray(r) ? r : (r?.walls || [])))
+      .catch((e) => setErr(e.message || String(e)));
+    req(`/api/teams/${team.team_id}/members`)
+      .then((r) => setRoster(r?.members || []))
+      .catch(() => {});
+  }, [team.team_id]);
+  useEffect(() => { load(); }, [load]);
+
+  const memberName = (uid) =>
+    prettyName((roster.find((m) => m.user_id === uid) || {}).name || `user ${uid}`);
+
+  const toggleExcluded = (uid) =>
+    setExcluded((xs) => xs.includes(uid) ? xs.filter((x) => x !== uid)
+                                         : [...xs, uid]);
+
+  const create = () => {
+    if (!name.trim() || saving) return;
+    setSaving(true); setErr("");
+    req(`/api/teams/${team.team_id}/walls`, {
+      method: "POST",
+      body: JSON.stringify({ name_norm: name.trim().toLowerCase(),
+                             excluded_user_ids: excluded,
+                             reason: reason.trim() || null }),
+    })
+      .then(() => { setName(""); setReason(""); setExcluded([]); load(); })
+      .catch((e) => setErr(e.message || String(e)))
+      .finally(() => setSaving(false));
+  };
+
+  const remove = (wid) => {
+    req(`/api/teams/${team.team_id}/walls/${wid}`, { method: "DELETE" })
+      .then(load)
+      .catch((e) => setErr(e.message || String(e)));
+  };
+
+  return (
+    <div style={{ margin: "0 16px 12px", padding: 12, borderRadius: 12,
+                  border: "1px solid rgba(0,0,0,0.08)" }}>
+      <p className="bk-name" style={{ marginBottom: 6 }}>Ethical walls</p>
+      <p className="bk-hint" style={{ marginTop: 0 }}>
+        A walled company disappears from the screened members' team view
+        entirely, and their own paths into it are hidden from everyone else.
+        Their private book is untouched.
+      </p>
+      {err && <div className="bk-err">{err}</div>}
+      {!walls && <p className="bk-hint"><Loader2 className="bk-spin" size={13} /> Loading…</p>}
+
+      {(walls || []).map((w) => (
+        <p key={w.wall_id} className="bk-sub"
+           style={{ margin: "6px 0", display: "flex", alignItems: "center", gap: 6 }}>
+          <strong>{w.company_name || w.subject_name_norm}</strong>
+          {" · screens "}
+          {(w.excluded_user_ids || []).length === 0
+            ? "everyone"
+            : (w.excluded_user_ids || []).map(memberName).join(", ")}
+          {w.reason ? ` · ${w.reason}` : ""}
+          <button type="button" aria-label="Remove wall"
+                  style={{ border: 0, background: "none", cursor: "pointer",
+                           marginLeft: "auto", padding: 2 }}
+                  onClick={() => remove(w.wall_id)}>
+            <X size={14} />
+          </button>
+        </p>
+      ))}
+      {Array.isArray(walls) && walls.length === 0 && (
+        <p className="bk-hint">No walls yet.</p>
+      )}
+
+      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+        <input className="bk-ask-input" placeholder="Company name to wall…"
+               style={{ border: "1px solid rgba(0,0,0,0.12)", borderRadius: 8,
+                        padding: "8px 10px" }}
+               value={name} onChange={(e) => setName(e.target.value)} />
+        <input className="bk-ask-input" placeholder="Reason (kept in the audit trail)"
+               style={{ border: "1px solid rgba(0,0,0,0.12)", borderRadius: 8,
+                        padding: "8px 10px" }}
+               value={reason} onChange={(e) => setReason(e.target.value)} />
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          <span className="bk-hint" style={{ margin: 0 }}>Screen:</span>
+          {roster.map((m) => (
+            <label key={m.user_id} className="bk-sub"
+                   style={{ display: "flex", alignItems: "center", gap: 4,
+                            cursor: "pointer", margin: 0 }}>
+              <input type="checkbox"
+                     checked={excluded.includes(m.user_id)}
+                     onChange={() => toggleExcluded(m.user_id)} />
+              {prettyName(m.name)}
+            </label>
+          ))}
+          <span className="bk-hint" style={{ margin: 0 }}>
+            (none checked = everyone)
+          </span>
+        </div>
+        <button type="button" className="bk-chip"
+                style={{ cursor: "pointer", alignSelf: "flex-start",
+                         opacity: name.trim() && !saving ? 1 : 0.5 }}
+                disabled={!name.trim() || saving}
+                onClick={create}>
+          {saving ? "Adding…" : "Add wall"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -258,7 +401,7 @@ export default function AccountsTab() {
           : "Companies your relationships roll up into"}
       </p>
 
-      {view === "team" && team && <TeamAccounts team={team} />}
+      {view === "team" && team && <TeamAccounts team={team} q={q} />}
 
       {view === "mine" && err && (
         <div className="bk-err">{err} <button className="bk-link" onClick={load}>Retry</button></div>
