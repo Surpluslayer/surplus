@@ -65,6 +65,23 @@ def test_cross_site_toplevel_nav_detection(site, dest, blocked):
     assert auth_route._is_cross_site_toplevel_nav(req) is blocked
 
 
+# ── Open-redirect sanitizer on the token-bootstrap `next` param ───────────
+
+@pytest.mark.parametrize("raw,expected", [
+    ("/dashboard", "/dashboard"),          # ordinary same-origin path: kept
+    ("/", "/"),
+    ("//evil.com", "/"),                    # protocol-relative: rejected
+    ("/\\evil.com", "/"),                   # backslash protocol-relative: rejected
+    ("https://evil.com", "/"),              # absolute URL: rejected
+    ("/\tfoo", "/"),                        # control/whitespace: rejected
+    ("/a\nb", "/"),
+    ("", "/"),                              # empty / non-path
+    ("dashboard", "/"),                     # no leading slash
+])
+def test_safe_local_path(raw, expected):
+    assert auth_route._safe_local_path(raw) == expected
+
+
 # ── M4: upload size cap ───────────────────────────────────────────────────
 
 def test_enforce_upload_size_rejects_oversized(monkeypatch):

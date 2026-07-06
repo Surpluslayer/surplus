@@ -370,6 +370,28 @@ def _is_mobile_state(state_token: Optional[str]) -> bool:
     return bool(state_token) and state_token.startswith(MOBILE_STATE_PREFIX)
 
 
+def _safe_local_path(raw, default: str = "/") -> str:
+    """Return `raw` only if it is a safe SAME-ORIGIN path, else `default`.
+
+    Guards the post-login redirect against open redirection to an attacker host.
+    Rejects anything that isn't a plain absolute path:
+      - non-strings / values not starting with '/'
+      - protocol-relative targets: '//evil.com' AND '/\\evil.com' (browsers
+        normalize the backslash, so both resolve to a new origin)
+      - embedded control/whitespace chars a browser might strip to reveal a
+        scheme (e.g. '/\\t/evil.com', newlines)
+    Only a leading single '/' followed by ordinary path characters is allowed.
+    """
+    if not isinstance(raw, str) or not raw.startswith("/"):
+        return default
+    # Second char (start of the would-be authority) must not open a new host.
+    if raw[1:2] in ("/", "\\"):
+        return default
+    if any(ord(c) < 0x20 or ord(c) == 0x7f for c in raw):
+        return default
+    return raw
+
+
 def _is_cross_site_toplevel_nav(request: Request) -> bool:
     """True when a GET is a CROSS-SITE TOP-LEVEL navigation — the classic
     login-CSRF / session-fixation vector for the cookie-adopting endpoints below.
@@ -1722,8 +1744,7 @@ def token_bootstrap(
     `next` so the SPA falls through to its normal signed-out sign-in screen."""
     # Constrain `next` to a same-origin path so this can't be turned into an
     # open redirect (and the cookie we set always belongs to our own host).
-    safe_next = next if (isinstance(next, str) and next.startswith("/")
-                         and not next.startswith("//")) else "/"
+    safe_next = _safe_local_path(next)
 
     # SECURITY: refuse to set a session cookie on a cross-site TOP-LEVEL click
     # (login-CSRF / session fixation — a link that pins the victim to an
