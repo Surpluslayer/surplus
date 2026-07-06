@@ -192,6 +192,7 @@ export default function BookApp() {
   let screen;
   if (route?.name === "detail") {
     screen = <RelationshipScreen row={route.row} onBack={() => goTab("book")}
+                                 onDeleted={() => { load(); goTab("book"); }}
                                  onDraftDone={() => {}} isDemo={!!user?.is_demo} />;
   } else if (route?.name === "account") {
     screen = <AccountScreen user={user} onBack={() => goTab("today")}
@@ -629,11 +630,32 @@ function BookView({ feed, err, user, onReload, onAccount, onAdd, onOpen, onDraft
 
 // ── Relationship detail ───────────────────────────────────────────────────────
 
-function RelationshipScreen({ row, onBack, isDemo = false }) {
+// "How this person got into the book", from the primary identity key prefix
+// (li:/em:/ph:). Already on every contact row, so no extra fetch.
+function capturedVia(key) {
+  const k = (key || "").toLowerCase();
+  if (k.startsWith("li:")) return "LinkedIn";
+  if (k.startsWith("em:")) return "Email";
+  if (k.startsWith("ph:")) return "Phone";
+  return null;
+}
+
+function RelationshipScreen({ row, onBack, onDeleted, isDemo = false }) {
   const id = row?.contact_id;
   const [d, setD] = useState(null);
   const [err, setErr] = useState("");
   const [starred, setStarred] = useState(!!row?.vip);
+  const [deleting, setDeleting] = useState(false);
+  const source = capturedVia(row?.primary_identity_key || d?.primary_identity_key);
+
+  const remove = () => {
+    if (!id || deleting) return;
+    if (!window.confirm(`Remove ${row?.name || d?.name || "this person"} from your book? This can't be undone.`)) return;
+    setDeleting(true);
+    api.deleteContact(id)
+      .then(() => onDeleted && onDeleted())
+      .catch((e) => { setErr(e.message || "Couldn't delete"); setDeleting(false); });
+  };
 
   useEffect(() => {
     if (!id) { setErr("This contact isn't in your book yet."); return; }
@@ -656,6 +678,12 @@ function RelationshipScreen({ row, onBack, isDemo = false }) {
       <div className="bk-detail-head">
         <button className="bk-back" onClick={onBack} aria-label="Back to book"><ChevronLeft size={20} /></button>
         <span className="bk-crumb">Your book</span>
+        {id && !isDemo && (
+          <button type="button" className="bk-detail-remove" onClick={remove}
+                  disabled={deleting} title="Remove this person from your book">
+            {deleting ? "Removing…" : "Remove"}
+          </button>
+        )}
       </div>
 
       <div className="bk-subhead">
@@ -678,6 +706,7 @@ function RelationshipScreen({ row, onBack, isDemo = false }) {
           )}
         </p>
         <p className="bk-role">{[d?.title || row?.title, d?.firm || row?.firm].filter(Boolean).join(" · ")}</p>
+        {source && <p className="bk-captured">Captured via {source}</p>}
         {d && (
           <div className="bk-stat">
             <Health status={status} />
@@ -2152,6 +2181,12 @@ const BOOK_CSS = `
 .bk-detail-head{display:flex; align-items:center; gap:8px; padding:16px 18px 6px;}
 .bk-back{border:0; background:none; color:var(--muted); cursor:pointer; padding:0; display:flex;}
 .bk-crumb{font-size:13px; color:var(--faint);}
+.bk-detail-remove{margin-left:auto; border:.5px solid var(--line); background:none;
+  color:var(--faint); border-radius:8px; padding:4px 11px; font:inherit; font-size:12.5px;
+  font-family:var(--font-ui); cursor:pointer;}
+.bk-detail-remove:hover:not(:disabled){color:#c0392b; border-color:#c0392b;}
+.bk-detail-remove:disabled{opacity:.55; cursor:default;}
+.bk-captured{font-size:12px; color:var(--faint); margin:3px 0 0;}
 .bk-subhead{padding:2px 18px 14px;}
 .bk-role{font-size:13px; color:var(--muted); margin:4px 0 0;}
 .bk-stat{display:flex; align-items:center; gap:8px; margin-top:8px; font-size:12px; color:var(--faint);}

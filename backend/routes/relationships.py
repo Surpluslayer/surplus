@@ -590,6 +590,29 @@ def list_contacts(
     return {"count": len(rows), "contacts": rows}
 
 
+@router.delete("/contacts/{contact_id}")
+def delete_contact(
+    contact_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Permanently remove a person from the book. Owner-scoped (404 on someone
+    else's or a missing contact). FK cascade drops the person's children
+    (identities, facts, interactions, outgoing messages). Any Prospect rows that
+    pointed at this contact are UNLINKED (contact_id -> NULL) rather than deleted,
+    so per-event history the person appeared in is preserved."""
+    contact = _owned_contact(db, contact_id, user)
+    for p in (db.query(models.Prospect)
+              .filter(models.Prospect.contact_id == contact.id).all()):
+        p.contact_id = None
+    db.flush()
+    db.delete(contact)
+    db.commit()
+    print(f"  [relationships.delete_contact] user={user.id} removed contact={contact_id}",
+          flush=True)
+    return {"ok": True, "deleted_contact_id": contact_id}
+
+
 @router.get("/contacts/due")
 def contacts_due(
     within_days: int = 0,

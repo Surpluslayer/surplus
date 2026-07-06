@@ -391,6 +391,10 @@ export const api = {
   // every event you've shared with them). Owner-scoped server-side.
   listContacts: () => request("/api/relationships/contacts"),
   getContact: (contactId) => request(`/api/relationships/contacts/${contactId}`),
+  // Permanently remove a person from the book (cascades their data; unlinks any
+  // per-event prospect rows so event history survives).
+  deleteContact: (contactId) =>
+    request(`/api/relationships/contacts/${contactId}`, { method: "DELETE" }),
   // Follow-up chat : send the host's ask to the same propose-only agent and get
   // back { summary, proposals[], auto_send_enabled }. No sends here.
   // unused by this UI (superseded by relationshipChatStream); kept for extension/mobile/test
