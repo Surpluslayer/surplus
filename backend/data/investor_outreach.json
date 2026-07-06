@@ -1,0 +1,533 @@
+[
+  {
+    "identity": "vc-sarahxguo",
+    "name": "Sarah Guo",
+    "role": "Founder & Managing Partner",
+    "company": "Conviction",
+    "linkedin_url": "https://www.linkedin.com/in/sarahxguo/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Sarah! I really respect how Conviction backed AI early, with bets like Harvey and Mistral, and I still learn a lot from No Priors. Would love to connect."
+  },
+  {
+    "identity": "vc-chemistryvc",
+    "name": "Chemistry",
+    "role": "Venture firm",
+    "company": "Chemistry",
+    "linkedin_url": "https://www.linkedin.com/company/chemistryvc",
+    "confidence": "medium",
+    "note": "Happy belated 4th! I really respect Chemistry's belief that venture isn't meant to scale, backing just a few companies per partner and staying close to them. Would love to connect."
+  },
+  {
+    "identity": "vc-longjourney",
+    "name": "Long Journey Ventures",
+    "role": "Venture firm",
+    "company": "Long Journey Ventures",
+    "linkedin_url": "https://www.linkedin.com/company/longjourney",
+    "confidence": "medium",
+    "note": "Happy belated 4th! I really respect how Long Journey backs the founders others find too weird to fund. That kind of early belief is rare. Would love to connect."
+  },
+  {
+    "identity": "vc-nathanbenaich",
+    "name": "Nathan Benaich",
+    "role": "Founder & General Partner",
+    "company": "Air Street Capital",
+    "linkedin_url": "https://uk.linkedin.com/in/nathanbenaich",
+    "confidence": "high",
+    "note": "Happy belated 4th, Nathan! I really respect your work on the State of AI Report. I read it cover to cover every year and learn a ton. Would love to connect."
+  },
+  {
+    "identity": "vc-ffg-syndicate",
+    "name": "181 Angels",
+    "role": "Angel collective",
+    "company": "181 Angels",
+    "linkedin_url": "https://www.linkedin.com/company/ffg-syndicate",
+    "confidence": "low",
+    "note": "Happy belated 4th! I really respect that 181 Angels shows up with 150+ operators behind each check, not just money. That support is what early founders need. Would love to connect."
+  },
+  {
+    "identity": "vc-terrencerohan",
+    "name": "Terrence Rohan",
+    "role": "Managing Director",
+    "company": "Otherwise Fund",
+    "linkedin_url": "https://www.linkedin.com/in/terrencerohan",
+    "confidence": "high",
+    "note": "Happy belated 4th, Terrence! I really respect the founders backing founders model you built at Otherwise, and your early belief in Figma and Notion. Would love to connect."
+  },
+  {
+    "identity": "vc-kparrish8",
+    "name": "Kyle Parrish",
+    "role": "Founding sales",
+    "company": "Figma",
+    "linkedin_url": "https://www.linkedin.com/in/kparrish8",
+    "confidence": "high",
+    "note": "Happy belated 4th, Kyle! Figma is one of my favorite tools, and I really respect that you built its sales from scratch. Would love to connect."
+  },
+  {
+    "identity": "vc-lennyrachitsky",
+    "name": "Lenny Rachitsky",
+    "role": "Writer",
+    "company": "Lenny's Newsletter",
+    "linkedin_url": "https://www.linkedin.com/in/lennyrachitsky",
+    "confidence": "high",
+    "note": "Happy belated 4th, Lenny! I really respect your work on the newsletter. It's taught me a ton as a first time founder. Would love to connect."
+  },
+  {
+    "identity": "vc-cyanb",
+    "name": "Cyan Banister",
+    "role": "General Partner",
+    "company": "Long Journey Ventures",
+    "linkedin_url": "https://www.linkedin.com/in/cyanb",
+    "confidence": "high",
+    "note": "Happy belated 4th, Cyan! I really respect how you've backed people others overlooked, going all the way back to that first check into SpaceX. Would love to connect."
+  },
+  {
+    "identity": "vc-vsodera",
+    "name": "Vivek Sodera",
+    "role": "Founder & GP",
+    "company": "Supercharge",
+    "linkedin_url": "https://www.linkedin.com/in/vsodera",
+    "confidence": "high",
+    "note": "Happy belated 4th, Vivek! Superhuman is still the fastest email I've used, and I really respect that you back devtools and AI now. Would love to connect."
+  },
+  {
+    "identity": "vc-daniellestrachman",
+    "name": "Danielle Strachman",
+    "role": "Co-founder & GP",
+    "company": "1517 Fund",
+    "linkedin_url": "https://www.linkedin.com/in/daniellestrachman",
+    "confidence": "high",
+    "note": "Happy belated 4th, Danielle! I really respect how 1517 backs dropouts and outsiders on hard problems. That takes real conviction. Would love to connect."
+  },
+  {
+    "identity": "vc-alanagoyal",
+    "name": "Alana Goyal",
+    "role": "Founder & Managing Partner",
+    "company": "Basecase Capital",
+    "linkedin_url": "https://www.linkedin.com/in/alanagoyal",
+    "confidence": "high",
+    "note": "Happy belated 4th, Alana! I really respect that Basecase goes looking for technical builders instead of taking pitches. Would love to connect."
+  },
+  {
+    "identity": "vc-edsim",
+    "name": "Ed Sim",
+    "role": "Founder & Managing Partner",
+    "company": "Boldstart Ventures",
+    "linkedin_url": "https://www.linkedin.com/in/edsim",
+    "confidence": "high",
+    "note": "Happy belated 4th, Ed! I really respect how Boldstart backs technical founders at inception, before there's even a name. Would love to connect."
+  },
+  {
+    "identity": "vc-darian314",
+    "name": "Darian Shirazi",
+    "role": "General Partner",
+    "company": "Gradient Ventures",
+    "linkedin_url": "https://www.linkedin.com/in/darian314/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Darian! I really respect that you built Radius before backing AI founders at Gradient. That founder first view comes through. Would love to connect."
+  },
+  {
+    "identity": "vc-fubini",
+    "name": "Ross Fubini",
+    "role": "Founder & Managing Partner",
+    "company": "XYZ Venture Capital",
+    "linkedin_url": "https://www.linkedin.com/in/fubini",
+    "confidence": "high",
+    "note": "Happy belated 4th, Ross! I really respect your engineering first approach at XYZ, and your early conviction on hard companies like Anduril. Would love to connect."
+  },
+  {
+    "identity": "vc-sarahdrinkwater",
+    "name": "Sarah Drinkwater",
+    "role": "Solo GP",
+    "company": "Common Magic",
+    "linkedin_url": "https://uk.linkedin.com/in/sarahdrinkwater",
+    "confidence": "high",
+    "note": "Happy belated 4th, Sarah! I really respect your work scaling Google's Campus in London, and now backing community first startups at Common Magic. Would love to connect."
+  },
+  {
+    "identity": "vc-camillericketts",
+    "name": "Camille Ricketts",
+    "role": "Marketing leader / investor",
+    "company": "ex-Notion, First Round",
+    "linkedin_url": "https://www.linkedin.com/in/camillericketts/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Camille! I really respect your work on Notion's community led growth and First Round Review. Both shaped how I think about storytelling. Would love to connect."
+  },
+  {
+    "identity": "vc-cristinajcordova",
+    "name": "Cristina Cordova",
+    "role": "COO",
+    "company": "Linear",
+    "linkedin_url": "https://www.linkedin.com/in/cristinajcordova/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Cristina! Linear is one of the few tools I genuinely enjoy using, and I really respect your partnerships work at Stripe and Notion. Would love to connect."
+  },
+  {
+    "identity": "vc-rauchg",
+    "name": "Guillermo Rauch",
+    "role": "Founder & CEO",
+    "company": "Vercel",
+    "linkedin_url": "https://www.linkedin.com/in/rauchg/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Guillermo! I've shipped a lot on Next.js, and I really respect everything you've built from Socket.io to Vercel and v0. Would love to connect."
+  },
+  {
+    "identity": "vc-hadardor",
+    "name": "Hadar Dor",
+    "role": "Product Lead / angel",
+    "company": "Instagram, ex-Shopify",
+    "linkedin_url": "https://www.linkedin.com/in/hadardor",
+    "confidence": "high",
+    "note": "Happy belated 4th, Hadar! I really respect your PM work at Instagram and Shopify, and your applied AI angel bets. Would love to connect."
+  },
+  {
+    "identity": "vc-logankilpatrick",
+    "name": "Logan Kilpatrick",
+    "role": "Lead, Google AI Studio",
+    "company": "Google DeepMind",
+    "linkedin_url": "https://www.linkedin.com/in/logankilpatrick/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Logan! I build on Gemini almost daily, and I really respect the developer experience you've shaped at OpenAI and now AI Studio. Would love to connect."
+  },
+  {
+    "identity": "vc-arthurlevy",
+    "name": "Art Levy",
+    "role": "Chief Business Officer",
+    "company": "Brex",
+    "linkedin_url": "https://www.linkedin.com/in/arthurlevy/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Art! Brex is one of the tools I rely on, and I really respect that you built its strategy and BD function from the ground up. Would love to connect."
+  },
+  {
+    "identity": "vc-scottbelsky",
+    "name": "Scott Belsky",
+    "role": "Founder / Partner",
+    "company": "Behance, A24",
+    "linkedin_url": "https://www.linkedin.com/in/scottbelsky/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Scott! I really respect your work on The Messy Middle. It's one of the few books I re-read when building gets hard. Would love to connect."
+  },
+  {
+    "identity": "vc-chudson",
+    "name": "Charles Hudson",
+    "role": "Managing Partner",
+    "company": "Precursor Ventures",
+    "linkedin_url": "https://www.linkedin.com/in/chudson/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Charles! I really respect how Precursor writes that first check to first time founders. That belief matters most early. Would love to connect."
+  },
+  {
+    "identity": "vc-ericbahn",
+    "name": "Eric Bahn",
+    "role": "Co-founder & GP",
+    "company": "Hustle Fund",
+    "linkedin_url": "https://www.linkedin.com/in/ericbahn",
+    "confidence": "high",
+    "note": "Happy belated 4th, Eric! I really respect how openly you share the craft of investing, and that Hustle Fund bets on velocity over polish. Would love to connect."
+  },
+  {
+    "identity": "vc-maples",
+    "name": "Mike Maples Jr.",
+    "role": "Co-founding Partner",
+    "company": "Floodgate",
+    "linkedin_url": "https://www.linkedin.com/in/maples",
+    "confidence": "high",
+    "note": "Happy belated 4th, Mike! I really respect your work on Pattern Breakers. It changed how I think about timing and living in the future. Would love to connect."
+  },
+  {
+    "identity": "vc-jordansinger",
+    "name": "Jordan Singer",
+    "role": "Founder",
+    "company": "Lil Fund / Diagram",
+    "linkedin_url": "https://www.linkedin.com/in/jordansinger/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Jordan! As someone who designs and codes, I really respect your work on Diagram and Magician. AI as a real design partner. Would love to connect."
+  },
+  {
+    "identity": "vc-jackmcclelland",
+    "name": "Jack McClelland",
+    "role": "Investor",
+    "company": "Afore Capital",
+    "linkedin_url": "https://www.linkedin.com/in/jackmcclelland",
+    "confidence": "high",
+    "note": "Happy belated 4th, Jack! I really respect how Afore writes first checks to pre product founders. That early belief matters most. Would love to connect."
+  },
+  {
+    "identity": "vc-yoheinakajima",
+    "name": "Yohei Nakajima",
+    "role": "General Partner",
+    "company": "Untapped Capital",
+    "linkedin_url": "https://www.linkedin.com/in/yoheinakajima",
+    "confidence": "high",
+    "note": "Happy belated 4th, Yohei! I really respect your work on BabyAGI. It was one of the sparks that got me excited about agents, and I love that you build and invest. Would love to connect."
+  },
+  {
+    "identity": "vc-rexwoodbury",
+    "name": "Rex Woodbury",
+    "role": "Founder & Managing Partner",
+    "company": "Daybreak",
+    "linkedin_url": "https://www.linkedin.com/in/rexwoodbury",
+    "confidence": "high",
+    "note": "Happy belated 4th, Rex! I really respect your work on Digital Native. I read it every week and it shapes what I choose to build. Would love to connect."
+  },
+  {
+    "identity": "vc-mekaasonye",
+    "name": "Meka Asonye",
+    "role": "Partner",
+    "company": "First Round Capital",
+    "linkedin_url": "https://www.linkedin.com/in/mekaasonye",
+    "confidence": "high",
+    "note": "Happy belated 4th, Meka! I really respect your writing on going 0 to 5M and making that first sales hire. So practical for an engineer. Would love to connect."
+  },
+  {
+    "identity": "vc-jennyfielding",
+    "name": "Jenny Fielding",
+    "role": "Co-founder & Managing Partner",
+    "company": "Everywhere Ventures",
+    "linkedin_url": "https://www.linkedin.com/in/jennyfielding/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Jenny! I really respect how you've built Everywhere into a 500+ operator community and first check founders early. Would love to connect."
+  },
+  {
+    "identity": "vc-harrystebbings",
+    "name": "Harry Stebbings",
+    "role": "Founder",
+    "company": "20VC",
+    "linkedin_url": "https://www.linkedin.com/in/harrystebbings",
+    "confidence": "high",
+    "note": "Happy belated 4th, Harry! I really respect your work on 20VC. I've learned so much from it on my commutes. Would love to connect."
+  },
+  {
+    "identity": "vc-calfonsorico",
+    "name": "Carmen Alfonso Rico",
+    "role": "Founding Partner",
+    "company": "Cocoa Ventures",
+    "linkedin_url": "https://www.linkedin.com/in/calfonsorico",
+    "confidence": "high",
+    "note": "Happy belated 4th, Carmen! I really respect Cocoa's founder first take on European pre seed, and I enjoy Todo Hierro. Would love to connect."
+  },
+  {
+    "identity": "vc-erica-wenger-ms-811b80132",
+    "name": "Erica Wenger",
+    "role": "Founder & GP",
+    "company": "Park Rangers Capital",
+    "linkedin_url": "https://www.linkedin.com/in/erica-wenger-ms-811b80132/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Erica! I really respect the elephant companies thesis at Park Rangers, building for resilience and real community. Would love to connect."
+  },
+  {
+    "identity": "vc-andreasklinger",
+    "name": "Andreas Klinger",
+    "role": "Founder",
+    "company": "Prototype Capital",
+    "linkedin_url": "https://www.linkedin.com/in/andreasklinger",
+    "confidence": "high",
+    "note": "Happy belated 4th, Andreas! I really respect your work from Head of Remote at AngelList to backing robotics and physical AI at Prototype. Would love to connect."
+  },
+  {
+    "identity": "vc-astasiamyers",
+    "name": "Astasia Myers",
+    "role": "General Partner",
+    "company": "Felicis",
+    "linkedin_url": "https://www.linkedin.com/in/astasiamyers",
+    "confidence": "high",
+    "note": "Happy belated 4th, Astasia! I really respect that you back the unglamorous infra that matters, like Supabase, Semgrep, and Hex. Would love to connect."
+  },
+  {
+    "identity": "vc-markgher",
+    "name": "Mark Ghermezian",
+    "role": "Founder & GP",
+    "company": "MXV Capital",
+    "linkedin_url": "https://www.linkedin.com/in/markgher/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Mark! I really respect that you took Braze from idea to IPO and now back early B2B founders. That founder empathy shows. Would love to connect."
+  },
+  {
+    "identity": "vc-ryanrhoover",
+    "name": "Ryan Hoover",
+    "role": "Founder",
+    "company": "Weekend Fund / Product Hunt",
+    "linkedin_url": "https://www.linkedin.com/in/ryanrhoover/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Ryan! I really respect your work on Product Hunt. It's where I check out what people are building most mornings. Would love to connect."
+  },
+  {
+    "identity": "vc-christianreber",
+    "name": "Christian Reber",
+    "role": "Founder / angel",
+    "company": "Pitch, Superlist",
+    "linkedin_url": "https://www.linkedin.com/in/christianreber",
+    "confidence": "high",
+    "note": "Happy belated 4th, Christian! I really respect your work from Wunderlist to Superlist. Your obsession with product craft shows. Would love to connect."
+  },
+  {
+    "identity": "vc-ashleymayer",
+    "name": "Ashley Mayer",
+    "role": "Co-founder & GP",
+    "company": "Coalition Operators",
+    "linkedin_url": "https://www.linkedin.com/in/ashleymayer",
+    "confidence": "high",
+    "note": "Happy belated 4th, Ashley! I really respect how Coalition gets operators onto cap tables, and your path from Box to Glossier. Would love to connect."
+  },
+  {
+    "identity": "vc-hunterwalk",
+    "name": "Hunter Walk",
+    "role": "Co-founder & Partner",
+    "company": "Homebrew",
+    "linkedin_url": "https://www.linkedin.com/in/hunterwalk",
+    "confidence": "high",
+    "note": "Happy belated 4th, Hunter! I really respect your writing on the seed stage, and the early Homebrew bets speak for themselves. Would love to connect."
+  },
+  {
+    "identity": "vc-katiestanton",
+    "name": "Katie Stanton",
+    "role": "Founder & GP",
+    "company": "Moxxie Ventures",
+    "linkedin_url": "https://www.linkedin.com/in/katiestanton",
+    "confidence": "high",
+    "note": "Happy belated 4th, Katie! I really respect your work from Twitter and Google to building Moxxie. Your operator's eye comes through. Would love to connect."
+  },
+  {
+    "identity": "vc-kartiktalwar",
+    "name": "Kartik Talwar",
+    "role": "General Partner",
+    "company": "A.Capital Ventures",
+    "linkedin_url": "https://www.linkedin.com/in/kartiktalwar/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Kartik! I've been to a few ETHGlobal events and really respect what you built there. Would love to connect."
+  },
+  {
+    "identity": "vc-reedmcbride",
+    "name": "Reed McBride",
+    "role": "Managing Partner",
+    "company": "Mintaka VC",
+    "linkedin_url": "https://www.linkedin.com/in/reedmcbride/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Reed! I really respect your path from startup lawyer to Carta to backing pre seed founders at Mintaka. Would love to connect."
+  },
+  {
+    "identity": "vc-ywelinder",
+    "name": "Yana Welinder",
+    "role": "Founder & CEO",
+    "company": "Kraftful",
+    "linkedin_url": "https://www.linkedin.com/in/ywelinder/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Yana! I really respect your work on Kraftful, turning product feedback into real AI tooling. Would love to connect."
+  },
+  {
+    "identity": "vc-varadhjain",
+    "name": "Varadh Jain",
+    "role": "Angel investor",
+    "company": "ex-Opendoor, Polymail",
+    "linkedin_url": "https://www.linkedin.com/in/varadhjain/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Varadh! I really respect your operator path, early at Opendoor and on Polymail's founding team, and now backing founders. Would love to connect."
+  },
+  {
+    "identity": "vc-adraper",
+    "name": "Adam Draper",
+    "role": "Founder & Managing Director",
+    "company": "Boost VC",
+    "linkedin_url": "https://www.linkedin.com/in/adraper",
+    "confidence": "high",
+    "note": "Happy belated 4th, Adam! I really respect your early conviction, from one of the first checks into Coinbase to a real thesis on frontier tech. Would love to connect."
+  },
+  {
+    "identity": "vc-evanmoore",
+    "name": "Evan Charles",
+    "role": "Angel investor",
+    "company": "",
+    "linkedin_url": "https://www.linkedin.com/in/evanmoore",
+    "confidence": "low",
+    "note": "Happy belated 4th, Evan! I really respect people who back the next generation of founders. That generosity shapes the whole ecosystem. Would love to connect."
+  },
+  {
+    "identity": "vc-nealmintz",
+    "name": "Neal Mintz",
+    "role": "VP",
+    "company": "Wischoff Ventures",
+    "linkedin_url": "https://www.linkedin.com/in/nealmintz/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Neal! I really respect Wischoff's thesis on automating the real world economy. It's right where I'm building. Would love to connect."
+  },
+  {
+    "identity": "vc-sarah-catanzaro-9770b98",
+    "name": "Sarah Catanzaro",
+    "role": "General Partner",
+    "company": "Amplify Partners",
+    "linkedin_url": "https://www.linkedin.com/in/sarah-catanzaro-9770b98/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Sarah! I really respect your writing on ML and data infra, and that you back practitioners. Would love to connect."
+  },
+  {
+    "identity": "vc-amilich",
+    "name": "Andrew Milich",
+    "role": "Founder / operator",
+    "company": "xAI, ex-Skiff",
+    "linkedin_url": "https://www.linkedin.com/in/amilich/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Andrew! I really respect your work from Skiff to Cursor and now xAI. That technical operator path is one I look up to. Would love to connect."
+  },
+  {
+    "identity": "vc-atbryce",
+    "name": "Bryce Roberts",
+    "role": "Co-founder",
+    "company": "Indie.vc / OATV",
+    "linkedin_url": "https://www.linkedin.com/in/atbryce/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Bryce! I really respect your work on Indie.vc. It changed how I think about building a company that stands on its own. Would love to connect."
+  },
+  {
+    "identity": "vc-colingardiner",
+    "name": "Colin Gardiner",
+    "role": "General Partner",
+    "company": "Yonder Ventures",
+    "linkedin_url": "https://www.linkedin.com/in/colingardiner/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Colin! I really respect how you scaled Outdoorsy past 3B and now back early marketplaces. Would love to connect."
+  },
+  {
+    "identity": "vc-akothari",
+    "name": "Akshay Kothari",
+    "role": "Co-founder & COO",
+    "company": "Notion",
+    "linkedin_url": "https://www.linkedin.com/in/akothari",
+    "confidence": "high",
+    "note": "Happy belated 4th, Akshay! Notion is where I run my whole company, and I really respect that you wrote one of its first checks and then helped build it. Would love to connect."
+  },
+  {
+    "identity": "vc-wlessin",
+    "name": "Sam Lessin",
+    "role": "Founding Partner",
+    "company": "Slow Ventures",
+    "linkedin_url": "https://www.linkedin.com/in/wlessin",
+    "confidence": "high",
+    "note": "Happy belated 4th, Sam! I really respect your writing at The Information. It always makes me think harder, even when I don't agree. Would love to connect."
+  },
+  {
+    "identity": "vc-jamest",
+    "name": "James Tamplin",
+    "role": "Co-founder",
+    "company": "Firebase",
+    "linkedin_url": "https://www.linkedin.com/in/jamest",
+    "confidence": "high",
+    "note": "Happy belated 4th, James! I really respect your work on Firebase. It shaped how I think about developer experience. Would love to connect."
+  },
+  {
+    "identity": "vc-romainhuet",
+    "name": "Romain Huet",
+    "role": "Head of Developer Experience",
+    "company": "OpenAI",
+    "linkedin_url": "https://www.linkedin.com/in/romainhuet/",
+    "confidence": "high",
+    "note": "Happy belated 4th, Romain! I really respect your developer experience work at OpenAI. Your demos set the bar for making an API feel magical. Would love to connect."
+  },
+  {
+    "identity": "vc-nikunjk",
+    "name": "Nikunj Kothari",
+    "role": "Partner",
+    "company": "FPV Ventures",
+    "linkedin_url": "https://www.linkedin.com/in/nikunjk",
+    "confidence": "high",
+    "note": "Happy belated 4th, Nikunj! I really respect your writing on building, and the operator's lens from Opendoor that you bring to FPV. Would love to connect."
+  }
+]
