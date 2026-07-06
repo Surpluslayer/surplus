@@ -1289,34 +1289,58 @@ def cleanup_email_noise(
         kept[reason] = kept.get(reason, 0) + 1
 
     for uid in user_ids:
-        for c in db.query(models.Contact).filter_by(user_id=uid).all():
+        contacts = db.query(models.Contact).filter_by(user_id=uid).all()
+        cids = [c.id for c in contacts]
+
+        # Batch-prefetch every guard signal in a handful of queries. The old
+        # per-contact version fired ~5 queries PER contact, so a 500-contact book
+        # made ~2600 round trips and blew the gateway timeout before committing.
+        def _idset(query):
+            return {row[0] for row in query} if cids else set()
+
+        rollups: dict = {}
+        if cids:
+            for ri in (db.query(models.RelationshipInteraction)
+                       .filter(models.RelationshipInteraction.actor_user_id == uid,
+                               models.RelationshipInteraction.contact_id.in_(cids),
+                               models.RelationshipInteraction.source_type == _ROLLUP_SOURCE)):
+                rollups.setdefault(ri.contact_id, ri)
+        with_prospect = _idset(db.query(models.Prospect.contact_id)
+                               .filter(models.Prospect.contact_id.in_(cids)))
+        with_linkedin = _idset(db.query(models.ContactIdentity.contact_id)
+                               .filter(models.ContactIdentity.user_id == uid,
+                                       models.ContactIdentity.contact_id.in_(cids),
+                                       models.ContactIdentity.kind == "linkedin"))
+        with_facts = _idset(db.query(models.ContactFact.contact_id)
+                            .filter(models.ContactFact.contact_id.in_(cids)))
+        with_other_touch = _idset(
+            db.query(models.RelationshipInteraction.contact_id)
+            .filter(models.RelationshipInteraction.contact_id.in_(cids),
+                    models.RelationshipInteraction.source_type != _ROLLUP_SOURCE))
+        pending_addrs = _idset(db.query(models.EmailPendingOutreach.address)
+                               .filter(models.EmailPendingOutreach.user_id == uid))
+
+        for c in contacts:
             # 1) Must be an email-sync contact (has the email rollup); else leave alone.
-            rollup = (db.query(models.RelationshipInteraction)
-                      .filter_by(actor_user_id=uid, contact_id=c.id,
-                                 source_type=_ROLLUP_SOURCE).first())
+            rollup = rollups.get(c.id)
             if rollup is None:
                 continue
             try:
                 meta = _json.loads(rollup.meta_json or "{}")
             except Exception:  # noqa: BLE001
                 meta = {}
-            # 2) Two-way -> a real relationship, keep.
+            # 2) Two-way -> real relationship, keep. 3) Any OTHER signal -> keep.
             if int(meta.get("n_in") or 0) >= 1:
                 _keep("two_way"); continue
-            # 3) Any OTHER signal -> keep.
             if c.vip:
                 _keep("vip"); continue
-            if db.query(models.Prospect.id).filter_by(contact_id=c.id).first():
+            if c.id in with_prospect:
                 _keep("prospect"); continue
-            if db.query(models.ContactIdentity.id).filter_by(
-                    user_id=uid, contact_id=c.id, kind="linkedin").first():
+            if c.id in with_linkedin:
                 _keep("linkedin"); continue
-            if db.query(models.ContactFact.id).filter_by(contact_id=c.id).first():
+            if c.id in with_facts:
                 _keep("facts"); continue
-            if (db.query(models.RelationshipInteraction.id)
-                    .filter(models.RelationshipInteraction.contact_id == c.id,
-                            models.RelationshipInteraction.source_type != _ROLLUP_SOURCE)
-                    .first()):
+            if c.id in with_other_touch:
                 _keep("other_touch"); continue
 
             # 4) Pure one-way email noise -> candidate for removal.
@@ -1329,9 +1353,7 @@ def cleanup_email_noise(
             # DEMOTE to a pending-outreach marker (preserve the outreach signal),
             # then delete the contact (FK cascade drops its rollup + identities).
             addr = (c.email or "").strip().lower()
-            if addr and "@" in addr and not (
-                    db.query(models.EmailPendingOutreach.id)
-                    .filter_by(user_id=uid, address=addr).first()):
+            if addr and "@" in addr and addr not in pending_addrs:
                 lo = None
                 raw = meta.get("last_out")
                 if raw:
@@ -1342,6 +1364,7 @@ def cleanup_email_noise(
                 db.add(models.EmailPendingOutreach(
                     user_id=uid, address=addr, name=c.name or None,
                     first_out_at=lo, last_out_at=lo))
+                pending_addrs.add(addr)  # avoid dup markers within one run
                 demoted += 1
             db.delete(c)
             removed += 1
