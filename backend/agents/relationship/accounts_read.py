@@ -363,3 +363,94 @@ def recompute_rollups(db: Session, account: models.Account) -> None:
     touches = [t for t in touch.values() if t is not None]
     account.last_touch_at = max(touches) if touches else None
     account.warmest_contact_id = warmest_id
+
+
+def account_summaries_page(db: Session, accounts: list,
+                           viewer_user_id: int) -> list[dict]:
+    """Batched list-page assembly: the same rows account_summary() produces,
+    built from ~6 queries TOTAL instead of ~6 per account.
+
+    Why this exists: the app replicas and Postgres can sit in different
+    regions, so every query pays a full cross-region round-trip (~100-200ms)
+    even though execution is sub-millisecond. Per-account assembly turned a
+    60-row page into 360 round-trips = ~47s on prod. Batch the page: one
+    IN-query each for companies, overlays, memberships, touches, contacts,
+    then assemble in memory. Latency now scales with query COUNT, not page
+    size."""
+    if not accounts:
+        return []
+    company_ids = {a.company_id for a in accounts}
+
+    companies = {c.id: c for c in
+                 db.query(models.Company)
+                   .filter(models.Company.id.in_(company_ids)).all()}
+    # Follow merge tombstones (bounded), batching each hop level.
+    for _ in range(5):
+        missing = {c.merged_into_id for c in companies.values()
+                   if c.merged_into_id and c.merged_into_id not in companies}
+        if not missing:
+            break
+        for c in (db.query(models.Company)
+                    .filter(models.Company.id.in_(missing)).all()):
+            companies[c.id] = c
+
+    def survivor(cid):
+        c, hops = companies.get(cid), 0
+        while c is not None and c.merged_into_id and hops < 5:
+            nxt = companies.get(c.merged_into_id)
+            if nxt is None:
+                break
+            c, hops = nxt, hops + 1
+        return c
+
+    all_cids = set(companies)
+    overlays = {}
+    for o in (db.query(models.CompanyOverlay)
+                .filter(models.CompanyOverlay.user_id == viewer_user_id,
+                        models.CompanyOverlay.company_id.in_(all_cids)).all()):
+        overlays[o.company_id] = o
+
+    memberships: dict[int, list] = {}
+    for m in (db.query(models.AccountMembership)
+                .filter(models.AccountMembership.user_id == viewer_user_id,
+                        models.AccountMembership.company_id.in_(company_ids),
+                        models.AccountMembership.is_current.is_(True),
+                        models.AccountMembership.status != "rejected").all()):
+        memberships.setdefault(m.company_id, []).append(m)
+
+    contact_ids = {m.contact_id for ms in memberships.values() for m in ms}
+    touch = _last_touch_by_contact(db, viewer_user_id, list(contact_ids))
+    contact_by_id = {} if not contact_ids else {
+        c.id: c for c in db.query(models.Contact)
+                           .filter(models.Contact.id.in_(contact_ids)).all()}
+
+    out = []
+    for account in accounts:
+        company = survivor(account.company_id)
+        if company is None:
+            continue
+        overlay = overlays.get(company.id) or overlays.get(account.company_id)
+        if overlay is not None and overlay.rejected:
+            continue
+        members = [contact_by_id[m.contact_id]
+                   for m in memberships.get(account.company_id, [])
+                   if m.contact_id in contact_by_id]
+        members.sort(key=lambda c: (_days_since(touch.get(c.id), c.created_at),
+                                    c.id))
+        out.append({
+            "id": account.id,
+            "company": _company_view(company, overlay),
+            "tier": account.tier,
+            "starred": bool(account.starred),
+            "objective": account.objective,
+            "notes": account.notes,
+            "sharing_level": account.sharing_level,
+            "rollups": {
+                "strength_score": account.strength_score,
+                "last_touch_at": _iso(account.last_touch_at),
+                "contact_count": account.contact_count,
+                "warmest_contact_id": account.warmest_contact_id,
+            },
+            "member_preview": [c.name or "Unknown" for c in members[:3]],
+        })
+    return out
