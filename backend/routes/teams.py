@@ -289,6 +289,28 @@ def patch_my_membership(team_id: int, body: MemberPatch,
     return _membership_brief(team, m)
 
 
+@router.get("/{team_id}/members")
+def list_members(team_id: int, db: Session = Depends(get_db),
+                 user: models.User = Depends(current_user)):
+    """The team roster: any member may see who is on their own team (name,
+    role, sharing state). Needed by the wall admin UI's exclusion picker —
+    ids alone can't render a screen list. Roster only: nothing about anyone's
+    relationships travels through here."""
+    team, _ = _member_or_404(db, team_id, user)
+    rows = (db.query(models.TeamMembership, models.User)
+              .join(models.User,
+                    models.User.id == models.TeamMembership.user_id)
+              .filter(models.TeamMembership.team_id == team.id)
+              .order_by(models.TeamMembership.joined_at)
+              .all())
+    return {"members": [{
+        "user_id": u.id,
+        "name": (u.name or u.email or f"user {u.id}"),
+        "role": m.role,
+        "share_signals": bool(m.share_signals),
+    } for m, u in rows]}
+
+
 # ─── relationship reads (all through team_view's gates) ─────────────────────
 
 @router.get("/{team_id}/accounts")
@@ -351,7 +373,19 @@ def list_walls(team_id: int, db: Session = Depends(get_db),
     team, m = _member_or_404(db, team_id, user)
     _admin_or_403(m)
     rows = db.query(models.Wall).filter(models.Wall.team_id == team.id).all()
-    return {"walls": [_wall_brief(w) for w in rows]}
+    # Enrich id-based walls with the company's display name (one IN-query);
+    # name_norm walls carry their own string.
+    cids = {w.subject_company_id for w in rows if w.subject_company_id}
+    names = {} if not cids else {
+        c.id: c.canonical_name
+        for c in db.query(models.Company)
+                   .filter(models.Company.id.in_(cids)).all()}
+    out = []
+    for w in rows:
+        brief = _wall_brief(w)
+        brief["company_name"] = names.get(w.subject_company_id)
+        out.append(brief)
+    return {"walls": out}
 
 
 @router.post("/{team_id}/walls")
