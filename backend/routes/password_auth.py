@@ -34,6 +34,13 @@ _MAX_PW = 128
 _rl_signup = per_ip_rate_limit(limit=5, window_s=60, tag="pw_signup")
 _rl_login = per_ip_rate_limit(limit=10, window_s=60, tag="pw_login")
 
+# A real bcrypt hash of a random value, computed once. `login` verifies against
+# this when no account exists so the bcrypt cost is paid either way — otherwise
+# the short-circuit on user=None is measurably faster and re-enables the account
+# enumeration the generic 401 is meant to prevent.
+import secrets as _secrets  # noqa: E402
+_DUMMY_PW_HASH = hash_password(_secrets.token_urlsafe(24))
+
 
 class SignupBody(BaseModel):
     name: str
@@ -107,7 +114,12 @@ def login(body: LoginBody, request: Request, db: DbSession = Depends(get_db)) ->
     set / wrong password) so we don't reveal which emails exist or use OAuth."""
     email = (body.email or "").strip().lower()
     user = db.query(User).filter(User.email == email).first() if email else None
-    if user is None or not verify_password(body.password or "", user.password_hash):
+    # Constant-work check: always run bcrypt, even when no account exists, so the
+    # response time doesn't reveal whether the email is registered (a timing
+    # oracle would otherwise defeat the generic 401 below).
+    stored_hash = user.password_hash if user is not None else _DUMMY_PW_HASH
+    password_ok = verify_password(body.password or "", stored_hash)
+    if user is None or not password_ok:
         raise HTTPException(401, "invalid email or password")
     return _session_response(db, user, normalize_client(body.client), {
         "ok": True, "user_id": user.id, "name": user.name, "email": user.email},

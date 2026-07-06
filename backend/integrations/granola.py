@@ -47,9 +47,13 @@ _CLIENT: dict = {}
 
 
 def _secret() -> bytes:
-    return (os.environ.get("SURPLUS_OAUTH_STATE_SECRET")
-            or os.environ.get("SURPLUS_BASE_URL")
-            or "surplus-dev-state-secret").encode()
+    # Reuse the OAuth module's single source of truth: it fails CLOSED in prod on
+    # a weak/missing secret. The previous local fallback to the PUBLIC
+    # SURPLUS_BASE_URL (then a git-committed literal) signed Granola's CSRF state
+    # + derived the PKCE verifier with a guessable key — the exact anti-pattern
+    # oauth._secret() refuses. Same secret, one guard.
+    from .oauth import _secret as _oauth_secret
+    return _oauth_secret()
 
 
 def configured() -> bool:

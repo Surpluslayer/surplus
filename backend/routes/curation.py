@@ -57,6 +57,7 @@ from .. import models
 from ..auth import current_user, get_owned_event
 from ..db import get_db
 from ..jobs import run_detached
+from ..triage.csv_parser import MAX_UPLOAD_BYTES, enforce_upload_size
 from ..curation import (
     attribution as attribution_mod,
     csv_import,
@@ -141,7 +142,9 @@ class PreviewMappingResult(BaseModel):
 
 
 class ImportBody(BaseModel):
-    csv: str
+    # Bound the inline CSV so a giant JSON body can't OOM the single worker
+    # (defense-in-depth alongside the edge/proxy body limit). ~1 byte/char.
+    csv: str = Field(max_length=MAX_UPLOAD_BYTES)
     mapping: dict[str, str] = Field(default_factory=dict)
     list_source: str = "other"
     default_rsvp: Optional[str] = None
@@ -282,7 +285,10 @@ async def preview_mapping(
     """Step 1 of CSV import : parse the file, guess a column mapping,
     return the first 5 rows for the UI to render a confirmation table."""
     get_owned_event(event_id, user, db)
-    content = await file.read()
+    # Bounded read so an oversized upload is rejected (413) instead of buffering
+    # unboundedly and OOMing the single web worker.
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    enforce_upload_size(content)
     proposal = csv_import.propose_mapping(content)
     return PreviewMappingResult(**proposal)
 

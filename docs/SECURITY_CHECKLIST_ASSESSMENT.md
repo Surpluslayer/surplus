@@ -317,3 +317,32 @@ events and move to per-identity admin RBAC.
 **New env (all optional, behaviour unchanged until set):**
 `ADMIN_READONLY_TOKEN` (least-privilege read-only admin token),
 `ADMIN_IP_ALLOWLIST` (comma-separated IPs/CIDRs pinning the admin surface).
+
+---
+
+## Security review — remediation (2026-07-06)
+
+A recursive, whole-codebase security review (6 parallel audits: auth/tenancy,
+injection/SSRF, secrets/crypto, web/frontend, webhooks/billing, data/DoS) was
+run. **Verified clean:** no SQL/command injection, no IDOR (every event/contact/
+prospect route goes through `get_owned_event`/`_owned_*`), Stripe billing
+(signature-verified, idempotent, no client price/qty trust), mass-assignment,
+and the export path. The findings below were code-fixable; each is now fixed
+with a regression test (`tests/test_security_fixes.py`).
+
+| Id | Finding | Fix |
+|----|---------|-----|
+| H1 | Session fixation / login-CSRF via `GET /api/auth/token-bootstrap` + `/api/auth/mobile-adopt` (a link sets the victim's session cookie to an attacker token) | Reject cross-site **top-level** navigations via Fetch-Metadata (`Sec-Fetch-Site: cross-site` + `Sec-Fetch-Dest: document`); the legit iframe-embed / deep-link / same-origin paths are unaffected. |
+| M2 | Host-header trust in `_surplus_base_url` → emailed reset-link poisoning + OAuth open redirect when `SURPLUS_BASE_URL` unset | Never echo an untrusted Host; fall back to the production apex unless the host is `is_first_party` / localhost. `SURPLUS_BASE_URL` now a prod startup warning. |
+| M4 | Unbounded CSV/JSON upload bodies → single-worker OOM DoS | `MAX_UPLOAD_BYTES` (10 MB, env-tunable) bounded read → 413 in the CSV parser + curation import/preview; `ImportBody.csv` length-capped. |
+| M5 | At-rest OAuth-token encryption fails open silently when `SURPLUS_ENCRYPTION_KEK` unset | Prod startup warning + `field_encryption` surfaced in `/api/health` integrations. |
+| M6 | Inbound message bodies (PII/correspondence) logged in cleartext | Log body length only, never content. |
+| L2 | No `X-Frame-Options` / `Referrer-Policy` | Added `X-Frame-Options: SAMEORIGIN` (extension strips it for its own embed) + `Referrer-Policy: strict-origin-when-cross-origin` (also curbs token-in-URL Referer leakage). |
+| L3 | Unauthenticated `/api/health` discloses which integrations/secrets are configured | `integrations` block gated to admin-authenticated `?deep=1`. |
+| L9 | `POST /api/auth/logout` never emitted the cookie-delete (set on the discarded injected response) | Clear on the returned response. |
+| L10 | Login timing oracle (bcrypt skipped when no account) + `granola._secret()` weak public fallback | Constant-work bcrypt against a dummy hash; `granola._secret()` reuses the fail-closed `oauth._secret()`. |
+
+**Deferred (needs infra/coordination, tracked here):**
+- **M1** — the hosted-auth webhooks (`/api/auth/linkedin/webhook`, `/email/webhook`) have no signature check (gated only by a state token that rides in the URL). The fix (require `X-Webhook-Secret` like `/webhooks/unipile`) depends on confirming Unipile attaches that header to the hosted-auth callback, so it's flagged rather than enforced blindly to avoid breaking sign-in. **M3** — the Unipile webhook has no replay/nonce protection and a `UNIPILE_REQUIRE_SIGNATURE=false` escape hatch (now a loud prod startup warning).
+- **L1** — auth rate-limiting is per-IP, in-memory, per-replica with no per-account lockout; a real fix needs a shared store (Redis) + a per-account counter.
+- **L4** (CORS `*` — not credential-exploitable; restricting would break the extension's cross-origin Bearer fetches), **L5** (field-encryption AAD binding — deferred to avoid a decrypt migration), **L7** (Luma redirect re-validation), **L8** (BrightData full-table scan — needs an indexed normalized column), **L11** (KEK/DEK rotation procedure).
