@@ -463,6 +463,89 @@ def app_privacy():
     return HTMLResponse(_APP_PRIVACY_HTML)
 
 
+# --- App homepage (Google OAuth verification requirement) --------------------
+# Google's brand verification fetches the "Application home page" and requires
+# real, crawlable content: an accurate description of the app, a transparent
+# explanation of what user data it requests and why, and a link to the privacy
+# policy — visible WITHOUT logging in and with no redirects. The SPA roots fail
+# all of that (an empty JS shell), so this is a server-rendered brand page.
+# Set the consent screen's home page to https://www.surpluslayer.com/about.
+_APP_HOME_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>surplus — your relationships, worked for you</title>
+<meta name="description" content="surplus is a relationship manager that organizes the people you know, drafts your outreach, and keeps follow-ups on track.">
+<style>
+ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+ max-width:760px;margin:48px auto;padding:0 20px;color:#1b1e22;line-height:1.65}
+ header{display:flex;align-items:center;gap:14px;margin-bottom:8px}
+ header img{width:56px;height:56px}
+ h1{font-weight:800;letter-spacing:-.03em;font-size:34px;margin:0}
+ .tag{color:#5b616a;font-size:18px;margin:4px 0 28px}
+ h2{margin-top:30px;font-size:19px} ul{padding-left:22px}
+ li{margin:6px 0} a{color:#2f6df6}
+ .card{background:#f4f5f7;border:1px solid #e6e8eb;border-radius:12px;padding:18px 20px;margin:18px 0}
+ footer{margin-top:40px;padding-top:16px;border-top:1px solid #e6e8eb;font-size:14px;color:#5b616a}
+ footer a{margin-right:16px}
+</style></head><body>
+<header>
+  <img src="/surplus-logo.png" alt="surplus logo">
+  <h1>surplus</h1>
+</header>
+<p class="tag">Your relationships, worked for you.</p>
+
+<p>surplus is a relationship manager for people whose work runs on
+relationships. It organizes everyone you know into a living "book," keeps
+track of who needs attention, drafts your outreach and follow-ups for you,
+and helps you schedule time with the people who matter — so no relationship
+goes cold by accident.</p>
+
+<h2>What surplus does</h2>
+<ul>
+<li><b>Your book.</b> The people you meet — captured from LinkedIn, imported
+from your contacts, or added by hand — organized with their context: who they
+are, how you met, and where the relationship stands.</li>
+<li><b>Drafted outreach.</b> surplus writes personalized connection notes and
+follow-up messages grounded in your real history with each person; you review
+and send.</li>
+<li><b>Follow-ups on autopilot.</b> A daily view of who needs attention, with
+reminders and scheduling so you keep momentum without keeping lists.</li>
+</ul>
+
+<div class="card">
+<h2 style="margin-top:0">How surplus uses your Google data</h2>
+<p>If you sign in with Google, surplus asks only for your basic profile
+(name and email) to create your account. Separately — and only when you choose
+to connect them — surplus requests:</p>
+<ul>
+<li><b>Google Calendar (calendar.events):</b> to book the meetings you ask
+surplus to schedule and reflect them in your relationship timeline.</li>
+<li><b>Google Contacts (read-only):</b> to import your address book into your
+book so surplus can help you keep up with those people.</li>
+</ul>
+<p>Your data is used only to provide these features — never sold, never used
+for advertising. Full details in the
+<a href="https://event.surpluslayer.com/privacy">privacy policy</a>.</p>
+</div>
+
+<h2>Get started</h2>
+<p>Open the app at <a href="https://event.surpluslayer.com">event.surpluslayer.com</a>
+and sign in with Google, Microsoft, or an email and password.</p>
+
+<footer>
+  <a href="https://event.surpluslayer.com/privacy">Privacy policy</a>
+  <a href="mailto:support@surpluslayer.com">support@surpluslayer.com</a>
+  <span>&copy; 2026 surplus &middot; surpluslayer.com</span>
+</footer>
+</body></html>"""
+
+
+@app.get("/about", include_in_schema=False)
+def app_home():
+    """Server-rendered brand homepage for OAuth verification (see note above)."""
+    return HTMLResponse(_APP_HOME_HTML)
+
+
 # --- Trust / security posture page ------------------------------------------
 # States the REAL data-protection boundary (checklist honesty guardrail): what
 # is encrypted where, per-tenant isolation, and — explicitly — that AI-processed
