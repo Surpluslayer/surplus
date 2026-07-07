@@ -990,47 +990,67 @@ def merge_users_deduping(
     _tables = set(_sa_inspect(db.connection()).get_table_names())
     has = lambda t: t in _tables
 
-    # 1. Partition the source's contacts into overlap (same primary_identity_key
-    #    already on the survivor) vs unique (only the source has this person).
-    dst_keys = {
-        row[1]: row[0] for row in ex(
-            "SELECT id, primary_identity_key FROM contacts "
-            "WHERE user_id = :dst AND primary_identity_key IS NOT NULL").fetchall()
-    }
-    overlaps: list[tuple[int, int]] = []   # (survivor_contact_id, dup_contact_id)
-    for cid, key in ex("SELECT id, primary_identity_key FROM contacts "
-                       "WHERE user_id = :src").fetchall():
-        if key and key in dst_keys:
-            overlaps.append((dst_keys[key], cid))
+    # 1. Count the overlap (same primary_identity_key on both) vs unique split for
+    #    the report. The actual moves below are SET-BASED (one statement each,
+    #    independent of contact count) so a 500-contact account merges in ~10
+    #    statements instead of thousands -- fast enough to run inside one request.
+    overlap_n = ex(
+        "SELECT COUNT(*) FROM contacts WHERE user_id = :src AND primary_identity_key IN "
+        "(SELECT primary_identity_key FROM contacts WHERE user_id = :dst "
+        " AND primary_identity_key IS NOT NULL)").scalar() or 0
 
-    # 2. Overlap: fold each dup contact into the survivor's -- move its child rows
-    #    (deduping facts by (key,dedup_key) and identities by (kind,value)), union
-    #    the survivor's NULL scalars from the dup, then delete the dup contact.
-    for surv_cid, dup_cid in overlaps:
-        ex("UPDATE relationship_interactions SET contact_id = :s WHERE contact_id = :d",
-           s=surv_cid, d=dup_cid)
-        ex("UPDATE outgoing_messages SET contact_id = :s, user_id = :dst WHERE contact_id = :d",
-           s=surv_cid, d=dup_cid)
-        if has("prospects"):
-            ex("UPDATE prospects SET contact_id = :s WHERE contact_id = :d",
-               s=surv_cid, d=dup_cid)
-        ex("DELETE FROM contact_facts WHERE contact_id = :d AND (key, dedup_key) IN "
-           "(SELECT key, dedup_key FROM contact_facts WHERE contact_id = :s)",
-           s=surv_cid, d=dup_cid)
-        ex("UPDATE contact_facts SET contact_id = :s, user_id = :dst WHERE contact_id = :d",
-           s=surv_cid, d=dup_cid)
-        ex("DELETE FROM contact_identities WHERE contact_id = :d AND (kind, value) IN "
-           "(SELECT kind, value FROM contact_identities WHERE contact_id = :s)",
-           s=surv_cid, d=dup_cid)
-        ex("UPDATE contact_identities SET contact_id = :s, user_id = :dst, "
-           "is_primary = FALSE WHERE contact_id = :d", s=surv_cid, d=dup_cid)
-        ex("UPDATE contacts SET "
-           "  name = COALESCE(name, (SELECT name FROM contacts WHERE id = :d)), "
-           "  linkedin_url = COALESCE(linkedin_url, (SELECT linkedin_url FROM contacts WHERE id = :d)), "
-           "  linkedin_public_id = COALESCE(linkedin_public_id, (SELECT linkedin_public_id FROM contacts WHERE id = :d)), "
-           "  headline = COALESCE(headline, (SELECT headline FROM contacts WHERE id = :d)) "
-           "WHERE id = :s", s=surv_cid, d=dup_cid)
-        ex("DELETE FROM contacts WHERE id = :d", d=dup_cid)
+    # Reusable fragments: OV = the source's overlapping contacts; SURV(x) = the
+    # survivor contact that shares x's identity key. Correlated subqueries so it
+    # is portable across Postgres (prod) and SQLite (tests).
+    OV = ("SELECT id FROM contacts WHERE user_id = :src AND primary_identity_key IN "
+          "(SELECT primary_identity_key FROM contacts WHERE user_id = :dst "
+          " AND primary_identity_key IS NOT NULL)")
+    SURV = ("(SELECT d.id FROM contacts d, contacts s "
+            " WHERE s.id = {tbl}.contact_id AND s.user_id = :src "
+            "   AND d.user_id = :dst AND d.primary_identity_key = s.primary_identity_key)")
+
+    # 2. Overlap: fold the dup contacts into the survivors' -- move child rows to
+    #    the matching survivor contact, deduping facts (key,dedup_key) and
+    #    identities (kind,value), union NULL scalars, then delete the dup contacts.
+    ex(f"UPDATE relationship_interactions SET contact_id = {SURV.format(tbl='relationship_interactions')} "
+       f"WHERE contact_id IN ({OV})")
+    ex(f"UPDATE outgoing_messages SET user_id = :dst, contact_id = {SURV.format(tbl='outgoing_messages')} "
+       f"WHERE contact_id IN ({OV})")
+    if has("prospects"):
+        ex(f"UPDATE prospects SET contact_id = {SURV.format(tbl='prospects')} "
+           f"WHERE contact_id IN ({OV})")
+    if has("host_person_links"):
+        ex(f"UPDATE host_person_links SET contact_id = {SURV.format(tbl='host_person_links')} "
+           f"WHERE contact_id IN ({OV})")
+    # facts: drop the dup's that collide with one already on the survivor, move rest
+    ex(f"DELETE FROM contact_facts WHERE contact_id IN ({OV}) AND EXISTS "
+       f"(SELECT 1 FROM contact_facts g, contacts s, contacts d "
+       f" WHERE s.id = contact_facts.contact_id AND s.user_id = :src "
+       f"   AND d.user_id = :dst AND d.primary_identity_key = s.primary_identity_key "
+       f"   AND g.contact_id = d.id AND g.key = contact_facts.key "
+       f"   AND g.dedup_key = contact_facts.dedup_key)")
+    ex(f"UPDATE contact_facts SET user_id = :dst, contact_id = {SURV.format(tbl='contact_facts')} "
+       f"WHERE contact_id IN ({OV})")
+    # identities: same dedup on (kind, value)
+    ex(f"DELETE FROM contact_identities WHERE contact_id IN ({OV}) AND EXISTS "
+       f"(SELECT 1 FROM contact_identities g, contacts s, contacts d "
+       f" WHERE s.id = contact_identities.contact_id AND s.user_id = :src "
+       f"   AND d.user_id = :dst AND d.primary_identity_key = s.primary_identity_key "
+       f"   AND g.contact_id = d.id AND g.kind = contact_identities.kind "
+       f"   AND g.value = contact_identities.value)")
+    ex(f"UPDATE contact_identities SET user_id = :dst, is_primary = FALSE, "
+       f"contact_id = {SURV.format(tbl='contact_identities')} WHERE contact_id IN ({OV})")
+    # scalar union onto each survivor from its matching dup
+    ex("UPDATE contacts SET "
+       "  name = COALESCE(name, (SELECT s.name FROM contacts s WHERE s.user_id = :src "
+       "    AND s.primary_identity_key = contacts.primary_identity_key)), "
+       "  linkedin_url = COALESCE(linkedin_url, (SELECT s.linkedin_url FROM contacts s WHERE s.user_id = :src "
+       "    AND s.primary_identity_key = contacts.primary_identity_key)), "
+       "  headline = COALESCE(headline, (SELECT s.headline FROM contacts s WHERE s.user_id = :src "
+       "    AND s.primary_identity_key = contacts.primary_identity_key)) "
+       "WHERE user_id = :dst AND primary_identity_key IN "
+       "  (SELECT primary_identity_key FROM contacts WHERE user_id = :src)")
+    ex(f"DELETE FROM contacts WHERE id IN ({OV})")
 
     # 3. Unique remainder: every contact still under the source is now a person
     #    the survivor lacks -- re-point them (and their child rows) to the
@@ -1090,7 +1110,7 @@ def merge_users_deduping(
         "dry_run": body.dry_run,
         "from_id": src_id,
         "to_id": dst_id,
-        "contacts_merged": len(overlaps),
+        "contacts_merged": int(overlap_n),
         "contacts_reassigned": int(reassigned),
         "billing_or_keys_filled": filled,
         "before": before,
