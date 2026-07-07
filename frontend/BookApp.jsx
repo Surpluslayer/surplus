@@ -1335,7 +1335,7 @@ function AddScreen({ user, onAccount, onAdded }) {
 
 // Match the relationship-agent chat's suggested "bubbles" (event-host framing).
 const CHIPS = ["Reach out to my sales prospects",
-               "Who do I know at Cursor?",
+               "Who do I know at a company I'm targeting?",
                "2nd degree founders in NYC"];
 
 function AskBar({ variant, onOpen, onDraft }) {
