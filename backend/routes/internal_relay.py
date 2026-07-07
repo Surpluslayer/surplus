@@ -23,6 +23,7 @@ SECURITY
     - Host-agnostic: mounted on every domain the service serves.
 """
 from __future__ import annotations
+import base64 as _b64
 import hmac
 import json as _json
 import os
@@ -151,3 +152,51 @@ async def verify_email(request: Request) -> Response:
             results.append({"email": email, "verdict": verdict, "method": method})
 
     return Response(content=_json.dumps({"results": results}), media_type="application/json")
+
+
+# ── Trigger the autonomous send-campaign workflow (no gh / repo-scope on caller) ─
+# The caller (skill/sandbox) POSTs an approved batch here with only the relay
+# token; Railway dispatches the GitHub Actions workflow using its own GitHub
+# token (GITHUB_DISPATCH_TOKEN). So no caller ever needs `gh` or GitHub access.
+_DISPATCH_REPO = os.environ.get("SEND_CAMPAIGN_REPO", "Surpluslayer/gtm_machine")
+_DISPATCH_WORKFLOW = os.environ.get("SEND_CAMPAIGN_WORKFLOW", "send-campaign.yml")
+
+
+@router.post("/trigger-send")
+async def trigger_send(request: Request) -> Response:
+    _check_token(request)
+    gh_token = (os.environ.get("GITHUB_DISPATCH_TOKEN") or "").strip()
+    if not gh_token:
+        raise HTTPException(status_code=503, detail="GITHUB_DISPATCH_TOKEN not configured on server")
+    try:
+        data = _json.loads((await request.body()) or b"{}")
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+    recipients = data.get("recipients")
+    from_account = (data.get("from_account_id") or "").strip()
+    if not recipients or not from_account:
+        raise HTTPException(status_code=400, detail="need {'recipients':[...], 'from_account_id':'...'}")
+    b64 = _b64.b64encode(_json.dumps(recipients).encode()).decode()
+    inputs = {
+        "recipients_b64": b64,
+        "from_account_id": from_account,
+        "cc": (data.get("cc") or "").strip(),
+        "dry_run": "true" if data.get("dry_run") else "false",
+    }
+    if data.get("subject"):
+        inputs["subject"] = data["subject"]
+    url = (f"https://api.github.com/repos/{_DISPATCH_REPO}/actions/"
+           f"workflows/{_DISPATCH_WORKFLOW}/dispatches")
+    headers = {"Authorization": f"Bearer {gh_token}", "Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28"}
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, headers=headers,
+                                     json={"ref": "main", "inputs": inputs})
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub dispatch failed: {exc}")
+    if resp.status_code not in (204, 201, 200):
+        raise HTTPException(status_code=502, detail=f"GitHub dispatch {resp.status_code}: {resp.text[:200]}")
+    return Response(content=_json.dumps({"ok": True, "dispatched": len(recipients),
+                                         "repo": _DISPATCH_REPO, "workflow": _DISPATCH_WORKFLOW}),
+                    media_type="application/json")
