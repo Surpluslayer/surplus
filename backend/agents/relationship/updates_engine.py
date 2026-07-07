@@ -60,10 +60,14 @@ def due_contacts(db, *, user_id: int | None = None, limit: int = 40) -> list:
     q = db.query(models.Contact).filter(models.Contact.name.isnot(None))
     if user_id is not None:
         q = q.filter(models.Contact.user_id == user_id)
-    # ⭐ starred first, then oldest-checked first (never-checked NULLs are most
-    # due) — so when a run is capped by `limit` the people you care about are
-    # never starved. _tier_days() then checks vip contacts far more often.
-    q = q.order_by(models.Contact.vip.desc(), models.Contact.watched_at.asc())
+    # ⭐ starred first, then never-checked (watched_at NULL) ahead of oldest-
+    # checked — so a fresh import's brand-new contacts are the FIRST to get an
+    # update pull, not starved behind re-checks of already-seen people. Postgres
+    # sorts NULLs last on a plain ASC, which silently inverted this; nullsfirst()
+    # makes the ordering match the intent. _tier_days() then re-checks vip
+    # contacts far more often once everyone has a baseline.
+    q = q.order_by(models.Contact.vip.desc(),
+                   models.Contact.watched_at.asc().nullsfirst())
     return [c for c in q.limit(limit * 3).all() if _is_due(c)][:limit]
 
 
