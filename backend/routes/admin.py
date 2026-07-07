@@ -935,6 +935,174 @@ def merge_users(
     }
 
 
+@router.post("/merge-users-deduping")
+def merge_users_deduping(
+    body: MergeUsersBody,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """Merge a FULL duplicate account (`from_user_id`) into the survivor
+    (`to_user_id`), DEDUPING contacts by identity key instead of blindly
+    re-pointing them.
+
+    Unlike /admin/merge-users (built for near-empty orphans), this handles two
+    data-rich accounts for the SAME person: where both own the same contact
+    (same primary_identity_key), the source contact is folded into the
+    survivor's via identity.merge_contacts (facts / identities / messages /
+    interactions moved + deduped, scalars unioned); where only the source has
+    the person, the contact is re-pointed to the survivor. Contact-owned child
+    rows (contact_facts / contact_identities / outgoing_messages) that end up on
+    a survivor contact are healed to user_id=survivor so they are NOT
+    cascade-deleted with the source. Then user-level rows (events / sessions /
+    interactions / pending outreach / host links / jobs) re-point, billing +
+    dedup keys gap-fill forward, and the source user is deleted.
+
+    dry_run=True (DEFAULT) runs the ENTIRE merge in the request's transaction
+    and ROLLS BACK -- so any unique-constraint violation surfaces here without
+    persisting, and the returned before/after counts are exactly what a real
+    run would produce. dry_run=False commits.
+    """
+    from sqlalchemy import text, inspect as _sa_inspect
+
+    if body.from_user_id == body.to_user_id:
+        raise HTTPException(400, "from_user_id and to_user_id are identical")
+    src = db.get(models.User, body.from_user_id)
+    dst = db.get(models.User, body.to_user_id)
+    if src is None or dst is None:
+        raise HTTPException(404, "Not Found")
+    src_id, dst_id = src.id, dst.id
+
+    before = {"from": _user_summary(db, src), "to": _user_summary(db, dst)}
+
+    # Everything below is RAW SQL on purpose: mixing ORM object mutation +
+    # merge_contacts + core bulk updates in one unit-of-work leaves stale
+    # snapshots that a later flush writes back (resurrecting merged contacts
+    # under the source). Raw SQL has no unit-of-work, so the result is
+    # deterministic; the request transaction still gives us atomic dry-run.
+    def ex(sql: str, **p):
+        return db.execute(text(sql), {"src": src_id, "dst": dst_id, **p})
+
+    # Resolve optional-table presence ONCE, against the session's OWN connection.
+    # inspect(db.bind) would check a pooled connection out and back, and on a
+    # single-connection pool the reset-on-return ROLLS BACK our in-flight
+    # transaction mid-merge. inspect(db.connection()) reuses the active
+    # transaction's connection, so it can't disturb it.
+    _tables = set(_sa_inspect(db.connection()).get_table_names())
+    has = lambda t: t in _tables
+
+    # 1. Partition the source's contacts into overlap (same primary_identity_key
+    #    already on the survivor) vs unique (only the source has this person).
+    dst_keys = {
+        row[1]: row[0] for row in ex(
+            "SELECT id, primary_identity_key FROM contacts "
+            "WHERE user_id = :dst AND primary_identity_key IS NOT NULL").fetchall()
+    }
+    overlaps: list[tuple[int, int]] = []   # (survivor_contact_id, dup_contact_id)
+    for cid, key in ex("SELECT id, primary_identity_key FROM contacts "
+                       "WHERE user_id = :src").fetchall():
+        if key and key in dst_keys:
+            overlaps.append((dst_keys[key], cid))
+
+    # 2. Overlap: fold each dup contact into the survivor's -- move its child rows
+    #    (deduping facts by (key,dedup_key) and identities by (kind,value)), union
+    #    the survivor's NULL scalars from the dup, then delete the dup contact.
+    for surv_cid, dup_cid in overlaps:
+        ex("UPDATE relationship_interactions SET contact_id = :s WHERE contact_id = :d",
+           s=surv_cid, d=dup_cid)
+        ex("UPDATE outgoing_messages SET contact_id = :s, user_id = :dst WHERE contact_id = :d",
+           s=surv_cid, d=dup_cid)
+        if has("prospects"):
+            ex("UPDATE prospects SET contact_id = :s WHERE contact_id = :d",
+               s=surv_cid, d=dup_cid)
+        ex("DELETE FROM contact_facts WHERE contact_id = :d AND (key, dedup_key) IN "
+           "(SELECT key, dedup_key FROM contact_facts WHERE contact_id = :s)",
+           s=surv_cid, d=dup_cid)
+        ex("UPDATE contact_facts SET contact_id = :s, user_id = :dst WHERE contact_id = :d",
+           s=surv_cid, d=dup_cid)
+        ex("DELETE FROM contact_identities WHERE contact_id = :d AND (kind, value) IN "
+           "(SELECT kind, value FROM contact_identities WHERE contact_id = :s)",
+           s=surv_cid, d=dup_cid)
+        ex("UPDATE contact_identities SET contact_id = :s, user_id = :dst, "
+           "is_primary = FALSE WHERE contact_id = :d", s=surv_cid, d=dup_cid)
+        ex("UPDATE contacts SET "
+           "  name = COALESCE(name, (SELECT name FROM contacts WHERE id = :d)), "
+           "  linkedin_url = COALESCE(linkedin_url, (SELECT linkedin_url FROM contacts WHERE id = :d)), "
+           "  linkedin_public_id = COALESCE(linkedin_public_id, (SELECT linkedin_public_id FROM contacts WHERE id = :d)), "
+           "  headline = COALESCE(headline, (SELECT headline FROM contacts WHERE id = :d)) "
+           "WHERE id = :s", s=surv_cid, d=dup_cid)
+        ex("DELETE FROM contacts WHERE id = :d", d=dup_cid)
+
+    # 3. Unique remainder: every contact still under the source is now a person
+    #    the survivor lacks -- re-point them (and their child rows) to the
+    #    survivor. Drop identities that would collide with one the survivor
+    #    already owns (unique on (kind, value, user_id)).
+    reassigned = ex("SELECT COUNT(*) FROM contacts WHERE user_id = :src").scalar() or 0
+    ex("DELETE FROM contact_identities WHERE user_id = :src AND (kind, value) IN "
+       "(SELECT kind, value FROM contact_identities WHERE user_id = :dst)")
+    ex("UPDATE contact_facts SET user_id = :dst WHERE user_id = :src")
+    ex("UPDATE contact_identities SET user_id = :dst WHERE user_id = :src")
+    ex("UPDATE outgoing_messages SET user_id = :dst WHERE user_id = :src")
+    ex("UPDATE contacts SET user_id = :dst WHERE user_id = :src")
+
+    # 4. User-level rows: preserve by re-pointing to the survivor. (Rows not moved
+    #    -- connected_accounts / email_accounts / jobs / account_memberships /
+    #    team_* -- cascade-delete with the source, which is correct.)
+    ex("UPDATE events SET user_id = :dst WHERE user_id = :src")
+    ex("UPDATE sessions SET user_id = :dst WHERE user_id = :src")
+    ex("UPDATE relationship_interactions SET actor_user_id = :dst WHERE actor_user_id = :src")
+    if has("auth_states"):
+        ex("UPDATE auth_states SET user_id = :dst WHERE user_id = :src")
+    if has("email_pending_outreach"):
+        ex("UPDATE email_pending_outreach SET user_id = :dst WHERE user_id = :src")
+    if has("host_person_links"):
+        ex("UPDATE host_person_links SET host_user_id = :dst WHERE host_user_id = :src")
+
+    # 5. Billing + dedup-key gap-fill onto the survivor (never clobber a value the
+    #    survivor already has).
+    filled: list[str] = []
+    su = db.execute(text("SELECT paid_at, stripe_customer_id, linkedin_provider_id, "
+                         "linkedin_public_id, email FROM users WHERE id = :src"),
+                    {"src": src_id}).mappings().first()
+    du = db.execute(text("SELECT paid_at, stripe_customer_id, linkedin_provider_id, "
+                         "linkedin_public_id, email FROM users WHERE id = :dst"),
+                    {"dst": dst_id}).mappings().first()
+    sets, params = [], {"id": dst_id}
+    if du["paid_at"] is None and su["paid_at"] is not None:
+        sets.append("paid_at = :paid_at"); params["paid_at"] = su["paid_at"]; filled.append("paid_at")
+        if du["stripe_customer_id"] is None:
+            sets.append("stripe_customer_id = :scid"); params["scid"] = su["stripe_customer_id"]
+    for col in ("linkedin_provider_id", "linkedin_public_id", "email"):
+        if du[col] is None and su[col] is not None:
+            sets.append(f"{col} = :{col}"); params[col] = su[col]; filled.append(col)
+    if sets:
+        db.execute(text(f"UPDATE users SET {', '.join(sets)} WHERE id = :id"), params)
+
+    # 6. Delete the now-empty source row (DB-level ON DELETE CASCADE clears any
+    #    remaining source-owned children like connected_accounts / jobs).
+    ex("DELETE FROM users WHERE id = :src")
+
+    # Fresh read for the after-summary. expunge_all (not expire_all) DETACHES the
+    # stale ORM snapshots without scheduling a refresh -- expire would try to
+    # reload the raw-deleted source row and raise ObjectDeletedError.
+    db.expunge_all()
+    dst = db.get(models.User, dst_id)
+    result = {
+        "dry_run": body.dry_run,
+        "from_id": src_id,
+        "to_id": dst_id,
+        "contacts_merged": len(overlaps),
+        "contacts_reassigned": int(reassigned),
+        "billing_or_keys_filled": filled,
+        "before": before,
+        "after": _user_summary(db, dst),
+    }
+    if body.dry_run:
+        db.rollback()
+    else:
+        db.commit()
+    return result
+
+
 # ── Gathering : LinkedIn chat sync trigger + prospect->contact backfill ──
 
 
