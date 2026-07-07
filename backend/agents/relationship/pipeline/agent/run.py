@@ -517,12 +517,27 @@ def _context_brief(sel: dict, ctx: dict) -> dict:
         natural_action = (sel.get("angle") or "").strip() or \
             "decide from the thread whether any touch is warranted"
 
+    # Capture provenance: did the host ACTUALLY meet this person, or were they
+    # merely sourced onto an event list? (contact_summary.met_in_person is set
+    # only by the in-person capture flow, so it is trustworthy.)
+    met_in_person = bool(summary.get("met_in_person"))
+    origin = (summary.get("origin") or "").strip()
+    met_event = (summary.get("met_event") or "").strip()
+    capture_note = (summary.get("capture_note") or "").strip()
+
     # safe_facts_to_use --------------------------------------------------------
     safe: list[str] = []
     if name:
         safe.append(f"name: {name}")
     if company:
         safe.append(f"company: {company}")
+    if met_in_person:
+        met_on = summary.get("met_on")
+        when = f" on {met_on:%b %d, %Y}" if hasattr(met_on, "strftime") else ""
+        where = f" at {met_event}" if met_event else ""
+        safe.append(f"the host met them in person{where}{when}")
+        if capture_note:
+            safe.append(f"host's capture note from meeting them: {capture_note}")
     if events:
         labels = [str(e.get("name") or e.get("title") or "").strip()
                   for e in events if isinstance(e, dict)]
@@ -543,6 +558,12 @@ def _context_brief(sel: dict, ctx: dict) -> dict:
         "update that is NOT visible in prior_messages",
         "warmth, interest, or intent the thread does not actually show",
     ]
+    if not met_in_person and origin == "sourced":
+        met_ref = f" ('{summary.get('met_at')}')" if summary.get("met_at") else ""
+        avoid.append(
+            "having met: this person was SOURCED onto an event list"
+            f"{met_ref}; the host has never actually met them -- never write "
+            "'great meeting you' or imply a prior conversation")
     angle = (sel.get("angle") or "").strip()
     if angle:
         avoid.append(f"the triage angle is a hint to verify, not a confirmed fact: {angle}")
@@ -554,6 +575,9 @@ def _context_brief(sel: dict, ctx: dict) -> dict:
     risks: list[str] = []
     if not thread:
         risks.append("no prior thread on file; do not fabricate shared history")
+        if not met_in_person and origin == "sourced":
+            risks.append("never met AND never messaged: this is a COLD first "
+                         "touch and must read as one (introduce the host)")
     if sig["awaiting_contact_reply"]:
         risks.append("the contact has the next natural move; the host may owe nothing")
         if (age or 0) < 3:
@@ -1105,6 +1129,13 @@ def run_relationship_agent_concurrent(
                 "company": s.get("company") or "",
                 "relationship_stage": s.get("relationship_stage"),
                 "n_events": s.get("n_events"),
+                # Provenance: "captured" = the host really met them in person,
+                # "sourced" = on an event list but NEVER met, "conversation" =
+                # known from a real DM thread. Triage must not treat a sourced
+                # stranger like a warm relationship.
+                "origin": s.get("origin"),
+                "met_in_person": bool(s.get("met_in_person")),
+                "capture_note": s.get("capture_note") or "",
                 "is_stale": bool(s.get("relationship_stage") == "stale"),
                 "days_since_last_touch": _days_since(s.get("last_touch_at")),
                 "has_next_step": bool(open_step.strip()),

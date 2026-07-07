@@ -22,6 +22,7 @@ functions also work against lightweight stand-ins in tests.
 """
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -467,6 +468,56 @@ def fetch_interactions(db, prospect) -> list:
         return []
 
 
+_ROLE_COMPANY_RE = re.compile(r"(?:@|\bat\b)\s*([^@,|]+)", re.I)
+# Placeholder strings that mean "we don't actually know" -- never worth storing
+# as a company (they poison update searches and identity corroboration).
+_COMPANY_PLACEHOLDERS = {"", "unknown", "n/a", "na", "none", "-", "?"}
+
+
+def prospect_company(prospect: Any) -> Optional[str]:
+    """The prospect's employer, placeholder-free. Falls back to parsing the
+    capture-form role string ("Engineer @ AutoComplete", "CTO at Scritch") --
+    quick captures routinely put the company THERE and leave company='Unknown'."""
+    company = _clean(getattr(prospect, "company", None))
+    if company and company.lower() not in _COMPANY_PLACEHOLDERS:
+        return company
+    m = _ROLE_COMPANY_RE.search(_clean(getattr(prospect, "role", None)) or "")
+    if m:
+        parsed = m.group(1).strip().rstrip(".")
+        if parsed and parsed.lower() not in _COMPANY_PLACEHOLDERS:
+            return parsed
+    return None
+
+
+def backfill_contact_companies(db, user_id: Optional[int] = None,
+                               dry_run: bool = True) -> dict:
+    """Repair contacts whose company is a placeholder ('Unknown' etc.) using
+    their linked prospects (real company field, or one parsed from the capture
+    role string). The company field is what every update-search leg and the
+    identity gate key off, so a placeholder here means weak coverage forever.
+    Bounded to contacts that HAVE a linked prospect; dry_run reports only."""
+    from .... import models
+    q = db.query(models.Contact)
+    if user_id is not None:
+        q = q.filter(models.Contact.user_id == user_id)
+    fixed: list[dict] = []
+    for contact in q.all():
+        current = (_clean(contact.company) or "").lower()
+        if current and current not in _COMPANY_PLACEHOLDERS:
+            continue
+        for p in (getattr(contact, "prospects", None) or []):
+            company = prospect_company(p)
+            if company:
+                fixed.append({"contact_id": contact.id, "name": contact.name,
+                              "company": company})
+                if not dry_run:
+                    contact.company = company
+                break
+    if not dry_run and fixed:
+        db.commit()
+    return {"dry_run": dry_run, "fixed": len(fixed), "contacts": fixed[:50]}
+
+
 def link_contact(db, prospect, owner_user_id: int):
     """Lazily find-or-create the Contact for a Prospect and link it.
 
@@ -509,7 +560,7 @@ def link_contact(db, prospect, owner_user_id: int):
                 name=_clean(getattr(prospect, "name", None)),
                 linkedin_url=_clean(getattr(prospect, "linkedin_url", None)),
                 linkedin_public_id=_clean(getattr(prospect, "linkedin_provider_id", None)),
-                company=_clean(getattr(prospect, "company", None)),
+                company=prospect_company(prospect),
                 vip=bool(getattr(prospect, "vip", False)),  # carry the ⭐ to the spine
             )
             db.add(contact)
@@ -911,6 +962,12 @@ def contact_events(db, contact, interactions_by_prospect=None) -> list[dict]:
             "event_city": _clean(getattr(event, "city", None)),
             "relationship_stage": summary["relationship_stage"],
             "captured_at": _as_aware(getattr(p, "captured_at", None)),
+            # Capture provenance: HOW this person entered the event. scan/text =
+            # a real in-person capture; captured_at None = sourced/imported (the
+            # host has never met them). The note is the shareable fun-fact from
+            # the capture form.
+            "capture_method": _clean(getattr(p, "source", None)),
+            "capture_note": _clean(getattr(p, "note", None)),
             "last_touch_at": summary["last_touch_at"],
             "status": _clean(getattr(p, "status", None)),
             "connection_status": _clean(getattr(p, "connection_status", None)),
@@ -945,6 +1002,10 @@ def contact_summary(db, contact, interactions_by_prospect=None,
 
     stages = [e["relationship_stage"] for e in events]
     first_touches = [e["captured_at"] for e in events if e["captured_at"]]
+    # In-person captures, EARLIEST first: the first real meeting is the one the
+    # relationship's "we met at ..." grounding should reference.
+    captured = sorted((e for e in events if e["captured_at"]),
+                      key=lambda e: e["captured_at"])
     last_touches = [e["last_touch_at"] for e in events if e["last_touch_at"]]
     next_steps = [e["next_step"] for e in events if e["next_step"]]
     contact_types = [e["contact_type"] for e in events if e["contact_type"]]
@@ -977,7 +1038,23 @@ def contact_summary(db, contact, interactions_by_prospect=None,
         "is_connection": connected,
         "n_events": len(events),
         # Where we FIRST met them (events are newest-first) : the Book's met_at.
+        # CAVEAT: this is the event we KNOW them from, not proof of a meeting --
+        # a sourced/imported prospect carries an event but was never captured.
+        # `met_in_person` below is the honest discriminator.
         "met_at": (events[-1]["event_title"] if events else None),
+        # Capture provenance rollup. captured_at is only ever written by the
+        # in-person capture flow, so its presence == the host actually met them.
+        "met_in_person": bool(captured),
+        "met_event": (captured[0]["event_title"] if captured else None),
+        "met_on": (captured[0]["captured_at"] if captured else None),
+        "capture_method": (captured[0]["capture_method"] if captured else None),
+        "capture_note": next((e["capture_note"] for e in captured
+                              if e["capture_note"]), None),
+        # "captured" = met in person; "sourced" = on an event list but never
+        # met; "conversation" = entered the Book from a real DM thread (no
+        # per-event prospect at all).
+        "origin": ("captured" if captured
+                   else ("sourced" if events else "conversation")),
         "first_met_at": min(first_touches) if first_touches else None,
         "last_touch_at": max(last_touches) if last_touches else None,
         "relationship_stage": _strongest_stage(stages),

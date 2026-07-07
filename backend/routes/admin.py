@@ -311,6 +311,23 @@ def run_followups(
     return dispatch_due_followups(db)
 
 
+@router.post("/backfill-contact-companies", status_code=200)
+def backfill_contact_companies(
+    dry_run: bool = True,
+    user_id: int | None = None,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Repair contacts whose company is a placeholder ('Unknown') from their
+    linked prospects (real company, or one parsed from the capture role string
+    like 'Engineer @ AutoComplete'). Update-search precision and the same-name
+    identity gate both key off contact.company, so placeholders mean weak
+    coverage. `dry_run=true` (default) only reports what WOULD change."""
+    from ..agents.relationship.spine.relationships import (
+        backfill_contact_companies as _backfill)
+    return _backfill(db, user_id=user_id, dry_run=dry_run)
+
+
 @router.post("/run-retention-purge", status_code=200)
 def run_retention_purge(
     dry_run: bool = True,
