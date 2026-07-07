@@ -24,6 +24,7 @@ SECURITY
 """
 from __future__ import annotations
 import hmac
+import json as _json
 import os
 
 import httpx
@@ -103,3 +104,50 @@ async def relay_exa(path: str, request: Request) -> Response:
     body = await request.body()
     return await _forward(request.method, f"https://api.exa.ai/{endpoint}",
                           dict(request.query_params), body, headers)
+
+
+# ── Email verification (no key needed on the caller) ─────────────────────────
+# Microsoft/O365 domains verify via GetCredentialType over HTTPS (works from
+# Railway; more reliable than SMTP for O365, incl. catch-all/Mimecast). Non-MS
+# domains (Google, etc.) can't be checked here (Railway blocks outbound :25), so
+# they're flagged "unverified_non_microsoft" — the caller can SMTP-verify those
+# from an open-egress machine or the GH Actions verifier. One relay token unlocks
+# this, so a sandbox needs no separate GitHub PAT for the O365 majority.
+_IFEXISTS = {0: "valid", 1: "invalid", 5: "valid", 6: "valid"}
+
+
+@router.post("/verify-email")
+async def verify_email(request: Request) -> Response:
+    _check_token(request)
+    try:
+        data = _json.loads((await request.body()) or b"{}")
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+    emails = data.get("emails") or ([data["email"]] if data.get("email") else [])
+    if not isinstance(emails, list) or not emails:
+        raise HTTPException(status_code=400, detail="provide {'emails': [...]} or {'email': '...'}")
+
+    results = []
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for email in emails[:200]:
+            dom = str(email).rsplit("@", 1)[-1].strip().lower()
+            verdict, method = "unknown", "none"
+            try:
+                realm = await client.get(
+                    f"https://login.microsoftonline.com/getuserrealm.srf?login=user@{dom}&json=1")
+                ns = realm.json().get("NameSpaceType") if realm.status_code == 200 else None
+                if ns in ("Managed", "Federated"):
+                    cred = await client.post(
+                        "https://login.microsoftonline.com/common/GetCredentialType",
+                        json={"Username": email},
+                        headers={"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"})
+                    ifx = cred.json().get("IfExistsResult")
+                    verdict = _IFEXISTS.get(ifx, f"unknown({ifx})")
+                    method = f"o365/{ns}"
+                else:
+                    verdict, method = "unverified_non_microsoft", "skip"
+            except Exception as exc:  # noqa: BLE001 : best-effort per address
+                verdict, method = f"err_{type(exc).__name__}", "error"
+            results.append({"email": email, "verdict": verdict, "method": method})
+
+    return Response(content=_json.dumps({"results": results}), media_type="application/json")
