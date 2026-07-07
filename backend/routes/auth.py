@@ -99,27 +99,17 @@ def _seed_conversations_and_voice(db, user_id: int) -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"[autoimport] user={user_id} failed: {type(exc).__name__}: {exc}",
               flush=True)
-    # Learn the host's voice from their own sent messages, in its own session.
-    # Same ban-safe own-account read surface; idempotent; never blocks the connect.
-    from ..db import SessionLocal
-    vdb = SessionLocal()
-    try:
-        from ..agents.live_enrich import sync_host_voice_on_connect
-        vres = sync_host_voice_on_connect(vdb, user_id)
-        print(f"[voicesync] user={user_id} {vres}", flush=True)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[voicesync] user={user_id} failed: {type(exc).__name__}: {exc}",
-              flush=True)
-    finally:
-        vdb.close()
     # Pull LinkedIn "what's new" (job changes / posts / profile updates) for the
-    # people we just seeded, so the Today feed shows real updates the moment they
-    # connect instead of waiting up to 6h for the scheduled gathering sweep to
-    # reach this user. This is the per-user, one-shot analog of /book/run-updates:
-    # it runs directly on the freshly-seeded contacts (they exist by now), bypasses
-    # the interval + 25-user cap + claim guard entirely, and is best-effort so a
+    # people we just seeded FIRST -- before voice -- so the Today feed shows real
+    # updates the moment they connect instead of waiting up to 6h for the
+    # scheduled gathering sweep to reach this user. This is the per-user, one-shot
+    # analog of /book/run-updates: it runs directly on the freshly-seeded contacts
+    # (they exist by now, watched_at=None -> all immediately due), bypasses the
+    # interval + 25-user cap + claim guard entirely, and is best-effort so a
     # failure never touches the connect. VIP-tiered inside run_sweep, so paid
-    # scraping spend still tracks the contacts that matter.
+    # scraping spend still tracks the contacts that matter. Ordered ahead of the
+    # voice sync so the updates pull is never gated behind voice's network fetch:
+    # this is the latency-critical part of the magic-moment.
     from ..db import SessionLocal as _SessionLocal
     udb = _SessionLocal()
     try:
@@ -131,6 +121,21 @@ def _seed_conversations_and_voice(db, user_id: int) -> None:
               f"{type(exc).__name__}: {exc}", flush=True)
     finally:
         udb.close()
+    # Learn the host's voice from their own sent messages, in its own session.
+    # Same ban-safe own-account read surface; idempotent; never blocks the connect.
+    # Runs LAST: it feeds the drafter, not the Today feed, so it is off the
+    # updates critical path.
+    from ..db import SessionLocal
+    vdb = SessionLocal()
+    try:
+        from ..agents.live_enrich import sync_host_voice_on_connect
+        vres = sync_host_voice_on_connect(vdb, user_id)
+        print(f"[voicesync] user={user_id} {vres}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[voicesync] user={user_id} failed: {type(exc).__name__}: {exc}",
+              flush=True)
+    finally:
+        vdb.close()
 
 
 def _autoimport_conversations(user_id: int) -> None:
