@@ -112,6 +112,25 @@ def _seed_conversations_and_voice(db, user_id: int) -> None:
               flush=True)
     finally:
         vdb.close()
+    # Pull LinkedIn "what's new" (job changes / posts / profile updates) for the
+    # people we just seeded, so the Today feed shows real updates the moment they
+    # connect instead of waiting up to 6h for the scheduled gathering sweep to
+    # reach this user. This is the per-user, one-shot analog of /book/run-updates:
+    # it runs directly on the freshly-seeded contacts (they exist by now), bypasses
+    # the interval + 25-user cap + claim guard entirely, and is best-effort so a
+    # failure never touches the connect. VIP-tiered inside run_sweep, so paid
+    # scraping spend still tracks the contacts that matter.
+    from ..db import SessionLocal as _SessionLocal
+    udb = _SessionLocal()
+    try:
+        from ..agents.relationship.updates_engine import run_sweep
+        ures = run_sweep(udb, user_id=user_id, limit=25)
+        print(f"[autoimport.updates] user={user_id} {ures}", flush=True)
+    except Exception as exc:  # noqa: BLE001 -- updates must never fail the connect
+        print(f"[autoimport.updates] user={user_id} failed: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+    finally:
+        udb.close()
 
 
 def _autoimport_conversations(user_id: int) -> None:
