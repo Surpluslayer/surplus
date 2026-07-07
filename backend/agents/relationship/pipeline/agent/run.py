@@ -32,7 +32,7 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from ...spine import relationships
@@ -1252,6 +1252,42 @@ def run_relationship_agent_concurrent(
     # main thread, never inside the fan-out (the SQLAlchemy session isn't thread-safe).
     from ..... import models as _models
     host_user = db.get(_models.User, user_id)
+
+    # Fresh-scrape the people we are ABOUT to draft for: anyone never checked (or
+    # stale past the window) gets an immediate update check -- Bright Data trigger
+    # (async, lands via webhook for next time) plus the sync web pass (news/Exa/X),
+    # whose activity_update rows land in the timeline BEFORE gather_contact_context
+    # reads it, so this run's drafts ground in fresh reality instead of a stale
+    # name+company row. Bounded (each sync check is seconds of network work) and
+    # fail-soft: a dead search provider must never sink the drafting run.
+    _fresh_days = max(0, int(os.environ.get("AGENT_FRESH_CHECK_DAYS", "3")))
+    _fresh_max = max(0, int(os.environ.get("AGENT_FRESH_CHECK_MAX", "4")))
+    if _fresh_max:
+        from ...updates_engine import scrape_contact as _fresh_check
+
+        def _is_stale(c) -> bool:
+            last = getattr(c, "watched_at", None)
+            if last is None:
+                return True
+            try:
+                age = datetime.now(timezone.utc) - (
+                    last if last.tzinfo else last.replace(tzinfo=timezone.utc))
+                return age >= timedelta(days=_fresh_days)
+            except Exception:  # noqa: BLE001 : unreadable timestamp -> re-check
+                return True
+
+        stale = [by_id[s["contact_id"]] for s in clean
+                 if _is_stale(by_id[s["contact_id"]])][:_fresh_max]
+        for c in stale:
+            t_check = time.monotonic()
+            try:
+                res = _fresh_check(db, c)  # commits internally
+                _trace(f"fresh-check {getattr(c, 'name', c.id)!r} -> "
+                       f"{res.get('mode')} in {time.monotonic()-t_check:.1f}s")
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                _trace(f"fresh-check {getattr(c, 'name', c.id)!r} failed: "
+                       f"{type(exc).__name__}: {exc}")
 
     jobs: list[dict] = []
     for sel in clean:

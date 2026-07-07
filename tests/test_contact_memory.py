@@ -279,8 +279,8 @@ def test_expire_stale_gcs_ancient_oneoff_only(db):
     assert ("flight", "recent") in surviving and ("birthday", "bd") in surviving
 
 
-def test_run_sweep_exa_commits_per_contact(db, monkeypatch):
-    """The Exa fallback must commit per contact so one pooled connection is not
+def test_run_sweep_web_commits_per_contact(db, monkeypatch):
+    """The sync web pass must commit per contact so one pooled connection is not
     held open across the whole (minutes-long, ~200-contact) network loop -- and
     so a mid-loop crash preserves prior contacts' progress. We assert the second
     contact's failure does not roll back the first contact's watched_at write."""
@@ -309,7 +309,7 @@ def test_run_sweep_exa_commits_per_contact(db, monkeypatch):
                       side_effect=fake_find):
         res = updates_engine.run_sweep(db, user_id=u.id, limit=40)
 
-    assert res["mode"] == "exa"
+    assert res["mode"] == "web"
     db.expire_all()
     # First contact committed before the second's crash -> its watched_at stuck.
     assert db.get(models.Contact, c1_id).watched_at is not None

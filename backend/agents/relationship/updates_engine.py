@@ -335,34 +335,50 @@ def _brightdata_enabled() -> bool:
         return False
 
 
+def _web_additive() -> bool:
+    """Whether the sync web pass (news RSS + Exa web + X) runs IN ADDITION to a
+    successful Bright Data trigger. Default on: Bright Data only covers LinkedIn,
+    so without the web pass a BetaKit/TechCrunch raise or an X launch thread is
+    invisible. Set UPDATES_WEB_ADDITIVE=0 to restore the old fallback-only shape."""
+    return (os.environ.get("UPDATES_WEB_ADDITIVE", "1").strip().lower()
+            not in ("0", "false", "no"))
+
+
 def scrape_contact(db, contact) -> dict:
-    """Kick ONE contact's update check now (e.g. right after the host stars them),
-    so close-monitoring/baseline starts immediately instead of at the next sweep.
-    Bright Data primary, Exa fallback; bounded to this one contact; fail-soft."""
+    """Kick ONE contact's update check now (e.g. right after the host stars them,
+    or when the agent is about to draft for them), so the check happens immediately
+    instead of at the next sweep. Bright Data (async, LinkedIn) AND the sync web
+    pass (news/web/X) both run; bounded to this one contact; fail-soft."""
     url = (getattr(contact, "linkedin_url", "") or "").strip()
+    modes: list[str] = []
     if _brightdata_enabled() and url:
         from ...providers import brightdata
         try:
             if brightdata.trigger_updates([url]):
-                contact.watched_at = _now()
-                db.commit()
-                return {"mode": "brightdata", "contact_id": contact.id}
+                modes.append("brightdata")
         except Exception:  # noqa: BLE001
             pass
-    try:
-        for _ in updates_watch.find_updates(db, contact):
-            pass
-        contact.watched_at = _now()
-        db.commit()
-        return {"mode": "exa", "contact_id": contact.id}
-    except Exception as exc:  # noqa: BLE001
-        return {"mode": "failed", "error": f"{type(exc).__name__}: {exc}"}
+    if not modes or _web_additive():
+        try:
+            for _ in updates_watch.find_updates(db, contact):
+                pass
+            modes.append("web")
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            if not modes:
+                return {"mode": "failed",
+                        "error": f"{type(exc).__name__}: {exc}"}
+    contact.watched_at = _now()
+    db.commit()
+    return {"mode": "+".join(modes), "contact_id": contact.id}
 
 
 def run_sweep(db, *, user_id: int | None = None, limit: int = 40) -> dict:
-    """One scheduled pass. Bright Data primary (async -> trigger now, results
-    arrive via webhook), Exa fallback (sync) when Bright Data isn't available.
-    Bounded + fail-soft. Returns a small status dict."""
+    """One scheduled pass. Bright Data (async -> trigger now, results arrive via
+    webhook) AND the sync web pass (news RSS + Exa web + X) both run for the due
+    contacts -- LinkedIn coverage and google-able coverage are different worlds,
+    so neither substitutes for the other (UPDATES_WEB_ADDITIVE=0 restores the old
+    Bright-Data-short-circuits shape). Bounded + fail-soft. Returns a status dict."""
     # Account-level pass FIRST (rollup refresh + aggregate signals like
     # account-cooling): it must run even when no individual contact is due,
     # because account silence is exactly the state where nothing else fires.
@@ -381,27 +397,28 @@ def run_sweep(db, *, user_id: int | None = None, limit: int = 40) -> dict:
         return _record_sweep({"due": 0, "mode": "none",
                               "accounts": accounts_result})
 
+    triggered = 0
     if _brightdata_enabled():
         from ...providers import brightdata
         urls = [c.linkedin_url for c in contacts if (c.linkedin_url or "").strip()]
-        triggered = False
         try:
-            triggered = brightdata.trigger_updates(urls)
+            if brightdata.trigger_updates(urls):
+                triggered = len(urls)
         except Exception as exc:  # noqa: BLE001
-            print(f"  [updates] brightdata trigger failed -> exa fallback: "
+            print(f"  [updates] brightdata trigger failed -> web pass only: "
                   f"{type(exc).__name__}: {exc}", flush=True)
-        if triggered:
-            # Mark as checked; the webhook will emit when the scrape lands.
+        if triggered and not _web_additive():
+            # Old fallback-only shape: mark as checked; the webhook will emit
+            # when the scrape lands.
             for c in contacts:
                 c.watched_at = _now()
             db.commit()
             return _record_sweep({"due": len(contacts), "mode": "brightdata",
-                                  "triggered": len(urls),
+                                  "triggered": triggered,
                                   "accounts": accounts_result})
-        # fall through to Exa if the trigger didn't take
 
-    # --- Exa fallback (synchronous, account-safe) --------------------------
-    # Each contact is an Exa search + an LLM extraction: seconds of network work.
+    # --- web pass (synchronous, account-safe: news RSS + Exa web + X) ------
+    # Each contact is a couple of searches + an LLM extraction: seconds of network work.
     # Over a full run (up to ~200 contacts) that is MINUTES. We must not hold one
     # pooled DB connection open across that whole span -- pool_size is small
     # (5+3 per worker), and a couple of concurrent sweeps that each pin a
@@ -422,10 +439,12 @@ def run_sweep(db, *, user_id: int | None = None, limit: int = 40) -> dict:
             db.commit()
         except Exception as exc:  # noqa: BLE001
             db.rollback()
-            print(f"  [updates] exa contact={c.id} failed: "
+            print(f"  [updates] web contact={c.id} failed: "
                   f"{type(exc).__name__}: {exc}", flush=True)
-    return _record_sweep({"due": len(contacts), "mode": "exa",
-                          "emitted": emitted, "accounts": accounts_result})
+    mode = "brightdata+web" if triggered else "web"
+    return _record_sweep({"due": len(contacts), "mode": mode,
+                          "triggered": triggered, "emitted": emitted,
+                          "accounts": accounts_result})
 
 
 # --- diagnostics (in-memory, per-replica; for the cutover/validation) -------
