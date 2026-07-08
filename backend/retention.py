@@ -193,6 +193,158 @@ def _days(env: str, default: int) -> int:
         return default
 
 
+# ── content retention: summarize-then-expire message bodies ─────────────────
+# The product's hot window is the last KEEP_LAST_N messages per contact (the
+# drafter reads ~5 verbatim; N gives headroom) plus everything newer than the
+# retention window. Older message BODIES are pure risk: the drafter only ever
+# consumes them as the rolling thread_summary ContactFact. So: refresh that
+# summary from the real thread, then blank the aged-out bodies, keeping the
+# metadata skeleton (occurred_at / direction / channel / type) that cadence
+# and health scoring read. Voice is untouched (users.voice_examples is
+# derived, refreshed live from the provider — never from this archive).
+#
+# INVARIANT: a body is only expired after the contact's thread_summary fact
+# demonstrably exists — a summarizer failure skips the contact, never drops
+# content that was not first compressed.
+#
+# Tombstone shape: summary="" (the thread builder, signals, and re-summaries
+# all skip empty-text rows already), title="", meta_json marks provenance.
+_EXPIRED_META = '{"expired": true}'
+
+
+def content_retention_days() -> int:
+    """Days a message body is kept verbatim. 0 / unset = content expiry OFF."""
+    try:
+        return max(0, int((os.environ.get("SURPLUS_CONTENT_RETENTION_DAYS")
+                           or "0").strip()))
+    except ValueError:
+        return 0
+
+
+def content_keep_last_n() -> int:
+    """Most-recent messages per contact that never expire, regardless of age
+    (re-engaging a years-stale contact needs the actual last exchange)."""
+    try:
+        return max(1, int((os.environ.get("SURPLUS_CONTENT_KEEP_LAST_N")
+                           or "20").strip()))
+    except ValueError:
+        return 20
+
+
+def _aware(dt: datetime) -> datetime:
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _expirable_rows(db, contact_id: int, *, cutoff: datetime,
+                    keep_n: int) -> list:
+    """Message rows past BOTH guards (older than cutoff AND beyond the last
+    keep_n by recency) that still carry a body."""
+    rows = (db.query(models.RelationshipInteraction)
+            .filter(models.RelationshipInteraction.contact_id == contact_id,
+                    models.RelationshipInteraction.interaction_type == "message")
+            .order_by(models.RelationshipInteraction.occurred_at.desc())
+            .all())
+    return [r for r in rows[keep_n:]
+            if (r.summary or "").strip()
+            and r.occurred_at is not None
+            and _aware(r.occurred_at) < cutoff]
+
+
+def _refresh_thread_summary(db, contact, keep_n: int) -> bool:
+    """Compress the contact's full real thread into the rolling thread_summary
+    fact. True only when the fact verifiably exists afterwards."""
+    from .agents.relationship.pipeline.context.gather import thread_from_timeline
+    from .agents.relationship.pipeline.context.summary import window_and_summarize
+    from .agents.relationship.spine import relationships as _rel
+    from .agents.relationship.spine.memory import get_facts
+    timeline = _rel.contact_timeline(db, contact)
+    prior_full = thread_from_timeline(timeline)
+    window_and_summarize(prior_full, keep_n, db=db,
+                         user_id=contact.user_id, contact=contact)
+    return bool(get_facts(db, contact.id, key="thread_summary"))
+
+
+def expire_contact_message_bodies(db, contact, *, cutoff: datetime,
+                                  keep_n: int, dry_run: bool = True) -> dict:
+    """Summarize-then-expire ONE contact's aged-out message bodies."""
+    expirable = _expirable_rows(db, contact.id, cutoff=cutoff, keep_n=keep_n)
+    if not expirable or dry_run:
+        return {"contact_id": contact.id, "expirable": len(expirable),
+                "expired": 0}
+    try:
+        summarized = _refresh_thread_summary(db, contact, keep_n)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("content retention: summary refresh failed for contact %s "
+                    "(%s: %s) -> skipping expiry", contact.id,
+                    type(exc).__name__, exc)
+        summarized = False
+    if not summarized:
+        return {"contact_id": contact.id, "expirable": len(expirable),
+                "expired": 0, "skipped": "no thread_summary"}
+    for r in expirable:
+        r.summary = ""
+        r.title = ""
+        r.meta_json = _EXPIRED_META
+    db.commit()
+    return {"contact_id": contact.id, "expirable": len(expirable),
+            "expired": len(expirable)}
+
+
+def run_content_retention(db, *, user_id: int | None = None,
+                          dry_run: bool = True,
+                          contact_limit: int = 200) -> dict:
+    """One bounded content-retention pass. Requires BOTH the master retention
+    switch (SURPLUS_RETENTION_ENABLED) and a nonzero
+    SURPLUS_CONTENT_RETENTION_DAYS before it writes; dry_run reports what a
+    real pass would expire. Per-contact commit so a long pass neither pins a
+    pooled connection nor loses progress on a crash."""
+    days = content_retention_days()
+    if days <= 0:
+        return {"enabled": False,
+                "note": "set SURPLUS_CONTENT_RETENTION_DAYS to activate"}
+    write = (not dry_run) and purge_enabled()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    keep_n = content_keep_last_n()
+
+    q = (db.query(models.RelationshipInteraction.contact_id)
+         .filter(models.RelationshipInteraction.interaction_type == "message",
+                 models.RelationshipInteraction.contact_id.isnot(None),
+                 models.RelationshipInteraction.occurred_at < cutoff,
+                 models.RelationshipInteraction.summary != ""))
+    if user_id is not None:
+        q = (q.join(models.Contact,
+                    models.Contact.id
+                    == models.RelationshipInteraction.contact_id)
+             .filter(models.Contact.user_id == user_id))
+    contact_ids = [cid for (cid,) in q.distinct().limit(contact_limit).all()]
+
+    checked = expirable = expired = skipped = 0
+    for cid in contact_ids:
+        contact = db.get(models.Contact, cid)
+        if contact is None:
+            continue
+        checked += 1
+        try:
+            res = expire_contact_message_bodies(
+                db, contact, cutoff=cutoff, keep_n=keep_n,
+                dry_run=not write)
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            log.warning("content retention: contact %s failed: %s: %s",
+                        cid, type(exc).__name__, exc)
+            continue
+        expirable += res.get("expirable", 0)
+        expired += res.get("expired", 0)
+        if res.get("skipped"):
+            skipped += 1
+    result = {"enabled": True, "dry_run": not write,
+              "retention_days": days, "keep_last_n": keep_n,
+              "contacts_checked": checked, "bodies_expirable": expirable,
+              "bodies_expired": expired, "contacts_skipped_no_summary": skipped}
+    log.info("content retention (dry_run=%s): %s", not write, result)
+    return result
+
+
 def run_purge_sweep(db, *, dry_run: bool = True) -> dict:
     """Purge ephemeral rows past their category TTL. No-op unless
     SURPLUS_RETENTION_ENABLED. dry_run counts what WOULD be purged without
