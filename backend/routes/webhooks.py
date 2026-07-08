@@ -237,9 +237,35 @@ def _apply_account_status(db: Session, provider, info: dict) -> dict:
             "halted": halted, "user_id": user.id}
 
 
+def _log_rejected_webhook(headers: dict, raw_body: bytes) -> None:
+    """A steady stream of 401s here means SOME Unipile workspace still has a
+    registration pointing at us with a stale secret. The 401 alone can't say
+    which one -- the payload's account_id can, so log just enough to trace the
+    sender without echoing the secret itself."""
+    lower = {k.lower(): v for k, v in (headers or {}).items()}
+    try:
+        payload = json.loads(raw_body or b"{}")
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    acct = payload.get("account_id") or payload.get("accountId") or ""
+    kind = (payload.get("event") or payload.get("event_type")
+            or payload.get("type") or "")
+    blk = payload.get("AccountStatus")
+    if not kind and isinstance(blk, dict):
+        acct = acct or blk.get("account_id") or ""
+        kind = blk.get("message") or "account_status"
+    secret = (lower.get("x-webhook-secret") or "").strip()
+    print(f"[unipile] REJECTED webhook acct={acct or '?'} event={kind or '?'} "
+          f"secret_prefix={secret[:8] or 'none'} ua={lower.get('user-agent', '?')}",
+          flush=True)
+
+
 async def _handle(request: Request, db: Session, provider: LinkedInProvider) -> dict:
     raw_body = await request.body()
     if not provider.verify_webhook(dict(request.headers), raw_body):
+        _log_rejected_webhook(dict(request.headers), raw_body)
         raise HTTPException(401, "webhook signature verification failed")
 
     try:
