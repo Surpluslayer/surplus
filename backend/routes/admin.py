@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session, selectinload
 from .. import audit, models
 from ..agents.relationship.pipeline.send.sender import send_and_log, send_followup
 from ..auth import _as_aware_utc
-from ..db import ENGINE, get_db
+from ..db import ENGINE, get_service_db
 from ..providers import (
     LinkedInProvider,
     get_provider,
@@ -171,7 +171,7 @@ def _check_admin(*, need_write: bool, x_admin_token: Optional[str],
 def _require_admin_token(
     x_admin_token: Optional[str] = Header(default=None),
     request: Request = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
 ) -> None:
     """Full-admin (write) gate for the mutating admin endpoints.
 
@@ -191,7 +191,7 @@ def _require_admin_token(
 def _require_admin_readonly(
     x_admin_token: Optional[str] = Header(default=None),
     request: Request = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
 ) -> str:
     """Read-only admin gate (least privilege). Accepts EITHER the full admin
     token or the read-only token, so a monitoring/dashboard consumer provisioned
@@ -296,7 +296,7 @@ def _fire_followup_booking(db, prospect, booking_payload, text: str) -> None:
 
 @router.post("/run-followups", status_code=200)
 def run_followups(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ) -> dict:
     """Dispatch every scheduled follow-up whose send time has arrived.
@@ -314,7 +314,7 @@ def run_followups(
 @router.post("/run-retention-purge", status_code=200)
 def run_retention_purge(
     dry_run: bool = True,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ) -> dict:
     """Purge ephemeral rows (expired sessions, old finished jobs) past their
@@ -329,7 +329,7 @@ def run_content_retention(
     dry_run: bool = True,
     user_id: int | None = None,
     contact_limit: int = 200,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ) -> dict:
     """Summarize-then-expire aged-out message BODIES (the metadata skeleton
@@ -348,7 +348,7 @@ def run_content_retention(
 def admin_delete_user(
     user_id: int,
     reason: str = "",
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ) -> dict:
     """Admin-initiated full deletion (support handling a customer's delete
@@ -548,7 +548,7 @@ def register_webhooks(
 
 @router.get("/billing-status")
 def billing_status(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ):
     """Return a roll-up of billing state across all users + the paid rows.
@@ -594,7 +594,7 @@ class GrantPaidIn(BaseModel):
 @router.post("/grant-paid")
 def grant_paid(
     body: GrantPaidIn,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ):
     """Stamp paid_at on a user by EMAIL — recovery for payments that Stripe
@@ -641,7 +641,7 @@ def grant_paid(
 
 @router.get("/pending-replies", response_model=list[PendingReplyOut])
 def list_pending_replies(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ):
     """Return every PendingReply still awaiting a human decision."""
@@ -686,7 +686,7 @@ def _send_pending(db: Session, pending: models.PendingReply, text: str) -> dict:
 def approve_pending_reply(
     pending_id: int,
     body: Optional[ApproveBody] = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ):
     pending = db.get(models.PendingReply, pending_id)
@@ -702,7 +702,7 @@ def approve_pending_reply(
 def reject_pending_reply(
     pending_id: int,
     body: Optional[RejectBody] = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ):
     pending = db.get(models.PendingReply, pending_id)
@@ -735,7 +735,7 @@ def _operator_user(db: Session) -> Optional[models.User]:
 
 @router.get("/voice-examples")
 def get_voice_examples(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ):
     """Return the operator's current voice-matching examples + which source
@@ -768,7 +768,7 @@ def get_voice_examples(
 @router.post("/voice-examples")
 def set_voice_examples(
     body: VoiceExamplesBody,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ):
     """Set the operator's voice-matching examples. Persists to the operator
@@ -832,7 +832,7 @@ def _user_summary(db: Session, u: models.User) -> dict:
 @router.get("/users")
 def lookup_users(
     identity: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ):
     """Read-only. List users matching `identity` (substring match against
@@ -857,7 +857,7 @@ def lookup_users(
 @router.post("/merge-users")
 def merge_users(
     body: MergeUsersBody,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ):
     """Merge the orphaned/duplicate `from_user_id` INTO the survivor
@@ -968,7 +968,7 @@ class LinkedInSyncBody(BaseModel):
 @router.post("/sync-linkedin-chats")
 def sync_linkedin_chats_route(
     body: Optional[LinkedInSyncBody] = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ):
     """On-demand LinkedIn DM sync. Dispatches DURABLY (jobs.run_detached: Modal
@@ -998,7 +998,7 @@ def sync_linkedin_chats_route(
 
 @router.post("/backfill-contact-links")
 def backfill_contact_links(
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ):
     """Link every Prospect with contact_id NULL to its durable Contact via the
@@ -1039,7 +1039,7 @@ class CleanupEmailContactsBody(BaseModel):
 @router.post("/cleanup-email-contacts")
 def cleanup_email_contacts(
     body: CleanupEmailContactsBody,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ):
     """Remove email-sync-only junk contacts from every user's book.
@@ -1187,7 +1187,7 @@ def _backfill_identities_from_rows(db: Session, user_id: int) -> int:
 @router.post("/dedup-contacts")
 def dedup_contacts(
     body: DedupContactsBody,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ):
     """Merge same-person duplicate Contacts using the ContactIdentity-backed merge
@@ -1274,7 +1274,7 @@ def dedup_contacts(
 @router.post("/cleanup-email-noise")
 def cleanup_email_noise(
     body: CleanupEmailNoiseBody,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ):
     """Remove the ONE-WAY email-sync 'contacts' the OLD gate created.
@@ -1404,7 +1404,7 @@ def admin_audit_log(
     limit: int = 100,
     outcome: Optional[str] = None,
     role: str = Depends(_require_admin_readonly),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
 ) -> list[models.AuditLog]:
     """Recent access-audit rows, newest first — "who accessed what and when".
 
@@ -1426,7 +1426,7 @@ def backfill_accounts(
     allow_llm: bool = False,
     limit: Optional[int] = 100,
     offset: int = 0,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_service_db),
     _: None = Depends(_require_admin_token),
 ):
     """Run the account-layer backfill (docs/accounts-architecture.md §3) from
