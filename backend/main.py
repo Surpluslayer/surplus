@@ -229,6 +229,45 @@ _API_PATH_PREFIXES = (
     "/openapi.json",
 )
 
+# ── Staging gate ─────────────────────────────────────────────────────────────
+# Non-prod environments must not be publicly browsable (real app, real auth
+# stack, seeded + team-owned data). When SURPLUS_STAGING_GATE is set to a
+# secret token, every request 404s (no fingerprint, matching the admin
+# routes' posture) unless it presents the token:
+#   - one-time ?staging_key=<token> -> sets a long-lived cookie + redirects
+#   - the cookie on every request after that
+# Carve-outs: /api/health (Railway's deploy probe carries no cookie) and
+# /webhooks/* (Bright Data / Unipile / Stripe deliveries authenticate with
+# their own fail-closed secrets and must keep landing on staging).
+# Unset (prod, local dev) -> pass-through. Read per-request so tests can flip
+# it with monkeypatch and a mid-flight env change needs no restart.
+_GATE_COOKIE = "surplus_staging_gate"
+_GATE_OPEN_PREFIXES = ("/api/health", "/webhooks/")
+
+
+@app.middleware("http")
+async def staging_gate(request: Request, call_next):
+    token = (os.environ.get("SURPLUS_STAGING_GATE") or "").strip()
+    if not token:
+        return await call_next(request)
+    path = request.url.path
+    if path.startswith(_GATE_OPEN_PREFIXES) or path == "/api/health":
+        return await call_next(request)
+    supplied = (request.query_params.get("staging_key") or "").strip()
+    if supplied and hmac.compare_digest(supplied, token):
+        from fastapi.responses import RedirectResponse
+        response = RedirectResponse(url=path or "/", status_code=303)
+        response.set_cookie(
+            _GATE_COOKIE, token, max_age=180 * 24 * 3600,
+            httponly=True, secure=True, samesite="lax")
+        return response
+    cookie = (request.cookies.get(_GATE_COOKIE) or "").strip()
+    if cookie and hmac.compare_digest(cookie, token):
+        return await call_next(request)
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse("not found", status_code=404)
+
+
 @app.middleware("http")
 async def no_store_for_api(request: Request, call_next):
     response = await call_next(request)
