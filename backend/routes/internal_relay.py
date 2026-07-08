@@ -27,6 +27,7 @@ import base64 as _b64
 import hmac
 import json as _json
 import os
+import time as _time
 
 import httpx
 from fastapi import APIRouter, Request, Response, HTTPException
@@ -200,3 +201,58 @@ async def trigger_send(request: Request) -> Response:
     return Response(content=_json.dumps({"ok": True, "dispatched": len(recipients),
                                          "repo": _DISPATCH_REPO, "workflow": _DISPATCH_WORKFLOW}),
                     media_type="application/json")
+
+
+# ── Schedule a send for a future time (queue -> cron fires it) ────────────────
+# Appends {send_at, from, cc, subject, recipients} to scheduled_sends.json in the
+# org repo. The scheduler cron (every 10 min) fires any job whose send_at has
+# passed. Caller needs only the relay token; Railway writes the queue with its
+# own GitHub token. send_at = ISO-8601 UTC (e.g. "2026-07-09T13:00:00Z").
+@router.post("/schedule-send")
+async def schedule_send(request: Request) -> Response:
+    _check_token(request)
+    gh_token = (os.environ.get("GITHUB_DISPATCH_TOKEN") or "").strip()
+    if not gh_token:
+        raise HTTPException(status_code=503, detail="GITHUB_DISPATCH_TOKEN not configured on server")
+    try:
+        data = _json.loads((await request.body()) or b"{}")
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+    recipients = data.get("recipients")
+    frm = (data.get("from_account_id") or "").strip()
+    send_at = (data.get("send_at") or "").strip()
+    if not (recipients and frm and send_at):
+        raise HTTPException(status_code=400, detail="need {'recipients':[...], 'from_account_id':'...', 'send_at':'ISO-UTC'}")
+    job = {"id": f"job-{int(_time.time())}", "send_at": send_at, "from_account_id": frm,
+           "cc": (data.get("cc") or "").strip(), "subject": data.get("subject", ""), "recipients": recipients}
+    path = f"https://api.github.com/repos/{_DISPATCH_REPO}/contents/scheduled_sends.json"
+    headers = {"Authorization": f"Bearer {gh_token}", "Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28"}
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        for _attempt in range(3):
+            g = await client.get(path + "?ref=main", headers=headers)
+            if g.status_code == 200:
+                gd = g.json(); sha = gd.get("sha")
+                try:
+                    cur = _json.loads(_b64.b64decode(gd.get("content", "")) or b"[]")
+                    if not isinstance(cur, list): cur = []
+                except Exception:
+                    cur = []
+            elif g.status_code == 404:
+                sha = None; cur = []
+            else:
+                raise HTTPException(status_code=502, detail=f"read queue {g.status_code}: {g.text[:150]}")
+            cur.append(job)
+            put = {"message": f"schedule: queue {len(recipients)} for {send_at}",
+                   "content": _b64.b64encode(_json.dumps(cur, indent=1).encode()).decode(), "branch": "main"}
+            if sha:
+                put["sha"] = sha
+            p = await client.put(path, headers=headers, json=put)
+            if p.status_code in (200, 201):
+                return Response(content=_json.dumps({"ok": True, "scheduled_for": send_at,
+                                                     "count": len(recipients), "id": job["id"]}),
+                                media_type="application/json")
+            if p.status_code == 409:  # sha stale (concurrent write) -> retry
+                continue
+            raise HTTPException(status_code=502, detail=f"write queue {p.status_code}: {p.text[:150]}")
+    raise HTTPException(status_code=409, detail="queue busy, retry")
