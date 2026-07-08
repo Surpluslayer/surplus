@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
 from .. import models
-from ..db import get_db
+from ..db import get_service_db
 from ..jobs import run_detached
 from ..agents.relationship.spine import relationships
 from ..agents.outreach import compose
@@ -197,7 +197,7 @@ def _trigger_auto_dm(
 
 
 @router.post("/unipile", status_code=200)
-async def unipile_webhook(request: Request, db: Session = Depends(get_db)) -> dict:
+async def unipile_webhook(request: Request, db: Session = Depends(get_service_db)) -> dict:
     provider = get_provider()
     if provider.name != "unipile":
         raise HTTPException(400, f"provider mismatch (configured: {provider.name})")
@@ -518,7 +518,7 @@ def _contacts_by_url(db: Session, url: Optional[str]) -> list:
 
 @router.post("/brightdata", status_code=200)
 @router.post("/brightdata/{kind}", status_code=200)
-async def brightdata_webhook(request: Request, db: Session = Depends(get_db),
+async def brightdata_webhook(request: Request, db: Session = Depends(get_service_db),
                              kind: str = "") -> dict:
     """Receive a Bright Data scrape delivery and turn it into Updates.
 

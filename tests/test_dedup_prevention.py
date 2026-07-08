@@ -181,8 +181,11 @@ def _admin_client(monkeypatch):
 
 
 def _override_db(app, admin_routes, db):
-    from backend.db import get_db
+    from backend.db import get_db, get_service_db
     app.dependency_overrides[get_db] = lambda: db
+    # Admin routes moved to the service-plane engine (get_service_db) so they
+    # bypass RLS; tests route both planes at the same in-memory session.
+    app.dependency_overrides[get_service_db] = lambda: db
 
 
 def _seed_bridge_pair(db, u):

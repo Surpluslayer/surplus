@@ -176,6 +176,25 @@ def get_db():
             db.close()
 
 
+def get_service_db():
+    """FastAPI dependency for the NON-SESSION service planes: admin ops and
+    webhook ingestion. Those requests authenticate with a token / signature,
+    carry no user session (so `set_rls_user` never runs), and are
+    DEFINITIONALLY cross-tenant — an admin sweep walks every user's rows, a
+    Bright Data delivery matches contacts across all owners. Under RLS the
+    request engine would scope them to ZERO rows and they would silently no-op
+    (the failure mode is invisible: queries succeed, empty). So they use the
+    jobs engine (`SessionLocal` on the superuser role, which bypasses RLS),
+    exactly like the background sweeps do. Session-authenticated routes must
+    keep using `get_db` — this dependency is for planes whose own auth gate is
+    the tenant boundary."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 def _is_benign_migration_error(exc: Exception) -> bool:
     """True if a migration error is the expected idempotent race (the column
     already exists because a sibling replica, or a previous boot, added it).
