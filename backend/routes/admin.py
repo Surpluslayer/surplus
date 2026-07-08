@@ -324,6 +324,26 @@ def run_retention_purge(
     return retention.run_purge_sweep(db, dry_run=dry_run)
 
 
+@router.post("/run-content-retention", status_code=200)
+def run_content_retention(
+    dry_run: bool = True,
+    user_id: int | None = None,
+    contact_limit: int = 200,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+) -> dict:
+    """Summarize-then-expire aged-out message BODIES (the metadata skeleton
+    stays). A body expires only when it is BOTH older than
+    SURPLUS_CONTENT_RETENTION_DAYS and beyond the contact's most recent
+    SURPLUS_CONTENT_KEEP_LAST_N messages, and only after the contact's rolling
+    thread_summary fact verifiably exists. Writes additionally require the
+    master SURPLUS_RETENTION_ENABLED switch; `dry_run=true` (default) reports
+    what a real pass would expire. Scope with `user_id` to trial one book."""
+    from .. import retention
+    return retention.run_content_retention(
+        db, user_id=user_id, dry_run=dry_run, contact_limit=contact_limit)
+
+
 @router.post("/delete-user", status_code=200)
 def admin_delete_user(
     user_id: int,
