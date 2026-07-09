@@ -83,9 +83,10 @@ export default function BookApp() {
   const [user, setUser] = useState(null);       // null=loading, undefined=signed out
   const [feed, setFeed] = useState(null);        // null=loading
   const [err, setErr] = useState("");
-  const [tab, setTab] = useState("today");       // "today" | "add" | "book" | "accounts"
+  const [tab, setTab] = useState("today");       // "today" | "referrals" | "add" | "book" | "accounts"
   const [route, setRoute] = useState(null);      // {name:"detail",row} | {name:"account"} | {name:"connections"} | null
   const [draftFor, setDraftFor] = useState(null);// {name, contact_id, trigger}
+  const [pending, setPending] = useState(null);  // {mode,query} handed to the other tab's ask bar
 
   // Fonts: load Inter + Newsreader only for this surface (the desktop App ships
   // its own type), injected once so the design tokens resolve.
@@ -185,6 +186,15 @@ export default function BookApp() {
   const openDraft = (d) => setDraftFor(d);
   const goTab = (t) => { setRoute(null); setTab(t); };
 
+  // Hand a query from one tab's ask bar to the other's: switch tabs and stash
+  // the query so the destination bar auto-runs it. modeTarget is "book" |
+  // "referral" (from routed_to / cross_hint); map to the tab that hosts it.
+  const onRoute = (modeTarget, query) => {
+    setRoute(null);
+    setTab(modeTarget === "referral" ? "referrals" : "today");
+    setPending({ mode: modeTarget, query });
+  };
+
   // Which bottom-nav item reads as active.
   const activeNav = route?.name === "detail" ? "book"
     : route ? "" : tab;
@@ -205,6 +215,12 @@ export default function BookApp() {
                        onAccount={() => setRoute({ name: "account" })}
                        onAdd={() => goTab("add")}
                        onOpen={openDetail} onDraft={openDraft} />;
+  } else if (tab === "referrals") {
+    screen = <ReferralsView user={user} feed={feed}
+                            onAccount={() => setRoute({ name: "account" })}
+                            onAdd={() => goTab("add")}
+                            onRoute={onRoute}
+                            pendingAsk={pending?.mode === "referral" ? pending.query : null} />;
   } else if (tab === "accounts") {
     screen = <AccountsTab />;
   } else if (tab === "add") {
@@ -215,6 +231,8 @@ export default function BookApp() {
     screen = <TodayView feed={feed} err={err} user={user} onReload={load}
                         onAccount={() => setRoute({ name: "account" })}
                         onAdd={() => goTab("add")}
+                        onRoute={onRoute}
+                        pendingAsk={pending?.mode === "book" ? pending.query : null}
                         onOpen={openDetail} onDraft={openDraft} />;
   }
 
@@ -240,6 +258,10 @@ export default function BookApp() {
           <button className={"bk-nav-item" + (activeNav === "today" ? " on" : "")}
                   onClick={() => goTab("today")}>
             <LayoutDashboard size={19} /><span>Today</span>
+          </button>
+          <button className={"bk-nav-item" + (activeNav === "referrals" ? " on" : "")}
+                  onClick={() => goTab("referrals")}>
+            <Sparkles size={19} /><span>Referrals</span>
           </button>
           <button data-onb="book"
                   className={"bk-nav-item" + (activeNav === "book" ? " on" : "")}
@@ -389,7 +411,7 @@ function WaitingForOk({ user }) {
   );
 }
 
-function TodayView({ feed, err, user, onReload, onAccount, onAdd, onOpen, onDraft }) {
+function TodayView({ feed, err, user, onReload, onAccount, onAdd, onOpen, onDraft, onRoute, pendingAsk }) {
   const updates = feed?.updates || [];
   const needs = feed?.needs_outreach || [];
 
@@ -417,7 +439,8 @@ function TodayView({ feed, err, user, onReload, onAccount, onAdd, onOpen, onDraf
         <TopbarActions user={user} feed={feed} onAdd={onAdd} onAccount={onAccount} />
       </header>
 
-      <AskBar variant="bar" onOpen={onOpen} onDraft={onDraft} />
+      <AskBar variant="bar" mode="book" onOpen={onOpen} onDraft={onDraft}
+              onRoute={onRoute} pendingAsk={pendingAsk} />
 
       {err && <div className="bk-err">{err} <button className="bk-link" onClick={onReload}>Retry</button></div>}
       {!feed && !err && <div className="bk-loading"><Loader2 className="bk-spin" size={18} /> Reading your book…</div>}
@@ -1331,17 +1354,62 @@ function AddScreen({ user, onAccount, onAdded }) {
   );
 }
 
+// ── Referrals ─────────────────────────────────────────────────────────────────
+
+// The network / intro surface: the SAME ask harness as Today, in referral mode
+// (mode="referral" forces the network search server-side). Renders deterministic
+// network_hits -- who you know at a company, warm paths in -- not the updates
+// feed. A referral ask typed in Today auto-switches here; an ambiguous one shows
+// a cross-hint instead of yanking the user across.
+function ReferralsView({ user, feed, onAccount, onAdd, onRoute, pendingAsk }) {
+  return (
+    <div className="bk-scroll">
+      <header className="bk-topbar">
+        <div>
+          <p className="bk-eyebrow">Warm paths</p>
+          <p className="bk-display">Who you can reach</p>
+        </div>
+        <TopbarActions user={user} feed={feed} onAdd={onAdd} onAccount={onAccount} />
+      </header>
+
+      <AskBar variant="bar" mode="referral" onRoute={onRoute} pendingAsk={pendingAsk}
+              onDraft={() => {}} onOpen={() => {}} />
+
+      <p className="bk-referral-hint">
+        Find intros through your network: who you know at a company you're
+        targeting, 2nd-degree connections, and the warmest path in.
+      </p>
+    </div>
+  );
+}
+
 // ── Ask bar / assistant card (agent) ──────────────────────────────────────────
 
-// Match the relationship-agent chat's suggested "bubbles" (event-host framing).
-const CHIPS = ["Reach out to my sales prospects",
-               "Who do I know at a company I'm targeting?",
-               "2nd degree founders in NYC"];
+// Suggested prompts + placeholder differ by tab so people self-route: Today is
+// about your existing book; Referrals is about reaching NEW people via network.
+const CHIPS_BOOK = ["Reach out to my sales prospects",
+                    "Who's gone quiet lately",
+                    "What's new with my contacts"];
+const CHIPS_REFERRAL = ["Who do I know at a company I'm targeting?",
+                        "2nd degree founders in NYC",
+                        "Intro me to someone at a company I want to reach"];
+function _chipsFor(mode) { return mode === "referral" ? CHIPS_REFERRAL : CHIPS_BOOK; }
+function _placeholderFor(mode, variant) {
+  if (mode === "referral")
+    return "Find intros: who you know at a company, warm paths in…";
+  return variant === "card"
+    ? "Ask about anyone, or who to follow up with…"
+    : "Ask about your book, updates, and who to reach out to…";
+}
 
-function AskBar({ variant, onOpen, onDraft }) {
+// `mode` = which tab this bar lives in ("book" | "referral"). onRoute(tab, query)
+// lets the bar hand a query to the OTHER tab: auto-switch on a confident
+// mismatch, or a manual switch from the cross-hint. pendingAsk is a query handed
+// IN from the other tab, auto-run once on arrival.
+function AskBar({ variant, mode = "book", onOpen, onDraft, onRoute, pendingAsk }) {
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
-  const [res, setRes] = useState(null);   // {answer, people, networkHits}
+  const [res, setRes] = useState(null);   // {answer, people, networkHits, crossHint}
   const [err, setErr] = useState("");
   const [phase, setPhase] = useState("");  // live "thinking / drafting X…" label
 
@@ -1354,15 +1422,24 @@ function AskBar({ variant, onOpen, onDraft }) {
       // each draft fills in as it lands. A heartbeat keeps the connection alive
       // so a slow moment shows "drafting…" instead of a 524 "server took too long".
       await api.bookAskStream(text, {
+        mode,
         onStatus: ({ phase: ph, name }) =>
           setPhase(ph === "drafting" ? `Drafting ${name || "…"}` :
                    ph === "selecting" ? "Finding who to follow up with…" : "Thinking…"),
-        onPeople: ({ people, answer, network_hits }) =>
+        onPeople: ({ people, answer, network_hits, routed_to, cross_hint }) => {
+          // Confident mismatch: hand the query to the other tab and stop rendering
+          // here (this bar unmounts on the switch, so don't paint a stale answer).
+          if (routed_to && routed_to !== mode && onRoute) {
+            onRoute(routed_to, text);
+            return;
+          }
           setRes({
             answer: answer || "",
             people: people || [],
             networkHits: network_hits || [],
-          }),
+            crossHint: cross_hint || null,
+          });
+        },
         onToken: ({ index, t }) =>     // each card types out live
           setRes((r) => {
             if (!r || !r.people[index]) return r;
@@ -1376,9 +1453,15 @@ function AskBar({ variant, onOpen, onDraft }) {
     finally { setBusy(false); setPhase(""); }
   };
 
+  // A query handed in from the other tab (auto-switch / cross-hint): run it once.
+  useEffect(() => {
+    if (pendingAsk) { setQ(pendingAsk); ask(pendingAsk); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAsk]);
+
   const input = (
     <input className="bk-ask-input"
-      placeholder={variant === "card" ? "Ask about anyone, or who to follow up with…" : "Ask your agent anything…"}
+      placeholder={_placeholderFor(mode, variant)}
       value={q} onChange={(e) => setQ(e.target.value)}
       onKeyDown={(e) => { if (e.key === "Enter") ask(); }} />
   );
@@ -1407,7 +1490,7 @@ function AskBar({ variant, onOpen, onDraft }) {
 
       {!res && !busy && (
         <div className="bk-chips" style={{ marginTop: 10 }}>
-          {CHIPS.map((c) => (
+          {_chipsFor(mode).map((c) => (
             <button key={c} className="bk-chip" onClick={() => ask(c)}>{c}</button>
           ))}
         </div>
@@ -1427,7 +1510,8 @@ function AskBar({ variant, onOpen, onDraft }) {
           {res.answer && !(res.networkHits || []).length && (
             <div className="bk-answer-text">{res.answer}</div>
           )}
-          {(res.people || []).length > 0 && (
+          {/* Book tab: your existing people. Hidden in referral mode. */}
+          {mode !== "referral" && (res.people || []).length > 0 && (
             <div className="bk-answer-people">
               {res.people.map((p, i) => (
                 <div key={i} className="bk-answer-person">
@@ -1441,12 +1525,24 @@ function AskBar({ variant, onOpen, onDraft }) {
               ))}
             </div>
           )}
+          {/* Referral tab: network paths / intros. */}
           {(res.networkHits || []).length > 0 && (
             <div className="bk-answer-network">
               {res.networkHits.map((h, i) => (
                 <NetworkHitCard key={`${h.linkedin_slug || h.name}-${i}`} hit={h} />
               ))}
             </div>
+          )}
+          {mode === "referral" && !busy && !(res.networkHits || []).length && (
+            <div className="bk-answer-text">No network paths found for that yet.</div>
+          )}
+          {/* Ambiguous ask: stay put, softly offer the other tab. */}
+          {res.crossHint && onRoute && (
+            <button className="bk-crosshint" onClick={() => onRoute(res.crossHint, q)}>
+              {res.crossHint === "referral"
+                ? "Looking for intros to people you don't know yet? Open Referrals →"
+                : "Looking for your existing contacts? Open Today →"}
+            </button>
           )}
           <button className="bk-link" onClick={() => { setRes(null); setQ(""); }}>Clear</button>
         </div>
@@ -2096,6 +2192,10 @@ const BOOK_CSS = `
 .bk-network-path{display:flex; align-items:center; gap:5px; font-size:12px; color:var(--faint); margin-top:4px;}
 .bk-network-link{flex:none; font-size:12px; font-weight:600; color:var(--accent); text-decoration:none;
   padding:6px 10px; border-radius:8px; border:.5px solid var(--line); background:#fff;}
+.bk-crosshint{display:block; width:100%; text-align:left; margin-top:10px; padding:9px 12px;
+  border:.5px dashed var(--line-2); border-radius:10px; background:none; cursor:pointer;
+  font-family:var(--font-ui); font-size:12.5px; color:var(--accent);}
+.bk-referral-hint{margin:12px 4px 0; font-size:12.5px; line-height:1.5; color:var(--muted);}
 .bk-ap-name{font-size:13px; font-weight:500; color:var(--ink);}
 .bk-ap-reason{font-size:12px; color:var(--muted); margin-top:1px;}
 .bk-ap-draft{font-size:12px; color:var(--muted); font-style:italic; margin-top:4px; line-height:1.4;}

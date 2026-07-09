@@ -554,13 +554,20 @@ def enrich_book_ask(
     book_answer: dict,
     *,
     search_fn: Any = None,
+    force: bool = False,
 ) -> dict:
-    """Merge LinkedIn network hits into a BookApp /ask response."""
+    """Merge LinkedIn network hits into a BookApp /ask response.
+
+    `force=True` runs the network search even when detect_network_intent is
+    false -- used by the Referrals tab (mode=referral), where the user's tab
+    choice IS the intent, so a bare "people at Stripe" should still search the
+    network. Default False keeps the legacy single-bar flow gated exactly as
+    before (no extra LinkedIn calls, no behavior change)."""
     out = dict(book_answer or {})
     out.setdefault("people", [])
     out["network_hits"] = []
     steer = (query or "").strip()
-    if not detect_network_intent(steer):
+    if not force and not detect_network_intent(steer):
         return out
 
     nr = search_linkedin_network(user, steer, contacts, search_fn=search_fn)

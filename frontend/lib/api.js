@@ -559,8 +559,11 @@ export const api = {
   // fire. Callbacks: onStatus({phase,name}), onPeople({people,answer,network_hits}),
   // onPerson({index,contact_id,name,draft}), onDone({total_s,count,network_hits}),
   // onError({detail}). Resolves when the stream closes.
-  bookAskStream: (query, { onStatus, onPeople, onToken, onPerson, onDone, onError } = {}) =>
-    consumeSSE("/api/book/ask/stream", { query }, {
+  // `mode` ("book" | "referral") tells the server which tab asked, so it can
+  // reply with routed_to (switch tabs) / cross_hint (soft nudge) and, for
+  // referral, force the network search. Omitted -> legacy behavior unchanged.
+  bookAskStream: (query, { onStatus, onPeople, onToken, onPerson, onDone, onError, mode } = {}) =>
+    consumeSSE("/api/book/ask/stream", mode ? { query, mode } : { query }, {
       handlers: {
         status: (p) => onStatus?.(p),
         people: (p) => onPeople?.(p),

@@ -15,6 +15,7 @@ import hmac
 import json
 import os
 import queue
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -335,6 +336,103 @@ class DraftIn(BaseModel):
 
 class AskIn(BaseModel):
     query: str
+    # Which tab the ask came from: "book" (Today/updates) or "referral"
+    # (network/intros). None = legacy caller (no routing). The natural intent is
+    # detected server-side regardless; `mode` only decides whether we tell the
+    # client to SWITCH tabs (via `routed_to`), so a referral ask typed in Today
+    # is answered as a referral and the UI can follow.
+    mode: Optional[str] = None
+
+
+# Strong REFERRAL intent the shared detect_network_intent (which keys on
+# "who do I know at / 2nd degree / intro / refer") misses: the equally-common
+# "reach someone new through my network" verbs. Kept HERE (router-local), not in
+# detect_network_intent, so the existing network-search gate + prod ask flow are
+# byte-for-byte unchanged -- this only widens the tab-routing signal. Precise on
+# purpose: "reach out" (a book verb) is explicitly excluded so it can't leak.
+_STRONG_REFERRAL_RE = re.compile(
+    r"\bconnect\s+(?:me\s+)?(?:with|to)\b"
+    r"|\bput\s+me\s+in\s+touch\b"
+    r"|\b(?:get|put)\s+(?:me\s+)?in\s+front\s+of\b"
+    r"|\bget\s+me\s+an?\s+intro"
+    r"|\bintroduce\s+me\b"
+    r"|\b(?:want|need|hoping|love|'?d\s+like)\s+to\s+meet\b"
+    r"|\bmeet\s+(?:the\s+)?(?:founder|founders|team|ceo|cto|cfo|partner|partners|people)\b"
+    r"|\breach\b(?!\s+out)\s+(?:the\s+)?\w",
+    re.I,
+)
+
+# Strong BOOK intent: explicit existing-relationship verbs. Used only to tell a
+# confident "book" ask apart from a genuinely AMBIGUOUS one -- so ambiguous asks
+# stay put instead of being force-labeled book (the old binary bug).
+_STRONG_BOOK_RE = re.compile(
+    r"\breach\s+out\s+to\b"
+    r"|\breconnect\b"
+    r"|\bfollow[-\s]?up\s+with\b"
+    r"|\blast\s+(?:talked|spoke|messaged|met|contact|reached)\b"
+    r"|\bgone\s+quiet\b"
+    r"|\bwhat'?s\s+new\b"
+    r"|\bcongratulate\b"
+    r"|\bdraft\s+(?:a\s+)?(?:note|message|reply|dm|email)\b",
+    re.I,
+)
+
+
+def _ask_signal(query: str) -> str:
+    """Three-state intent: 'referral' | 'book' | 'ambiguous'.
+
+    referral  = the shared network-intent gate OR a strong reach-through verb
+    book      = an explicit existing-relationship verb
+    ambiguous = a target (company/topic/status) with NO direction verb, e.g.
+                'people at Stripe' -- resolvable only by which tab you're in.
+
+    Deterministic, no LLM. detect_network_intent is checked (never mutated), so
+    routing and the existing enrichment gate never disagree on the referral set.
+    """
+    from ..agents.relationship.pipeline.context.network_search import (
+        detect_network_intent)
+    q = query or ""
+    if detect_network_intent(q) or _STRONG_REFERRAL_RE.search(q):
+        return "referral"
+    if _STRONG_BOOK_RE.search(q):
+        return "book"
+    return "ambiguous"
+
+
+def _natural_ask_mode(query: str) -> str:
+    """Binary view of _ask_signal for the enrichment/answer path (ambiguous folds
+    to 'book', its safe default). Legacy shape; routing uses _route_response."""
+    return "referral" if _ask_signal(query) == "referral" else "book"
+
+
+def _routed_to(requested: Optional[str], natural: str) -> Optional[str]:
+    """The tab to SWITCH to, or None to stay. Fires only on a confident mismatch
+    (the caller declared a tab and a STRONG signal points elsewhere). Ambiguous
+    never reaches here -- see _route_response."""
+    req = (requested or "").strip().lower()
+    if req in ("book", "referral") and req != natural:
+        return natural
+    return None
+
+
+def _route_response(requested: Optional[str], query: str) -> tuple:
+    """Full routing decision for a tab-aware ask. Returns (routed_to, cross_hint):
+
+      routed_to  -- switch the client to this tab NOW (confident opposite signal)
+      cross_hint -- stay put, but softly offer this other tab (ambiguous ask)
+
+    Legacy callers (no declared tab) get (None, None) -- behavior unchanged.
+    """
+    req = (requested or "").strip().lower()
+    if req not in ("book", "referral"):
+        return None, None
+    sig = _ask_signal(query)
+    if sig == "ambiguous":
+        # Trust the tab the user is standing in; nudge, never yank.
+        return None, ("referral" if req == "book" else "book")
+    if sig != req:
+        return sig, None            # confident mismatch -> auto-switch
+    return None, None               # confident match -> stay
 
 
 # ─── routes ──────────────────────────────────────────────────────────────────
@@ -475,7 +573,8 @@ def ask(body: AskIn, db: Session = Depends(get_db),
     res = book_agent.ask_agent(book, q)        # selection only: draft=null
     t_select = time.monotonic() - _t
     contacts_orm = rel_agent.list_contacts(db, user.id)
-    res = enrich_book_ask(user, q, contacts_orm, res)
+    res = enrich_book_ask(user, q, contacts_orm, res,
+                          force=(body.mode == "referral"))
     people = res.get("people") or []
     # Backfill each selected person with a real voice + thread draft via the ONE
     # shared composer. Resolve Contact ORMs ONCE (list_contacts is expensive),
@@ -524,6 +623,9 @@ def ask(body: AskIn, db: Session = Depends(get_db),
             f"[load={t_load:.1f} select={t_select:.1f} orm={t_orm:.1f} "
             f"draft={t_draft:.1f}, {len(jobs)} drafted]")
     _trace((">>> SLOW " if total > 60 else "") + line)
+    # Front-door routing signal: switch tabs on a confident opposite intent,
+    # or (for an ambiguous ask) stay put and softly offer the other tab.
+    res["routed_to"], res["cross_hint"] = _route_response(body.mode, q)
     return res
 
 
@@ -558,7 +660,8 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
             book = _load_book(wdb, wuser)
             contacts_orm = rel_agent.list_contacts(wdb, user_id)
             res = book_agent.ask_agent(book, q)          # selection (Haiku, gated)
-            res = enrich_book_ask(wuser, q, contacts_orm, res)
+            res = enrich_book_ask(wuser, q, contacts_orm, res,
+                                  force=(body.mode == "referral"))
             people = res.get("people") or []
             network_hits = res.get("network_hits") or []
             orm_by_id = {str(c.id): c for c in contacts_orm}
@@ -568,10 +671,15 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
                 if bd and bd.get("id"):
                     p["contact_id"] = bd["id"]
             # Show the ranked list NOW (drafts fill in next) -- first paint ~3s.
+            # `routed_to` rides the first paint so the UI can switch tabs the
+            # instant results are ready, not after all drafts land.
+            _routed, _hint = _route_response(body.mode, q)
             events.put(("people", {
                 "people": people,
                 "answer": res.get("answer"),
                 "network_hits": network_hits,
+                "routed_to": _routed,
+                "cross_hint": _hint,
             }))
             # Draft the top few, emitting each as it lands. Build DB contexts
             # SERIALLY (session not thread-safe), then fan the pure-LLM calls out.
