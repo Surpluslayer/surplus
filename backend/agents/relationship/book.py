@@ -187,7 +187,7 @@ def score_health(contact: dict, *, background: bool = False) -> dict:
         f"- Name: {contact.get('name')} | Title: {contact.get('title')} @ "
         f"{contact.get('firm')} | Tier: {contact.get('tier')}\n"
         f"- Last meaningful contact: {contact.get('last_contact_date')} "
-        f"({contact.get('days_since')} days ago)\n"
+        f"({(str(contact.get('days_since')) + ' days ago') if contact.get('days_since') is not None else 'no interactions on record'})\n"
         f"- Expected cadence for this tier: {contact.get('cadence_days')} days\n"
         f"- Review cycle: {contact.get('review_cadence')} | Next review due: "
         f"{contact.get('next_review_date')}\n"

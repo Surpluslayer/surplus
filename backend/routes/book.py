@@ -183,10 +183,14 @@ def _book_from_spine(db: Session, user: models.User) -> list[dict]:
     t_inter = time.monotonic() - t
     t = time.monotonic()
     update_index = rel_agent.prefetch_activity_updates_by_contact(db, contacts)
+    # Contact-keyed interaction index so last_touch works for import-path
+    # contacts (no Prospect); their history hangs off contact_id.
+    contact_index = rel_agent.prefetch_interactions_by_contact(db, contacts)
     t_upd = time.monotonic() - t
     rel_agent._spine_prof_reset()
     t = time.monotonic()
-    out = _book_from_spine_contacts(db, user, contacts, inter_index, update_index)
+    out = _book_from_spine_contacts(db, user, contacts, inter_index, update_index,
+                                    contact_index)
     t_loop = time.monotonic() - t
     prof = rel_agent.spine_prof()
     _trace(f"_book_from_spine {len(contacts)} contacts: list={t_list:.2f}s "
@@ -223,11 +227,14 @@ def _find_contact_fast(db: Session, user: models.User,
         return None
     inter_index = rel_agent.prefetch_interactions_by_prospect(db, [match])
     update_index = rel_agent.prefetch_activity_updates_by_contact(db, [match])
-    book = _book_from_spine_contacts(db, user, [match], inter_index, update_index)
+    contact_index = rel_agent.prefetch_interactions_by_contact(db, [match])
+    book = _book_from_spine_contacts(db, user, [match], inter_index, update_index,
+                                     contact_index)
     return book[0] if book else None
 
 
-def _book_from_spine_contacts(db, user, contacts, inter_index, update_index):
+def _book_from_spine_contacts(db, user, contacts, inter_index, update_index,
+                              contact_index=None):
     """Inner loop of _book_from_spine, reusable for single-contact fast path."""
     now = datetime.now(timezone.utc)
     book = []
@@ -236,8 +243,13 @@ def _book_from_spine_contacts(db, user, contacts, inter_index, update_index):
         # so .get returns None -> contact_summary reads that as "not prefetched"
         # and fires a per-contact fetch_activity_updates DB query (the N+1 that
         # made summary_loop ~10s for 80 contacts). [] = "prefetched, none".
-        row = rel_agent.contact_summary(db, c, inter_index, update_index.get(c.id) or [])
-        days = 0
+        row = rel_agent.contact_summary(
+            db, c, inter_index, update_index.get(c.id) or [],
+            interactions_by_contact=(contact_index if contact_index is not None else {}))
+        # days_since = None means "no known interaction" (never messaged / no
+        # synced history) -- distinct from 0 ("touched today"), so the UI can say
+        # so honestly instead of a misleading "moments ago".
+        days = None
         last = row.get("last_touch_at")
         if last is not None:
             try:
@@ -246,7 +258,7 @@ def _book_from_spine_contacts(db, user, contacts, inter_index, update_index):
                     dt = dt.replace(tzinfo=timezone.utc)
                 days = max(0, (now - dt).days)
             except Exception:
-                days = 0
+                days = None
         upd = row.get("latest_update") or {}
         headline = upd.get("title") or upd.get("summary")
         signals = None
@@ -279,6 +291,9 @@ def _book_from_spine_contacts(db, user, contacts, inter_index, update_index):
             "met_at": row.get("met_at") or "",
             "value": "",
             "is_prospect": not row.get("is_connection"),
+            # Lets the UI label a no-history row honestly ("Connected on
+            # LinkedIn") instead of a misleading time when days_since is null.
+            "has_linkedin": bool(row.get("linkedin_url")),
             "stage": row.get("relationship_stage"),
             "interaction_history": row.get("next_step") or "",
             "raw_signals": signals,

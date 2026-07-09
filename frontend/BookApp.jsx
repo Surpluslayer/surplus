@@ -692,7 +692,8 @@ function RelationshipScreen({ row, onBack, onDeleted, isDemo = false }) {
 
   const status = d?.is_prospect ? "new" : d?.status;
   const stat = d && [
-    d.days_since > 0 ? `last spoke ${d.days_since} days ago` : "just met",
+    d.days_since > 0 ? `last spoke ${d.days_since} days ago`
+      : (d.days_since === 0 ? "just met" : ""),
     d.value,
   ].filter(Boolean).join(" · ");
 
@@ -1829,12 +1830,19 @@ function _first(name) { return String(name || "they").trim().split(/\s+/)[0]; }
 function _book_meta(r) {
   const bits = [];
   if (r.met_at) bits.push(`Met at ${r.met_at}`);
-  // "moments ago" is ONLY for a genuinely fresh capture (met today). A
-  // prospect-linked row with real history shows real recency; the backfill
-  // that linked every prospect made the whole book read "moments ago".
-  if (r.is_prospect && !(r.days_since > 0)) bits.push("moments ago");
-  else if (r.review_due) bits.push(r.days_since > 0 ? `review overdue ${r.days_since}d` : "review due");
-  else if (r.days_since > 0) bits.push(`last spoke ${r.days_since}d ago`);
+  // days_since === null/undefined = NO known interaction (a connection we have
+  // no synced messages with). Say so honestly -- never "moments ago", which
+  // falsely reads as "just talked". Reserve "moments ago" for a real same-day
+  // touch (days_since === 0), and show real recency for everything else.
+  if (r.days_since == null) {
+    if (r.has_linkedin) bits.push("Connected on LinkedIn");
+  } else if (r.review_due) {
+    bits.push(r.days_since > 0 ? `review overdue ${r.days_since}d` : "review due");
+  } else if (r.days_since > 0) {
+    bits.push(`last spoke ${r.days_since}d ago`);
+  } else {
+    bits.push("moments ago");
+  }
   return bits.join(" · ");
 }
 

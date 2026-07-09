@@ -7,7 +7,7 @@ derived+stored timeline. Existing event-scoped Prospect flows must keep working
 with contact_id NULL.
 """
 from __future__ import annotations
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
@@ -177,6 +177,71 @@ def test_contact_level_note_appears_on_prospect_timeline(db):
     db.add(ri); db.commit()
     tl = rel.build_timeline(p, rel.fetch_interactions(db, p))
     assert any(it["summary"] == "met again at a different event" for it in tl)
+
+
+def test_activity_update_does_not_reset_last_touch(db):
+    """A passive activity_update (they posted / changed jobs) must NOT count as a
+    touch -- last_touch reflects real interactions only, so detecting someone's
+    LinkedIn activity can't hide the fact that we have gone quiet with them."""
+    u = _user(db)
+    # Prospect-less contact so there's no capture-dated-now touch to confound it.
+    c = models.Contact(user_id=u.id, primary_identity_key="li:au-test",
+                       name="AU Test")
+    db.add(c); db.commit()
+    old = datetime.now(timezone.utc) - timedelta(days=30)
+    # A REAL touch 30 days ago.
+    db.add(models.RelationshipInteraction(
+        actor_user_id=u.id, contact_id=c.id, source_type="manual_note",
+        interaction_type="note", summary="real touch", occurred_at=old))
+    # A passive signal we OBSERVED just now (a LinkedIn post).
+    db.add(models.RelationshipInteraction(
+        actor_user_id=u.id, contact_id=c.id, source_type="activity_update",
+        interaction_type="new_post", summary="they posted",
+        occurred_at=datetime.now(timezone.utc)))
+    db.commit()
+    idx = rel.prefetch_interactions_by_contact(db, [c])
+    s = rel.contact_summary(db, c, {}, [], interactions_by_contact=idx)
+    lt = s["last_touch_at"]
+    assert lt is not None
+    # last_touch is the 30-day-old REAL touch, NOT the just-now activity_update.
+    assert (datetime.now(timezone.utc) - lt).days >= 29, \
+        f"activity_update reset the quiet-clock: last_touch={lt}"
+
+
+def test_contact_summary_last_touch_without_prospect(db):
+    """An import-path contact (NO prospect) with real messages must still get a
+    real last_touch via the contact-centric read -- the bug that made the whole
+    imported book read 'moments ago'."""
+    u = _user(db)
+    c = models.Contact(user_id=u.id, primary_identity_key="li:test-import",
+                       name="Import Person",
+                       linkedin_url="https://linkedin.com/in/testimport")
+    db.add(c); db.commit()
+    old = datetime.now(timezone.utc) - timedelta(days=40)
+    db.add(models.RelationshipInteraction(
+        actor_user_id=u.id, contact_id=c.id, source_type="linkedin",
+        interaction_type="message", direction="in", summary="hi", occurred_at=old))
+    db.commit()
+    # Batch path (what the Book list uses) resolves the real touch.
+    idx = rel.prefetch_interactions_by_contact(db, [c])
+    s = rel.contact_summary(db, c, {}, [], interactions_by_contact=idx)
+    lt = s["last_touch_at"]
+    assert lt is not None, "prospect-less contact got null last_touch (moments-ago bug)"
+    assert (datetime.now(timezone.utc) - lt).days >= 39
+    # Detail path (no index) resolves via fetch_contact_interactions too.
+    assert rel.contact_summary(db, c, {}, [])["last_touch_at"] is not None
+
+
+def test_contact_summary_null_last_touch_when_no_history(db):
+    """A bare connection with zero interactions has a genuinely unknown last
+    touch -> None, so the UI can say 'Connected on LinkedIn' not 'moments ago'."""
+    u = _user(db)
+    c = models.Contact(user_id=u.id, primary_identity_key="li:no-history",
+                       name="No History")
+    db.add(c); db.commit()
+    idx = rel.prefetch_interactions_by_contact(db, [c])
+    s = rel.contact_summary(db, c, {}, [], interactions_by_contact=idx)
+    assert s["last_touch_at"] is None
 
 
 # ── notes route ──────────────────────────────────────────────────────────

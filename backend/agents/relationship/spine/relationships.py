@@ -325,7 +325,14 @@ def relationship_summary(prospect: Any, interactions: Any = None) -> dict:
     _t = time.monotonic()
     timeline = build_timeline(prospect, interactions)
     _SPINE_PROF["timeline"] += time.monotonic() - _t
-    touched = [it for it in timeline if it["occurred_at"] is not None]
+    # A "touch" is a real interaction (message, meeting, note) -- NOT a passive
+    # signal we merely OBSERVED about them (a LinkedIn post / job change / cooling
+    # notice, all source_type "activity_update"). Counting those as a touch would
+    # reset the quiet-clock the instant we detect their activity, hiding people
+    # who have actually gone silent. So last_touch reads real contact only.
+    touched = [it for it in timeline
+               if it["occurred_at"] is not None
+               and it["source_type"] != "activity_update"]
     last_touch_at = touched[-1]["occurred_at"] if touched else None
     last_touch_type = touched[-1]["interaction_type"] if touched else None
 
@@ -825,6 +832,57 @@ def prefetch_interactions_by_prospect(db, contacts) -> dict:
     return result
 
 
+def prefetch_interactions_by_contact(db, contacts) -> dict:
+    """Batch the union of every RelationshipInteraction that belongs to each
+    Contact -- tied DIRECTLY to the contact (contact_id) OR to any of its linked
+    Prospects (prospect_id) -- into ONE query, keyed by contact_id. Mirrors
+    fetch_contact_interactions' union semantics across a whole list.
+
+    This is what lets last_touch work for import-path contacts (no Prospect at
+    all): their history hangs off contact_id, which the prospect-keyed index
+    never surfaces. Returns {contact_id: [RI, ...]}; {} on error."""
+    from .... import models
+    from sqlalchemy import or_
+    contact_ids = [c.id for c in contacts if getattr(c, "id", None) is not None]
+    # prospect_id -> contact_id, so a prospect-linked interaction buckets to its
+    # durable Contact even when it carries no contact_id of its own.
+    p2c: dict = {}
+    for c in contacts:
+        for p in (getattr(c, "prospects", None) or []):
+            pid = getattr(p, "id", None)
+            if pid is not None:
+                p2c[pid] = c.id
+    if not contact_ids and not p2c:
+        return {}
+    try:
+        clauses = []
+        if contact_ids:
+            clauses.append(
+                models.RelationshipInteraction.contact_id.in_(contact_ids))
+        if p2c:
+            clauses.append(
+                models.RelationshipInteraction.prospect_id.in_(list(p2c.keys())))
+        rows = db.query(models.RelationshipInteraction).filter(or_(*clauses)).all()
+    except Exception:  # noqa: BLE001
+        return {}
+    cid_set = set(contact_ids)
+    out: dict = {}
+    seen: dict = {}   # contact_id -> {ri.id} for dedup
+    for ri in rows:
+        cid = getattr(ri, "contact_id", None)
+        if cid not in cid_set:
+            cid = p2c.get(getattr(ri, "prospect_id", None))
+        if cid is None:
+            continue
+        rid = getattr(ri, "id", None)
+        s = seen.setdefault(cid, set())
+        if rid in s:
+            continue
+        s.add(rid)
+        out.setdefault(cid, []).append(ri)
+    return out
+
+
 def fetch_activity_updates(db, contact) -> list:
     """Newest-first activity_update interactions for one durable Contact — the
     'what's new about them' the relationship-watch poller emits (job changes,
@@ -922,7 +980,7 @@ def contact_events(db, contact, interactions_by_prospect=None) -> list[dict]:
 
 
 def contact_summary(db, contact, interactions_by_prospect=None,
-                    activity_updates=None) -> dict:
+                    activity_updates=None, interactions_by_contact=None) -> dict:
     """A durable-person rollup across every event we've shared : who they are,
     when we first met, how many events, the strongest stage reached, the freshest
     touch, and the open next step. The Pillar-1 'who I've met' card.
@@ -933,7 +991,12 @@ def contact_summary(db, contact, interactions_by_prospect=None,
     `activity_updates` (newest-first, from prefetch_activity_updates_by_contact)
     feeds the 'what's new' card fields — latest_update + n_updates — so the CRM
     can show 'Maya changed roles' and float fresh-news contacts to the top.
-    None on the detail path -> fetched directly for this one contact."""
+    None on the detail path -> fetched directly for this one contact.
+
+    `interactions_by_contact` (from prefetch_interactions_by_contact) is what
+    makes last_touch work for import-path contacts that have NO Prospect: their
+    real history hangs off contact_id, invisible to the prospect-keyed rollup.
+    None on the detail path -> fetched directly via fetch_contact_interactions."""
     _t = time.monotonic()
     prospects = list(getattr(contact, "prospects", None) or [])
     _SPINE_PROF["prospects"] += time.monotonic() - _t
@@ -943,12 +1006,37 @@ def contact_summary(db, contact, interactions_by_prospect=None,
     updates = (activity_updates if activity_updates is not None
                else fetch_activity_updates(db, contact))
 
+    # last_touch across the contact's OWN interactions (contact_id + any linked
+    # prospect), so it is correct whether or not the person came through a
+    # Prospect. Real interactions only -- a passive activity_update (they posted /
+    # changed jobs) is an observation, not a touch, so it never resets the clock.
+    if interactions_by_contact is not None:
+        own_interactions = interactions_by_contact.get(
+            getattr(contact, "id", None)) or []
+    else:
+        own_interactions = fetch_contact_interactions(db, contact)
+    own_touches = [
+        _as_aware(getattr(ri, "occurred_at", None))
+        for ri in own_interactions
+        if getattr(ri, "occurred_at", None) is not None
+        and _clean(getattr(ri, "source_type", None)) != "activity_update"
+    ]
+    own_last_touch = max(own_touches) if own_touches else None
+
     stages = [e["relationship_stage"] for e in events]
     first_touches = [e["captured_at"] for e in events if e["captured_at"]]
     last_touches = [e["last_touch_at"] for e in events if e["last_touch_at"]]
     next_steps = [e["next_step"] for e in events if e["next_step"]]
     contact_types = [e["contact_type"] for e in events if e["contact_type"]]
     connected = any(e["connection_status"] == "connected" for e in events)
+
+    # Authoritative last_touch: the newer of the contact-centric read and the
+    # per-event rollup (either may be None). This is what fixes "moments ago" for
+    # import-path contacts -- own_last_touch carries their real message history.
+    _event_last_touch = max(last_touches) if last_touches else None
+    _newest_touch = max(
+        [t for t in (own_last_touch, _event_last_touch) if t is not None],
+        default=None)
 
     # Identity : prefer a linked Prospect carrying real enrichment, else the
     # first one; fall back to the Contact's own stored fields.
@@ -979,7 +1067,7 @@ def contact_summary(db, contact, interactions_by_prospect=None,
         # Where we FIRST met them (events are newest-first) : the Book's met_at.
         "met_at": (events[-1]["event_title"] if events else None),
         "first_met_at": min(first_touches) if first_touches else None,
-        "last_touch_at": max(last_touches) if last_touches else None,
+        "last_touch_at": _newest_touch,
         "relationship_stage": _strongest_stage(stages),
         "contact_types": sorted({c for c in contact_types}),
         "next_step": next_steps[0] if next_steps else None,
