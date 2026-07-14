@@ -397,8 +397,11 @@ def _handle_ai_reply(
     Returns a small dict for the webhook response body, or None if the
     feature was skipped (e.g. provider has no fetch_thread).
     """
+    # Do NOT log the raw inbound body: it's third-party correspondence + PII,
+    # and redaction.py is applied only to LLM input, never to logs. Log length
+    # only so the flow stays debuggable without spilling message content.
     print(f"  [ai_reply] message_replied prospect_id={prospect.id} "
-          f"body={canonical.body[:100]!r}")
+          f"body_len={len(canonical.body or '')}")
     event = prospect.event
     if event is None:
         print(f"  [ai_reply] SKIP prospect_id={prospect.id} : no event linked")

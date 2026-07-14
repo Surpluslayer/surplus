@@ -16,8 +16,24 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import re
 from typing import Iterable
+
+# Cap CSV/import uploads so a single huge body can't OOM the single web worker
+# (WEB_CONCURRENCY=1) — the file is buffered in memory to parse, so this bounds
+# that buffer. 10 MB is ~50k rows of a Luma export; env-tunable. The complete
+# fix also needs an edge/proxy body-size limit; this is the app-level backstop.
+MAX_UPLOAD_BYTES = int(os.environ.get("SURPLUS_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
+
+
+def enforce_upload_size(content: bytes) -> None:
+    """Raise HTTP 413 when an uploaded body exceeds MAX_UPLOAD_BYTES."""
+    if content is not None and len(content) > MAX_UPLOAD_BYTES:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=413,
+            detail=f"Upload too large (limit {MAX_UPLOAD_BYTES // (1024 * 1024)} MB).")
 
 
 # Canonical fields the rest of the triage pipeline expects on an Applicant.
@@ -206,7 +222,9 @@ def parse_csv(content: str | bytes) -> list[dict]:
 
 
 def parse_csv_file(file_obj) -> list[dict]:
-    """Convenience wrapper for FastAPI's UploadFile.file : read the whole
-    file into memory and parse. CSVs are small enough this is fine."""
-    content = file_obj.read()
+    """Convenience wrapper for FastAPI's UploadFile.file : read the file into
+    memory and parse. Bounded read (MAX_UPLOAD_BYTES + 1) so an oversized upload
+    is rejected with 413 instead of buffering unboundedly and OOMing the worker."""
+    content = file_obj.read(MAX_UPLOAD_BYTES + 1)
+    enforce_upload_size(content)
     return parse_csv(content)

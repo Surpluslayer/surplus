@@ -223,8 +223,9 @@ def _surplus_base_url(request: Request) -> str:
       2. Hardcoded apex when the request's Host is a known production
          origin behind the CDN (belt-and-suspenders against missing env
          var on Railway/Fly)
-      3. The request's own origin, forcing https:// for production hosts
-         (local dev / preview builds)
+      3. The request's own origin — ONLY when that origin is trusted
+         (a *.surpluslayer.com / *.railway.app / localhost host). A forged
+         Host is never echoed back (see SECURITY note below).
 
     Always force https:// for surpluslayer.com / railway.app hosts :
     Railway terminates SSL upstream so request.url.scheme is "http" but
@@ -235,12 +236,22 @@ def _surplus_base_url(request: Request) -> str:
     host = request.url.netloc
     if any(host == h or host.startswith(h + ":") for h in _PRODUCTION_ORIGIN_HOSTS):
         return _PRODUCTION_APEX
-    # Trust X-Forwarded-Proto if present, otherwise infer https for production hosts
+    # SECURITY: never echo an untrusted Host header back into a user-facing URL.
+    # This value builds emailed password-reset links and OAuth success redirects;
+    # a forged `Host: evil.com` (when SURPLUS_BASE_URL is unset) would otherwise
+    # send the reset TOKEN to an attacker host = account takeover. Only trust the
+    # request host when it is genuinely one of ours; anything else falls back to
+    # the production apex, not the attacker value.
+    from ..hosts import is_first_party
+    bare_host = host.split(":")[0].lower()
     forwarded = request.headers.get("x-forwarded-proto", "").lower()
     scheme = forwarded or request.url.scheme
-    if "surpluslayer.com" in host or "railway.app" in host:
-        scheme = "https"
-    return f"{scheme}://{host}"
+    if is_first_party(bare_host):
+        return f"https://{host}"
+    if "railway.app" in bare_host or bare_host in ("localhost", "127.0.0.1") \
+            or bare_host.startswith("127."):
+        return f"{scheme}://{host}"
+    return _PRODUCTION_APEX
 
 
 def _redirect_base(request: Request) -> str:
@@ -383,6 +394,52 @@ def _is_mobile_state(state_token: Optional[str]) -> bool:
     return bool(state_token) and state_token.startswith(MOBILE_STATE_PREFIX)
 
 
+def _safe_local_path(raw, default: str = "/") -> str:
+    """Return `raw` only if it is a safe SAME-ORIGIN path, else `default`.
+
+    Guards the post-login redirect against open redirection to an attacker host.
+    Rejects anything that isn't a plain absolute path:
+      - non-strings / values not starting with '/'
+      - protocol-relative targets: '//evil.com' AND '/\\evil.com' (browsers
+        normalize the backslash, so both resolve to a new origin)
+      - embedded control/whitespace chars a browser might strip to reveal a
+        scheme (e.g. '/\\t/evil.com', newlines)
+    Only a leading single '/' followed by ordinary path characters is allowed.
+    """
+    if not isinstance(raw, str) or not raw.startswith("/"):
+        return default
+    # Second char (start of the would-be authority) must not open a new host.
+    if raw[1:2] in ("/", "\\"):
+        return default
+    if any(ord(c) < 0x20 or ord(c) == 0x7f for c in raw):
+        return default
+    return raw
+
+
+def _is_cross_site_toplevel_nav(request: Request) -> bool:
+    """True when a GET is a CROSS-SITE TOP-LEVEL navigation — the classic
+    login-CSRF / session-fixation vector for the cookie-adopting endpoints below.
+
+    An attacker lures a victim to click a link that sets the victim's session
+    cookie to an ATTACKER-supplied token, silently placing the victim inside the
+    attacker's account. We detect it via the browser's Fetch-Metadata headers:
+      - Sec-Fetch-Site: cross-site  → navigation initiated by another site/email
+      - Sec-Fetch-Dest: document    → a TOP-LEVEL page load (the link click)
+
+    The legitimate callers are NOT cross-site top-level documents:
+      - the extension loads /token-bootstrap in an IFRAME (Dest: iframe),
+      - the native app opens /mobile-adopt from a surplus:// deep link
+        (Site: none, OS-initiated),
+      - same-origin SPA navigations are Site: same-origin / same-site.
+
+    Browsers without Fetch-Metadata omit these headers; we fail OPEN there (this
+    is defense-in-depth layered on the token check), blocking only when the
+    headers positively identify a cross-site top-level navigation."""
+    site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+    dest = (request.headers.get("sec-fetch-dest") or "").strip().lower()
+    return site == "cross-site" and dest == "document"
+
+
 @router.get("/mobile-adopt", include_in_schema=False)
 def mobile_adopt(
     request: Request,
@@ -394,6 +451,10 @@ def mobile_adopt(
     surplus_session cookie on THIS WebView navigation and redirects into the
     app. Because the token IS the session secret, holding it already grants the
     session — this just moves it into the WebView's cookie jar."""
+    # SECURITY: refuse to set a session cookie on a cross-site top-level click
+    # (login-CSRF / session fixation). The real WebView deep-link is Site:none.
+    if _is_cross_site_toplevel_nav(request):
+        return RedirectResponse("/signin?error=mobile_adopt_blocked", status_code=303)
     tok = (token or "").strip()
     _h = request_browser_host(request) or None
     ok = False
@@ -1707,8 +1768,14 @@ def token_bootstrap(
     `next` so the SPA falls through to its normal signed-out sign-in screen."""
     # Constrain `next` to a same-origin path so this can't be turned into an
     # open redirect (and the cookie we set always belongs to our own host).
-    safe_next = next if (isinstance(next, str) and next.startswith("/")
-                         and not next.startswith("//")) else "/"
+    safe_next = _safe_local_path(next)
+
+    # SECURITY: refuse to set a session cookie on a cross-site TOP-LEVEL click
+    # (login-CSRF / session fixation — a link that pins the victim to an
+    # attacker-supplied token). The legitimate caller is the extension's Book
+    # IFRAME (Sec-Fetch-Dest: iframe), never a top-level document navigation.
+    if _is_cross_site_toplevel_nav(request):
+        return RedirectResponse(safe_next, status_code=303)
 
     user = _load_user_by_session(db, (token or "").strip() or None)
     host = request_browser_host(request)
@@ -1887,5 +1954,10 @@ def logout(
         if token:
             revoke_session(db, token)
     from ..hosts import request_browser_host
-    clear_session_cookie(response, host=request_browser_host(request))
-    return JSONResponse({"ok": True})
+    # Clear the cookie on the RETURNED response. Mutating the injected `response`
+    # is a no-op here: FastAPI sends the JSONResponse we return and discards the
+    # injected response's headers, so the Set-Cookie delete would be dropped and
+    # the (now-revoked) cookie would linger in the browser.
+    out = JSONResponse({"ok": True})
+    clear_session_cookie(out, host=request_browser_host(request))
+    return out

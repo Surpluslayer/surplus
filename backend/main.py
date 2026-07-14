@@ -70,6 +70,23 @@ def _validate_startup_config() -> list[str]:
         if _missing(name):
             degraded.append(f"{name} ({feature} disabled)")
 
+    # Security posture warnings (prod only): not fatal, but the operator must
+    # SEE them — each is a silent-failure trap the audit flagged.
+    if prod:
+        # At-rest field encryption fails OPEN (pass-through) with no KEK, so OAuth
+        # access/refresh tokens would persist as CLEARTEXT with no other signal.
+        if _missing("SURPLUS_ENCRYPTION_KEK"):
+            degraded.append("SURPLUS_ENCRYPTION_KEK (OAuth tokens stored UNENCRYPTED at rest)")
+        # Emailed reset links / OAuth redirects fall back to the request Host when
+        # this is unset — keep it set so a forged Host can never be echoed.
+        if _missing("SURPLUS_BASE_URL"):
+            degraded.append("SURPLUS_BASE_URL (unset: user-facing links derive from the request Host)")
+        # The inbound-webhook signature check can be disabled via env; that makes
+        # /webhooks/unipile forgeable (auto-DMs, per-user DoS). Warn if disabled.
+        _req_sig = (os.environ.get("UNIPILE_REQUIRE_SIGNATURE") or "").strip().lower()
+        if _req_sig in ("0", "false", "no", "off"):
+            degraded.append("UNIPILE_REQUIRE_SIGNATURE=false (inbound webhooks accept UNSIGNED requests)")
+
     if fatal:
         banner = "STARTUP CONFIG FATAL: " + "; ".join(fatal)
         print("=" * 70 + f"\n  {banner}\n" + "=" * 70, flush=True)
@@ -285,6 +302,15 @@ async def no_store_for_api(request: Request, call_next):
         response.headers.setdefault(
             "Strict-Transport-Security", "max-age=63072000; includeSubDomains")
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    # Clickjacking: only same-origin may frame us. The Chrome extension embeds the
+    # Book cross-origin and strips this header for surpluslayer.com frames via its
+    # declarativeNetRequest rule, so SAMEORIGIN doesn't break the extension while
+    # still blocking arbitrary third-party framing. (frame-ancestors in a CSP
+    # would break the extension, which can't strip CSP — hence XFO here.)
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    # Don't leak full URLs (which can carry tokens on auth-adoption paths) to
+    # third parties via the Referer header on cross-origin navigations.
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
 
     if any(path.startswith(p) for p in _API_PATH_PREFIXES):
         response.headers["Cache-Control"] = (
@@ -801,6 +827,13 @@ def health(deep: bool = False,
     def _env_bool(*names: str) -> bool:
         return any((os.environ.get(n) or "").strip() for n in names)
 
+    def _encryption_on() -> bool:
+        try:
+            from . import crypto
+            return bool(crypto.encryption_enabled())
+        except Exception:  # noqa: BLE001
+            return False
+
     integrations = {
         "anthropic_key_set":      _env_bool("ANTHROPIC_API_KEY"),
         "exa_key_set":            _env_bool("EXA_API_KEY"),
@@ -808,6 +841,9 @@ def health(deep: bool = False,
         "stripe_secret_set":      _env_bool("STRIPE_SECRET_KEY"),
         "stripe_webhook_set":     _env_bool("STRIPE_WEBHOOK_SECRET"),
         "stripe_payment_link_set": _env_bool("STRIPE_PAYMENT_LINK"),
+        # At-rest field encryption active? (KEK provisioned.) So an operator can
+        # confirm OAuth tokens are encrypted rather than silently pass-through.
+        "field_encryption":       _encryption_on(),
     }
 
     # Stripe-webhook freshness proxy : the most recent paid_at timestamp.
@@ -1014,7 +1050,9 @@ def health(deep: bool = False,
         "warnings": warnings,  # PAGE-worthy: non-empty => imminent outage
         "info": info,          # known config gaps: surface, never page/fail on
         "db_url_set": bool((os.environ.get("DATABASE_URL") or "").strip()),
-        "integrations": integrations,
+        # Which integrations/secrets are configured is operator-only recon: expose
+        # it only to an admin-authenticated ?deep=1 caller, not anonymously.
+        "integrations": integrations if deep else None,
         "last_paid_at": last_webhook_paid_at,
         "pending_replies": pending_replies_count,
         "outreach_kill_switch": kill_switch_engaged,
