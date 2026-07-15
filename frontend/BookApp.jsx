@@ -2066,12 +2066,15 @@ const BOOK_CSS = `
 @keyframes bkspin{to{transform:rotate(360deg);}}
 /* A freshly-detected update card pops in: slides up with a green highlight flash
    that fades, so a new update draws the eye without disturbing the rest. */
-.bk-upd--pop{animation:bkpop 1.1s cubic-bezier(.2,.85,.25,1) both; border-radius:12px;}
+.bk-upd--pop{animation:bkpop 1.5s cubic-bezier(.2,.85,.25,1) both; border-radius:12px;}
 @keyframes bkpop{
-  0%{opacity:0; transform:translateY(12px) scale(.985); background:rgba(47,210,122,.22);}
-  35%{opacity:1; transform:translateY(0) scale(1.012); background:rgba(47,210,122,.16);}
-  70%{transform:translateY(0) scale(1); background:rgba(47,210,122,.10);}
-  100%{opacity:1; transform:none; background:transparent;}
+  0%{opacity:0; transform:translateY(20px) scale(.965);
+     background:rgba(47,210,122,.30); box-shadow:0 8px 26px rgba(47,210,122,.32);}
+  28%{opacity:1; transform:translateY(0) scale(1.025);
+      background:rgba(47,210,122,.22); box-shadow:0 8px 26px rgba(47,210,122,.22);}
+  55%{transform:translateY(0) scale(1); background:rgba(47,210,122,.12);
+      box-shadow:0 3px 12px rgba(47,210,122,.10);}
+  100%{opacity:1; transform:none; background:transparent; box-shadow:none;}
 }
 
 .bk-scroll{flex:1; overflow-y:auto; padding-bottom:20px;}
