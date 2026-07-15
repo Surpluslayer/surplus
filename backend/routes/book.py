@@ -327,18 +327,19 @@ _BOOK_CACHE_TTL = float(os.environ.get("BOOK_CACHE_TTL", "300"))
 
 
 def _book_fingerprint(db: Session, user_id: int) -> tuple:
-    """A cheap key that moves whenever the book's inputs change: how many
-    contacts the user has + the newest interaction timestamp. Two small indexed
-    aggregates -- far cheaper than building the book. On error returns a unique
-    sentinel so we simply don't serve from cache (never a stale hit)."""
+    """A cheap key that moves when the roster changes: the user's contact count.
+    Deliberately does NOT fold in the newest interaction timestamp -- the daily
+    Bright Data sweep adds interactions to existing contacts constantly, which
+    would move the key on every request and defeat the cache entirely. A capture
+    (the moment freshness matters for the demo) adds a NEW contact, so the count
+    moves and the cache invalidates; passive sweep updates to existing people
+    ride the TTL instead. One tiny indexed COUNT -- far cheaper than a build. On
+    error returns a unique sentinel so we simply don't serve from cache."""
     from sqlalchemy import func
     try:
         n = (db.query(func.count(models.Contact.id))
                .filter(models.Contact.user_id == user_id).scalar()) or 0
-        ts = (db.query(func.max(models.RelationshipInteraction.created_at))
-                .filter(models.RelationshipInteraction.actor_user_id == user_id)
-                .scalar())
-        return (n, ts.isoformat() if ts else "")
+        return (n,)
     except Exception:  # noqa: BLE001 : never let the key computation break a load
         return (object(),)
 

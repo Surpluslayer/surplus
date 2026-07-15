@@ -48,10 +48,8 @@ def test_cache_reuses_build_then_rebuilds_on_change(db, monkeypatch):
     bk._load_book(db, u)
     assert calls["n"] == 1  # second read served from cache (fingerprint stable)
 
-    # A new interaction moves the fingerprint -> next read rebuilds.
-    db.add(models.RelationshipInteraction(
-        actor_user_id=u.id, source_type="manual_note", interaction_type="note",
-        occurred_at=datetime.now(timezone.utc)))
+    # A new contact (a capture) moves the fingerprint -> next read rebuilds.
+    db.add(models.Contact(user_id=u.id, primary_identity_key="li:new", name="New"))
     db.commit()
     bk._load_book(db, u)
     assert calls["n"] == 2

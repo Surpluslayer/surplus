@@ -547,7 +547,10 @@ def _prioritized_for_ask(book: list[dict], query: str, cap: int) -> list[dict]:
     if len(book) <= cap:
         return book
     q = (query or "").lower()
-    scored = [(c, score_health(c)) for c in book]
+    # Rank with the DETERMINISTIC heuristic, never the LLM score_health -- ranking
+    # the whole book to pick a cap must not fire an LLM call per contact (that was
+    # a 494-call 'You score the health' storm that starved the real ask).
+    scored = [(c, _score_health_heuristic(c)) for c in book]
     cadence = any(k in q for k in ("cool", "cold", "dormant", "quiet", "follow",
                                    "outreach", "touch", "reconnect", "reach out",
                                    "lost", "overdue"))
