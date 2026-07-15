@@ -1143,6 +1143,10 @@ function ConnectionsScreen({ user, onBack }) {
     if (/outlook|hotmail|live|microsoft|office365/.test(dom)) return "Outlook";
     return "Mailbox";
   };
+  // Don't show "Add Gmail"/"Add Outlook" for a provider that's already connected
+  // -- otherwise "Gmail" appears twice (the connected row + a redundant Add row).
+  const hasGmail = (emailAccounts || []).some((a) => providerLabel(a) === "Gmail");
+  const hasOutlook = (emailAccounts || []).some((a) => providerLabel(a) === "Outlook");
   // Google (calendar + contacts) -- from /me (instant on/off, no separate fetch).
   const googleOn = !!u?.google_connected;
   // Zoom -- shown only when the server has Zoom creds (available.zoom), connected
@@ -1190,14 +1194,18 @@ function ConnectionsScreen({ user, onBack }) {
                        connected={acct.status === "active"}
                        onConnect={() => connect(api.startEmailAuth, "email")} />
             ))}
-            <ConnRow icon={<Mail size={21} />} name="Add Gmail"
-                     sub="Connect a Google mailbox"
-                     connected={false}
-                     onConnect={() => connect(() => api.startEmailAuth("google"), "Gmail")} />
-            <ConnRow icon={<Mail size={21} />} name="Add Outlook"
-                     sub="Connect a Microsoft 365 / Outlook mailbox"
-                     connected={false}
-                     onConnect={() => connect(() => api.startEmailAuth("outlook"), "Outlook")} />
+            {!hasGmail && (
+              <ConnRow icon={<Mail size={21} />} name="Add Gmail"
+                       sub="Connect a Google mailbox"
+                       connected={false}
+                       onConnect={() => connect(() => api.startEmailAuth("google"), "Gmail")} />
+            )}
+            {!hasOutlook && (
+              <ConnRow icon={<Mail size={21} />} name="Add Outlook"
+                       sub="Connect a Microsoft 365 / Outlook mailbox"
+                       connected={false}
+                       onConnect={() => connect(() => api.startEmailAuth("outlook"), "Outlook")} />
+            )}
           </>
         ) : (
           // No mailbox yet : explicit Gmail + Outlook connect rows. Both go
