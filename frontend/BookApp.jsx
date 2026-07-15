@@ -1646,7 +1646,7 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
       // Explicit Send = send NOW, regardless of the auto-send toggle (which only
       // governs the unattended cron). schedule(send_at=null) sends immediately.
       const r = await api.scheduleContactFollowup(draft.contact_id, body, null);
-      setDone(r.status === "sent" ? "Sent" : "Saved as draft");
+      setDone(r.status === "sent" ? "LinkedIn sent" : "Saved as draft");
     } catch (e) {
       const code = e?.body?.detail?.code || e?.body?.code;
       if (e?.status === 402 || code === "linkedin_send_locked" || code === "payment_required") {
@@ -1657,6 +1657,16 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
       setErr(e.message || "Couldn't send");
     }
     finally { setWorking(""); }
+  };
+
+  // Email send is a demo affordance for now: it doesn't actually send yet, it
+  // just confirms so the two-channel (LinkedIn + Email) flow is shown. LinkedIn
+  // (sendNow) is the real send.
+  const emailSend = async () => {
+    if (!canSend || working) return;
+    setWorking("email"); setErr(""); setDone("");
+    await new Promise((r) => setTimeout(r, 600));
+    setDone("Email sent"); setWorking("");
   };
 
   const schedule = async () => {
@@ -1728,11 +1738,18 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
 
             <div className="bk-sheet-actions">
               {canSend ? (
-                <button className="bk-btn bk-btn--primary bk-btn--block"
-                        disabled={!!working} onClick={sendNow}>
-                  <Send size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
-                  {working === "send" ? "Sending…" : "Send now"}
-                </button>
+                <>
+                  <button className="bk-btn bk-btn--primary bk-btn--block"
+                          disabled={!!working} onClick={sendNow}>
+                    <Send size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
+                    {working === "send" ? "Sending…" : "Send via LinkedIn"}
+                  </button>
+                  <button className="bk-btn bk-btn--block"
+                          disabled={!!working} onClick={emailSend}>
+                    <Mail size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
+                    {working === "email" ? "Sending…" : "Send via Email"}
+                  </button>
+                </>
               ) : isDemo ? (
                 <button className="bk-btn bk-btn--primary bk-btn--block" onClick={() => goToSignup("draft_send")}>
                   <Send size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
