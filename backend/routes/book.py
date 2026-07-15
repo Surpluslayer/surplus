@@ -260,7 +260,13 @@ def _book_from_spine_contacts(db, user, contacts, inter_index, update_index,
             except Exception:
                 days = None
         upd = row.get("latest_update") or {}
-        headline = upd.get("title") or upd.get("summary")
+        # Prefer a specific title, but a bare "Update" (account-cooling and other
+        # kinds not in _TITLES) tells the user nothing -- fall back to the summary
+        # ("Casus Capital is cooling: no touch in 34 days"), which is what makes
+        # the feed read as real intelligence rather than a wall of "Update".
+        _ttl = (upd.get("title") or "").strip()
+        headline = (_ttl if _ttl and _ttl.lower() != "update"
+                    else (upd.get("summary") or _ttl or "Update"))
         signals = None
         if headline:
             occurred = upd.get("occurred_at")

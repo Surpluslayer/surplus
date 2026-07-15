@@ -38,6 +38,7 @@ _TITLES = {
     "promotion": "Promoted",
     "profile_update": "Updated profile",
     "new_post": "New LinkedIn post",
+    "account_cooling": "Going quiet",
 }
 
 
