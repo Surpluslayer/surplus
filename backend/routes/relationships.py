@@ -83,17 +83,42 @@ def _owned_contact(db: Session, contact_id: int, user: models.User) -> models.Co
     return c
 
 
-def _sendable_prospect(contact: models.Contact) -> models.Prospect:
-    """Resolve a Contact to the per-event Prospect a follow-up acts through:
-    the most-recently captured linked prospect that still has an owning event
-    (send_and_log / scheduling both need prospect.event). 409 if none."""
+def _sendable_prospect(db, contact: models.Contact, user) -> models.Prospect:
+    """Resolve a Contact to the per-event Prospect a follow-up acts through
+    (send_and_log / scheduling both need prospect.event).
+
+    An import-path contact (LinkedIn/email, no event capture) has NO linked
+    prospect -- so instead of a dead-end 409, mint one under the user's durable
+    'book' Event. This makes a send work regardless of where the contact came
+    from (the same prospect-first seam the Book roster had for last_touch)."""
     linked = [p for p in (getattr(contact, "prospects", None) or [])
               if getattr(p, "event", None) is not None]
-    if not linked:
-        raise HTTPException(409, "contact has no sendable event prospect")
-    linked.sort(key=lambda p: getattr(p, "captured_at", None) or _MIN_DT,
-                reverse=True)
-    return linked[0]
+    if linked:
+        linked.sort(key=lambda p: getattr(p, "captured_at", None) or _MIN_DT,
+                    reverse=True)
+        return linked[0]
+    # Find-or-create a per-user 'book' event to hang the minted prospect on.
+    ev = (db.query(models.Event)
+            .filter_by(user_id=user.id, kind="book").first())
+    if ev is None:
+        ev = models.Event(user_id=user.id, kind="book", label="Your book", city="")
+        db.add(ev)
+        db.flush()
+    p = models.Prospect(
+        event_id=ev.id, contact_id=contact.id,
+        identity=(getattr(contact, "primary_identity_key", None)
+                  or getattr(contact, "linkedin_url", None)
+                  or getattr(contact, "name", None) or "unknown"),
+        name=getattr(contact, "name", None) or "Unknown",
+        company=getattr(contact, "company", None) or "Unknown",
+        linkedin_url=getattr(contact, "linkedin_url", None),
+        linkedin_provider_id=getattr(contact, "linkedin_provider_id", None),
+        status="contacted", sources="book",
+        captured_at=datetime.now(timezone.utc))
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return p
 
 
 def _fire_booking_after_send(db, user, contact, booking_payload, text: str):
@@ -245,7 +270,7 @@ def send_contact_email(
     text = (body.message or "").strip()
     if not text:
         raise HTTPException(422, "message is required")
-    prospect = _sendable_prospect(contact)
+    prospect = _sendable_prospect(db, contact, user)
 
     to_address = ((getattr(prospect, "email", None) or "").strip().lower()
                   or (contact.email or "").strip().lower())
@@ -993,7 +1018,7 @@ def send_contact_followup(
             contact_id, EmailSendIn(message=text, subject=body.subject),
             db, user)
 
-    prospect = _sendable_prospect(contact)
+    prospect = _sendable_prospect(db, contact, user)
 
     # Approving a specific message IS the user deciding: a manual send, so it
     # always sends (the autonomy gates only govern UNATTENDED sends). The old
@@ -1056,7 +1081,7 @@ def schedule_contact_followup(
     text = (body.message or "").strip()
     if not text:
         raise HTTPException(422, "message is required")
-    prospect = _sendable_prospect(contact)
+    prospect = _sendable_prospect(db, contact, user)
 
     now = datetime.now(timezone.utc)
     send_at = body.send_at
