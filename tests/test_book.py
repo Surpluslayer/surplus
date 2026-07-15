@@ -117,3 +117,29 @@ def test_ask_agent_routes_queries():
     reviews = b.ask_agent(book, "reviews due")
     names = {p["name"] for p in reviews["people"]}
     assert "Margaret Chen" in names  # she has review_due=True
+
+
+def test_prioritized_for_ask_caps_large_book_by_cadence():
+    """A large book is capped to the most-relevant contacts before the selection
+    LLM: a cadence/quiet ask keeps the coldest (needs_outreach) and drops the
+    fresh tail, so the prompt stays small no matter how big the book is."""
+    # 50 fresh contacts (recently touched) + 5 clearly-cold ones.
+    fresh = [{"id": i, "name": f"Fresh{i}", "days_since": 1, "stage": "active"}
+             for i in range(50)]
+    cold = [{"id": 900 + i, "name": f"Cold{i}", "days_since": 400,
+             "stage": "contacted"} for i in range(5)]
+    book = fresh + cold
+
+    capped = b._prioritized_for_ask(book, "who's gone quiet", cap=10)
+    names = {c["name"] for c in capped}
+    # Cadence ask keeps the cooling contacts and drops the fresh tail entirely
+    # (no padding with recently-touched people).
+    assert len(capped) <= 10
+    for i in range(5):
+        assert f"Cold{i}" in names
+    assert not any(n.startswith("Fresh") for n in names)
+
+
+def test_prioritized_for_ask_noop_under_cap():
+    book = [{"id": i, "name": f"C{i}", "days_since": 5} for i in range(10)]
+    assert b._prioritized_for_ask(book, "anything", cap=80) is book

@@ -536,12 +536,40 @@ def _ask_payload(book: list[dict]) -> list[dict]:
     return slim
 
 
+def _prioritized_for_ask(book: list[dict], query: str, cap: int) -> list[dict]:
+    """Rank a large book down to the CAP most-relevant contacts before the
+    selection LLM sees it, so the prompt (and thus latency) stays bounded no
+    matter how big the book grows. A cadence/quiet ask ranks by who is coldest
+    (needs_outreach, then priority); everything else by overall priority. The
+    tail of a big book is almost never the answer to 'who should I act on', so
+    this is a latency win with negligible selection-quality loss. Books at or
+    under the cap are returned unchanged (behavior-preserving)."""
+    if len(book) <= cap:
+        return book
+    q = (query or "").lower()
+    scored = [(c, score_health(c)) for c in book]
+    cadence = any(k in q for k in ("cool", "cold", "dormant", "quiet", "follow",
+                                   "outreach", "touch", "reconnect", "reach out",
+                                   "lost", "overdue"))
+    if cadence:
+        pool = [(c, h) for (c, h) in scored if h.get("needs_outreach")] or scored
+    else:
+        pool = scored
+    pool.sort(key=lambda ch: -(ch[1].get("priority") or 0))
+    return [c for (c, _h) in pool[:cap]]
+
+
 def ask_agent(book: list[dict], query: str) -> dict:
     """The freeform ask bar + chip queries. {answer, people}. SELECTION ONLY:
     it picks who + why and returns draft=null; the caller (routes/book.py) then
     drafts each selected person through the shared composer (voice + their real
     thread + dash scrub). Keeping drafting out of this call keeps it fast and
-    avoids the model inventing generic, em-dash-laden messages over a big book."""
+    avoids the model inventing generic, em-dash-laden messages over a big book.
+
+    A big book is pre-ranked down to ASK_BOOK_CAP contacts (default 80) so the
+    selection prompt stays small and fast even at thousands of contacts."""
+    cap = max(20, int(os.environ.get("ASK_BOOK_CAP", "80")))
+    book = _prioritized_for_ask(book, query, cap)
     user = (
         "The user's book (scored contacts):\n"
         + json.dumps(_ask_payload(book), default=str)
