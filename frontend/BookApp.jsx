@@ -141,10 +141,24 @@ export default function BookApp() {
   }, [user]);
   const onbGo = (i) => {
     const next = Math.min(Math.max(i, 0), BK_ONB_STEPS.length - 1);
+    const nextDef = BK_ONB_STEPS[next];
     setOnbStep(next);
     // Put the screen the step points at in front of the visitor.
     setRoute(null);
-    setTab(BK_ONB_STEPS[next].tab);
+    setTab(nextDef.tab);
+    // "Send it" needs the Draft popup open -- that's where its Send button
+    // lives. Open one automatically (reusing whatever's already open, else
+    // the first draftable contact) instead of relying on the visitor having
+    // tapped a real Draft link themselves: skipping that step is what left
+    // step 5 with no anchor to find, dead-ending the tour. Every other step
+    // needs the popup CLOSED -- it's a full-screen sheet that blocks
+    // everything behind it, including the Ask bar step 4 points at -- so
+    // close it on the way to any step that isn't Send.
+    if (nextDef.key === "send2") {
+      setDraftFor((cur) => cur || _firstDraftable(feed));
+    } else {
+      setDraftFor(null);
+    }
   };
   const onbClose = () => setOnbOn(false);
 
@@ -1915,6 +1929,21 @@ function _rel_time(iso) {
 // switches to the right tab as the visitor advances, so the highlighted
 // control is always on screen. Mirrors the in-person OnboardingCoach pattern.
 
+// Same shape DraftLink's onClick hands to onDraft, so the "Send it" step can
+// open a real draft on the visitor's behalf if they never tapped one
+// themselves. Prefers an update with a ready draft, else the first
+// needs-outreach contact; null (no draftable contact yet) lets the step's
+// waitForAnchor guard keep it hidden rather than open an empty sheet.
+function _firstDraftable(feed) {
+  if (!feed) return null;
+  const u = (feed.updates || []).find((x) => x.can_draft);
+  if (u) return { name: u.name, contact_id: u.contact_id,
+                   trigger: u.trigger || u.headline, body: u.draft, subject: u.draft_subject };
+  const n = (feed.needs_outreach || [])[0];
+  if (n) return { name: n.name, contact_id: n.contact_id, trigger: n.trigger || n.reason };
+  return null;
+}
+
 const BK_ONB_STEPS = [
   {
     key: "add", tab: "today", anchor: "add", place: "top",
@@ -1930,6 +1959,7 @@ const BK_ONB_STEPS = [
     key: "send", tab: "today", anchor: "draft", place: "bottom",
     title: "Draft a follow-up",
     body: "Tap Draft to review a message in your voice.",
+    insidePopup: true,
   },
   {
     key: "ask", tab: "today", anchor: "ask", place: "bottom",
@@ -2015,11 +2045,12 @@ function BookOnboarding({ step, onGo, onClose, popupOpen }) {
   // until that anchor actually shows up in the DOM.
   if (def.waitForAnchor && !rect) return null;
 
-  // The Draft sheet is a full-screen popup: every step except the one that
-  // lives inside it (insidePopup) must stay hidden while it's open, or the
-  // tour card renders stacked on top of the still-open sheet. Once the
-  // visitor closes the sheet, the step reappears on its own (no dismiss
-  // needed) since this is just a render guard, not state.
+  // The Draft sheet is a full-screen popup: any step not marked compatible
+  // with it (insidePopup -- either its anchor lives inside the sheet, or its
+  // instructed action is what opens the sheet) must stay hidden while it's
+  // open, or the tour card renders stacked on top of the still-open sheet.
+  // Once the visitor closes the sheet, the step reappears on its own (no
+  // dismiss needed) since this is just a render guard, not state.
   if (popupOpen && !def.insidePopup) return null;
 
   const next = () => {
