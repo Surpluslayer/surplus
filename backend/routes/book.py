@@ -515,16 +515,24 @@ def today(db: Session = Depends(get_db),
     feed = book_agent.build_today(book)
     name = _host_name(user)
     feed["advisor_name"] = name
-    # Warm drafts in the background for the people this feed is about to tell
-    # the user to contact, so the draft panel is usually instant on tap.
+    # Warm drafts in the background ONLY for the top few the user is likely to
+    # open first, so the draft panel is usually instant on tap. Pre-drafting the
+    # WHOLE feed (hundreds of updates) fired hundreds of 8-22s LLM calls that
+    # saturated the pool and starved the foreground ask (a 'who's gone quiet' was
+    # seen taking 76s behind them). The rest draft lazily on tap -- the draft
+    # sheet already composes on open when the cache is cold. The feed is already
+    # ordered (updates newest-first, needs-outreach by priority), so the head is
+    # the most-likely-opened slice.
+    predraft_max = max(0, int(os.environ.get("TODAY_PREDRAFT_MAX", "12")))
     by_id = {c.get("id"): c for c in book}
     pairs = [(by_id[r["contact_id"]], r.get("trigger") or "catching up")
              for r in feed["needs_outreach"] + feed["updates"]
              if r.get("contact_id") in by_id and (r.get("can_draft") is not False)]
+    pairs = pairs[:predraft_max]
     book_agent.predraft(pairs, user_name=name)
     _trace(f"GET /today user={user.id}: {len(feed['updates'])} updates, "
            f"{len(feed['needs_outreach'])} needs-outreach, predraft {len(pairs)} "
-           f"in {time.monotonic()-t0:.2f}s")
+           f"(cap {predraft_max}) in {time.monotonic()-t0:.2f}s")
     return feed
 
 
