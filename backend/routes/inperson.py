@@ -556,13 +556,31 @@ def send_capture(
         and datetime.now(timezone.utc) - checked_at < timedelta(minutes=3)
     )
 
-    outcome = route_and_send(
-        db, p, provider, p.event,
-        note=send_note,
-        message=body.message or None,
-        draft=stored_draft,
-        refresh_connection=not status_is_fresh,
-    )
+    try:
+        outcome = route_and_send(
+            db, p, provider, p.event,
+            note=send_note,
+            message=body.message or None,
+            draft=stored_draft,
+            # Trust a fresh status for latency; an already-connected person whose
+            # status is stale-wrong is still recovered inside route_and_send (the
+            # invite fails, a live check confirms the relation, and it sends the
+            # DM instead of a 500).
+            refresh_connection=not status_is_fresh,
+        )
+    except HTTPException as he:
+        if he.status_code < 500:
+            raise  # clean, intentional 4xx (recent-send 409, note-too-long 400)
+        db.rollback()
+        return {"prospect_id": p.id, "prospect_name": p.name,
+                "linkedin_url": p.linkedin_url, "state": "failed", "dry_run": False,
+                "error": str(getattr(he, "detail", he)), "path_taken": None}
+    except Exception as exc:  # noqa: BLE001 : never surface a raw 500 to the send UI
+        db.rollback()
+        return {"prospect_id": p.id, "prospect_name": p.name,
+                "linkedin_url": p.linkedin_url, "state": "failed", "dry_run": False,
+                "error": f"Couldn't send: {type(exc).__name__}: {exc}",
+                "path_taken": None}
     res = outcome.res
     return {
         "prospect_id": p.id,

@@ -165,8 +165,11 @@ def route_and_send(
                     prospect.linkedin_provider_id = li_id
             except Exception as exc:  # noqa: BLE001
                 raise HTTPException(502, f"linkedin lookup failed: {exc}")
+        # For an already-connected person there is no invite to attach a note to
+        # -- the note IS the opener. Fall back to it when no separate message was
+        # given, so a warm send never goes out empty.
         lead = provider.build_lead_payload(
-            prospect, ev, note=draft.note, message=final_message)
+            prospect, ev, note=draft.note, message=(final_message or final_note))
         res = provider.send_message(
             lead, linkedin_provider_id=prospect.linkedin_provider_id)
         if not provider.dry_run and res.state == "message_sent":
@@ -183,11 +186,43 @@ def route_and_send(
         lead = provider.build_lead_payload(
             prospect, ev, note=final_note, message=final_message)
         res = provider.send_connection(lead)
-        if res.linkedin_provider_id:
-            prospect.linkedin_provider_id = res.linkedin_provider_id
-        if not provider.dry_run and res.state == "invite_sent":
-            prospect.status = "contacted"
-        path_taken = "cold"
+        # Already-connected recovery: the cached status can be stale (or the scan
+        # missed the relation), so an invite is sent to someone we are ALREADY
+        # connected to and fails. If a live check confirms the connection, send
+        # the note as a DM instead of surfacing a dead-end error.
+        recovered = False
+        if res.error and not provider.dry_run:
+            try:
+                already = provider.is_relation(prospect.linkedin_url or "")
+            except Exception:  # noqa: BLE001
+                already = False
+            if already:
+                prospect.connection_status = "connected"
+                pid = prospect.linkedin_provider_id
+                if not pid or str(pid).startswith("dry_"):
+                    try:
+                        pid = provider.resolve_linkedin_user(prospect.linkedin_url) or pid
+                    except Exception:  # noqa: BLE001
+                        pass
+                if pid:
+                    prospect.linkedin_provider_id = pid
+                    lead = provider.build_lead_payload(
+                        prospect, ev, note=draft.note,
+                        message=(final_message or final_note))
+                    res = provider.send_message(lead, linkedin_provider_id=pid)
+                    if not provider.dry_run and res.state == "message_sent":
+                        prospect.status = "contacted"
+                        from .followup_scheduler import stage_followup
+                        stage_followup(db, prospect, commit=False)
+                    recovered = True
+        if recovered:
+            path_taken = "warm"
+        else:
+            if res.linkedin_provider_id:
+                prospect.linkedin_provider_id = res.linkedin_provider_id
+            if not provider.dry_run and res.state == "invite_sent":
+                prospect.status = "contacted"
+            path_taken = "cold"
 
     if not provider.dry_run and not res.error:
         from ..context.reconcile import clear_prospect_next_step_if_fulfilled
