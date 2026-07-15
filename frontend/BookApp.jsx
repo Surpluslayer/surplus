@@ -334,7 +334,7 @@ function Avatar({ user, feed, onAccount }) {
 function TopbarActions({ user, feed, onAdd, onAccount }) {
   return (
     <div className="bk-topbar-actions">
-      <button className="bk-topcapture" onClick={onAdd} aria-label="Capture"
+      <button data-onb="add" className="bk-topcapture" onClick={onAdd} aria-label="Capture"
               title="Capture">
         <Plus size={15} /> Capture
       </button>
