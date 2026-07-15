@@ -140,25 +140,24 @@ export default function BookApp() {
     return () => window.removeEventListener("pageshow", arm);
   }, [user]);
   const onbGo = (i) => {
-    const next = Math.min(Math.max(i, 0), BK_ONB_STEPS.length - 1);
+    const forward = i >= onbStep;
+    let next = Math.min(Math.max(i, 0), BK_ONB_STEPS.length - 1);
+    // "Send it" only makes sense while a Draft popup the visitor opened
+    // themselves is actually open -- that's where its Send button lives.
+    // We don't force one open: that'd depend on an AI draft finishing
+    // generation, which is too unreliable to gate a tour step on and is
+    // what left step 5 permanently stuck waiting for an anchor that might
+    // never appear. Instead, if there's no popup open when we'd land here,
+    // skip straight past it (to Referrals going forward, back to Ask going
+    // back) rather than show a step with nothing to point at.
+    if (BK_ONB_STEPS[next].key === "send2" && !draftFor) {
+      next = Math.min(Math.max(next + (forward ? 1 : -1), 0), BK_ONB_STEPS.length - 1);
+    }
     const nextDef = BK_ONB_STEPS[next];
     setOnbStep(next);
     // Put the screen the step points at in front of the visitor.
     setRoute(null);
     setTab(nextDef.tab);
-    // "Send it" needs the Draft popup open -- that's where its Send button
-    // lives. Open one automatically (reusing whatever's already open, else
-    // the first draftable contact) instead of relying on the visitor having
-    // tapped a real Draft link themselves: skipping that step is what left
-    // step 5 with no anchor to find, dead-ending the tour. Every other step
-    // needs the popup CLOSED -- it's a full-screen sheet that blocks
-    // everything behind it, including the Ask bar step 4 points at -- so
-    // close it on the way to any step that isn't Send.
-    if (nextDef.key === "send2") {
-      setDraftFor((cur) => cur || _firstDraftable(feed));
-    } else {
-      setDraftFor(null);
-    }
   };
   const onbClose = () => setOnbOn(false);
 
@@ -1929,21 +1928,6 @@ function _rel_time(iso) {
 // switches to the right tab as the visitor advances, so the highlighted
 // control is always on screen. Mirrors the in-person OnboardingCoach pattern.
 
-// Same shape DraftLink's onClick hands to onDraft, so the "Send it" step can
-// open a real draft on the visitor's behalf if they never tapped one
-// themselves. Prefers an update with a ready draft, else the first
-// needs-outreach contact; null (no draftable contact yet) lets the step's
-// waitForAnchor guard keep it hidden rather than open an empty sheet.
-function _firstDraftable(feed) {
-  if (!feed) return null;
-  const u = (feed.updates || []).find((x) => x.can_draft);
-  if (u) return { name: u.name, contact_id: u.contact_id,
-                   trigger: u.trigger || u.headline, body: u.draft, subject: u.draft_subject };
-  const n = (feed.needs_outreach || [])[0];
-  if (n) return { name: n.name, contact_id: n.contact_id, trigger: n.trigger || n.reason };
-  return null;
-}
-
 const BK_ONB_STEPS = [
   {
     key: "add", tab: "today", anchor: "add", place: "top",
@@ -1970,7 +1954,7 @@ const BK_ONB_STEPS = [
     key: "send2", tab: "today", anchor: "send", place: "bottom",
     title: "Send it",
     body: "Hit Send, no copy-paste.",
-    waitForAnchor: true, insidePopup: true,
+    insidePopup: true,
   },
   {
     key: "list", tab: "referrals", anchor: "referrals", place: "top",
@@ -2038,12 +2022,6 @@ function BookOnboarding({ step, onGo, onClose, popupOpen }) {
       window.removeEventListener("resize", measure);
     };
   }, [selector]);
-
-  // Some steps point at UI that only exists once the visitor has taken the
-  // prior step's action (e.g. the Send button lives inside the Draft popup).
-  // Rather than fall back to a floating, out-of-context toast, stay hidden
-  // until that anchor actually shows up in the DOM.
-  if (def.waitForAnchor && !rect) return null;
 
   // The Draft sheet is a full-screen popup: any step not marked compatible
   // with it (insidePopup -- either its anchor lives inside the sheet, or its
