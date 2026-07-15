@@ -310,10 +310,55 @@ def _book_from_spine_contacts(db, user, contacts, inter_index, update_index,
     return book
 
 
+# Per-user built-book cache. Building the book is O(all contacts) -- once the
+# book went contact-first (494 contacts here vs ~5 prospects before), every ask
+# AND every Today render rebuilt all of it. We cache the built book keyed by a
+# CHEAP fingerprint (contact count + newest interaction timestamp), so repeated
+# reads reuse one build, but the instant anything changes -- a capture adds a
+# contact, an update lands a new interaction -- the fingerprint moves and the
+# next read rebuilds. This keeps the feed fast WITHOUT ever showing a stale book
+# (no fixed TTL freshness gap for the demo's capture-then-Today moment). The TTL
+# is only a backstop for changes the fingerprint can't see (e.g. a bare field
+# edit). Per worker process; each computes its own fingerprint, so it is
+# correct across Railway's multiple workers with no cross-process signalling.
+_BOOK_CACHE: dict = {}                       # user_id -> (fingerprint, book, built_at)
+_BOOK_CACHE_LOCK = threading.Lock()
+_BOOK_CACHE_TTL = float(os.environ.get("BOOK_CACHE_TTL", "300"))
+
+
+def _book_fingerprint(db: Session, user_id: int) -> tuple:
+    """A cheap key that moves whenever the book's inputs change: how many
+    contacts the user has + the newest interaction timestamp. Two small indexed
+    aggregates -- far cheaper than building the book. On error returns a unique
+    sentinel so we simply don't serve from cache (never a stale hit)."""
+    from sqlalchemy import func
+    try:
+        n = (db.query(func.count(models.Contact.id))
+               .filter(models.Contact.user_id == user_id).scalar()) or 0
+        ts = (db.query(func.max(models.RelationshipInteraction.created_at))
+                .filter(models.RelationshipInteraction.actor_user_id == user_id)
+                .scalar())
+        return (n, ts.isoformat() if ts else "")
+    except Exception:  # noqa: BLE001 : never let the key computation break a load
+        return (object(),)
+
+
 def _load_book(db: Session, user: models.User) -> list[dict]:
     """Real book from the spine; only DEMO users fall back to the demo roster
-    (a real account with an empty spine gets an empty book, not fake clients)."""
+    (a real account with an empty spine gets an empty book, not fake clients).
+
+    Served from a per-user fingerprint cache so a large contact-first book does
+    not get rebuilt on every ask/Today render."""
     t0 = time.monotonic()
+    fp = _book_fingerprint(db, user.id)
+    now = time.monotonic()
+    with _BOOK_CACHE_LOCK:
+        hit = _BOOK_CACHE.get(user.id)
+    if hit and hit[0] == fp and (now - hit[2]) < _BOOK_CACHE_TTL:
+        _trace(f"load_book user={user.id} -> {len(hit[1])} contacts (cache) "
+               f"in {time.monotonic()-t0:.2f}s")
+        return hit[1]
+
     book = _book_from_spine(db, user)
     from ..auth import is_demo_user
     if is_demo_user(user):
@@ -327,6 +372,8 @@ def _load_book(db: Session, user: models.User) -> list[dict]:
     else:
         book = []
         src = "empty"
+    with _BOOK_CACHE_LOCK:
+        _BOOK_CACHE[user.id] = (fp, book, now)
     _trace(f"load_book user={user.id} -> {len(book)} contacts ({src}) "
            f"in {time.monotonic()-t0:.2f}s")
     return book
