@@ -259,7 +259,8 @@ export default function BookApp() {
                   onClick={() => goTab("today")}>
             <LayoutDashboard size={19} /><span>Today</span>
           </button>
-          <button className={"bk-nav-item" + (activeNav === "referrals" ? " on" : "")}
+          <button data-onb="referrals"
+                  className={"bk-nav-item" + (activeNav === "referrals" ? " on" : "")}
                   onClick={() => goTab("referrals")}>
             <Sparkles size={19} /><span>Referrals</span>
           </button>
@@ -278,7 +279,8 @@ export default function BookApp() {
       {draftFor && <DraftSheet draft={draftFor} onClose={() => setDraftFor(null)}
                                isDemo={!!user?.is_demo} />}
 
-      {onbOn && <BookOnboarding step={onbStep} onGo={onbGo} onClose={onbClose} />}
+      {onbOn && <BookOnboarding step={onbStep} onGo={onbGo} onClose={onbClose}
+                                popupOpen={!!draftFor} />}
     </div>
   );
 }
@@ -1739,7 +1741,7 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
             <div className="bk-sheet-actions">
               {canSend ? (
                 <>
-                  <button className="bk-btn bk-btn--primary bk-btn--block"
+                  <button data-onb="send" className="bk-btn bk-btn--primary bk-btn--block"
                           disabled={!!working} onClick={sendNow}>
                     <Send size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
                     {working === "send" ? "Sending…" : "Send via LinkedIn"}
@@ -1751,7 +1753,7 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
                   </button>
                 </>
               ) : isDemo ? (
-                <button className="bk-btn bk-btn--primary bk-btn--block" onClick={() => goToSignup("draft_send")}>
+                <button data-onb="send" className="bk-btn bk-btn--primary bk-btn--block" onClick={() => goToSignup("draft_send")}>
                   <Send size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
                   Sign up now
                 </button>
@@ -1935,14 +1937,15 @@ const BK_ONB_STEPS = [
     body: "It reads your whole book to answer.",
   },
   {
-    key: "send2", tab: "today", anchor: "draft", place: "bottom",
+    key: "send2", tab: "today", anchor: "send", place: "bottom",
     title: "Send it",
     body: "Hit Send, no copy-paste.",
+    waitForAnchor: true, insidePopup: true,
   },
   {
-    key: "list", tab: "book", anchor: "book", place: "top",
-    title: "Your relationship list",
-    body: "Open Book to see everyone, sorted by who needs attention.",
+    key: "list", tab: "referrals", anchor: "referrals", place: "top",
+    title: "Your referral network",
+    body: "See who can intro you.",
   },
   {
     key: "signin", tab: "today", anchor: "signin", place: "bottom",
@@ -1978,7 +1981,7 @@ function bkOnbCardStyle(rect, place) {
   return style;
 }
 
-function BookOnboarding({ step, onGo, onClose }) {
+function BookOnboarding({ step, onGo, onClose, popupOpen }) {
   const total = BK_ONB_STEPS.length;
   const idx = Math.min(Math.max(step | 0, 0), total - 1);
   const def = BK_ONB_STEPS[idx];
@@ -2005,6 +2008,19 @@ function BookOnboarding({ step, onGo, onClose }) {
       window.removeEventListener("resize", measure);
     };
   }, [selector]);
+
+  // Some steps point at UI that only exists once the visitor has taken the
+  // prior step's action (e.g. the Send button lives inside the Draft popup).
+  // Rather than fall back to a floating, out-of-context toast, stay hidden
+  // until that anchor actually shows up in the DOM.
+  if (def.waitForAnchor && !rect) return null;
+
+  // The Draft sheet is a full-screen popup: every step except the one that
+  // lives inside it (insidePopup) must stay hidden while it's open, or the
+  // tour card renders stacked on top of the still-open sheet. Once the
+  // visitor closes the sheet, the step reappears on its own (no dismiss
+  // needed) since this is just a render guard, not state.
+  if (popupOpen && !def.insidePopup) return null;
 
   const next = () => {
     if (def.convert) { goToSignup("tour_final"); return; }  // final step = convert
