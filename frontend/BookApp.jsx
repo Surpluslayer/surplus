@@ -259,7 +259,8 @@ export default function BookApp() {
                   onClick={() => goTab("today")}>
             <LayoutDashboard size={19} /><span>Today</span>
           </button>
-          <button className={"bk-nav-item" + (activeNav === "referrals" ? " on" : "")}
+          <button data-onb="referrals"
+                  className={"bk-nav-item" + (activeNav === "referrals" ? " on" : "")}
                   onClick={() => goTab("referrals")}>
             <Sparkles size={19} /><span>Referrals</span>
           </button>
@@ -1941,9 +1942,9 @@ const BK_ONB_STEPS = [
     waitForAnchor: true,
   },
   {
-    key: "list", tab: "book", anchor: "book", place: "top",
-    title: "Your relationship list",
-    body: "Open Book to see everyone, sorted by who needs attention.",
+    key: "list", tab: "referrals", anchor: "referrals", place: "top",
+    title: "Your referral network",
+    body: "Track who can give you intros.",
   },
   {
     key: "signin", tab: "today", anchor: "signin", place: "bottom",
