@@ -279,7 +279,8 @@ export default function BookApp() {
       {draftFor && <DraftSheet draft={draftFor} onClose={() => setDraftFor(null)}
                                isDemo={!!user?.is_demo} />}
 
-      {onbOn && <BookOnboarding step={onbStep} onGo={onbGo} onClose={onbClose} />}
+      {onbOn && <BookOnboarding step={onbStep} onGo={onbGo} onClose={onbClose}
+                                popupOpen={!!draftFor} />}
     </div>
   );
 }
@@ -1939,12 +1940,12 @@ const BK_ONB_STEPS = [
     key: "send2", tab: "today", anchor: "send", place: "bottom",
     title: "Send it",
     body: "Hit Send, no copy-paste.",
-    waitForAnchor: true,
+    waitForAnchor: true, insidePopup: true,
   },
   {
     key: "list", tab: "referrals", anchor: "referrals", place: "top",
     title: "Your referral network",
-    body: "Track who can give you intros.",
+    body: "See who can intro you.",
   },
   {
     key: "signin", tab: "today", anchor: "signin", place: "bottom",
@@ -1980,7 +1981,7 @@ function bkOnbCardStyle(rect, place) {
   return style;
 }
 
-function BookOnboarding({ step, onGo, onClose }) {
+function BookOnboarding({ step, onGo, onClose, popupOpen }) {
   const total = BK_ONB_STEPS.length;
   const idx = Math.min(Math.max(step | 0, 0), total - 1);
   const def = BK_ONB_STEPS[idx];
@@ -2013,6 +2014,13 @@ function BookOnboarding({ step, onGo, onClose }) {
   // Rather than fall back to a floating, out-of-context toast, stay hidden
   // until that anchor actually shows up in the DOM.
   if (def.waitForAnchor && !rect) return null;
+
+  // The Draft sheet is a full-screen popup: every step except the one that
+  // lives inside it (insidePopup) must stay hidden while it's open, or the
+  // tour card renders stacked on top of the still-open sheet. Once the
+  // visitor closes the sheet, the step reappears on its own (no dismiss
+  // needed) since this is just a render guard, not state.
+  if (popupOpen && !def.insidePopup) return null;
 
   const next = () => {
     if (def.convert) { goToSignup("tour_final"); return; }  // final step = convert
