@@ -382,6 +382,29 @@ def finish_scan_capture(db: Session, prospect_id: int) -> None:
         # the row is enriched (link_contact already ran on the fast path).
         contact = relationships.link_contact(db, p, ev.user_id)
         capture_enrich.refresh_contact(db, contact, p)
+        db.commit()  # persist the backfill before the (optional) update pull
+
+        # Magic moment: pull this person's freshest public update RIGHT NOW, so
+        # someone you just captured surfaces at the top of Today. Best-effort +
+        # account-safe (Exa only); a miss (or failure) never touches the draft.
+        try:
+            from ..agents.relationship import updates_watch, updates_engine
+            emitted = (updates_watch.find_updates(db, contact)
+                       if contact is not None else [])
+            for change in emitted:
+                # Auto-draft the follow-up so the fresh update carries a ready
+                # draft -- which floats it to the TOP of Today (the feed sorts
+                # drafted + newest first). No-op for non-draftworthy kinds.
+                try:
+                    updates_engine.autodraft(db, contact, change)
+                except Exception:  # noqa: BLE001
+                    pass
+            if emitted:
+                db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            print(f"  [inperson.finish_scan] capture-update prospect={prospect_id} "
+                  f"skipped: {type(exc).__name__}: {exc}", flush=True)
 
         # ev.kind == "in_person", so compose() takes the warm "we just met"
         # branch, grounded in the fun fact + any prior relationship history.
