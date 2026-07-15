@@ -1739,7 +1739,7 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
             <div className="bk-sheet-actions">
               {canSend ? (
                 <>
-                  <button className="bk-btn bk-btn--primary bk-btn--block"
+                  <button data-onb="send" className="bk-btn bk-btn--primary bk-btn--block"
                           disabled={!!working} onClick={sendNow}>
                     <Send size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
                     {working === "send" ? "Sending…" : "Send via LinkedIn"}
@@ -1751,7 +1751,7 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
                   </button>
                 </>
               ) : isDemo ? (
-                <button className="bk-btn bk-btn--primary bk-btn--block" onClick={() => goToSignup("draft_send")}>
+                <button data-onb="send" className="bk-btn bk-btn--primary bk-btn--block" onClick={() => goToSignup("draft_send")}>
                   <Send size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
                   Sign up now
                 </button>
@@ -1935,9 +1935,10 @@ const BK_ONB_STEPS = [
     body: "It reads your whole book to answer.",
   },
   {
-    key: "send2", tab: "today", anchor: "draft", place: "bottom",
+    key: "send2", tab: "today", anchor: "send", place: "bottom",
     title: "Send it",
     body: "Hit Send, no copy-paste.",
+    waitForAnchor: true,
   },
   {
     key: "list", tab: "book", anchor: "book", place: "top",
@@ -2005,6 +2006,12 @@ function BookOnboarding({ step, onGo, onClose }) {
       window.removeEventListener("resize", measure);
     };
   }, [selector]);
+
+  // Some steps point at UI that only exists once the visitor has taken the
+  // prior step's action (e.g. the Send button lives inside the Draft popup).
+  // Rather than fall back to a floating, out-of-context toast, stay hidden
+  // until that anchor actually shows up in the DOM.
+  if (def.waitForAnchor && !rect) return null;
 
   const next = () => {
     if (def.convert) { goToSignup("tour_final"); return; }  // final step = convert
