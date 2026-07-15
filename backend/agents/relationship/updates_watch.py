@@ -112,8 +112,11 @@ def _exa_search(query: str, *, lookback_days: int = _LOOKBACK_DAYS,
         r = httpx.post(
             "https://api.exa.ai/search",
             headers={"x-api-key": exa._api_key(), "Content-Type": "application/json"},
-            json={"query": query, "numResults": n, "type": "auto",
-                  "startPublishedDate": since,
+            # No startPublishedDate / type filter: Exa drops results that lack a
+            # publish date, and LinkedIn posts usually have none -- so those
+            # params silently exclude the very updates we want. Recency is judged
+            # by the LLM (_EXTRACT_SYSTEM) from the content instead.
+            json={"query": query, "numResults": n,
                   "contents": {"text": {"maxCharacters": 600}}},
             timeout=20,
         )

@@ -387,14 +387,13 @@ def finish_scan_capture(db: Session, prospect_id: int) -> None:
         # Magic moment: pull this person's freshest public update RIGHT NOW, so
         # someone you just captured surfaces at the top of Today. Best-effort +
         # account-safe (Exa only); a miss (or failure) never touches the draft.
+        # (a) Fast path -- Exa web search for an immediate hit, auto-drafted so a
+        # found update floats to the TOP of Today (feed sorts drafted + newest).
         try:
             from ..agents.relationship import updates_watch, updates_engine
             emitted = (updates_watch.find_updates(db, contact)
                        if contact is not None else [])
             for change in emitted:
-                # Auto-draft the follow-up so the fresh update carries a ready
-                # draft -- which floats it to the TOP of Today (the feed sorts
-                # drafted + newest first). No-op for non-draftworthy kinds.
                 try:
                     updates_engine.autodraft(db, contact, change)
                 except Exception:  # noqa: BLE001
@@ -403,8 +402,21 @@ def finish_scan_capture(db: Session, prospect_id: int) -> None:
                 db.commit()
         except Exception as exc:  # noqa: BLE001
             db.rollback()
-            print(f"  [inperson.finish_scan] capture-update prospect={prospect_id} "
+            print(f"  [inperson.finish_scan] capture-update(exa) prospect={prospect_id} "
                   f"skipped: {type(exc).__name__}: {exc}", flush=True)
+        # (b) Reliable path -- scrape their ACTUAL LinkedIn profile/posts via
+        # Bright Data (async; lands via /webhooks/brightdata in ~a minute). This
+        # surfaces a specific person's real recent post when Exa's web index
+        # misses it. Best-effort; no-op when Bright Data isn't configured.
+        try:
+            from ..providers import brightdata
+            if (contact is not None and (contact.linkedin_url or "").strip()
+                    and brightdata.configured()):
+                brightdata.trigger_updates([contact.linkedin_url])
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [inperson.finish_scan] capture-update(brightdata) "
+                  f"prospect={prospect_id} skipped: {type(exc).__name__}: {exc}",
+                  flush=True)
 
         # ev.kind == "in_person", so compose() takes the warm "we just met"
         # branch, grounded in the fun fact + any prior relationship history.
