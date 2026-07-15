@@ -329,6 +329,55 @@ def test_schedule_followup_now_sends_immediately(db):
     assert db.query(models.OutreachLog).count() == 1
 
 
+def test_sendable_prospect_recovers_linkedin_url_from_update(db):
+    """A phone/import-first contact with NO linkedin_url still has a handle we
+    can send to when an activity_update matched them: _sendable_prospect recovers
+    the profile url from the newest update and backfills it onto both the minted
+    prospect and the contact, so the DM can resolve a provider_id."""
+    import json as _json
+    u = _user(db)
+    # A contact with no linkedin_url (mint a bare Contact directly).
+    c = models.Contact(user_id=u.id, name="Yoeven", primary_identity_key="ph:123")
+    db.add(c); db.commit()
+    # An update we found at their LinkedIn profile.
+    db.add(models.RelationshipInteraction(
+        actor_user_id=u.id, contact_id=c.id, source_type="activity_update",
+        interaction_type="job_change", title="Changed roles", summary="now CEO",
+        occurred_at=datetime.now(timezone.utc),
+        meta_json=_json.dumps({"url": "https://linkedin.com/in/yoeven"})))
+    db.commit()
+
+    p = rel_route._sendable_prospect(db, c, u)
+    assert p.linkedin_url == "https://linkedin.com/in/yoeven"
+    db.refresh(c)
+    assert c.linkedin_url == "https://linkedin.com/in/yoeven"  # backfilled + durable
+
+
+def test_schedule_followup_send_failure_is_409_not_transient_502(db, monkeypatch):
+    """A real send failure (recipient not connected, provider declined) is a
+    business outcome, not a server error: it must surface as a NON-transient 409
+    with an actionable host-facing message -- never a 502 the client would
+    mislabel 'the server took too long'."""
+    from fastapi import HTTPException
+    import backend.agents.relationship.pipeline.send.sender as sender
+
+    class _Res:
+        error = "recipient is not a relation"
+        state = "failed"
+
+    monkeypatch.setattr(sender, "send_followup", lambda *a, **k: _Res())
+
+    u = _user(db)
+    ev = _event(db, u)
+    c = rel.link_contact(db, _prospect(db, ev), u.id)
+
+    with pytest.raises(HTTPException) as ei:
+        rel_route.schedule_contact_followup(
+            c.id, rel_route.FollowupScheduleIn(message="hi", send_at=None), db, u)
+    assert ei.value.status_code == 409
+    assert "Send via Email" in ei.value.detail
+
+
 # ── chat stream keepalive (the 502 fix) ────────────────────────────────────
 # The follow-up chat streams SSE; the gap before the first draft is several
 # sequential LLM calls. An edge proxy idle-times-out a silent stream and 502s

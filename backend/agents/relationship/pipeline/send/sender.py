@@ -185,6 +185,23 @@ def send_and_log(
         raise ValueError(f"prospect {prospect.id} has no event")
 
     provider = get_provider_for_prospect(prospect, fallback_provider)
+    # Import-path contacts (LinkedIn/email book, no in-person capture) carry only
+    # a linkedin_url -- send_connection was never called for them, so they have no
+    # linkedin_provider_id (Unipile's internal member id). Without it send_message
+    # fails even though the person is a real 1st-degree connection who can be DM'd.
+    # Resolve the url -> provider_id ONCE here and persist it on the prospect so
+    # the send goes through and later sends skip the lookup. Fail-soft: if the
+    # lookup errors, send_message still returns a clean "missing id" result.
+    if not prospect.linkedin_provider_id and prospect.linkedin_url:
+        resolve = getattr(provider, "resolve_linkedin_user", None)
+        if callable(resolve):
+            try:
+                pid = resolve(prospect.linkedin_url)
+                if pid:
+                    prospect.linkedin_provider_id = pid
+            except Exception as exc:  # noqa: BLE001 : keep going, send reports it
+                print(f"  [send] provider_id resolve failed for prospect "
+                      f"{prospect.id}: {type(exc).__name__}: {exc}")
     lead = provider.build_lead_payload(
         prospect, prospect.event, note=text, message=text,
     )

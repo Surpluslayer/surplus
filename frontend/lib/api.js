@@ -18,6 +18,14 @@ function _friendly(status, text) {
   const isHtml = /^\s*</.test(text || "");
   if (TRANSIENT.has(status)) return "The server took too long. Try again in a moment.";
   if (isHtml) return `Request failed (${status}).`;
+  // FastAPI ships errors as { detail } (or { message }). Surface that human
+  // string directly -- a 409 send failure carries an actionable line ("not
+  // connected yet, use Send via Email"), not a raw "409 : {...}" blob.
+  try {
+    const j = JSON.parse(text);
+    const d = j && (typeof j.detail === "string" ? j.detail : j.message);
+    if (d) return d;
+  } catch { /* not JSON : fall through */ }
   return `${status} : ${(text || "").slice(0, 240)}`;
 }
 

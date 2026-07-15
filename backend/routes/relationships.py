@@ -83,6 +83,40 @@ def _owned_contact(db: Session, contact_id: int, user: models.User) -> models.Co
     return c
 
 
+_LI_PROFILE_RE = None  # lazy
+
+
+def _contact_linkedin_url(db, contact) -> Optional[str]:
+    """Best LinkedIn PROFILE url for a contact. Prefer the stored linkedin_url;
+    else recover it from the newest activity_update, whose meta_json carries the
+    url we found the person's post/job-change at.
+
+    Phone/import-first contacts routinely get LinkedIn activity matched to them
+    without a linkedin_url ever landing on the record -- so a send has no handle
+    to resolve a provider_id from, and the DM fails even for a real 1st-degree
+    connection. We prefer a canonical /in/<handle> profile url; a post url still
+    yields the handle, so we keep it as a fallback."""
+    direct = getattr(contact, "linkedin_url", None)
+    if direct:
+        return direct
+    rows = (db.query(models.RelationshipInteraction)
+              .filter(models.RelationshipInteraction.contact_id == contact.id,
+                      models.RelationshipInteraction.source_type == "activity_update")
+              .order_by(models.RelationshipInteraction.occurred_at.desc())
+              .all())
+    fallback = None
+    for r in rows:
+        try:
+            url = (json.loads(r.meta_json or "{}") or {}).get("url") or ""
+        except Exception:  # noqa: BLE001
+            url = ""
+        if "linkedin.com/in/" in url:
+            return url
+        if "linkedin.com" in url and fallback is None:
+            fallback = url
+    return fallback
+
+
 def _sendable_prospect(db, contact: models.Contact, user) -> models.Prospect:
     """Resolve a Contact to the per-event Prospect a follow-up acts through
     (send_and_log / scheduling both need prospect.event).
@@ -90,35 +124,68 @@ def _sendable_prospect(db, contact: models.Contact, user) -> models.Prospect:
     An import-path contact (LinkedIn/email, no event capture) has NO linked
     prospect -- so instead of a dead-end 409, mint one under the user's durable
     'book' Event. This makes a send work regardless of where the contact came
-    from (the same prospect-first seam the Book roster had for last_touch)."""
+    from (the same prospect-first seam the Book roster had for last_touch).
+
+    Either way we backfill the prospect's (and contact's) linkedin_url from the
+    contact's updates when it is missing, so the DM path can resolve a
+    provider_id -- a book-prospect minted before the first update arrived would
+    otherwise be stuck with a null handle forever."""
     linked = [p for p in (getattr(contact, "prospects", None) or [])
               if getattr(p, "event", None) is not None]
     if linked:
         linked.sort(key=lambda p: getattr(p, "captured_at", None) or _MIN_DT,
                     reverse=True)
-        return linked[0]
-    # Find-or-create a per-user 'book' event to hang the minted prospect on.
-    ev = (db.query(models.Event)
-            .filter_by(user_id=user.id, kind="book").first())
-    if ev is None:
-        ev = models.Event(user_id=user.id, kind="book", label="Your book", city="")
-        db.add(ev)
-        db.flush()
-    p = models.Prospect(
-        event_id=ev.id, contact_id=contact.id,
-        identity=(getattr(contact, "primary_identity_key", None)
-                  or getattr(contact, "linkedin_url", None)
-                  or getattr(contact, "name", None) or "unknown"),
-        name=getattr(contact, "name", None) or "Unknown",
-        company=getattr(contact, "company", None) or "Unknown",
-        linkedin_url=getattr(contact, "linkedin_url", None),
-        linkedin_provider_id=getattr(contact, "linkedin_provider_id", None),
-        status="contacted", sources="book",
-        captured_at=datetime.now(timezone.utc))
-    db.add(p)
-    db.commit()
-    db.refresh(p)
+        p = linked[0]
+    else:
+        # Find-or-create a per-user 'book' event to hang the minted prospect on.
+        ev = (db.query(models.Event)
+                .filter_by(user_id=user.id, kind="book").first())
+        if ev is None:
+            ev = models.Event(user_id=user.id, kind="book", label="Your book", city="")
+            db.add(ev)
+            db.flush()
+        p = models.Prospect(
+            event_id=ev.id, contact_id=contact.id,
+            identity=(getattr(contact, "primary_identity_key", None)
+                      or _contact_linkedin_url(db, contact)
+                      or getattr(contact, "name", None) or "unknown"),
+            name=getattr(contact, "name", None) or "Unknown",
+            company=getattr(contact, "company", None) or "Unknown",
+            linkedin_url=_contact_linkedin_url(db, contact),
+            status="contacted", sources="book",
+            captured_at=datetime.now(timezone.utc))
+        db.add(p)
+        db.commit()
+        db.refresh(p)
+
+    # Backfill a LinkedIn handle onto a reused (or freshly minted) prospect that
+    # still lacks one, and mirror it onto the contact so it is durable.
+    if not p.linkedin_url or not getattr(contact, "linkedin_url", None):
+        url = _contact_linkedin_url(db, contact)
+        if url:
+            if not p.linkedin_url:
+                p.linkedin_url = url
+            if not getattr(contact, "linkedin_url", None):
+                contact.linkedin_url = url
+            db.commit()
     return p
+
+
+def _send_fail_hint(reason, name: str, channel: str = "LinkedIn") -> str:
+    """A calm, host-facing message for a failed send. A real send failure (the
+    recipient is not a 1st-degree connection yet, the provider declined, a
+    transient upstream hiccup) is a business outcome, NOT a server error -- so
+    callers raise it as a 409 with this string instead of a 502 that the client
+    would mislabel 'the server took too long'. The raw provider reason is kept
+    short and appended for debuggability, but the lead is human and actionable."""
+    who = (name or "this contact").strip()
+    raw = str(reason or "").strip().lower()
+    if any(k in raw for k in ("not a relation", "not connected", "not in your network",
+                              "invitation", "cannot_resend", "not_connected", "relation")):
+        return (f"You're not connected to {who} on LinkedIn yet, so a message can't be "
+                f"delivered. Send an invite first, or use Send via Email.")
+    return (f"{channel} couldn't deliver this to {who} right now. Try again in a moment, "
+            f"or use Send via Email.")
 
 
 def _fire_booking_after_send(db, user, contact, booking_payload, text: str):
@@ -345,7 +412,7 @@ def send_contact_email(
     db.commit()
 
     if res.error and res.state == "failed":
-        raise HTTPException(502, f"email send failed: {res.error}")
+        raise HTTPException(409, _send_fail_hint(res.error, contact.name, "Email"))
     return {"status": "unconfirmed" if res.state == "unconfirmed" else "sent",
             "dry_run": res.dry_run, "contact_id": contact_id,
             "prospect_id": prospect.id, "to": to_address, "subject": subject}
@@ -1027,10 +1094,12 @@ def send_contact_followup(
     from ..agents.relationship.pipeline.send.sender import send_followup
     try:
         res = send_followup(db, prospect, text, channel="linkedin")
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(502, f"send failed: {type(exc).__name__}: {exc}")
+        raise HTTPException(409, _send_fail_hint(exc, contact.name)) from exc
     if getattr(res, "error", None):
-        raise HTTPException(502, f"send failed: {res.error}")
+        raise HTTPException(409, _send_fail_hint(res.error, contact.name))
     return {"status": "sent", "contact_id": contact_id,
             "prospect_id": prospect.id, "message": text}
 
@@ -1101,17 +1170,19 @@ def schedule_contact_followup(
                 raise HTTPException(409, str(exc))
             db.commit()
             if res.error and res.state == "failed":
-                raise HTTPException(502, f"email send failed: {res.error}")
+                raise HTTPException(409, _send_fail_hint(res.error, contact.name, "Email"))
             booked = _fire_booking_after_send(db, user, contact, booking_payload, text)
             return {"status": "sent", "contact_id": contact_id,
                     "prospect_id": prospect.id, "channel": "email",
                     "dry_run": res.dry_run, **({"booking": booked} if booked else {})}
         try:
             res = send_followup(db, prospect, text, channel="linkedin")
+        except HTTPException:
+            raise
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(502, f"send failed: {type(exc).__name__}: {exc}")
+            raise HTTPException(409, _send_fail_hint(exc, contact.name)) from exc
         if getattr(res, "error", None):
-            raise HTTPException(502, f"send failed: {res.error}")
+            raise HTTPException(409, _send_fail_hint(res.error, contact.name))
         booked = _fire_booking_after_send(db, user, contact, booking_payload, text)
         return {"status": "sent", "contact_id": contact_id,
                 "prospect_id": prospect.id, "message": text,
