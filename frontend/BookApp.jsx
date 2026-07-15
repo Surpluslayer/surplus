@@ -1928,38 +1928,51 @@ function _rel_time(iso) {
 // switches to the right tab as the visitor advances, so the highlighted
 // control is always on screen. Mirrors the in-person OnboardingCoach pattern.
 
+// "Send it" is an optional interstitial, not a guaranteed stop -- it only
+// shows if the visitor already has a Draft popup open (see onbGo), and skips
+// straight through otherwise. So it doesn't get its own number: the visible
+// count is 6 steps, and "Send it" previews the number of the step it leads
+// into (Referrals) rather than incrementing past it.
+const BK_ONB_TOTAL = 6;
+
 const BK_ONB_STEPS = [
   {
     key: "add", tab: "today", anchor: "add", place: "top",
     title: "Add contacts",
     body: "Tap + to scan a LinkedIn QR or paste a profile.",
+    display: 1,
   },
   {
     key: "find", tab: "book", anchor: "search", place: "bottom",
     title: "Find them",
     body: "Search by name, firm, or event.",
+    display: 2,
   },
   {
     key: "send", tab: "today", anchor: "draft", place: "bottom",
     title: "Draft a follow-up",
     body: "Tap Draft to review a message in your voice.",
     insidePopup: true,
+    display: 3,
   },
   {
     key: "ask", tab: "today", anchor: "ask", place: "bottom",
     title: "Ask the agent",
     body: "It reads your whole book to answer.",
+    display: 4,
   },
   {
     key: "send2", tab: "today", anchor: "send", place: "bottom",
     title: "Send it",
     body: "Hit Send, no copy-paste.",
     insidePopup: true,
+    display: 5,
   },
   {
     key: "list", tab: "referrals", anchor: "referrals", place: "top",
     title: "Your referral network",
     body: "See who can intro you.",
+    display: 5,
   },
   {
     key: "signin", tab: "today", anchor: "signin", place: "bottom",
@@ -1967,6 +1980,7 @@ const BK_ONB_STEPS = [
     body: "Sign up now to turn this into your real book, "
         + "with your own contacts, your voice, and your follow-ups.",
     final: true, cta: "Sign up now", convert: true,
+    display: 6,
   },
 ];
 
@@ -2048,7 +2062,7 @@ function BookOnboarding({ step, onGo, onClose, popupOpen }) {
       <div className={"bk-onb-card" + (rect ? "" : " floating")}
            style={bkOnbCardStyle(rect, def.place)}>
         <div className="bk-onb-top">
-          <span className="bk-onb-progress">Step {idx + 1} of {total}</span>
+          <span className="bk-onb-progress">Step {def.display} of {BK_ONB_TOTAL}</span>
           <button className="bk-onb-x" onClick={() => onClose()} aria-label="Dismiss the tour">
             <X size={15} />
           </button>
