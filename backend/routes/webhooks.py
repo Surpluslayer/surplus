@@ -516,6 +516,82 @@ def _contacts_by_url(db: Session, url: Optional[str]) -> list:
     return [c for c in rows if _norm_li(c.linkedin_url) == key]
 
 
+def _process_brightdata_delivery(db, records, kind) -> None:
+    """Detached processing of a Bright Data scrape delivery: match records to
+    Contacts by linkedin_url, emit activity_updates + auto-drafts. Runs OFF the
+    request worker (inline it was holding a worker 100-200s per delivery and
+    starving the app -- the book/ask went slow-to-loading). Builds the
+    url->contacts index ONCE (was a full-table scan per record)."""
+    from ..providers import brightdata
+    from ..agents.relationship import updates_engine
+    from .. import models
+    url_index: dict = {}
+    try:
+        for c in (db.query(models.Contact)
+                    .filter(models.Contact.linkedin_url.isnot(None)).all()):
+            url_index.setdefault(_norm_li(c.linkedin_url), []).append(c)
+    except Exception:  # noqa: BLE001
+        url_index = {}
+
+    def _hits(url):
+        return url_index.get(_norm_li(url or ""), [])
+
+    applied = matched = 0
+    sample_raw_keys = sample_norm = None
+
+    def _is_post_record(r) -> bool:
+        return isinstance(r, dict) and ("post_text" in r or "discovery_input" in r)
+
+    is_posts_delivery = kind == "posts" or (
+        not kind and records and _is_post_record(records[0]))
+    if is_posts_delivery:
+        by_profile: dict = {}
+        for rec in records:
+            try:
+                p = brightdata.normalize_post(rec)
+                if sample_raw_keys is None and isinstance(rec, dict):
+                    sample_raw_keys = list(rec.keys())
+                    sample_norm = p
+                prof = p.get("profile_url")
+                if not prof:
+                    continue
+                if _norm_li(p.get("author_url")) and _norm_li(p.get("author_url")) != _norm_li(prof):
+                    continue
+                by_profile.setdefault(_norm_li(prof), {"url": prof, "posts": []})
+                if p.get("url"):
+                    by_profile[_norm_li(prof)]["posts"].append({"url": p["url"], "text": p.get("text") or ""})
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [brightdata] post record skipped: {type(exc).__name__}: {exc}", flush=True)
+        for grp in by_profile.values():
+            hits = _hits(grp["url"])
+            matched += len(hits)
+            for c in hits:
+                applied += len(updates_engine.apply_posts(db, c, grp["posts"]))
+    else:
+        for rec in records:
+            try:
+                norm = brightdata.normalize_profile(rec)
+                hits = _hits(norm.get("linkedin_url"))
+                matched += len(hits)
+                for c in hits:
+                    applied += len(updates_engine.apply_profile(db, c, norm))
+                if sample_raw_keys is None and isinstance(rec, dict):
+                    sample_raw_keys = list(rec.keys())
+                    sample_norm = norm
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [brightdata] record skipped: {type(exc).__name__}: {exc}", flush=True)
+    db.commit()
+    try:
+        updates_engine.record_delivery(
+            kind or "profile", len(records), matched, applied,
+            sample_raw_keys, sample_norm)
+    except Exception:  # noqa: BLE001
+        pass
+    print(f"  [brightdata] delivery processed: received={len(records)} "
+          f"matched={matched} applied={applied} kind={kind or 'profile'}",
+          flush=True)
+
+
 @router.post("/brightdata", status_code=200)
 @router.post("/brightdata/{kind}", status_code=200)
 async def brightdata_webhook(request: Request, db: Session = Depends(get_service_db),
@@ -558,65 +634,10 @@ async def brightdata_webhook(request: Request, db: Session = Depends(get_service
     else:
         records = []
 
-    applied = matched = 0
-    sample_raw_keys = sample_norm = None
-
-    # Posts deliveries arrive as a BATCH of per-post records (each its own dict
-    # with post_text + discovery_input). Detect by kind, or by the post shape on
-    # the base path. Profile deliveries stay one-record-per-profile.
-    def _is_post_record(r) -> bool:
-        return isinstance(r, dict) and ("post_text" in r or "discovery_input" in r)
-
-    is_posts_delivery = kind == "posts" or (
-        not kind and records and _is_post_record(records[0]))
-
-    if is_posts_delivery:
-        # Group posts by the QUERIED profile (discovery_input.url), keeping only
-        # posts AUTHORED BY that profile -- the feed mixes in others' posts and we
-        # must never attribute someone else's milestone to this contact.
-        by_profile: dict = {}
-        for rec in records:
-            try:
-                p = brightdata.normalize_post(rec)
-                if sample_raw_keys is None and isinstance(rec, dict):
-                    sample_raw_keys = list(rec.keys())
-                    sample_norm = p
-                prof = p.get("profile_url")
-                if not prof:
-                    continue
-                # author must match the queried profile (own post, not a reshare)
-                if _norm_li(p.get("author_url")) and _norm_li(p.get("author_url")) != _norm_li(prof):
-                    continue
-                by_profile.setdefault(_norm_li(prof), {"url": prof, "posts": []})
-                if p.get("url"):
-                    by_profile[_norm_li(prof)]["posts"].append({"url": p["url"], "text": p.get("text") or ""})
-            except Exception as exc:  # noqa: BLE001
-                print(f"  [brightdata] post record skipped: {type(exc).__name__}: {exc}", flush=True)
-        for grp in by_profile.values():
-            hits = _contacts_by_url(db, grp["url"])
-            matched += len(hits)
-            for c in hits:
-                applied += len(updates_engine.apply_posts(db, c, grp["posts"]))
-    else:
-        for rec in records:
-            try:
-                norm = brightdata.normalize_profile(rec)
-                hits = _contacts_by_url(db, norm.get("linkedin_url"))
-                matched += len(hits)
-                for c in hits:
-                    applied += len(updates_engine.apply_profile(db, c, norm))
-                if sample_raw_keys is None and isinstance(rec, dict):
-                    sample_raw_keys = list(rec.keys())
-                    sample_norm = norm
-            except Exception as exc:  # noqa: BLE001 : one bad record never sinks the delivery
-                print(f"  [brightdata] record skipped: {type(exc).__name__}: {exc}", flush=True)
-    db.commit()
-    # record for /api/book/_updates-status so we can validate field-mapping
-    try:
-        updates_engine.record_delivery(
-            kind or "profile", len(records), matched, applied,
-            sample_raw_keys, sample_norm)
-    except Exception:  # noqa: BLE001
-        pass
-    return {"ok": True, "received": len(records), "matched": matched,
-            "applied": applied, "kind": kind or "profile"}
+    # Detach the heavy processing (contact matching + LLM auto-drafts) OFF the
+    # request worker: inline it held a worker 100-200s per delivery and starved
+    # the app (the book/ask went slow-to-loading). Return 200 immediately so
+    # Bright Data never enters a retry storm.
+    from ..jobs import run_detached
+    run_detached(_process_brightdata_delivery, records, kind)
+    return {"ok": True, "queued": len(records), "kind": kind or "profile"}
