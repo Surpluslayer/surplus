@@ -833,18 +833,19 @@ def prefetch_interactions_by_prospect(db, contacts) -> dict:
 
 
 def prefetch_interactions_by_contact(db, contacts) -> dict:
-    """Batch the union of every RelationshipInteraction that belongs to each
-    Contact -- tied DIRECTLY to the contact (contact_id) OR to any of its linked
-    Prospects (prospect_id) -- into ONE query, keyed by contact_id. Mirrors
-    fetch_contact_interactions' union semantics across a whole list.
+    """The newest REAL (non-activity_update) interaction DATETIME per Contact --
+    across its own contact_id links AND any linked Prospect's -- via two
+    lightweight MAX(occurred_at) aggregates (no full-row hydration). This is what
+    lets last_touch work for import-path contacts (no Prospect): their history
+    hangs off contact_id, which the prospect-keyed index never surfaces.
 
-    This is what lets last_touch work for import-path contacts (no Prospect at
-    all): their history hangs off contact_id, which the prospect-keyed index
-    never surfaces. Returns {contact_id: [RI, ...]}; {} on error."""
+    Returns {contact_id: datetime}. Aggregating in SQL keeps the Book feed fast
+    even with thousands of interactions (vs loading every row to find a max).
+    {} on error."""
     from .... import models
-    from sqlalchemy import or_
+    from sqlalchemy import func
     contact_ids = [c.id for c in contacts if getattr(c, "id", None) is not None]
-    # prospect_id -> contact_id, so a prospect-linked interaction buckets to its
+    # prospect_id -> contact_id, so a prospect-linked interaction folds into its
     # durable Contact even when it carries no contact_id of its own.
     p2c: dict = {}
     for c in contacts:
@@ -854,32 +855,29 @@ def prefetch_interactions_by_contact(db, contacts) -> dict:
                 p2c[pid] = c.id
     if not contact_ids and not p2c:
         return {}
+    RI = models.RelationshipInteraction
+    out: dict = {}
     try:
-        clauses = []
         if contact_ids:
-            clauses.append(
-                models.RelationshipInteraction.contact_id.in_(contact_ids))
+            for cid, mx in (db.query(RI.contact_id, func.max(RI.occurred_at))
+                            .filter(RI.contact_id.in_(contact_ids),
+                                    RI.source_type != "activity_update",
+                                    RI.occurred_at.isnot(None))
+                            .group_by(RI.contact_id).all()):
+                if cid is not None and mx is not None:
+                    out[cid] = mx
         if p2c:
-            clauses.append(
-                models.RelationshipInteraction.prospect_id.in_(list(p2c.keys())))
-        rows = db.query(models.RelationshipInteraction).filter(or_(*clauses)).all()
+            for pid, mx in (db.query(RI.prospect_id, func.max(RI.occurred_at))
+                            .filter(RI.prospect_id.in_(list(p2c.keys())),
+                                    RI.source_type != "activity_update",
+                                    RI.occurred_at.isnot(None))
+                            .group_by(RI.prospect_id).all()):
+                cid = p2c.get(pid)
+                if cid is not None and mx is not None and (
+                        cid not in out or mx > out[cid]):
+                    out[cid] = mx
     except Exception:  # noqa: BLE001
         return {}
-    cid_set = set(contact_ids)
-    out: dict = {}
-    seen: dict = {}   # contact_id -> {ri.id} for dedup
-    for ri in rows:
-        cid = getattr(ri, "contact_id", None)
-        if cid not in cid_set:
-            cid = p2c.get(getattr(ri, "prospect_id", None))
-        if cid is None:
-            continue
-        rid = getattr(ri, "id", None)
-        s = seen.setdefault(cid, set())
-        if rid in s:
-            continue
-        s.add(rid)
-        out.setdefault(cid, []).append(ri)
     return out
 
 
@@ -1011,17 +1009,20 @@ def contact_summary(db, contact, interactions_by_prospect=None,
     # Prospect. Real interactions only -- a passive activity_update (they posted /
     # changed jobs) is an observation, not a touch, so it never resets the clock.
     if interactions_by_contact is not None:
-        own_interactions = interactions_by_contact.get(
-            getattr(contact, "id", None)) or []
+        # Batch path (Book feed): the index already holds the newest real
+        # interaction datetime per contact -- a cheap dict lookup.
+        own_last_touch = _as_aware(
+            interactions_by_contact.get(getattr(contact, "id", None)))
     else:
+        # Detail path (single contact): no index -> read its interactions direct.
         own_interactions = fetch_contact_interactions(db, contact)
-    own_touches = [
-        _as_aware(getattr(ri, "occurred_at", None))
-        for ri in own_interactions
-        if getattr(ri, "occurred_at", None) is not None
-        and _clean(getattr(ri, "source_type", None)) != "activity_update"
-    ]
-    own_last_touch = max(own_touches) if own_touches else None
+        own_touches = [
+            _as_aware(getattr(ri, "occurred_at", None))
+            for ri in own_interactions
+            if getattr(ri, "occurred_at", None) is not None
+            and _clean(getattr(ri, "source_type", None)) != "activity_update"
+        ]
+        own_last_touch = max(own_touches) if own_touches else None
 
     stages = [e["relationship_stage"] for e in events]
     first_touches = [e["captured_at"] for e in events if e["captured_at"]]
