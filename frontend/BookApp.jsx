@@ -2203,7 +2203,7 @@ const BOOK_CSS = `
 .bk-crosshint{display:block; width:100%; text-align:left; margin-top:10px; padding:9px 12px;
   border:.5px dashed var(--line-2); border-radius:10px; background:none; cursor:pointer;
   font-family:var(--font-ui); font-size:12.5px; color:var(--accent);}
-.bk-referral-hint{margin:12px 4px 0; font-size:12.5px; line-height:1.5; color:var(--muted);}
+.bk-referral-hint{margin:12px 4px 0; font-size:12.5px; line-height:1.5; color:var(--muted); text-align:center;}
 .bk-ap-name{font-size:13px; font-weight:500; color:var(--ink);}
 .bk-ap-reason{font-size:12px; color:var(--muted); margin-top:1px;}
 .bk-ap-draft{font-size:12px; color:var(--muted); font-style:italic; margin-top:4px; line-height:1.4;}
