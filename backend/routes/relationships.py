@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, selectinload
 from .. import billing_plans as bp
 from .. import models
 from ..agents.relationship.spine import relationships
-from ..auth import current_user
+from ..auth import current_user, require_can_send_linkedin, require_paid
 from ..db import SessionLocal, get_db
 from ..integrations.unipile_config import unipile_creds
 
@@ -333,6 +333,7 @@ def send_contact_email(
     except in dry-run, where the payload is built but nothing leaves the
     box (demos exercise the full path). The per-channel double-send guard
     applies: an unconfirmed email send blocks a blind retry."""
+    require_paid(user)  # email send is a paid action (no LinkedIn needed)
     contact = _owned_contact(db, contact_id, user)
     text = (body.message or "").strip()
     if not text:
@@ -1085,6 +1086,7 @@ def send_contact_followup(
             contact_id, EmailSendIn(message=text, subject=body.subject),
             db, user)
 
+    require_can_send_linkedin(user)  # LinkedIn send paywall (bypasses unlimited)
     prospect = _sendable_prospect(db, contact, user)
 
     # Approving a specific message IS the user deciding: a manual send, so it
@@ -1160,6 +1162,12 @@ def schedule_contact_followup(
     # Send now: no future time chosen. Explicit host action, sends regardless of
     # the auto toggle (same as the followups send-now route).
     want_email = (getattr(body, "channel", "") or "linkedin") == "email"
+    # Send paywall, per channel -- gates both an immediate send and a scheduled
+    # one (queuing a paid send still needs a paid account). Bypasses unlimited.
+    if want_email:
+        require_paid(user)
+    else:
+        require_can_send_linkedin(user)
     booking_payload = getattr(body, "booking_payload", None)
     if send_at is None or send_at <= now:
         from ..agents.relationship.pipeline.send.sender import send_followup

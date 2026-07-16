@@ -405,6 +405,34 @@ def user_can_send_linkedin(user: User) -> bool:
     return user_has_paid(user) and user_has_linkedin_connected(user)
 
 
+def _send_bypasses_paywall(user: User) -> bool:
+    """Demo / team / allowlisted (SURPLUS_UNLIMITED_ACCOUNTS) / kill-switch
+    accounts skip the send paywall. Lazy import keeps auth free of a billing
+    import cycle; a flag-check failure must never wrongly block a send."""
+    try:
+        from . import billing_plans as bp
+        return bp.is_unlimited(user)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def require_paid(user: User) -> None:
+    """The payment half of the paywall, channel-agnostic (email + any non-LinkedIn
+    send): unlimited accounts and paid users pass, everyone else gets a 402 the
+    SPA maps to the Stripe checkout modal. Use this where a LinkedIn connection is
+    NOT mechanically required (so we don't wrongly demand LinkedIn to send email)."""
+    if _send_bypasses_paywall(user):
+        return
+    if not user_has_paid(user):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "code": "payment_required",
+                "message": "Sending is a paid feature. Upgrade to start sending.",
+            },
+        )
+
+
 def require_can_send_linkedin(user: User) -> None:
     """The single gate for every real LinkedIn send : manual one-off
     (invite/dm) AND batch autonomous outreach.
@@ -421,7 +449,13 @@ def require_can_send_linkedin(user: User) -> None:
     before being asked to pay. The 402 `code` tells the SPA which modal to
     open : `linkedin_send_locked` → connect-LinkedIn, `payment_required` →
     Stripe checkout. A user who has done both sends freely : no paywall.
+
+    Unlimited accounts (demo links, team members, the SURPLUS_UNLIMITED_ACCOUNTS
+    allowlist, or the SURPLUS_BILLING_DISABLED kill switch) bypass entirely --
+    the paywall is for real external free users, not internal/comped accounts.
     """
+    if _send_bypasses_paywall(user):
+        return
     if not user_has_linkedin_connected(user):
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,

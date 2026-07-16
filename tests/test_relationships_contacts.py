@@ -29,6 +29,9 @@ def db(monkeypatch):
     monkeypatch.setenv("UNIPILE_DRY_RUN", "true")
     monkeypatch.setenv("UNIPILE_REQUIRE_SIGNATURE", "false")
     monkeypatch.setenv("UNIPILE_ACCOUNT_ID", "fake_account")
+    # These exercise SEND behavior, not the paywall: run with billing off so the
+    # send routes' new require_can_send_linkedin / require_paid gate bypasses.
+    monkeypatch.setenv("SURPLUS_BILLING_DISABLED", "1")
     engine = create_engine("sqlite:///:memory:",
                            connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)

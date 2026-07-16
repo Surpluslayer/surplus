@@ -142,3 +142,29 @@ def test_elapsed_period_resets_then_allows(db, monkeypatch):
     db.refresh(user)
     assert out["summary"] == "ok"
     assert user.drafts_used_this_period == 1  # reset to 0, then +1 for this run
+
+
+def test_send_paywall_blocks_unpaid_allows_paid_and_unlimited(db, monkeypatch):
+    """The send paywall (now on the relationship send routes too): a connected
+    but unpaid/free account is 402'd; a paid subscriber and an allowlisted
+    (unlimited) account both pass. This is the enforcement gap being closed."""
+    from backend.auth import require_can_send_linkedin, require_paid
+    monkeypatch.delenv("SURPLUS_BILLING_DISABLED", raising=False)
+    monkeypatch.delenv("SURPLUS_UNLIMITED_ACCOUNTS", raising=False)
+
+    free = _user(db, email="free@x.com", unipile_account_id="acctF")  # connected, unpaid
+    with pytest.raises(HTTPException) as e1:
+        require_can_send_linkedin(free)
+    assert e1.value.status_code == 402
+    with pytest.raises(HTTPException) as e2:
+        require_paid(free)
+    assert e2.value.status_code == 402
+
+    paid = _user(db, email="paid@x.com", unipile_account_id="acctP",
+                 subscription_status="active")
+    require_can_send_linkedin(paid)                 # no raise
+    require_paid(paid)                              # no raise
+
+    monkeypatch.setenv("SURPLUS_UNLIMITED_ACCOUNTS", "free@x.com")
+    require_can_send_linkedin(free)                 # allowlisted -> bypass
+    require_paid(free)
