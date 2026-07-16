@@ -47,6 +47,7 @@ def db(monkeypatch):
     monkeypatch.setenv("UNIPILE_REQUIRE_SIGNATURE", "false")
     monkeypatch.setenv("ADMIN_TOKEN", "test-admin-token")
     monkeypatch.setenv("UNIPILE_ACCOUNT_ID", "fake_account")
+    monkeypatch.setenv("SURPLUS_BILLING_DISABLED", "1")  # these test dispatch, not the paywall
     # Force the deterministic template : no Anthropic call in tests.
     monkeypatch.setenv("FOLLOWUP_COMPOSE_DISABLE", "1")
     reset_provider_cache()
@@ -269,6 +270,25 @@ def test_run_followups_sends_due_row(db, monkeypatch):
     assert refreshed.sent_at is not None
     states = [o.state for o in db.get(models.Prospect, p.id).outreach]
     assert states.count("follow_up_sent") == 1
+
+
+def test_run_followups_holds_unpaid_owner(db, monkeypatch):
+    """Send paywall on the queued path: with billing enforced, a due row whose
+    owner is free/unpaid is HELD (left 'scheduled'), never sent -- so it fires
+    later if they pay, and lapsing to free can't auto-fire a queued send."""
+    monkeypatch.setenv("SURPLUS_AUTOMATED_SENDS", "true")
+    monkeypatch.delenv("SURPLUS_BILLING_DISABLED", raising=False)   # enforce paywall
+    monkeypatch.delenv("SURPLUS_UNLIMITED_ACCOUNTS", raising=False)
+    u, _ev, p = _seed(db)                                          # free/unpaid owner
+    u.autonomy_mode = "auto"
+    db.commit()
+    row = _stage_due(db, p)
+    result = run_followups(db=db, _=None)
+    assert result["due"] == 1
+    assert result["sent"] == 0
+    assert result["held"] == 1
+    db.expire_all()
+    assert db.get(models.ScheduledFollowup, row.id).status == "scheduled"  # held, not sent
 
 
 def test_run_followups_sends_even_when_user_toggle_off(db, monkeypatch):

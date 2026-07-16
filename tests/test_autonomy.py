@@ -43,6 +43,7 @@ def db(monkeypatch):
     monkeypatch.setenv("UNIPILE_ACCOUNT_ID", "fake_account")
     monkeypatch.setenv("FOLLOWUP_COMPOSE_DISABLE", "1")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("SURPLUS_BILLING_DISABLED", "1")  # tests dispatch gating, not the paywall
     reset_provider_cache()
 
     engine = create_engine("sqlite:///:memory:",

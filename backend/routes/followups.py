@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..agents.relationship.pipeline.send.sender import send_followup
-from ..auth import current_user
+from ..auth import current_user, require_can_send_linkedin, require_paid
 from ..db import ENGINE, get_db
 from ..providers import get_provider
 
@@ -247,6 +247,13 @@ def send_followup_now(
     text = (row.body or "").strip()
     if not text:
         raise HTTPException(400, "follow-up body is empty")
+
+    # Send paywall: a manual send-now is a real send. Gate per channel (email
+    # needs no LinkedIn); unlimited/paid pass.
+    if (getattr(row, "channel", "") or "linkedin") == "email":
+        require_paid(user)
+    else:
+        require_can_send_linkedin(user)
 
     # ── Atomic claim : make the manual send-now and the cron mutually exclusive
     # on this row. Re-fetch under a row lock (Postgres) and re-check the status:

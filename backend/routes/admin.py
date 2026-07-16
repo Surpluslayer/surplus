@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .. import audit, models
 from ..agents.relationship.pipeline.send.sender import send_and_log, send_followup
-from ..auth import _as_aware_utc
+from ..auth import _as_aware_utc, user_may_send
 from ..db import ENGINE, get_service_db
 from ..providers import (
     LinkedInProvider,
@@ -428,6 +428,15 @@ def dispatch_due_followups(db: Session) -> dict:
         # may send it themselves, later.
         if not _auto_send_enabled(prospect, (getattr(row, "channel", "") or "linkedin")):
             held.append({"followup_id": row.id, "prospect_id": prospect.id})
+            continue
+
+        # Send paywall (queued path): a row scheduled while paid must NOT fire
+        # later if the owner has since lapsed to free. HOLD (leave "scheduled"),
+        # never cancel -- it fires whenever they pay again. Bypasses unlimited.
+        owner = getattr(getattr(prospect, "event", None), "user", None)
+        if owner is None or not user_may_send(owner):
+            held.append({"followup_id": row.id, "prospect_id": prospect.id,
+                         "reason": "unpaid"})
             continue
 
         text = (row.body or "").strip()

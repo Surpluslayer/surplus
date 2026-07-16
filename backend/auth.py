@@ -416,6 +416,14 @@ def _send_bypasses_paywall(user: User) -> bool:
         return False
 
 
+def user_may_send(user: User) -> bool:
+    """Boolean payment predicate for non-request contexts (the cron dispatcher):
+    True when the owner is unlimited or has paid. Use this to HOLD an unpaid
+    owner's queued send instead of raising -- the request-time gates
+    (require_paid / require_can_send_linkedin) raise a 402 for the SPA."""
+    return _send_bypasses_paywall(user) or user_has_paid(user)
+
+
 def require_paid(user: User) -> None:
     """The payment half of the paywall, channel-agnostic (email + any non-LinkedIn
     send): unlimited accounts and paid users pass, everyone else gets a 402 the
