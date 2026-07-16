@@ -32,6 +32,7 @@ from ..agents.relationship.pipeline.send.sender import (
     automated_send_enabled, follow_up_send_enabled, owner_autonomy_mode,
     send_and_log,
 )
+from ..auth import user_may_send
 from ..providers import (
     get_provider,
     CanonicalEvent,
@@ -441,9 +442,13 @@ def _handle_ai_reply(
     # (should_auto_send), the env master (ops kill switch), AND the owning
     # user's autonomy_mode == 'auto'. Any other mode keeps the existing
     # behavior: the draft stages as a PendingReply for approval.
+    # Send paywall: an auto-reply is an ongoing automated send, so an unpaid /
+    # lapsed owner must NOT auto-fire -- fall through to queueing (a PendingReply
+    # the host can send manually, which enforces the paywall). Bypasses unlimited.
     if (should_auto_send(decision, prior_auto)
             and automated_send_enabled("linkedin")
-            and owner_autonomy_mode(host) == "auto"):
+            and owner_autonomy_mode(host) == "auto"
+            and user_may_send(host)):
         print(f"  [ai_reply] gate PASS → auto-sending")
         return _auto_send_reply(db, provider, prospect, decision)
     print(f"  [ai_reply] gate BLOCK → queueing (class={decision.classification} "
