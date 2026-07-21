@@ -549,15 +549,6 @@ def today(db: Session = Depends(get_db),
     return feed
 
 
-@router.post("/refresh")
-def refresh(db: Session = Depends(get_db),
-            user: models.User = Depends(current_user)):
-    """Re-run the batch over the book. Same shape as /today; busts the
-    assessment cache so the next loads pick up fresh LLM verdicts."""
-    _trace(f"POST /refresh user={user.id}: busting assessment+draft caches")
-    book_agent.invalidate_assessments()
-    return today(db, user)
-
 
 @router.post("/draft")
 def draft(body: DraftIn, db: Session = Depends(get_db),
@@ -647,75 +638,6 @@ def draft_stream(body: DraftIn, db: Session = Depends(get_db),
         gen(), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-
-@router.post("/ask")
-def ask(body: AskIn, db: Session = Depends(get_db),
-        user: models.User = Depends(current_user)):
-    """The 'Ask your agent anything' bar + chip queries."""
-    q = (body.query or "").strip()
-    if not q:
-        raise HTTPException(422, "query is required")
-    t0 = time.monotonic()
-    book = _load_book(db, user)
-    t_load = time.monotonic() - t0
-    _t = time.monotonic()
-    res = book_agent.ask_agent(book, q)        # selection only: draft=null
-    t_select = time.monotonic() - _t
-    contacts_orm = rel_agent.list_contacts(db, user.id)
-    res = enrich_book_ask(user, q, contacts_orm, res,
-                          force=(body.mode == "referral"))
-    people = res.get("people") or []
-    # Backfill each selected person with a real voice + thread draft via the ONE
-    # shared composer. Resolve Contact ORMs ONCE (list_contacts is expensive),
-    # then fan the drafts out concurrently. Cards still show drafts inline.
-    _t = time.monotonic()
-    orm_by_id = {str(c.id): c for c in contacts_orm}
-    t_orm = time.monotonic() - _t
-    by_name = {(c.get("name") or "").strip().lower(): c for c in book}
-    jobs, idxs = [], []
-    for i, p in enumerate(people):
-        bd = by_name.get((p.get("name") or "").strip().lower())
-        # Carry the real contact_id onto the card so its Draft sheet can Send /
-        # Schedule (those endpoints are contact-id keyed).
-        if bd and bd.get("id"):
-            p["contact_id"] = bd["id"]
-        orm = orm_by_id.get(str(bd.get("id"))) if bd else None
-        if orm is not None:
-            jobs.append({"contact": orm,
-                         "reason": p.get("reason") or "following up",
-                         "channel": "email"})
-            idxs.append(i)
-    # Progressive, not batch: draft only the TOP few inline (people are returned
-    # ranked) so a "draft everyone" ask can't fire a dozen Claude calls at once
-    # (the burst that throttles + stalls). Every card still carries contact_id,
-    # so the rest draft on-demand the instant the host taps Draft (1 call each,
-    # ~instant). Tunable via ASK_INLINE_DRAFTS.
-    inline = max(0, int(os.environ.get("ASK_INLINE_DRAFTS", "6")))
-    jobs, idxs = jobs[:inline], idxs[:inline]
-    _t = time.monotonic()
-    if jobs:
-        from ..agents.relationship.pipeline.compose import drafting
-        drafts = drafting.compose_batch(db, user.id, jobs, directive=q)
-        for j, i in enumerate(idxs):
-            d = drafts[j]
-            if d and (d.get("body") or "").strip():
-                people[i]["draft"] = d["body"]
-    t_draft = time.monotonic() - _t
-    res["people"] = people
-    drafted = sum(1 for p in people if (p.get("draft") or "").strip())
-    total = time.monotonic() - t0
-    # Phase breakdown = the "why is /ask slow" log. The browser cuts the request
-    # at ~100s, so if total approaches that the client sees "Couldn't reach the
-    # server" even though we return 200 -> flag it loudly with where the time went.
-    line = (f"POST /ask user={user.id} q={q!r} -> {len(people)} people "
-            f"({drafted} drafted) in {total:.1f}s "
-            f"[load={t_load:.1f} select={t_select:.1f} orm={t_orm:.1f} "
-            f"draft={t_draft:.1f}, {len(jobs)} drafted]")
-    _trace((">>> SLOW " if total > 60 else "") + line)
-    # Front-door routing signal: switch tabs on a confident opposite intent,
-    # or (for an ambiguous ask) stay put and softly offer the other tab.
-    res["routed_to"], res["cross_hint"] = _route_response(body.mode, q)
-    return res
 
 
 @router.post("/ask/stream")
@@ -1742,6 +1664,9 @@ def relationship_chat(
     user: models.User = Depends(current_user),
 ):
     """Conversational front door to the propose-only relationship agent.
+    (Non-stream variant: superseded in the UI by /chat/stream, KEPT as the
+    synchronous seam the relationship-billing tests drive directly — quota
+    enforcement + usage recording assert against its return value.)
 
     The host types an ask; we steer the same auditable survey-and-propose loop
     with it and hand back (a) a one-paragraph natural-language reply and (b) the
