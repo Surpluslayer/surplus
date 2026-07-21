@@ -49,8 +49,14 @@ The codebase is two product lines sharing infra. Every backend file belongs to
 exactly one of these buckets. (Files are NOT yet physically split into
 subpackages — this map is the source of truth for the split.)
 
-### EVENTS side — the desktop event-ROI pipeline (`www`, `App.jsx`)
-Intake → prospect → outreach → match → ROI, plus triage & curation.
+### EVENTS side — RETIRED 2026-07-07 (surface unmounted; models/data kept)
+The desktop event-ROI pipeline (intake → prospect → outreach → match → ROI,
+plus triage & curation) is no longer served: its routers are not mounted in
+main.py and `www`/apex now serve the marketing landing. The MODULES remain on
+disk (the relationship spine imports triage.enrichment_cache.identity_keys;
+capture still creates Event/Prospect rows) and ALL tables + data remain. A
+tripwire test (test_api.py::test_retired_pipeline_surface_stays_dark) fails
+if the surface is ever re-mounted by accident.
 - routes: `events`, `pipeline`, `matching`, `roi`, `triage`, `curation`, `jobs`
 - agents: `prospector`, `scorer`, `outreach`, `matcher`, `matcher_lib`, `sponsor_matcher`, `roi`, `pair_explainer`, `agents/sources/*`
 - packages: `backend/triage/`, `backend/curation/`, `backend/matching/`
