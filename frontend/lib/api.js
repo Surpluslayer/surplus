@@ -542,7 +542,6 @@ export const api = {
   // (the durable-person payload the old /api/relationships/contacts/{id} served).
   bookRelationship: (id) =>
     request(`/api/book/relationship/${encodeURIComponent(id)}`),
-  bookRefresh: () => request("/api/book/refresh", { method: "POST" }),
   // Draft the note behind a "Draft" tap. Pass { contact_id | name, trigger,
   // channel }. Returns { channel, subject, body }.
   bookDraft: (body) =>
@@ -561,10 +560,6 @@ export const api = {
         error: (p) => onError?.(p),
       },
     }),
-  // The agent ask bar + chips. { query } -> { answer, people:[{name,reason,draft}] }.
-  // unused by this UI (superseded by bookAskStream); kept for extension/mobile/test
-  bookAsk: (query) =>
-    request("/api/book/ask", { method: "POST", body: JSON.stringify({ query }) }),
   // Streaming twin of bookAsk: emits the ranked people the instant selection
   // finishes, then each drafted card as it completes -- with a heartbeat, so the
   // connection is never silent and Cloudflare's 100s read timeout (the 524) can't
