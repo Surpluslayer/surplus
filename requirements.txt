@@ -6,7 +6,7 @@ pydantic==2.9.2
 # <3.10. No-op on 3.10+ (prod). Without it, importing any BaseModel that uses
 # `X | None` fields raises TypeError at class-construction time on 3.9.
 eval_type_backport==0.3.1; python_version < "3.10"
-pytest==8.3.3
+pytest==9.1.1
 httpx==0.27.2
 anthropic==0.42.0
 # python-multipart: required by FastAPI for File/UploadFile (multipart form
