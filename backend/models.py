@@ -1228,7 +1228,14 @@ class RelationshipInteraction(Base):
 
 
 class OutgoingMessage(Base):
-    """A queued/scheduled outbound message -- the server-side send queue.
+    """RETIRED SURFACE (2026-07-21): the device-outbox routes (/api/messages/*,
+    the self-hosted Mac iMessage companion contract) were removed — nothing
+    writes this table anymore and prod holds zero rows. The model stays because
+    the data-rights export/delete (retention.py) and contact-merge logic
+    (identity.py) enumerate it, and per the events-side precedent tables are
+    never dropped. Original design:
+
+    A queued/scheduled outbound message -- the server-side send queue.
 
     The BRAINS live here (schedule, channel, body, status); the actual send hop varies:
       * CLOUD channels (whatsapp/linkedin/email) -> the server drains + sends them at

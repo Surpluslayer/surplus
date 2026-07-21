@@ -203,7 +203,7 @@ def _ingest_whatsapp_batch(session_factory, user_id: int,
     network fetching happens with no connection checked out at all. Partial
     progress persists; dedup-by-message-id makes any re-run overlap free."""
     from ... import models
-    from ...routes.messages import ingest_messages
+    from .message_sink import ingest_messages
 
     s = session_factory()
     try:

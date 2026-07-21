@@ -248,7 +248,7 @@ def _ingest_chat_batch(session_factory, user_id: int, peer: dict,
     happens with no connection checked out at all. Partial progress persists
     (each chat commits); dedup-by-message-id makes any re-run overlap free."""
     from ... import models
-    from ...routes.messages import append_message_for_contact
+    from .message_sink import append_message_for_contact
 
     s = session_factory()
     try:
