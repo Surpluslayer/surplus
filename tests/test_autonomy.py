@@ -60,7 +60,10 @@ def db(monkeypatch):
 
 def _seed(db, *, autonomy: str = "off"):
     """User (+ mode) + event + prospect with a first DM already sent."""
-    user = models.User(email="host@example.com", autonomy_mode=autonomy)
+    # Connected host: the send-confirm route runs require_can_send_linkedin,
+    # whose LinkedIn-connection check applies even with billing disabled.
+    user = models.User(email="host@example.com", autonomy_mode=autonomy,
+                       unipile_account_id="acct_host")
     db.add(user); db.flush()
     ev = models.Event(
         user_id=user.id,
