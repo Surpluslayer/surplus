@@ -74,7 +74,9 @@ def _seed(db, *, replied: bool = False, status: str = "contacted"):
 
     The legacy per-user auto_followups_enabled column is left at its default
     (False): neither staging nor dispatch reads it anymore."""
-    user = models.User(email="host@example.com")
+    # Connected host: send-now goes through require_can_send_linkedin, whose
+    # mechanical LinkedIn-connection check applies even with billing disabled.
+    user = models.User(email="host@example.com", unipile_account_id="acct_host")
     db.add(user); db.flush()
     ev = models.Event(
         user_id=user.id,
