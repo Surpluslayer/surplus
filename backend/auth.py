@@ -459,11 +459,14 @@ def require_can_send_linkedin(user: User) -> None:
     Stripe checkout. A user who has done both sends freely : no paywall.
 
     Unlimited accounts (demo links, team members, the SURPLUS_UNLIMITED_ACCOUNTS
-    allowlist, or the SURPLUS_BILLING_DISABLED kill switch) bypass entirely --
-    the paywall is for real external free users, not internal/comped accounts.
+    allowlist, or the SURPLUS_BILLING_DISABLED kill switch) bypass the PAYMENT
+    half only -- the paywall is for real external free users, not internal/comped
+    accounts. The LinkedIn-connection check is NOT part of the paywall: it is
+    mechanically required to send, so it runs first for everyone. Skipping it
+    for unlimited/demo accounts would let an unconnected demo user fall through
+    to get_provider_for_user, which raises ValueError (a 500) instead of the
+    402 `linkedin_send_locked` contract the SPA depends on.
     """
-    if _send_bypasses_paywall(user):
-        return
     if not user_has_linkedin_connected(user):
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
@@ -476,6 +479,8 @@ def require_can_send_linkedin(user: User) -> None:
                 ),
             },
         )
+    if _send_bypasses_paywall(user):
+        return
     if not user_has_paid(user):
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
