@@ -23,7 +23,7 @@ numpy==2.4.6
 psycopg2-binary==2.9.12
 
 # Stripe SDK for the billing module (checkout sessions + webhook signature verify).
-stripe==11.4.1
+stripe==15.3.1
 
 # Modal client : ONLY imported by backend/jobs.py to .spawn() LLM/batch jobs
 # onto Modal when USE_MODAL=1. The import is lazy, so with the flag off this is
