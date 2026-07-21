@@ -536,7 +536,7 @@ class SponsorMatch(Base):
     # 0-100, same scale as MatchEdge.weight
     score: Mapped[float]
     # JSON list of short reason strings. Same provenance shape as the
-    # guest-pair reasons that pair_explainer surfaces.
+    # guest-pair reasons the retired pair_explainer used to surface.
     reasons: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 

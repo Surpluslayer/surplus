@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .. import models
-from ..triage.enrichment_cache import identity_keys
+from ..agents.relationship.enrichment_cache import identity_keys
 
 
 def parse_iso(s: Optional[str]) -> Optional[datetime]:

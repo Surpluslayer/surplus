@@ -9,7 +9,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from backend.agents import outreach as agents_outreach
-from backend.curation import outreach as curation_outreach
 
 
 def _prospect(name):
@@ -44,6 +43,3 @@ def test_normalization_expression_matches_all_sites():
     assert first(None) == "there"
     assert first("Ada Lovelace") == "Ada"
     assert first("  Grace  ") == "Grace"
-
-    # Sanity : the curation module imports cleanly with the same fix applied.
-    assert hasattr(curation_outreach, "_framing")

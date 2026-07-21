@@ -21,7 +21,7 @@ def _setup(monkeypatch):
 
 
 def _email_contact(s, u, *, email, name, n_in, n_out, last_out="2026-06-01T10:00:00+00:00"):
-    from backend.triage.enrichment_cache import identity_keys
+    from backend.agents.relationship.enrichment_cache import identity_keys
     key = identity_keys(email=email, linkedin_url="")[0]
     c = models.Contact(user_id=u.id, primary_identity_key=key, name=name, email=email)
     s.add(c); s.commit(); s.refresh(c)

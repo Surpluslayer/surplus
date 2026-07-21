@@ -1,16 +1,14 @@
 """
-Tests for the intake additions (Enterprise stage + YOE chips) and the
-prospecting speedups (judge skip on single source, lower default timeouts).
+Tests for the Exa query builder (Enterprise stage + YOE chips).
 
 Direct function tests : no TestClient (avoids the 3.9 / `str | None`
 collection issue with schemas.py).
+
+The prospector tests that used to live here were deleted with the events-side
+prospecting pipeline (backend/agents/events/).
 """
 from __future__ import annotations
-import os
-import pytest
-from types import SimpleNamespace
 
-from backend.agents.events import prospector
 from backend.agents.exa import _build_query
 
 
@@ -48,86 +46,3 @@ def test_query_handles_mixed_startup_and_enterprise():
     })
     assert "seed startups" in q
     assert "enterprise companies" in q
-
-
-# ── Judge runs unconditionally (single source skip was reverted) ────────
-
-def test_single_source_still_runs_judge(monkeypatch):
-    """The single-source judge skip was reverted because LinkedIn alone
-    surfaces wrong-person matches that the ICP gatekeeper would have
-    caught. Trades ~4s of latency for search quality."""
-    import asyncio
-    from backend.agents import llm
-
-    judge_calls: list = []
-    monkeypatch.setattr(llm, "llm_available", lambda: True)
-
-    async def _fake_judge_all(out, icp):
-        judge_calls.append(True)
-        return out
-    monkeypatch.setattr(prospector, "_judge_all", _fake_judge_all)
-
-    class _FakeAdapter:
-        key = "linkedin"
-        async def fetch(self, icp):
-            return [{
-                "identity": "x", "name": "X",
-                "linkedin_url": "https://www.linkedin.com/in/x",
-                "source": "linkedin",
-            }]
-
-    asyncio.run(prospector.prospect(
-        {"role": "engineers", "seniority": "Senior", "city": "SF"},
-        adapters=[_FakeAdapter()],
-        force_fresh=True,
-    ))
-    assert judge_calls == [True], "Judge should run even for single-source"
-
-
-def test_multi_source_still_runs_judge(monkeypatch):
-    import asyncio
-    from backend.agents import llm
-
-    judge_calls: list = []
-    monkeypatch.setattr(llm, "llm_available", lambda: True)
-
-    async def _fake_judge_all(out, icp):
-        judge_calls.append(True)
-        return out
-    monkeypatch.setattr(prospector, "_judge_all", _fake_judge_all)
-
-    class _FakeAdapter:
-        def __init__(self, k): self.key = k
-        async def fetch(self, icp):
-            return [{
-                "identity": f"x-{self.key}",
-                "name": f"X{self.key}",
-                "linkedin_url": f"https://www.linkedin.com/in/x-{self.key}",
-                "source": self.key,
-            }]
-
-    asyncio.run(prospector.prospect(
-        {"role": "engineers", "seniority": "Senior", "city": "SF"},
-        adapters=[_FakeAdapter("linkedin"), _FakeAdapter("github")],
-        force_fresh=True,
-    ))
-    assert judge_calls == [True], "Judge should have run for multi-source"
-
-
-# ── Defaults that the speedup PR changed ───────────────────────────────
-
-def test_adapter_timeout_default_is_thirty_seconds():
-    """Restored to 30s after reverting the speed changes that degraded
-    search quality. Exa typically responds in 2-5s; the extra headroom
-    just guards against transient hangs."""
-    os.environ.pop("PROSPECTING_ADAPTER_TIMEOUT", None)
-    assert prospector._adapter_timeout() == 30.0
-
-
-def test_judge_timeout_default_is_thirty_seconds():
-    """Bumped to 30s : Railway→Anthropic round-trips routinely need 6-12s for
-    a batched judge call of ~50 candidates, and a premature timeout silently
-    bypasses the ICP gate (surfacing wrong-person matches). 6s was forcing
-    constant fail-open, so the headroom is deliberate."""
-    os.environ.pop("PROSPECTING_JUDGE_TIMEOUT", None)
-    assert prospector._judge_timeout() == 30.0

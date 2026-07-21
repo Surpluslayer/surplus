@@ -482,7 +482,7 @@ def link_contact(db, prospect, owner_user_id: int):
     None when there's no stable identity to key on (the Prospect simply stays
     contact-less, which every flow supports). Never raises."""
     from .... import models
-    from ....triage.enrichment_cache import identity_keys
+    from ..enrichment_cache import identity_keys
     from .. import identity as _identity
     try:
         if getattr(prospect, "contact_id", None) is not None:
@@ -568,7 +568,7 @@ def import_conversation_contacts(db, user, want: int = 15,
     import os
     from .... import models
     from ....providers.unipile import UnipileProvider
-    from ....triage.enrichment_cache import identity_keys
+    from ..enrichment_cache import identity_keys
     from .. import identity as _identity
 
     acct = _clean(getattr(user, "unipile_account_id", None))

@@ -49,18 +49,39 @@ The codebase is two product lines sharing infra. Every backend file belongs to
 exactly one of these buckets. (Files are NOT yet physically split into
 subpackages — this map is the source of truth for the split.)
 
-### EVENTS side — RETIRED 2026-07-07 (surface unmounted; models/data kept)
+### EVENTS side — RETIRED 2026-07-07 (surface unmounted); code DELETED 2026-07-21
 The desktop event-ROI pipeline (intake → prospect → outreach → match → ROI,
 plus triage & curation) is no longer served: its routers are not mounted in
-main.py and `www`/apex now serve the marketing landing. The MODULES remain on
-disk (the relationship spine imports triage.enrichment_cache.identity_keys;
-capture still creates Event/Prospect rows) and ALL tables + data remain. A
-tripwire test (test_api.py::test_retired_pipeline_surface_stays_dark) fails
-if the surface is ever re-mounted by accident.
-- routes: `events`, `pipeline`, `matching`, `roi`, `triage`, `curation`, `jobs`
-- agents: `prospector`, `scorer`, `outreach`, `matcher`, `matcher_lib`, `sponsor_matcher`, `roi`, `pair_explainer`, `agents/sources/*`
-- packages: `backend/triage/`, `backend/curation/`, `backend/matching/`
-- frontend: `App.jsx`, `TriageApp.jsx`, `SharedIntake.jsx`, `components/MatchingRadarGraph.jsx`
+main.py and `www`/apex now serve the marketing landing. As of 2026-07-21 the
+modules themselves are DELETED from the repo (git history keeps them); ALL
+tables + data remain (models.py unchanged — Event/Prospect/Applicant/
+TriageEnrichmentCache etc. still exist, and capture still creates
+Event/Prospect rows). A tripwire test
+(test_api.py::test_retired_pipeline_surface_stays_dark) fails if the surface
+is ever re-mounted by accident.
+
+Deleted: routes `events`/`pipeline`/`matching`/`roi`/`triage`/`curation`/`jobs`;
+`backend/pipeline.py`; `backend/seed.py`; `backend/agents/events/` (prospector,
+scorer, matcher, matcher_lib, sponsor_matcher, roi, pair_explainer);
+`backend/agents/sources/`; `backend/triage/`; `backend/curation/`;
+`backend/matching/`; the Modal triage/prospect/pipeline/match job definitions
+in `modal_jobs.py`; and the prospect/match Job dispatch branches in
+`backend/jobs.py`.
+
+Two survivors were reclassified to the relationship side:
+- `backend/agents/relationship/enrichment_cache.py` — the identity-key kernel
+  (`identity_keys` / `_linkedin_slug`), moved out of `backend/triage/` because
+  every relationship sync path (email, LinkedIn chat, Google contacts,
+  WhatsApp, spine dedup) keys people by it. The triage-only DB read/write half
+  (cache_get/cache_put) was dropped; the `TriageEnrichmentCache` table and its
+  data are kept.
+- `backend/agents/outreach.py` — the invite/DM composer, formerly pipeline
+  stage 03b, now relationship-side: the live send flow (pipeline/send/flow.py,
+  followup_scheduler, investor_campaign, live_enrich, routes/admin/inperson/
+  webhooks) composes through it.
+
+Frontend events-side shells (`App.jsx`, `TriageApp.jsx`, `SharedIntake.jsx`,
+`components/MatchingRadarGraph.jsx`) are unreferenced but still on disk.
 
 ### RELATIONSHIP side — the phone-first "book" / CRM (`event.*`, `BookApp.jsx`)
 Capture people → detect their updates → draft follow-ups in your voice.
@@ -71,7 +92,7 @@ Capture people → detect their updates → draft follow-ups in your voice.
 ### SHARED — used by both
 - routes: `auth`, `billing`, `demo`, `webhooks`, `admin`
 - agents/infra: `llm`, `agent_loop`, `rategate`, `voice`, `exa`, `usage`, `failure_log`, `live_enrich`
-- core: `main`, `db`, `models`, `models_monitoring`, `auth`, `schemas`, `config`, `billing_plans`, `pipeline`, `jobs`, `hosts`, `rate_limit`, `jsonx`, `metrics`, `reqlog`, `env_loader`, `demo_seed`
+- core: `main`, `db`, `models`, `models_monitoring`, `auth`, `schemas`, `config`, `billing_plans`, `jobs`, `hosts`, `rate_limit`, `jsonx`, `metrics`, `reqlog`, `env_loader`, `demo_seed`
 - providers: `base`, `unipile`, `brightdata`
 - frontend lib/components: `lib/*`, `UpgradePaywall`, `surplusTheme`, `intakeFormConstants`
 
@@ -92,8 +113,8 @@ split is visible at the entrypoint.
     (2026-07-01). Steady-state cadence is unaffected (claims are shared, an
     already-running replica keeps ticking).
 - **Modal** (`modal_jobs.py`, app `surplus-jobs`) runs off-box batch + scheduled
-  jobs when `USE_MODAL=1` (triage scoring, prospecting, CRM refresh, the
-  on-connect WhatsApp first sync, the hourly updates sweep). Secrets:
+  jobs when `USE_MODAL=1` (CRM refresh, the on-connect WhatsApp first sync,
+  detached seeds, the hourly updates sweep, investor outreach). Secrets:
   `surplus-jobs` (DB/Anthropic/etc) + `surplus-brightdata`.
 - **Postgres** (Railway) in prod; SQLite (`backend/data/surplus.db`) for local dev.
   Schema migrations are inline idempotent `_migrate_*()` functions in `db.py`
@@ -124,21 +145,19 @@ threads (updates/gathering sweeps + the punctual follow-up dispatcher, §6c).
 - `jobs.py` — job dispatch: local BackgroundTask vs Modal (`use_modal()`).
 - `hosts.py` — in-person host detection. `rate_limit.py` — per-IP limiter.
 - `jsonx.py` — robust JSON extraction from LLM output. `metrics.py` / `reqlog.py` — request/LLM stats + logging. `env_loader.py` — load .env first.
-- `demo_seed.py` — demo workspace bootstrap. `seed.py` — dev-only CLI (`python -m backend.seed`), not imported by the app.
+- `demo_seed.py` — demo workspace bootstrap. (`seed.py`, the events-pipeline dev CLI, was deleted with the events side.)
 
 ### Routes (`backend/routes/`) — all mounted in `main.py`
 - `auth.py` — LinkedIn/email sign-in (Unipile), session, `/api/me`, onboarding, **auto-import on connect** (background worker seeds the Book from genuine DM conversations AND auto-syncs the host's voice from their own sent messages via `live_enrich.sync_host_voice_on_connect` — same ban-safe own-account read, idempotent). The WhatsApp connect webhook dispatches its first conversation sync DURABLY off the request lifecycle via `jobs.dispatch_whatsapp_first_sync` (Modal `run_whatsapp_first_sync` when `USE_MODAL`, else a daemon thread that owns its own DB session): minutes of Unipile I/O can't run in the webhook thread or it gets killed mid-sync. `whatsapp_sync` fetches each chat's attendees+messages concurrently (bounded `ThreadPoolExecutor`, read-only HTTP) then ingests single-threaded; idempotent by message id.
 - `book.py` — the BookApp surface: `/api/book/today` feed, `/draft`(+stream), `/ask`(+stream), relationship detail, `run-updates` sweep, `_updates-status` diagnostics, `_draft-preview` (admin: composes drafts across a user's top contacts + the "natural move" reasoning, to inspect messaging quality — read-only, bounded).
 - `relationships.py` — contact spine read API, star/VIP, email threads, **import-conversations**, CRM refresh, updates feed.
 - `demo.py` — token-gated demo entry + public walkthrough.
-- `events.py` `pipeline.py` `matching.py` `roi.py` — the desktop event pipeline (intake → prospect/outreach → match → ROI).
-- `triage.py` `curation.py` — inbound applicant triage + event curation surfaces.
 - `inperson.py` - phone capture (QR/paste/manual). **Scan fast-path**: `POST
   /api/inperson/scan` does only the DB upsert and returns immediately with
   `draft_status="pending"`; the slow half (Unipile resolve + enrichment + draft
   compose, `finish_scan_capture`) runs detached on its own DB session
   (`jobs.run_detached`) and the UI polls `GET /scan/{id}/draft` until
-  `ready`/`failed`. `jobs.py` - async job dispatch+poll.
+  `ready`/`failed`.
 - `followups.py` — scheduled follow-up queue (Gmail-style). `billing.py` — Stripe. `admin.py` — token-gated ops. `webhooks.py` — Unipile / Bright Data / Stripe ingestion.
 
 ### Agents / logic (`backend/agents/`)
@@ -169,7 +188,7 @@ extraction/matching), `exa.py` (Exa search), `jsonx` use.
 - Law-firm readiness (shipped): `agents/relationship/audit.py` -> `TeamAuditLog` (append-only team-plane trail: every gated read with counts, every wall/policy/membership change; mutations commit ATOMICALLY with their audit row, reads are best-effort; admin `GET /api/teams/{id}/audit`, itself audited). `conflict_import.py` + `routes/team_conflicts.py` -- deterministic conflict-list import per docs/accounts-architecture.md §6b: parse in code, provisional name-walls written before review, coverage invariant (every line lands in an accounted state), confirm converts single-match walls to entity walls + unlocks `view_state`, audited skip. Delete semantics: graph rows cascade; compliance rows (teams/walls/audit) survive their creator via SET NULL (`_migrate_fk_cascade` actions).
 - `accounts_read.py` + `routes/accounts.py` — the owner's account read model (members warmest-first via `score_health`, unioned timeline, coverage/single-threaded, rollup recompute). `routes/teams.py` + `team_view.py` — the team plane: Level-1 metadata-only aggregates ({member, contact, warmth band, recency band} — never content), gates enforced pre-aggregation.
 
-**Outreach/pipeline:** `prospector.py` `scorer.py` `outreach.py` `matcher.py`(+`matcher_lib.py`) `sponsor_matcher.py` `roi.py` `pair_explainer.py`.
+**Composer:** `outreach.py` (relationship-side invite/DM composer, formerly pipeline stage 03b).
 **Messaging:** `reply_agent.py` (inbound DM classify, propose-only) `sender.py` `send_flow.py` `followup_scheduler.py` `email_sync.py`.
 **Enrichment:** `capture_enrich.py` `live_enrich.py` `resolver.py`.
 **Utils:** `failure_log.py` `usage.py`.

@@ -5,17 +5,21 @@ Railway web dyno.
 WHY
 ---
 The web app (FastAPI on Railway) is latency-sensitive and single-purpose:
-serve requests, hold a small Postgres pool. The heavy work — per-applicant
-triage scoring (Haiku fan-out, concurrency 25), prospecting (multi-source web
-search + Sonnet judging), and the full prospect→score→outreach pipeline — is
-bursty, CPU/IO-spiky, and can run for minutes. Today that runs in a FastAPI
-BackgroundTask on the same dyno, which (a) competes with request handling,
-(b) dies if the dyno restarts mid-deploy, and (c) can't scale past one box.
+serve requests, hold a small Postgres pool. The heavy relationship-side work —
+the CRM refresh sweep, WhatsApp first-sync, connect-time detached seeds, the
+hourly updates sweep, the investor outreach campaign — is bursty, IO-spiky,
+and can run for minutes. Run in a FastAPI BackgroundTask on the same dyno it
+(a) competes with request handling, (b) dies if the dyno restarts mid-deploy,
+and (c) can't scale past one box.
 
 Modal is a better home for exactly this shape of work: serverless containers
 that autoscale on `.map()`, retry on crash, and bill per-second. We keep the
 web app on Railway (NOT moved to Modal — the user explicitly wants the
 frontend/app untouched) and offload only the batch jobs.
+
+(The retired events-side jobs — triage scoring, prospecting, the full
+prospect→score→outreach pipeline — used to live here too; they were deleted
+with the events-side code removal.)
 
 ARCHITECTURE
 ------------
@@ -24,19 +28,9 @@ ARCHITECTURE
     `modal run` / schedule ─────▶ Modal function ─┘   shared Anthropic/Exa/Unipile
 
 Both the web app and the Modal functions point at the SAME DATABASE_URL, so a
-job that scores an event writes rows the web app immediately reads. The Modal
-functions import the existing `backend/` package unchanged — no logic is
-duplicated; we just call evaluate_all / run_prospect / run_pipeline from a
-Modal container.
-
-GRANULARITY
------------
-Per-EVENT, not per-applicant. The inner `_one(applicant)` closure inside
-evaluate_all depends on per-event context (rubric, triage_config, priority
-policy, the shared semaphore, the second-pass deferred list), so the natural
-Modal unit is "score one whole event". Fan-out across many events uses
-`run_triage_event.map(event_ids)` — Modal then runs each event in its own
-container, in parallel, with per-container retries.
+job that writes rows is immediately visible to the web app. The Modal functions
+import the existing `backend/` package unchanged — no logic is duplicated; the
+job bodies live in backend/jobs.py and backend/agents/relationship/*.
 
 SETUP (one-time)
 ----------------
@@ -49,7 +43,6 @@ SETUP (one-time)
        ANTHROPIC_API_KEY=sk-ant-... \
        EXA_API_KEY=... \
        UNIPILE_API_KEY=... UNIPILE_DSN=... UNIPILE_ACCOUNT_ID=... \
-       UNIPILE_TRIAGE_API_KEY=... UNIPILE_TRIAGE_ACCOUNT_IDS=... \
        GITHUB_TOKEN=...
 
    NOTE: Modal containers can't reach Railway's *.railway.internal host, so
@@ -57,15 +50,13 @@ SETUP (one-time)
    Postgres service), not the internal one.
 
 3. Deploy:           modal deploy modal_jobs.py
-   Run one event:    modal run modal_jobs.py::run_triage_event --event-id 1
-   Fan out a sweep:  modal run modal_jobs.py::triage_sweep
 
 TRIGGER FROM THE WEB APP
 ------------------------
-See backend/jobs.py (thin client). With USE_MODAL=1 set on Railway, the triage
-route calls `modal.Function.from_name("surplus-jobs", "run_triage_event")
-.spawn(event_id)` instead of a local BackgroundTask. Without it, behaviour is
-unchanged (local background task) — so this is a safe, reversible flag.
+See backend/jobs.py (thin client). With USE_MODAL=1 set on Railway, dispatch
+sites call `modal.Function.from_name("surplus-jobs", ...).spawn(...)` instead
+of a local BackgroundTask/thread. Without it, behaviour is unchanged (local
+fallback) — so this is a safe, reversible flag.
 """
 from __future__ import annotations
 
@@ -84,18 +75,11 @@ image = (
     .pip_install_from_requirements("requirements.txt")
     # Data assets the backend reads at import/runtime. add_local_python_source
     # mounts ONLY .py files, so non-code assets must be added explicitly.
-    # prospect_pool.json is read at import time by agents/sources/base.py
-    # (the prospecting mock pool) — without it, importing backend.pipeline
-    # raises FileNotFoundError and prospect/match jobs die before they start.
     # NB: we deliberately do NOT bundle backend/data/surplus.db (the 6.6 MB
     # local-dev SQLite file) — Modal talks to Postgres via DATABASE_URL.
-    .add_local_file(
-        "backend/data/prospect_pool.json",
-        "/root/backend/data/prospect_pool.json",
-    )
     # The curated investor roster read at runtime by
     # agents/relationship/investor_campaign.py (the batched connection-request
-    # campaign). Same reason as prospect_pool.json: it's a data asset, not .py.
+    # campaign). It's a data asset, not .py, so it needs an explicit mount.
     .add_local_file(
         "backend/data/investor_outreach.json",
         "/root/backend/data/investor_outreach.json",
@@ -112,213 +96,10 @@ secret = modal.Secret.from_name("surplus-jobs")
 
 app = modal.App("surplus-jobs")
 
-# Sensible ceilings. Triage scoring fans out 25-wide *inside* one container
-# (asyncio.Semaphore), so a single 1-CPU container handles a 500-applicant
-# event; the per-event timeout is generous because rubric synth + 500 Haiku
-# calls + Judge B can take a few minutes. retries=2 covers transient
-# Anthropic/Postgres blips without re-charging a whole successful run.
-_TRIAGE_TIMEOUT = 60 * 30   # 30 min hard cap per event
-_PROSPECT_TIMEOUT = 60 * 15
 
 
 # --------------------------------------------------------------------------- #
-# 1) TRIAGE SCORING — the primary batch job.
-#    Mirrors backend/routes/triage.py::_evaluate_event_async exactly, but in a
-#    Modal container with its own DB session.
-# --------------------------------------------------------------------------- #
-@app.function(
-    image=image,
-    secrets=[secret],
-    timeout=_TRIAGE_TIMEOUT,
-    retries=2,
-)
-async def run_triage_event(event_id: int, force_reenrich: bool = False) -> dict:
-    """Score every applicant for one event. Returns {total, scored, failed}.
-
-    Idempotent: enrichment is frozen on Applicant.enrichment_raw + the
-    cross-event identity cache, and scoring is temp=0, so re-running an event
-    re-scores deterministically without re-enriching (unless force_reenrich).
-    """
-    from backend.db import SessionLocal, init_db
-    from backend import models
-    from backend.triage.rubric import synthesize_rubric, icp_from_event
-    from backend.triage.score import evaluate_all
-
-    # Migrations are idempotent; cheap insurance that the Modal container's
-    # view of the schema matches the web app's even if it booted first.
-    init_db()
-
-    db = SessionLocal()
-    try:
-        ev = db.get(models.Event, event_id)
-        if ev is None:
-            print(f"  [modal.triage] event={event_id} NOT FOUND")
-            return {"event_id": event_id, "error": "not_found"}
-
-        applicants = list(ev.applicants)
-        if not applicants:
-            print(f"  [modal.triage] event={event_id} has 0 applicants")
-            return {"event_id": event_id, "total": 0, "scored": 0, "failed": 0}
-
-        print(f"  [modal.triage] event={event_id} scoring {len(applicants)} applicants")
-        rubric = synthesize_rubric(
-            ev.id, ev.triage_config or "", applicants,
-            icp=icp_from_event(ev),
-        )
-        result = await evaluate_all(
-            db, ev, rubric, force_reenrich=force_reenrich
-        )
-        print(f"  [modal.triage] event={event_id} done: {result}")
-        return {"event_id": event_id, **result}
-    finally:
-        db.close()
-
-
-@app.function(image=image, secrets=[secret], timeout=_TRIAGE_TIMEOUT)
-def triage_sweep(force_reenrich: bool = False) -> list[dict]:
-    """Re-score every triage event in the DB, one container per event.
-
-    Useful as a scheduled backfill or after a scorer change. Uses Modal's
-    fan-out: each event runs in its own container, in parallel, with the
-    per-event retries from run_triage_event.
-    """
-    from backend.db import SessionLocal
-    from backend import models
-
-    db = SessionLocal()
-    try:
-        # Triage events are the ones with a non-empty triage_config.
-        rows = (
-            db.query(models.Event.id)
-            .filter(models.Event.triage_config != "")
-            .all()
-        )
-        event_ids = [r[0] for r in rows]
-    finally:
-        db.close()
-
-    print(f"  [modal.triage_sweep] fanning out over {len(event_ids)} events")
-    results = list(
-        run_triage_event.map(
-            event_ids,
-            kwargs={"force_reenrich": force_reenrich},
-        )
-    )
-    return results
-
-
-# --------------------------------------------------------------------------- #
-# 2) PROSPECTING — multi-source discovery + scoring for one event.
-#    Mirrors the route that calls backend/pipeline.py::run_prospect.
-# --------------------------------------------------------------------------- #
-@app.function(
-    image=image,
-    secrets=[secret],
-    timeout=_PROSPECT_TIMEOUT,
-    retries=1,  # web_search is non-deterministic; one retry, not two
-)
-async def run_prospecting(event_id: int, force_fresh: bool = False) -> dict:
-    """Fan out across source adapters, persist + score prospects for one event.
-
-    Returns {event_id, prospects, failures} counts. force_fresh busts the
-    in-memory ICP cache in prospect()."""
-    from backend.db import SessionLocal, init_db
-    from backend import models
-    from backend.pipeline import run_prospect
-
-    init_db()
-    db = SessionLocal()
-    try:
-        ev = db.get(models.Event, event_id)
-        if ev is None:
-            print(f"  [modal.prospect] event={event_id} NOT FOUND")
-            return {"event_id": event_id, "error": "not_found"}
-
-        prospects, failures = await run_prospect(db, ev, force_fresh=force_fresh)
-        db.commit()
-        out = {
-            "event_id": event_id,
-            "prospects": len(prospects),
-            "failures": len(failures),
-        }
-        print(f"  [modal.prospect] event={event_id} done: {out}")
-        return out
-    finally:
-        db.close()
-
-
-# --------------------------------------------------------------------------- #
-# 3) FULL PIPELINE — prospect → score → outreach compose, for one event.
-#    The heaviest job; lives on Modal so a multi-minute run never ties up a
-#    web worker. Mirrors backend/pipeline.py::run_pipeline.
-# --------------------------------------------------------------------------- #
-@app.function(
-    image=image,
-    secrets=[secret],
-    timeout=_PROSPECT_TIMEOUT,
-    retries=1,
-)
-async def run_full_pipeline(event_id: int) -> dict:
-    """Run the end-to-end prospect+outreach pipeline for one event."""
-    from backend.db import SessionLocal, init_db
-    from backend import models
-    from backend.pipeline import run_pipeline
-
-    init_db()
-    db = SessionLocal()
-    try:
-        ev = db.get(models.Event, event_id)
-        if ev is None:
-            return {"event_id": event_id, "error": "not_found"}
-        await run_pipeline(db, ev)
-        db.commit()
-        print(f"  [modal.pipeline] event={event_id} done")
-        return {"event_id": event_id, "ok": True}
-    finally:
-        db.close()
-
-
-# --------------------------------------------------------------------------- #
-# 4) ASYNC JOBS — request/response prospecting + matching keyed off a Job row.
-#    Unlike run_prospecting/run_full_pipeline above (fire-and-forget, return
-#    counts), these power the frontend's start+poll flow: the web app inserts a
-#    queued Job, spawns one of these, and the worker writes the serialized
-#    PipelineResult / MatchResult onto the Job row for the frontend to poll.
-#    The actual work lives in backend/jobs.py::execute_*_job — single source of
-#    truth shared with the local BackgroundTask path — so these are thin shells.
-# --------------------------------------------------------------------------- #
-@app.function(
-    image=image,
-    secrets=[secret],
-    timeout=_PROSPECT_TIMEOUT,
-    retries=1,
-)
-async def run_prospect_job(job_id: str, force_fresh: bool = False) -> None:
-    """Execute a queued prospect Job (search) and persist its PipelineResult."""
-    from backend.db import init_db
-    from backend.jobs import execute_prospect_job
-
-    init_db()
-    await execute_prospect_job(job_id, force_fresh=force_fresh)
-
-
-@app.function(
-    image=image,
-    secrets=[secret],
-    timeout=_PROSPECT_TIMEOUT,
-    retries=1,
-)
-async def run_match_job(job_id: str) -> None:
-    """Execute a queued match Job and persist its MatchResult."""
-    from backend.db import init_db
-    from backend.jobs import execute_match_job
-
-    init_db()
-    await execute_match_job(job_id)
-
-
-# --------------------------------------------------------------------------- #
-# 5) RELATIONSHIP WATCH — poll each user's CRM (Contact spine) for LinkedIn
+# 1) RELATIONSHIP WATCH — poll each user's CRM (Contact spine) for LinkedIn
 #    changes and emit activity_update interactions. There is NO Unipile push for
 #    a tracked person's own posts/job changes (webhooks only fire for the
 #    connected account's own activity), so freshness comes from POLLING on a
@@ -370,7 +151,7 @@ def crm_refresh_sweep() -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
-# 5b) WHATSAPP FIRST SYNC : the on-connect conversation import.
+# 2) WHATSAPP FIRST SYNC : the on-connect conversation import.
 #    When a user connects WhatsApp, the webhook kicks a first sync that pages
 #    the account's chats and ingests each conversation. That's minutes of
 #    Unipile I/O, so it can't live in the request lifecycle (a throwaway thread
@@ -397,7 +178,7 @@ def run_whatsapp_first_sync(user_id: int) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# 5c) DETACHED JOB : the durable home for the generic fire-and-forget seeds
+# 3) DETACHED JOB : the durable home for the generic fire-and-forget seeds
 #    (connect-time conversation autoimport + voice sync, email first-sync). The
 #    web app would otherwise run these in a throwaway daemon thread that dies if
 #    the worker recycles mid-deploy, dropping the seed. run_detached(prefer_modal
@@ -421,7 +202,7 @@ def run_detached_job(fn_path: str, args: list, kwargs: dict) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 6) UPDATES SWEEP — the tiered "what's new" sweep (job changes + milestone
+# 4) UPDATES SWEEP — the tiered "what's new" sweep (job changes + milestone
 #    posts) for the Book contact spine. Primary scheduler. Bright Data scrapes
 #    on its own infra and delivers to the Railway webhook; this function just
 #    selects DUE contacts (vip = daily, others = weekly) and fires the triggers.
@@ -460,7 +241,7 @@ def updates_sweep() -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# 7) INVESTOR OUTREACH : the batched, throttled LinkedIn connection campaign.
+# 5) INVESTOR OUTREACH : the batched, throttled LinkedIn connection campaign.
 #    Sends a small daily batch of pre-written connection requests to the curated
 #    investor roster (backend/data/investor_outreach.json), routed through the
 #    same guarded send path as every other outreach. Spreading a fixed list over
@@ -510,25 +291,3 @@ def investor_outreach_sweep() -> dict:
           f"sent={summary['sent']}/{summary['attempted']} "
           f"remaining={summary['remaining']}")
     return summary
-
-
-# --------------------------------------------------------------------------- #
-# Local entrypoints: `modal run modal_jobs.py::<name>`
-# --------------------------------------------------------------------------- #
-@app.local_entrypoint()
-def main(event_id: int = 0, job: str = "triage", force: bool = False):
-    """Convenience CLI.
-
-    Examples:
-      modal run modal_jobs.py --event-id 1                 # triage one event
-      modal run modal_jobs.py --event-id 1 --job prospect  # prospect one event
-      modal run modal_jobs.py --job sweep                  # re-score all events
-    """
-    if job == "sweep":
-        print(triage_sweep.remote(force_reenrich=force))
-    elif job == "prospect":
-        print(run_prospecting.remote(event_id, force_fresh=force))
-    elif job == "pipeline":
-        print(run_full_pipeline.remote(event_id))
-    else:
-        print(run_triage_event.remote(event_id, force_reenrich=force))

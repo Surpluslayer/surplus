@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .... import models
-from ....triage.enrichment_cache import identity_keys
+from ..enrichment_cache import identity_keys
 
 # Scalar fields copied from a dup into the canonical when the canonical's is empty.
 _BACKFILL = ("name", "linkedin_url", "email", "company", "company_domain",

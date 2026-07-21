@@ -194,7 +194,7 @@ def _find_or_create_linkedin_contact(db, user, peer: dict, stats: dict):
     the SAME scheme import_conversation_contacts and link_contact use (never a
     new one). Returns the Contact or None when the URL yields no strong key."""
     from ... import models
-    from ...triage.enrichment_cache import identity_keys
+    from .enrichment_cache import identity_keys
     from . import identity as _identity
 
     keys = identity_keys(email="", linkedin_url=peer["linkedin_url"])
