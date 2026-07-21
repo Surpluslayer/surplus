@@ -1197,9 +1197,16 @@ def run_relationship_agent_concurrent(
             messages=[{"role": "user", "content": triage_prompt}],
         )
     except Exception as exc:  # noqa: BLE001 : transport failure ends the run
-        result.error = f"{type(exc).__name__}: {exc}"
+        # Full detail goes to the server log only: exception MESSAGES can carry
+        # internals (SQL fragments, provider URLs) and result.error flows into
+        # the chat response body. The caller gets the class name, not the body.
+        print(f"  [agent.run] triage failed: {type(exc).__name__}: {exc}",
+              flush=True)
+        result.error = (f"The agent hit an unexpected error "
+                        f"({type(exc).__name__}). Try again in a moment.")
         result.stop_reason = "error"
-        _trace(f"triage FAILED after {time.monotonic()-t_triage:.1f}s: {result.error}")
+        _trace(f"triage FAILED after {time.monotonic()-t_triage:.1f}s: "
+               f"{type(exc).__name__}")
         return result
     _trace(f"triage done in {time.monotonic()-t_triage:.1f}s")
 

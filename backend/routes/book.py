@@ -28,6 +28,7 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -1108,9 +1109,6 @@ def _owned_contact(db: Session, contact_id: int, user: models.User) -> models.Co
     return c
 
 
-_LI_PROFILE_RE = None  # lazy
-
-
 def _contact_linkedin_url(db, contact) -> Optional[str]:
     """Best LinkedIn PROFILE url for a contact. Prefer the stored linkedin_url;
     else recover it from the newest activity_update, whose meta_json carries the
@@ -1135,11 +1133,25 @@ def _contact_linkedin_url(db, contact) -> Optional[str]:
             url = (json.loads(r.meta_json or "{}") or {}).get("url") or ""
         except Exception:  # noqa: BLE001
             url = ""
-        if "linkedin.com/in/" in url:
+        # Host-parse, not substring: meta urls originate from scraped
+        # payloads, and "evil.com/linkedin.com/in/x" must not pass a check
+        # that feeds provider_id resolution for real sends.
+        if not _is_linkedin_url(url):
+            continue
+        if "/in/" in (urlparse(url).path or ""):
             return url
-        if "linkedin.com" in url and fallback is None:
+        if fallback is None:
             fallback = url
     return fallback
+
+
+def _is_linkedin_url(url: str) -> bool:
+    """True only when the url's HOST is linkedin.com (or a subdomain)."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "linkedin.com" or host.endswith(".linkedin.com")
 
 
 def _sendable_prospect(db, contact: models.Contact, user) -> models.Prospect:
@@ -1521,6 +1533,8 @@ def import_conversations_status(
         try:
             out["progress"] = json.loads(job.result_json)
         except ValueError:
+            # Mid-write progress JSON can be momentarily truncated; the poller
+            # simply shows no progress this tick rather than 500ing.
             pass
     if job.status == "error":
         out["error"] = job.error
