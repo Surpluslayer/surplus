@@ -713,9 +713,20 @@ async def linkedin_webhook(payload: dict, db: DbSession = Depends(get_db)) -> JS
     state_token = (payload.get("name") or "").strip()
     account_id = (payload.get("account_id") or "").strip()
 
+    # Non-success webhooks carry the only diagnostic detail we will EVER see
+    # for a hosted-auth failure (the raw provider response lives on Unipile's
+    # side — support asks "what was the exact API response" and this payload
+    # is our entire answer). Log the FULL body for every non-success, and for
+    # the drop paths below too: an ignored webhook used to vanish without a
+    # trace, which made "someone couldn't connect LinkedIn" undebuggable.
+    if status_raw not in {"CREATION_SUCCESS", "RECONNECTED"}:
+        import json as _json
+        print(f"  [auth.webhook] NON-SUCCESS payload: "
+              f"{_json.dumps(payload, default=str)[:2000]}", flush=True)
+
     if not state_token:
         # Not from a hosted-auth flow we initiated; ignore but ack so Unipile
-        # doesn't retry.
+        # doesn't retry. (Payload already logged above when non-success.)
         return JSONResponse({"ok": True, "ignored": "no state_token"})
 
     auth_state = db.query(AuthState).filter(AuthState.state_token == state_token).first()
@@ -723,8 +734,12 @@ async def linkedin_webhook(payload: dict, db: DbSession = Depends(get_db)) -> JS
         return JSONResponse({"ok": True, "ignored": "unknown state_token"})
 
     if status_raw not in {"CREATION_SUCCESS", "RECONNECTED"} or not account_id:
+        import json as _json
         auth_state.status = "failed"
-        auth_state.error = f"unipile status={status_raw}"
+        # File the whole webhook body (error column is 400 chars — the payload
+        # is small; truncation keeps the strongest prefix), not a terse status:
+        # this row is what we quote back to Unipile support.
+        auth_state.error = _json.dumps(payload, default=str)[:400]
         auth_state.completed_at = _utcnow()
         db.commit()
         return JSONResponse({"ok": True, "recorded": "failure"})
