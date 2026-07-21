@@ -446,7 +446,7 @@ def _record_sweep(result: dict) -> dict:
 
 def record_delivery(kind: str, received: int, matched: int, applied: int,
                     sample_raw_keys=None, sample_normalized=None) -> None:
-    """Called by the Bright Data webhook so /_updates-status can show the last
+    """Called by the Bright Data webhook so /_diagnostics can show the last
     delivery — counts + parsed sample fields, to validate field mapping."""
     global _LAST_DELIVERY
     _LAST_DELIVERY = {

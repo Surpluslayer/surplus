@@ -398,7 +398,9 @@ export const api = {
   // Contact-centric read model (one row per durable person, rolled up over
   // every event you've shared with them). Owner-scoped server-side.
   listContacts: () => request("/api/relationships/contacts"),
-  getContact: (contactId) => request(`/api/relationships/contacts/${contactId}`),
+  // Contact detail is served by the ONE canonical endpoint: bookRelationship
+  // (GET /api/book/relationship/{id}) — for a real spine contact its response
+  // also carries { contact_summary, events, spine_timeline }.
   // Permanently remove a person from the book (cascades their data; unlinks any
   // per-event prospect rows so event history survives).
   deleteContact: (contactId) =>
@@ -534,8 +536,10 @@ export const api = {
   // roster:[...] }. Built server-side by scoring + update-detection over the
   // book (cached shape; loads instantly). refresh re-runs the batch.
   bookToday: () => request("/api/book/today"),
-  // The relationship detail screen for one contact :
-  // { name, title, firm, status, why, value, timeline:[{t,d,warn}], ... }.
+  // The canonical relationship detail for one contact :
+  // { name, title, firm, status, why, value, timeline:[{t,d,warn}], ... };
+  // real spine contacts also carry { contact_summary, events, spine_timeline }
+  // (the durable-person payload the old /api/relationships/contacts/{id} served).
   bookRelationship: (id) =>
     request(`/api/book/relationship/${encodeURIComponent(id)}`),
   bookRefresh: () => request("/api/book/refresh", { method: "POST" }),

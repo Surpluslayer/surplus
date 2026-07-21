@@ -49,10 +49,8 @@ def list_integrations(
             "status": r.status, "scopes": (r.scopes or "").split(),
             "connected_at": r.created_at, "last_synced_at": r.last_synced_at,
         } for r in rows],
-        # which providers the server can actually run. OAuth ones need client creds;
-        # Granola (DCR) needs none, so it's always available.
-        "available": {**{name: oauth.configured(name) for name in _PROVIDERS},
-                      "granola": True},
+        # which providers the server can actually run (OAuth ones need client creds).
+        "available": {name: oauth.configured(name) for name in _PROVIDERS},
     }
 
 
@@ -173,82 +171,6 @@ def linkedin_connect_cookie(
     return {"connected": True, "account_id": new_account_id, "reused": False}
 
 
-# ── Calendly scheduling link (share / send as an invite). Before /{provider}.
-@router.get("/calendly/scheduling-link")
-def calendly_scheduling_link(
-    db: Session = Depends(get_db),
-    user: models.User = Depends(current_user),
-):
-    """The host's public Calendly link to share in a message. 409 if Calendly isn't
-    connected / can't refresh."""
-    acct = (db.query(models.ConnectedAccount)
-            .filter_by(user_id=user.id, provider="calendly", status="active").first())
-    if acct is None:
-        raise HTTPException(409, "no connected calendly account")
-    token = oauth.get_valid_access_token(db, acct)
-    if not token:
-        raise HTTPException(409, "calendly needs reconnection")
-    from ..integrations.calendly_client import scheduling_url
-    try:
-        url = scheduling_url(token)
-    except Exception:  # noqa: BLE001
-        raise HTTPException(400, "calendly error")
-    if not url:
-        raise HTTPException(404, "no scheduling link on this calendly account")
-    return {"scheduling_url": url}
-
-
-# ── Granola (MCP: DCR + PKCE) — its own connect/callback, NOT the generic OAuth one.
-# Declared BEFORE the /{provider} routes so the literal 'granola' wins.
-@router.get("/granola/connect")
-def granola_connect(
-    request: Request,
-    user: models.User = Depends(current_user),
-):
-    """Granola uses Dynamic Client Registration + PKCE (no preset client creds), so it
-    has a dedicated connect. Returns the consent URL to send the host to."""
-    from ..integrations import granola
-    redirect_uri = f"{_surplus_base_url(request)}/api/integrations/granola/callback"
-    return {"url": granola.authorize_url(redirect_uri=redirect_uri, user_id=user.id)}
-
-
-@router.get("/granola/callback")
-def granola_callback(
-    request: Request,
-    code: Optional[str] = None,
-    state: Optional[str] = None,
-    error: Optional[str] = None,
-    db: Session = Depends(get_db),
-):
-    """Granola OAuth redirect target. Verifies the signed state, recomputes the PKCE
-    verifier from its nonce, exchanges the code, stores the tokens. User comes from
-    the signed state (no session dependency)."""
-    from ..integrations import granola, oauth
-    base = _surplus_base_url(request)
-    if error or not code:
-        return RedirectResponse(
-            f"{base}/settings?integration=granola&status=denied", status_code=302)
-    payload = granola.verify_state(state)
-    if not payload:
-        raise HTTPException(400, "invalid or expired state")
-    user = db.get(models.User, int(payload.get("u") or 0))
-    if user is None:
-        raise HTTPException(400, "unknown user for this state")
-    redirect_uri = f"{base}/api/integrations/granola/callback"
-    tokens = granola.exchange_code(
-        code=code, redirect_uri=redirect_uri, nonce=payload.get("n") or "")
-    email = ""
-    try:                                   # best-effort label; live shape unverified
-        info = granola.call_tool(tokens.get("access_token", ""), "get_account_info", {})
-        email = (info.get("email") or "") if isinstance(info, dict) else ""
-    except Exception:  # noqa: BLE001
-        email = ""
-    oauth.save_tokens(db, user_id=user.id, provider="granola",
-                      account_email=email, tokens=tokens)
-    return RedirectResponse(
-        f"{base}/settings?integration=granola&status=connected", status_code=302)
-
-
 @router.get("/{provider}/connect")
 def connect(
     provider: str,
@@ -303,9 +225,6 @@ def _account_syncer(provider: str):
     if provider == "microsoft":
         from ..integrations.outlook_sync import sync_outlook_account
         return sync_outlook_account
-    if provider == "calendly":
-        from ..integrations.calendly_sync import sync_calendly_account
-        return sync_calendly_account
     return None
 
 

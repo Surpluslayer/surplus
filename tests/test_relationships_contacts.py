@@ -185,32 +185,39 @@ def test_contacts_route_lists_owned_contacts(db):
 
 
 def test_contact_detail_route_returns_summary_events_timeline(db):
+    # The canonical detail endpoint (GET /api/book/relationship/{id}) absorbed
+    # the old /api/relationships/contacts/{id}: the spine payload rides along
+    # as contact_summary / events / spine_timeline for a real owned Contact.
+    from backend.routes import book as book_route
     u = _user(db)
     ev = _event(db, u)
     p = _prospect(db, ev)
     c = rel.link_contact(db, p, u.id)
-    out = rel_route.contact_detail(c.id, db, u)
+    out = book_route.relationship(str(c.id), db, u)
     assert out["contact_summary"]["contact_id"] == c.id
     assert len(out["events"]) == 1
-    assert any(it["interaction_type"] == "captured" for it in out["timeline"])
+    assert any(it["interaction_type"] == "captured"
+               for it in out["spine_timeline"])
 
 
 def test_contact_detail_route_blocks_unowned(db):
     from fastapi import HTTPException
+    from backend.routes import book as book_route
     owner = _user(db, email="owner@x.com", acct="owner")
     other = _user(db, email="other@x.com", acct="other")
     ev = _event(db, owner)
     c = rel.link_contact(db, _prospect(db, ev), owner.id)
     with pytest.raises(HTTPException) as ei:
-        rel_route.contact_detail(c.id, db, other)
+        book_route.relationship(str(c.id), db, other)
     assert ei.value.status_code == 404
 
 
 def test_contact_detail_route_404_on_missing(db):
     from fastapi import HTTPException
+    from backend.routes import book as book_route
     u = _user(db)
     with pytest.raises(HTTPException) as ei:
-        rel_route.contact_detail(999, db, u)
+        book_route.relationship("999", db, u)
     assert ei.value.status_code == 404
 
 

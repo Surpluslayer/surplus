@@ -4,7 +4,9 @@
 //
 // Master/detail: a list of cross-event Contacts (GET /api/relationships/
 // contacts) and, on click, one person's rollup + per-event breakdown + unified
-// cross-event timeline (GET .../contacts/{id}). Styled light to match the
+// cross-event timeline (GET /api/book/relationship/{id} — the canonical
+// detail endpoint; spine payload rides in contact_summary / events /
+// spine_timeline). Styled light to match the
 // surplus event flow. Self-contained so it stays isolated from the in-progress
 // CRM work and from each app's own CSS.
 import React, { useState, useEffect, useRef } from "react";
@@ -95,7 +97,7 @@ export default function ContactsPage() {
 
   const open = async (id) => {
     setDetailLoading(true); setActive({ loading: true });
-    try { setActive(await api.getContact(id)); }
+    try { setActive(await api.bookRelationship(id)); }
     catch (e) { setErr(e.message || String(e)); setActive(null); }
     finally { setDetailLoading(false); }
   };
@@ -172,14 +174,14 @@ export default function ContactsPage() {
         <SectionLabel icon={Activity} text="Cross-event timeline" />
         <div style={{ background: C.card, border: `1px solid ${C.line}`,
                       borderRadius: 12, padding: "8px 18px 14px" }}>
-          {active.timeline.length === 0 && (
+          {(active.spine_timeline || []).length === 0 && (
             <div style={{ color: C.faint, fontSize: 13, padding: "10px 0" }}>
               No touches recorded yet.
             </div>
           )}
-          {active.timeline.map((it, i) => (
+          {(active.spine_timeline || []).map((it, i) => (
             <div key={i} style={{ display: "flex", gap: 12, padding: "10px 0",
-                                  borderBottom: i < active.timeline.length - 1
+                                  borderBottom: i < (active.spine_timeline || []).length - 1
                                     ? `1px solid ${C.line}` : "none" }}>
               <div style={{ width: 8, height: 8, borderRadius: 999,
                             background: C.accent, marginTop: 6,
