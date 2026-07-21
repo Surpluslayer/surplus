@@ -3,7 +3,7 @@ instead of scrolling Railway logs.
 
 The request-log middleware feeds request outcomes here; the book LLM helper feeds
 Claude-call outcomes here; the rate-gate reports its live in-flight state. An
-admin endpoint (/api/book/_status) returns a snapshot: counts, recent errors /
+admin endpoint (/api/book/_diagnostics) returns a snapshot: counts, recent errors /
 slow requests, per-route latency, and whether the relationship layer is
 throttling right now.
 

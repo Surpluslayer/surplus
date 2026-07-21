@@ -47,7 +47,7 @@ def _btrace(msg: str) -> None:
 
 
 def _record_llm(label: str, ms: float, ok: bool, detail: str = "") -> None:
-    """Feed the in-process metrics store (monitor via /api/book/_status). Never
+    """Feed the in-process metrics store (monitor via /api/book/_diagnostics). Never
     let a metrics hiccup affect an LLM call."""
     try:
         from ... import metrics

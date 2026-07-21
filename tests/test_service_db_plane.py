@@ -12,7 +12,9 @@ import inspect
 from backend.db import ENGINE, REQUEST_ENGINE, SessionLocal, get_service_db
 from backend.routes import admin as admin_routes
 from backend.routes import webhooks as webhook_routes
-from backend.routes import relationships as session_routes
+# The relationship-side session routes (/api/book + /api/relationships) live
+# in routes/book.py now; routes/relationships.py is a thin re-export shim.
+from backend.routes import book as session_routes
 
 
 def test_get_service_db_uses_jobs_engine():

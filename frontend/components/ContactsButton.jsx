@@ -1,7 +1,9 @@
 // ── Relationship CRM peek (temporary, self-contained, shared) ────────────
 // A single "Contacts" button that opens a slide-in panel listing the durable
 // cross-event Contact spine (GET /api/relationships/contacts) and, on click,
-// one person's full rollup + cross-event timeline (GET .../contacts/{id}).
+// one person's full rollup + cross-event timeline (GET
+// /api/book/relationship/{id} — spine payload in contact_summary / events /
+// spine_timeline).
 //
 // Imported by BOTH the desktop app (App.jsx) and the in-person app
 // (InPersonApp.jsx) so the spine is reachable from either surface. Deliberately
@@ -47,7 +49,7 @@ function ContactsPeek({ onClose }) {
 
   const openContact = async (id) => {
     setDetailLoading(true); setActive(null);
-    try { setActive(await api.getContact(id)); }
+    try { setActive(await api.bookRelationship(id)); }
     catch (e) { setErr(e.message || String(e)); }
     finally { setDetailLoading(false); }
   };
@@ -139,7 +141,7 @@ function ContactsPeek({ onClose }) {
                           color: "#6b7384", margin: "16px 0 6px" }}>
               Cross-event timeline
             </div>
-            {active.timeline.map((it, i) => (
+            {(active.spine_timeline || []).map((it, i) => (
               <div key={i} style={{ borderLeft: "2px solid #232936",
                                     padding: "2px 0 10px 12px", marginLeft: 4 }}>
                 <div style={{ fontSize: 13 }}>

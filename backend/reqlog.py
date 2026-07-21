@@ -58,7 +58,7 @@ class RequestLogMiddleware:
         if _skip(path):
             return
         code = status["code"]
-        # Feed the in-process metrics store (monitor via /api/book/_status without
+        # Feed the in-process metrics store (monitor via /api/book/_diagnostics without
         # log-diving). Best-effort: never let metrics break a response.
         try:
             from . import metrics

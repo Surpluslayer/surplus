@@ -2,7 +2,7 @@
 
 Replaces the flaky external GitHub-Actions cron with a background thread that
 lives INSIDE the product. No external secrets, no missed/delayed scheduled runs,
-and it's visible to the app (status via /api/book/_updates-status).
+and it's visible to the app (status via /api/book/_diagnostics).
 
 How it works
 ------------

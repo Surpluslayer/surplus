@@ -31,8 +31,9 @@ from .routes import (
     # shared
     auth, google_login, microsoft_login, password_auth, account_email,
     billing, demo, webhooks, admin,
-    # relationship side (the phone-first "book" / CRM)
-    book, relationships, inperson, followups, integrations, messages, settings,
+    # relationship side (the phone-first "book" / CRM) — book.py carries BOTH
+    # routers (/api/book + /api/relationships); routes/relationships.py is a shim
+    book, inperson, followups, integrations, messages, settings,
     # shared: data-subject rights (export / delete)
     privacy,
     accounts, teams, team_conflicts,
@@ -307,8 +308,8 @@ app.include_router(webhooks.router)
 app.include_router(admin.router)
 
 # ── RELATIONSHIP side: the phone-first "book" / CRM (event.surpluslayer.com) ──
-app.include_router(book.router)            # Today feed, drafts, ask-agent
-app.include_router(relationships.router)   # contact spine, star/VIP, imports, updates
+app.include_router(book.router)            # /api/book: Today feed, drafts, ask-agent
+app.include_router(book.relationships_router)  # /api/relationships: contact spine, star/VIP, imports
 app.include_router(inperson.router)        # phone capture (QR / paste / manual)
 app.include_router(messages.router)        # message capture (context in) + send queue
 app.include_router(followups.router)       # scheduled follow-up queue
