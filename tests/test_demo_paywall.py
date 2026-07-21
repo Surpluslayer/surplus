@@ -148,25 +148,7 @@ def test_send_gate_noop_for_paid_connected_user(db):
 
 # ── real-send route paywalls the demo user ──────────────────────────────
 
-def test_invite_route_paywalls_demo_user(db):
-    from backend.routes.pipeline import send_connection_invite
-    user = _demo_user(db)
-    ev, p = _event_with_prospect(db, user)
-    with pytest.raises(HTTPException) as ei:
-        send_connection_invite(ev.id, p.id, schemas.OutreachOverride(), db, user)
-    assert ei.value.status_code == 402
 
-
-def test_dm_route_paywalls_demo_user(db):
-    from backend.routes.pipeline import send_direct_message
-    user = _demo_user(db)
-    ev, p = _event_with_prospect(db, user)
-    with pytest.raises(HTTPException) as ei:
-        send_direct_message(ev.id, p.id, schemas.OutreachOverride(), db, user)
-    assert ei.value.status_code == 402
-
-
-# ── workflow still works for the demo user ───────────────────────────────
 
 def test_preview_provider_is_dry_run_for_demo_user(db):
     prov = get_preview_provider(_demo_user(db))
@@ -174,18 +156,6 @@ def test_preview_provider_is_dry_run_for_demo_user(db):
     assert prov.account_id is None
 
 
-def test_outreach_preview_renders_for_demo_user(db):
-    """The compose/preview path must work end-to-end without a LinkedIn
-    connection : no 402, no 500, real composed messages come back."""
-    from backend.routes.pipeline import outreach_preview
-    user = _demo_user(db)
-    ev, _p = _event_with_prospect(db, user)
-    result = outreach_preview(ev.id, db, user)
-    assert result.dry_run is True
-    assert result.count_eligible >= 1
-
-
-# ── demo user bootstrap ──────────────────────────────────────────────────
 
 def test_mint_demo_user_is_not_connected_and_per_visitor(db):
     from backend.routes.demo import _mint_demo_user

@@ -1429,29 +1429,6 @@ async def whatsapp_callback(
 # straight in the triage flow. They can attach an email later if they
 # want to recover the data across browsers.
 
-@router.post("/triage/quick-start",
-             dependencies=[Depends(_rl_triage_signup)])
-def triage_quick_start(db: DbSession = Depends(get_db),
-                       request: Request = None) -> JSONResponse:
-    """Create an anonymous User row + session cookie. Caller reloads and
-    lands in TriageApp (App.jsx routes there for users with no
-    unipile_account_id)."""
-    # Random suffix in email so the unique constraint doesn't collide if
-    # the same browser hits this twice. Email lives in our DB only,
-    # nothing's ever sent to it.
-    tag = secrets.token_hex(6)
-    user = User(
-        name="Triage user",
-        email=f"triage-{tag}@anonymous.surplus",
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    sess = create_session(db, user)
-    resp = JSONResponse({"ok": True, "user_id": user.id, "mode": "triage_only"})
-    set_session_cookie(resp, sess.session_token,
-                       host=request.headers.get("host") if request else None)
-    return resp
 
 
 # ─── 3a'. In-person guest : zero-friction anonymous session ───────────
@@ -1503,61 +1480,6 @@ class TriageSignupBody(BaseModel):
     email: str
 
 
-@router.post("/triage/signup",
-             dependencies=[Depends(_rl_triage_signup_email)])
-def triage_signup(
-    body: TriageSignupBody,
-    db: DbSession = Depends(get_db),
-    request: Request = None,
-) -> JSONResponse:
-    """Create a User row + session for someone who only wants triage.
-
-    No email verification : trust scales later. This endpoint is intended
-    for self-serve signup from the public sign-in screen, not for the
-    operator's main flow (which still goes through LinkedIn).
-
-    Existing email → returns the existing User + a fresh session, so a
-    second signup attempt doesn't crash on the unique-ish email constraint.
-    """
-    name = (body.name or "").strip()
-    email = (body.email or "").strip().lower()
-    if not name or not email or "@" not in email:
-        raise HTTPException(400, "name and a valid email are required")
-
-    # Reuse existing User row if email matches : prevents accidental dupes.
-    user = db.query(User).filter(User.email == email).first()
-    if user is None:
-        user = User(name=name, email=email)
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-        # TOCTOU backstop. users.email has NO unique constraint, so two
-        # concurrent signups (double-click, retried request) can BOTH pass
-        # the read above and BOTH insert — a silent duplicate identity that
-        # later splits the account's data. Converge deterministically: every
-        # racer re-reads, adopts the OLDEST row for this email, and the
-        # losers delete their own insert (no session points at it yet).
-        oldest = (db.query(User).filter(User.email == email)
-                  .order_by(User.id.asc()).first())
-        if oldest is not None and oldest.id != user.id:
-            db.delete(user)
-            db.commit()
-            user = oldest
-
-    sess = create_session(db, user)
-    # Cookie has to be set on the SAME response we return : FastAPI gotcha
-    # where setting headers/cookies on a dependency-injected Response is
-    # ignored when the handler returns a different Response instance.
-    resp = JSONResponse({
-        "ok": True,
-        "user_id": user.id,
-        "name": user.name,
-        "email": user.email,
-        "mode": "triage_only",
-    })
-    set_session_cookie(resp, sess.session_token,
-                       host=request.headers.get("host") if request else None)
-    return resp
 
 
 # ─── 4. /me: who is signed in? ────────────────────────────────────

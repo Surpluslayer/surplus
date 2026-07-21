@@ -21,12 +21,11 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     // Multi-page: two HTML shells from one build, sharing the hashed /assets.
-    //   index.html    -> desktop pipeline   (surpluslayer.com)
-    //   inperson.html -> phone-first capture (event.surpluslayer.com)
-    // FastAPI picks which shell to serve per Host (backend/main.py).
+    //   inperson.html -> the Book (every product host; the desktop
+    //   pipeline shell was retired with the events side).
+    // FastAPI serves the landing on join./www/apex, the Book elsewhere.
     rollupOptions: {
       input: {
-        main: resolve(__dirname, "index.html"),
         inperson: resolve(__dirname, "inperson.html"),
       },
       output: {

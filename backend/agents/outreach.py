@@ -1,12 +1,18 @@
 """
-agents/outreach.py : stage 03b, message composition + simulated funnel.
+agents/outreach.py : relationship-side invite/DM composer.
+
+Formerly stage 03b of the retired events pipeline; the live relationship
+send flow (pipeline/send/flow.py, followup_scheduler, investor_campaign,
+live_enrich, routes/{admin,inperson,webhooks}) composes its invites and DMs
+through this module, so it stays after the events-side code removal.
 
   compose(prospect, event, peers=?, host_bio=?) -> Message
       Produces the LinkedIn connection note (≤280 chars) and the longer
       post-accept DM. Calls Claude (Haiku) to write a personalized message
       using prospect signal (role, company, works_on, offers, headline).
-      Falls back to the deterministic template on any LLM failure so the
-      pipeline can't be broken by a model outage.
+      Falls back to the deterministic template on any LLM failure so a
+      send can't be broken by a model outage. `prospect`/`event` are
+      duck-typed carriers; relationship callers pass their own shapes.
 
   run_outreach(prospects, event, rng=?) -> [(prospect, events, status)]
       RNG-seeded simulator used in DRY_RUN mode for demo continuity.

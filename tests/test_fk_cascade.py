@@ -27,12 +27,6 @@ from sqlalchemy.orm import sessionmaker
 
 from backend import models
 from backend.db import Base, enable_sqlite_fk_pragma
-from backend.routes.admin import (
-    CleanupEmailContactsBody,
-    MergeUsersBody,
-    cleanup_email_contacts,
-    merge_users,
-)
 from backend.routes.demo import _cleanup_stale_demo_users
 
 
@@ -63,31 +57,19 @@ def test_fk_enforced_in_fixture(db):
     db.rollback()
 
 
-# ── H1 : admin.merge_users ────────────────────────────────────────────────
+# ── H1 : user delete cascades DIE-with-user children ─────────────────────
 
-def test_merge_users_cascades_orphan_children(db):
-    """merge_users deletes the source user; its DIE-with-user children (Job,
-    EmailAccount, ContactFact, ContactIdentity, ConnectedAccount,
-    OutgoingMessage) cascade instead of throwing a ForeignKeyViolation, while
-    MOVE children (Event/Contact) re-point to the survivor."""
-    import os
-    os.environ["ADMIN_TOKEN"] = "t"
-    now = datetime.now(timezone.utc)
+def test_user_delete_cascades_children(db):
+    """Deleting a User (the privacy self-delete / operator path) cascades its
+    children (Job, EmailAccount, ConnectedAccount, Contact and the contact's
+    ContactFact/ContactIdentity/OutgoingMessage) instead of throwing a
+    ForeignKeyViolation. (The old merge-users endpoint drove this coverage;
+    the endpoint retired with the events side, the DB guarantee stays.)"""
     src = models.User(email="src@example.com", name="Src")
-    dst = models.User(email="dst@example.com", name="Dst")
-    db.add_all([src, dst]); db.flush()
-
-    # A MOVE child (must survive, re-pointed to dst).
-    ev = models.Event(
-        role="founders", seniority="Senior", co_stage="Seed", headcount=30,
-        format="Mixer", city="NYC", goal="connect", budget=0, threshold=60,
-        user_id=src.id)
-    db.add(ev)
+    db.add(src); db.flush()
     contact = models.Contact(user_id=src.id, primary_identity_key="li:x",
-                             name="Moved Contact")
+                             name="C")
     db.add(contact); db.flush()
-
-    # DIE-with-user children (must cascade-delete with src).
     db.add(models.Job(id="job_src_1", user_id=src.id, kind="prospect",
                       status="done"))
     db.add(models.EmailAccount(user_id=src.id, provider="google",
@@ -101,23 +83,19 @@ def test_merge_users_cascades_orphan_children(db):
     db.add(models.OutgoingMessage(user_id=src.id, contact_id=contact.id,
                                   channel="linkedin", body="hi"))
     db.commit()
-    src_id, dst_id = src.id, dst.id
+    src_id = src.id
 
-    out = merge_users(MergeUsersBody(from_user_id=src_id, to_user_id=dst_id,
-                                     dry_run=False), db=db, _=None)
-    assert out["dry_run"] is False
+    # Delete through the real product path (privacy self-delete): it removes
+    # non-cascading children in dependency order, with the DB cascades as the
+    # backstop for everything else.
+    from backend import retention
+    retention.delete_user_data(db, src_id, actor="self")
 
-    # src gone; its DIE children gone.
     assert db.get(models.User, src_id) is None
-    assert db.query(models.Job).filter_by(user_id=src_id).count() == 0
-    assert db.query(models.EmailAccount).filter_by(user_id=src_id).count() == 0
-    assert db.query(models.ConnectedAccount).filter_by(user_id=src_id).count() == 0
-    assert db.query(models.ContactFact).filter_by(user_id=src_id).count() == 0
-    assert db.query(models.OutgoingMessage).filter_by(user_id=src_id).count() == 0
-
-    # MOVE children re-pointed to the survivor, not deleted.
-    assert db.query(models.Event).filter_by(user_id=dst_id).count() == 1
-    assert db.query(models.Contact).filter_by(user_id=dst_id).count() == 1
+    for model in (models.Job, models.EmailAccount, models.ConnectedAccount,
+                  models.ContactFact, models.OutgoingMessage,
+                  models.ContactIdentity, models.Contact):
+        assert db.query(model).filter_by(user_id=src_id).count() == 0
 
 
 # ── H2 : demo._cleanup_stale_demo_users ───────────────────────────────────
@@ -154,7 +132,7 @@ def test_demo_cleanup_deletes_contact_with_contactfact(db, monkeypatch):
     assert db.query(models.OutgoingMessage).filter_by(contact_id=cid).count() == 0
 
 
-# ── H3 : admin.cleanup_email_contacts ─────────────────────────────────────
+# ── H3 : contact delete cascades (was: cleanup_email_contacts driver) ─────
 
 def _junk_email_contact(db, u):
     """A deletable inbound-only email-sync junk contact (passes the cleanup
@@ -170,27 +148,6 @@ def _junk_email_contact(db, u):
         meta_json=json.dumps({"n_in": 3, "n_out": 0, "address": c.email})))
     return c
 
-
-def test_cleanup_email_contacts_deletes_junk_with_identity(db):
-    """The cleanup route deletes a junk contact and its ContactIdentity child
-    without a FK violation (the identity delete is explicit; the cascade backs
-    it up)."""
-    import os
-    os.environ["ADMIN_TOKEN"] = "t"
-    u = models.User(name="Host", email="host@x.com")
-    db.add(u); db.flush()
-    c = _junk_email_contact(db, u)
-    db.add(models.ContactIdentity(user_id=u.id, contact_id=c.id,
-                                  kind="email", value="noreply@linkedin.com"))
-    db.commit()
-    cid = c.id
-
-    out = cleanup_email_contacts(CleanupEmailContactsBody(dry_run=False),
-                                 db=db, _=None)
-    assert out["dry_run"] is False
-    assert out["deleted"] == 1
-    assert db.query(models.Contact).filter_by(id=cid).count() == 0
-    assert db.query(models.ContactIdentity).filter_by(contact_id=cid).count() == 0
 
 
 def test_contact_delete_cascades_contactfact(db):

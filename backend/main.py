@@ -36,8 +36,6 @@ from .routes import (
     # shared: data-subject rights (export / delete)
     privacy,
     accounts, teams, team_conflicts,
-    # events side (the desktop event-ROI pipeline)
-    events, pipeline, matching, roi, triage, curation, jobs,
     # infra: token-gated Unipile pass-through for :443-only egress sandboxes
     internal_relay,
 )
@@ -322,13 +320,6 @@ app.include_router(teams.router)           # team plane: Level-1 gated aggregate
 app.include_router(team_conflicts.router)   # conflict import (walls-first, audited)
 
 # ── EVENTS side: the desktop event-ROI pipeline (www.surpluslayer.com) ───────
-app.include_router(events.router)          # 01 intake
-app.include_router(pipeline.router)        # 02-03 prospecting + outreach
-app.include_router(matching.router)        # 04 symbiotic matching
-app.include_router(roi.router)             # 05 ROI ledger
-app.include_router(triage.router)          # inbound applicant triage
-app.include_router(curation.router)        # event attendee curation
-app.include_router(jobs.router)            # async job dispatch + poll
 app.include_router(internal_relay.router)  # token-gated Unipile relay (sandbox egress)
 
 
@@ -1321,17 +1312,22 @@ if _FRONTEND_DIST.is_dir():
         return headers.get("host") or ""
 
     def _is_landing_host(host: str) -> bool:
-        """join.surpluslayer.com (and any join.* preview subdomain) serves the
-        marketing landing instead of the React SPA. Checked before the SPA
-        shell selection so the landing wins on those hosts."""
+        """join.* has always served the marketing landing. The apex and www
+        now do too: the desktop event-ROI pipeline was retired (its routers
+        are no longer mounted), so index.html would be a dead SPA calling
+        removed endpoints. event.* (the product) is untouched."""
         h = (host or "").split(":")[0].lower()
-        return h.startswith("join.")
+        if h.startswith("join.") or h.startswith("www."):
+            return True
+        # Bare apex (surpluslayer.com) — but NOT event.* / staging.* etc.
+        return h in {"surpluslayer.com"}
 
     def _shell_for_host(host: str) -> str:
-        h = (host or "").split(":")[0].lower()
-        if _HAS_INPERSON_SHELL and (h in _INPERSON_HOSTS or h.startswith("event.")):
-            return "inperson.html"
-        return "index.html"
+        """One SPA shell remains: the Book (inperson.html). The desktop
+        pipeline shell (index.html/App.jsx) was deleted with the events side,
+        and landing hosts are already peeled off by _is_landing_host before
+        this runs — so every product host gets the Book."""
+        return "inperson.html"
 
     class SPAStaticFiles(StaticFiles):
         async def get_response(self, path: str, scope):

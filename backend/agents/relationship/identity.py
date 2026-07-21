@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from ... import models
-from ...triage.enrichment_cache import _linkedin_slug
+from .enrichment_cache import _linkedin_slug
 
 log = logging.getLogger(__name__)
 

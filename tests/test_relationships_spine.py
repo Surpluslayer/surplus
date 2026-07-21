@@ -246,27 +246,4 @@ def test_contact_summary_null_last_touch_when_no_history(db):
 
 # ── notes route ──────────────────────────────────────────────────────────
 
-def test_notes_route_creates_and_returns_timeline(db):
-    u = _user(db)
-    ev, p = _prospect(db, u)
-    out = rel_route.create_note(p.id, rel_route.NoteIn(summary="ping in 2 weeks"), db, u)
-    assert any(it["summary"] == "ping in 2 weeks" for it in out["timeline"])
 
-
-def test_notes_route_rejects_empty_summary(db):
-    from fastapi import HTTPException
-    u = _user(db)
-    ev, p = _prospect(db, u)
-    with pytest.raises(HTTPException) as ei:
-        rel_route.create_note(p.id, rel_route.NoteIn(summary="   "), db, u)
-    assert ei.value.status_code == 422
-
-
-def test_notes_route_blocks_unowned_prospect(db):
-    from fastapi import HTTPException
-    owner = _user(db, email="owner@x.com", acct="owner")
-    other = _user(db, email="other@x.com", acct="other")
-    ev, p = _prospect(db, owner)
-    with pytest.raises(HTTPException) as ei:
-        rel_route.create_note(p.id, rel_route.NoteIn(summary="sneaky"), db, other)
-    assert ei.value.status_code == 404

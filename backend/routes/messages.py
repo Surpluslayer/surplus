@@ -72,7 +72,7 @@ class SentIn(BaseModel):
 def _find_or_create_contact(db, user, handle: str, name: str):
     """Find-or-create a Contact by handle (email -> em:, else phone -> ph:). Stores the
     raw phone. Returns (contact, created) or (None, False) if unkeyable."""
-    from ..triage.enrichment_cache import identity_keys
+    from ..agents.relationship.enrichment_cache import identity_keys
     handle = (handle or "").strip()
     is_email = "@" in handle
     keys = identity_keys(email=handle if is_email else "",

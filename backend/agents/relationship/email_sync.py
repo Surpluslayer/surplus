@@ -282,7 +282,7 @@ def _sync_one_mailbox(db, user, stats, fetcher, own, max_pages) -> dict:
     invoking us), and the upsert phase is one short DB-only transaction that
     ends in db.commit() -- so no connection is held across network I/O."""
     from .spine.relationships import _clean  # same cleaners as the LinkedIn spine
-    from ...triage.enrichment_cache import identity_keys
+    from .enrichment_cache import identity_keys
     from . import identity as _identity
 
     # ── 1+2+3 : page + aggregate per counterpart ────────────────────────────

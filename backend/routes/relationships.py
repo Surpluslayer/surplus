@@ -241,57 +241,6 @@ class NoteIn(BaseModel):
     visibility: str = "private"      # "private" | "team"
 
 
-@router.get("/prospects")
-def list_relationships(
-    event_id: Optional[int] = None,
-    stage: Optional[str] = None,
-    contact_type: Optional[str] = None,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(current_user),
-):
-    """Every relationship the user has built across their events — the
-    accumulated 'who I've met' list — newest touch first.
-
-    Each row pairs the safe prospect header (no private_note) with its
-    relationship_summary, so a 'relationships' view and a 'needs follow-up'
-    view both render off this one call. The summary's source_event carries
-    which event each person came from.
-
-    Owner-scoped: only the caller's own events are reachable. Optional filters:
-      event_id      one event (e.g. a single dinner / conference)
-      stage         captured | contacted | replied | converted | stale
-      contact_type  sponsor | sales | recruiting | follow_up | ...
-    """
-    q = (db.query(models.Prospect)
-           .join(models.Event, models.Prospect.event_id == models.Event.id)
-           .filter(models.Event.user_id == user.id)
-           # Eager-load the per-row links relationship_summary() reads, so a big
-           # book is 3 batched queries instead of N+1 lazy loads : a 500-person
-           # book must not 524 behind Cloudflare's 100s cap.
-           .options(
-               selectinload(models.Prospect.conversion),
-               selectinload(models.Prospect.outreach),
-               selectinload(models.Prospect.event),
-           ))
-    if event_id is not None:
-        q = q.filter(models.Prospect.event_id == event_id)
-    if contact_type:
-        q = q.filter(models.Prospect.contact_type == contact_type)
-
-    rows = []
-    # Sane cap : the biggest realistic book still renders ; an unbounded scan
-    # cannot hang a request until the edge times it out.
-    for p in q.limit(1000).all():
-        summary = relationships.relationship_summary(p)
-        if stage and summary["relationship_stage"] != stage:
-            continue
-        rows.append({"prospect": _prospect_brief(p),
-                     "relationship_summary": summary})
-
-    rows.sort(key=lambda r: r["relationship_summary"]["last_touch_at"] or _MIN_DT,
-              reverse=True)
-    return {"count": len(rows), "relationships": rows}
-
 
 @router.post("/email/sync")
 def sync_email(
@@ -706,80 +655,8 @@ def delete_contact(
     return {"ok": True, "deleted_contact_id": contact_id}
 
 
-@router.get("/contacts/due")
-def contacts_due(
-    within_days: int = 0,
-    limit: int = 50,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(current_user),
-):
-    """Who's overdue for a touch -- the relationship-MAINTENANCE surface, most
-    overdue first. Cadence (vip / stage -> an expected interval) compared against
-    days-since-last-touch; `within_days` looks ahead so a daily sweep can surface
-    contacts coming due. Complements the dated-trigger feed (birthdays/flights);
-    whether a nudge auto-fires is gated separately by the automation flag.
-
-    Declared BEFORE /contacts/{contact_id} so the literal 'due' isn't captured by
-    the int path param. Owner-scoped."""
-    from ..agents.relationship.pipeline.proactive import cadence
-    rows = cadence.due_contacts(db, user.id, within_days=within_days, limit=limit)
-    return {"count": len(rows), "due_contacts": rows}
 
 
-@router.get("/due")
-def relationship_due(
-    within_days: int = 0,
-    limit: int = 50,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(current_user),
-):
-    """The unified PROACTIVE feed: everything due for the caller right now --
-    relationship maintenance (cadence) + dated triggers (birthday, an upcoming
-    flight). Read-only; consumes nothing. The surface the UI and the harness pull
-    to decide who to reach out to. `within_days` looks ahead."""
-    from ..agents.relationship.pipeline import proactive
-    return proactive.collect_due(db, user.id, within_days=within_days,
-                                 cadence_limit=limit)
-
-
-@router.get("/plan")
-def relationship_plan(
-    within_days: int = 1,
-    limit: int = 25,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(current_user),
-):
-    """Today's outreach plan: one deduplicated, prioritized list across cadence +
-    dated triggers. A birthday outranks staleness; a contact due for both shows
-    once. The single 'who should I reach out to' surface for the UI/harness."""
-    from ..agents.relationship.pipeline import proactive
-    return proactive.daily_plan(db, user.id, within_days=within_days, limit=limit)
-
-
-@router.get("/_status")
-def relationship_status(
-    db: Session = Depends(get_db),
-    user: models.User = Depends(current_user),
-):
-    """Health snapshot of the deterministic relationship layer for the caller:
-    fact-store coverage, the proactive due queue, automation-flag state, scheduler
-    heartbeats. A development/debugging surface for 'what does the agent know?'."""
-    from ..agents.relationship import observability
-    return observability.relationship_status(db, user.id)
-
-
-@router.post("/contacts/dedup")
-def contacts_dedup(
-    apply: bool = False,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(current_user),
-):
-    """Find (and with apply=true, MERGE) duplicate Contacts -- the same person split
-    across LinkedIn/email identities -- into one canonical row, reassigning every
-    prospect/interaction/fact so the gather reads one clean timeline. Owner-scoped.
-    Defaults to a DRY RUN (report only); pass apply=true to actually merge."""
-    from ..agents.relationship.spine import dedup as contact_dedup
-    return contact_dedup.dedup_user(db, user.id, dry_run=not apply)
 
 
 @router.post("/contacts/{contact_id}/snooze")
@@ -825,71 +702,7 @@ def contact_detail(
     }
 
 
-@router.post("/refresh")
-def refresh_crm(
-    limit: Optional[int] = None,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(current_user),
-):
-    """Manually poll the caller's CRM (Contact spine) for LinkedIn changes —
-    job/company moves, headline edits, new posts — and emit each real change as
-    an activity_update interaction (which then shows up in GET /updates and the
-    per-contact timeline).
 
-    Owner-scoped : only ever touches THIS user's contacts. Read-only against
-    LinkedIn (never sends). `limit` caps how many contacts to poll this call
-    (oldest-checked first), so a big CRM can be swept in round-robin batches.
-
-    Dispatch mirrors the rest of the app: when USE_MODAL is set we spawn the
-    off-box sweep and return immediately; otherwise we run inline and return the
-    poll summary so a manual trigger gives instant feedback."""
-    from ..jobs import use_modal, _spawn_modal, execute_crm_refresh
-
-    if use_modal() and _spawn_modal("run_crm_refresh", user.id, limit=limit):
-        return {"dispatched": "modal", "user_id": user.id}
-
-    summary = execute_crm_refresh(user.id, limit=limit)
-    return {"dispatched": "local", **summary}
-
-
-@router.get("/updates")
-def relationship_updates(
-    limit: int = 50,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(current_user),
-):
-    """The 'what's new' feed : every change the watch-poller has detected about
-    the caller's tracked people, newest first. Backed by the append-only
-    activity_update RelationshipInteraction rows the refresh job writes.
-
-    Owner-scoped via actor_user_id. Each item carries the contact it's about so
-    the feed can render 'Maya changed roles' without a second lookup."""
-    limit = max(1, min(limit, 200))
-    rows = (
-        db.query(models.RelationshipInteraction)
-        .filter(models.RelationshipInteraction.actor_user_id == user.id)
-        .filter(models.RelationshipInteraction.source_type == "activity_update")
-        .order_by(models.RelationshipInteraction.occurred_at.desc())
-        .limit(limit)
-        .all()
-    )
-    # Batch-resolve contact names (avoid an N+1 over the feed).
-    contact_ids = {r.contact_id for r in rows if r.contact_id}
-    names: dict[int, str] = {}
-    if contact_ids:
-        for c in (db.query(models.Contact)
-                    .filter(models.Contact.id.in_(contact_ids)).all()):
-            names[c.id] = c.name
-
-    items = [{
-        "contact_id": r.contact_id,
-        "name": names.get(r.contact_id, ""),
-        "type": r.interaction_type,      # job_change | profile_update | new_post
-        "title": r.title,
-        "summary": r.summary,
-        "occurred_at": r.occurred_at,
-    } for r in rows]
-    return {"count": len(items), "updates": items}
 
 
 class ChatIn(BaseModel):
@@ -1223,42 +1036,4 @@ def schedule_contact_followup(
             "message": text}
 
 
-@router.get("/prospects/{prospect_id}/timeline")
-def prospect_timeline(
-    prospect_id: int,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(current_user),
-):
-    """The full relationship timeline + summary for one owned prospect, unioning
-    derived touches with stored RelationshipInteraction rows (notes, etc.)."""
-    p = _owned_prospect(db, prospect_id, user)
-    interactions = relationships.fetch_interactions(db, p)
-    return {
-        "prospect": _prospect_brief(p),
-        "relationship_summary": relationships.relationship_summary(p, interactions),
-        "timeline": relationships.build_timeline(p, interactions),
-    }
 
-
-@router.post("/prospects/{prospect_id}/notes")
-def create_note(
-    prospect_id: int,
-    body: NoteIn,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(current_user),
-):
-    """Record a manual note against an owned prospect (stored as a
-    RelationshipInteraction; links the Contact spine opportunistically) and
-    return the refreshed timeline."""
-    p = _owned_prospect(db, prospect_id, user)
-    summary = (body.summary or "").strip()
-    if not summary:
-        raise HTTPException(422, "summary is required")
-    relationships.add_note(db, p, user.id, summary,
-                           title=body.title, visibility=body.visibility)
-    interactions = relationships.fetch_interactions(db, p)
-    return {
-        "prospect": _prospect_brief(p),
-        "relationship_summary": relationships.relationship_summary(p, interactions),
-        "timeline": relationships.build_timeline(p, interactions),
-    }

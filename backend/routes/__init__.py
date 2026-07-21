@@ -1,13 +1,11 @@
 """
-HTTP routes : one router per mechanism stage.
+HTTP routes : one router per surface.
 
-    events    01       POST /events,                  GET /events/{id}
-    pipeline  02-03    POST /events/{id}/run,         GET /events/{id}/prospects
-    matching  04       POST /events/{id}/match,       GET /events/{id}/matches
-    roi       05       GET  /events/{id}/roi
-    triage    06       /events/{id}/triage/...        (Luma CSV applicants)
-    curation  07       /events/{id}/curation/...      (CSV-imported attendees,
-                                                       5-stage curation flow with
-                                                       feature-flagged NEAR-TERM
-                                                       extensions)
+The relationship side (book, relationships, inperson, followups, integrations,
+messages, settings, accounts, teams, ...) plus the shared surfaces (auth,
+billing, demo, webhooks, admin, privacy). See backend/main.py for the mounted
+set.
+
+The events-side routers (events, pipeline, matching, roi, triage, curation,
+jobs) were retired and their modules deleted — see ARCHITECTURE.md.
 """

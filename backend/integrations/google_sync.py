@@ -58,7 +58,7 @@ def sync_google_contacts(db, user, account, *, max_pages: int = 10) -> dict:
     contact is find-or-created by identity key (em: > ph:), so a phone-only contact is
     keyed by ph: and dedupes against existing people. Enrich, never clobber."""
     from .. import models
-    from ..triage.enrichment_cache import identity_keys
+    from ..agents.relationship.enrichment_cache import identity_keys
     from ..agents.relationship import identity as _identity
     token = oauth.get_valid_access_token(db, account)
     if not token:

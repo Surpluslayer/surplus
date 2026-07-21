@@ -169,7 +169,7 @@ def test_promotional_sender_counted_and_skipped(db):
 def test_existing_contact_rollup_still_updates_on_inbound_only(db):
     """The two-way filter gates CREATION only: a contact already in the book
     keeps getting its rollup refreshed even when the window is inbound-only."""
-    from backend.triage.enrichment_cache import identity_keys
+    from backend.agents.relationship.enrichment_cache import identity_keys
     u = _user(db)
     key = identity_keys(email="maya@lo91r.com", linkedin_url="")[0]
     c = models.Contact(user_id=u.id, primary_identity_key=key,
