@@ -28,6 +28,7 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
