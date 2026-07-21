@@ -72,7 +72,7 @@ def is_unlimited(user) -> bool:
     SURPLUS_BILLING_DISABLED=1 makes EVERY account unlimited — the kill
     switch for environments where billing must not exist at all (the demo /
     staging deployment, so a live demo never sees a paywall)."""
-    if (os.environ.get("SURPLUS_BILLING_DISABLED") or "").strip().lower()             in ("1", "true", "yes"):
+    if _bypasses_via_kill_switch_or_allowlist(user):
         return True
     # Lazy import avoids a module-load cycle (auth imports models, not us).
     try:
@@ -81,12 +81,33 @@ def is_unlimited(user) -> bool:
             return True
     except Exception:  # noqa: BLE001 : never let a flag check break a paid run
         pass
+    return False
+
+
+def _bypasses_via_kill_switch_or_allowlist(user) -> bool:
+    if (os.environ.get("SURPLUS_BILLING_DISABLED") or "").strip().lower()             in ("1", "true", "yes"):
+        return True
     allow = _unlimited_allowlist()
     if not allow:
         return False
     email = (getattr(user, "email", "") or "").strip().lower()
     uid = str(getattr(user, "id", "") or "")
     return email in allow or uid in allow
+
+
+def bypasses_linkedin_requirement(user) -> bool:
+    """True only for accounts that may send with NO connected LinkedIn account
+    at all: the SURPLUS_BILLING_DISABLED kill switch and the
+    SURPLUS_UNLIMITED_ACCOUNTS allowlist (internal/test accounts, often
+    dispatched through an env-configured fallback provider instead of the
+    user's own connection).
+
+    Deliberately excludes demo-link users. A demo session must still hit the
+    mechanical 'connect LinkedIn' 402 on a real send -- that's the guarantee
+    routes/demo.py documents (no real send is ever possible from a demo
+    session) and what a downstream get_provider_for_user(user) call assumes
+    (it raises on a NULL unipile_account_id rather than 402ing cleanly)."""
+    return _bypasses_via_kill_switch_or_allowlist(user)
 
 
 # ─── Billing period ──────────────────────────────────────────────────────────

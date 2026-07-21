@@ -416,6 +416,16 @@ def _send_bypasses_paywall(user: User) -> bool:
         return False
 
 
+def _send_bypasses_linkedin_requirement(user: User) -> bool:
+    """Kill-switch / allowlisted accounts only -- NOT demo users. See
+    billing_plans.bypasses_linkedin_requirement for why demo is excluded."""
+    try:
+        from . import billing_plans as bp
+        return bp.bypasses_linkedin_requirement(user)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def user_may_send(user: User) -> bool:
     """Boolean payment predicate for non-request contexts (the cron dispatcher):
     True when the owner is unlimited or has paid. Use this to HOLD an unpaid
@@ -458,13 +468,16 @@ def require_can_send_linkedin(user: User) -> None:
     open : `linkedin_send_locked` → connect-LinkedIn, `payment_required` →
     Stripe checkout. A user who has done both sends freely : no paywall.
 
-    Unlimited accounts (demo links, team members, the SURPLUS_UNLIMITED_ACCOUNTS
-    allowlist, or the SURPLUS_BILLING_DISABLED kill switch) bypass entirely --
-    the paywall is for real external free users, not internal/comped accounts.
+    Unlimited accounts (team members, the SURPLUS_UNLIMITED_ACCOUNTS allowlist,
+    or the SURPLUS_BILLING_DISABLED kill switch) bypass entirely, LinkedIn
+    connection included -- they're internal/test accounts often dispatched
+    through an env-configured fallback provider instead of their own
+    connection. Demo-link users are the one exception: they bypass PAYMENT
+    only, never the LinkedIn-connection check, since a demo session must still
+    be turned away here with a clean 402 rather than let through to a
+    downstream provider lookup that blows up on the NULL unipile_account_id.
     """
-    if _send_bypasses_paywall(user):
-        return
-    if not user_has_linkedin_connected(user):
+    if not user_has_linkedin_connected(user) and not _send_bypasses_linkedin_requirement(user):
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail={
@@ -476,6 +489,8 @@ def require_can_send_linkedin(user: User) -> None:
                 ),
             },
         )
+    if _send_bypasses_paywall(user):
+        return
     if not user_has_paid(user):
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
