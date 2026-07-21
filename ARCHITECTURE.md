@@ -85,8 +85,8 @@ Frontend events-side shells (`App.jsx`, `TriageApp.jsx`, `SharedIntake.jsx`,
 
 ### RELATIONSHIP side — the phone-first "book" / CRM (`event.*`, `BookApp.jsx`)
 Capture people → detect their updates → draft follow-ups in your voice.
-- routes: `book`, `relationships`, `inperson`, `followups`
-- agents: `book`, `relationships`, `relationship_agent`, `relationship_watch`, `updates_engine`, `updates_scheduler`, `updates_watch`, `drafting`, `reply_agent`, `capture_enrich`, `resolver`, `email_sync`, `send_flow`, `sender`, `followup_scheduler`
+- routes: `book` (carries both relationship routers), `inperson`, `followups`
+- agents: `book`, `relationships`, `relationship_agent`, `relationship_watch`, `updates_engine`, `updates_scheduler`, `updates_watch`, `drafting`, `reply_agent`, `capture_enrich`, `resolver`, `email_sync`, `message_sink` (shared ingest sink; the device-outbox routes around it were retired 2026-07-21), `send_flow`, `sender`, `followup_scheduler`
 - frontend: `BookApp.jsx`, `CaptureShared.jsx`, `main-inperson.jsx`, `components/ContactsButton.jsx`, `components/ContactsPage.jsx`
 
 ### SHARED — used by both
@@ -263,7 +263,7 @@ past ~7 days expire as `stale`.
 ## 6d. Gathering (conversation context the drafter reads)
 
 The per-contact message context is kept fresh by three entry points into the
-same idempotent syncs (`linkedin_chat_sync` + `email_sync`, both bounded and
+same idempotent syncs (`linkedin_chat_sync` + `email_sync`, `message_sink` (shared ingest sink; the device-outbox routes around it were retired 2026-07-21), both bounded and
 watermarked: LinkedIn by `users.linkedin_chat_synced_at`, dedup by Unipile
 message id):
 

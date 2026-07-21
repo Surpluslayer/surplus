@@ -33,7 +33,7 @@ from .routes import (
     billing, demo, webhooks, admin,
     # relationship side (the phone-first "book" / CRM) — book.py carries BOTH
     # routers (/api/book + /api/relationships); routes/relationships.py is a shim
-    book, inperson, followups, integrations, messages, settings,
+    book, inperson, followups, integrations, settings,
     # shared: data-subject rights (export / delete)
     privacy,
     accounts, teams, team_conflicts,
@@ -311,7 +311,6 @@ app.include_router(admin.router)
 app.include_router(book.router)            # /api/book: Today feed, drafts, ask-agent
 app.include_router(book.relationships_router)  # /api/relationships: contact spine, star/VIP, imports
 app.include_router(inperson.router)        # phone capture (QR / paste / manual)
-app.include_router(messages.router)        # message capture (context in) + send queue
 app.include_router(followups.router)       # scheduled follow-up queue
 app.include_router(settings.router)        # per-user settings (autonomy mode)
 app.include_router(privacy.router)         # data-subject rights: export / delete
