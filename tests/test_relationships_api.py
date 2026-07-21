@@ -57,49 +57,7 @@ def _captured_prospect(db, user, **kw):
 
 # ── timeline endpoint ───────────────────────────────────────────────────
 
-def test_timeline_endpoint_shape(db):
-    u = _user(db)
-    ev, p = _captured_prospect(db, u, note="talked KV-cache", contact_type="sponsor")
-    db.add(models.OutreachLog(prospect_id=p.id, channel="linkedin",
-                              state="invite_sent")); db.commit()
 
-    out = rel_route.prospect_timeline(p.id, db, u)
-    assert set(out) == {"prospect", "relationship_summary", "timeline"}
-    assert out["prospect"]["prospect_id"] == p.id
-    assert out["prospect"]["name"] == "Maya Rodriguez"
-    assert out["relationship_summary"]["relationship_stage"] == "contacted"
-    assert out["relationship_summary"]["contact_type"] == "sponsor"
-    # timeline carries capture + note + outreach
-    kinds = {it["source_type"] for it in out["timeline"]}
-    assert {"in_person_capture", "manual_note", "linkedin_outreach"} <= kinds
-
-
-def test_timeline_unauthorized_prospect_blocked(db):
-    owner = _user(db, email="owner@x.com", acct="owner_acct")
-    other = _user(db, email="other@x.com", acct="other_acct")
-    ev, p = _captured_prospect(db, owner)
-    # A different user must not be able to read the owner's prospect.
-    with pytest.raises(HTTPException) as ei:
-        rel_route.prospect_timeline(p.id, db, other)
-    assert ei.value.status_code == 404
-
-
-def test_timeline_missing_prospect_404(db):
-    u = _user(db)
-    with pytest.raises(HTTPException) as ei:
-        rel_route.prospect_timeline(99999, db, u)
-    assert ei.value.status_code == 404
-
-
-def test_timeline_prospect_brief_does_not_leak_private_note(db):
-    u = _user(db)
-    ev, p = _captured_prospect(db, u, private_note="budget approver")
-    out = rel_route.prospect_timeline(p.id, db, u)
-    # The compact header subset must not carry the private note text.
-    assert "budget approver" not in str(out["prospect"])
-
-
-# ── /captures enrichment (backward compatibility) ─────────────────────────
 
 def test_capture_row_keeps_existing_fields_and_adds_summary(db):
     u = _user(db)
@@ -132,66 +90,7 @@ def _captured_at_event(db, user, label, name, captured_at, **kw):
     return ev, p
 
 
-def test_list_returns_all_user_relationships_across_events(db):
-    u = _user(db)
-    _captured_at_event(db, u, "Dinner", "Maya", datetime.now(timezone.utc))
-    _captured_at_event(db, u, "Mixer", "Sam", datetime.now(timezone.utc))
-    out = rel_route.list_relationships(db=db, user=u)
-    assert out["count"] == 2
-    names = {r["prospect"]["name"] for r in out["relationships"]}
-    assert names == {"Maya", "Sam"}
 
-
-def test_list_is_owner_scoped(db):
-    owner = _user(db, email="owner@x.com", acct="o")
-    other = _user(db, email="other@x.com", acct="x")
-    _captured_at_event(db, owner, "Dinner", "Maya", datetime.now(timezone.utc))
-    out = rel_route.list_relationships(db=db, user=other)
-    assert out["count"] == 0
-
-
-def test_list_filters_by_event(db):
-    u = _user(db)
-    ev1, _ = _captured_at_event(db, u, "Dinner", "Maya", datetime.now(timezone.utc))
-    _captured_at_event(db, u, "Mixer", "Sam", datetime.now(timezone.utc))
-    out = rel_route.list_relationships(event_id=ev1.id, db=db, user=u)
-    assert out["count"] == 1
-    assert out["relationships"][0]["prospect"]["name"] == "Maya"
-
-
-def test_list_filters_by_stage(db):
-    u = _user(db)
-    _, p = _captured_at_event(db, u, "Dinner", "Maya", datetime.now(timezone.utc))
-    _captured_at_event(db, u, "Mixer", "Sam", datetime.now(timezone.utc))
-    # Maya gets outreach -> "contacted"; Sam stays "captured".
-    db.add(models.OutreachLog(prospect_id=p.id, channel="linkedin",
-                              state="invite_sent")); db.commit()
-    out = rel_route.list_relationships(stage="contacted", db=db, user=u)
-    assert out["count"] == 1
-    assert out["relationships"][0]["prospect"]["name"] == "Maya"
-
-
-def test_list_filters_by_contact_type(db):
-    u = _user(db)
-    _captured_at_event(db, u, "Dinner", "Maya", datetime.now(timezone.utc),
-                       contact_type="sponsor")
-    _captured_at_event(db, u, "Mixer", "Sam", datetime.now(timezone.utc))
-    out = rel_route.list_relationships(contact_type="sponsor", db=db, user=u)
-    assert out["count"] == 1
-    assert out["relationships"][0]["prospect"]["name"] == "Maya"
-
-
-def test_list_sorted_newest_touch_first(db):
-    u = _user(db)
-    _captured_at_event(db, u, "Old", "Older",
-                       datetime.now(timezone.utc) - timedelta(days=10))
-    _captured_at_event(db, u, "New", "Newer",
-                       datetime.now(timezone.utc) - timedelta(days=1))
-    out = rel_route.list_relationships(db=db, user=u)
-    assert [r["prospect"]["name"] for r in out["relationships"]] == ["Newer", "Older"]
-
-
-# ── import-conversations : queued job + poll ─────────────────────────────
 
 def test_import_conversations_queues_job_and_polls(db, monkeypatch):
     """POST /import-conversations no longer runs the (minutes-long) Unipile

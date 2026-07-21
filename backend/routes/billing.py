@@ -483,25 +483,3 @@ def _dev_billing_enabled() -> bool:
     return raw in ("1", "true", "yes")
 
 
-@router.post("/dev/toggle-paid")
-def dev_toggle_paid(
-    db: DbSession = Depends(get_db),
-    user: "models.User" = Depends(current_user),
-) -> JSONResponse:
-    """Flip `paid_at` on the signed-in user. Disabled in prod
-    (SURPLUS_DEV_BILLING unset)."""
-    if not _dev_billing_enabled():
-        raise HTTPException(status_code=404, detail="not found")
-    if user.paid_at is None:
-        user.paid_at = datetime.now(timezone.utc)
-        user.stripe_customer_id = user.stripe_customer_id or "cus_dev_toggle"
-        action = "marked_paid"
-    else:
-        user.paid_at = None
-        action = "marked_unpaid"
-    db.commit()
-    return JSONResponse({
-        "ok": True, "action": action,
-        "paid_at": user.paid_at.isoformat() if user.paid_at else None,
-        "stripe_customer_id": user.stripe_customer_id,
-    })

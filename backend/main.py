@@ -1323,10 +1323,11 @@ if _FRONTEND_DIST.is_dir():
         return h in {"surpluslayer.com"}
 
     def _shell_for_host(host: str) -> str:
-        h = (host or "").split(":")[0].lower()
-        if _HAS_INPERSON_SHELL and (h in _INPERSON_HOSTS or h.startswith("event.")):
-            return "inperson.html"
-        return "index.html"
+        """One SPA shell remains: the Book (inperson.html). The desktop
+        pipeline shell (index.html/App.jsx) was deleted with the events side,
+        and landing hosts are already peeled off by _is_landing_host before
+        this runs — so every product host gets the Book."""
+        return "inperson.html"
 
     class SPAStaticFiles(StaticFiles):
         async def get_response(self, path: str, scope):

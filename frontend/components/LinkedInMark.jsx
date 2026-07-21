@@ -1,5 +1,5 @@
 // lucide dropped brand icons, so render the LinkedIn mark inline so tiles
-// match the design's ti-brand-linkedin. Shared across App / BookApp / TriageApp.
+// match the design's ti-brand-linkedin. Used by BookApp surfaces.
 //
 // REQUIRED import: this build uses esbuild's classic JSX transform (no react
 // plugin in vite.config), so JSX compiles to React.createElement and every
