@@ -1,21 +1,21 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-sqlalchemy==2.0.35
-pydantic==2.9.2
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+sqlalchemy==2.0.51
+pydantic==2.13.4
 # Lets pydantic evaluate PEP-604 (`str | None`) field annotations on Python
 # <3.10. No-op on 3.10+ (prod). Without it, importing any BaseModel that uses
 # `X | None` fields raises TypeError at class-construction time on 3.9.
 eval_type_backport==0.3.1; python_version < "3.10"
 pytest==8.3.3
-httpx==0.27.2
-anthropic==0.42.0
+httpx==0.28.1
+anthropic==0.117.0
 # python-multipart: required by FastAPI for File/UploadFile (multipart form
 # parsing). Triage uses it for the Luma CSV upload endpoint. App crashes at
 # import time without it.
-python-multipart==0.0.12
+python-multipart==0.0.32
 # Pinned (was numpy>=1.26): a floating range lets a new numpy release break the
 # Railway build with no code change on our side. Pin for reproducible builds.
-numpy==2.4.6
+numpy==2.5.1
 # psycopg2-binary: SQLAlchemy's Postgres driver. Required when DATABASE_URL
 # is set (Railway production). Local dev falls back to SQLite and doesn't
 # need this, but it's cheap to install and keeps deploy + local in sync.
@@ -29,7 +29,7 @@ stripe==11.4.1
 # onto Modal when USE_MODAL=1. The import is lazy, so with the flag off this is
 # never imported at runtime and the dyno behaves exactly as before. Pinned to
 # the version validated against the deployed surplus-jobs app.
-modal==1.2.6
+modal==1.5.2
 bcrypt>=4.1,<6
 
 # cryptography: application-level field encryption (backend/crypto.py) --
