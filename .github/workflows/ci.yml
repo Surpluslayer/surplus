@@ -41,7 +41,7 @@ jobs:
       # --- Backend test suite ---
       # Match the prod runtime (Dockerfile: python:3.12.8-slim), NOT a dev box's
       # older Python -- requirements pin numpy==2.4.6 which needs >=3.11.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
