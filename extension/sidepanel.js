@@ -259,9 +259,59 @@ captureBtn.addEventListener('click', () => {
 function setNoteCount() {
   rvNoteCount.textContent = `${rvNote.value.length}/300`;
 }
-rvNote.addEventListener('input', setNoteCount);
+// Track whether the user has hand-edited a field, so the draft poll never
+// clobbers their typing when the composed copy lands.
+let noteTouched = false;
+let msgTouched = false;
+let draftPollTimer = null;
+rvNote.addEventListener('input', () => { noteTouched = true; setNoteCount(); });
+rvMessage.addEventListener('input', () => { msgTouched = true; });
+
+function stopDraftPoll() {
+  if (draftPollTimer) { clearTimeout(draftPollTimer); draftPollTimer = null; }
+}
+
+// The note + first message are composed by a detached worker after /scan
+// returns, so on capture they're empty. Show a drafting state and poll
+// /scan/{id}/draft until "ready" (or "failed"), then fill any field the user
+// hasn't touched.
+function setDrafting(on, doneMsg) {
+  if (on) {
+    rvStatus.textContent = 'Drafting a note and message…';
+    rvStatus.className = '';
+    rvNote.placeholder = 'Drafting…';
+    rvMessage.placeholder = 'Drafting…';
+  } else {
+    rvStatus.textContent = doneMsg || '';
+    rvStatus.className = '';
+    rvNote.placeholder = 'Short note sent with the invite';
+    rvMessage.placeholder = 'The follow-up message';
+  }
+}
+
+function pollDraft(prospectId, attempt) {
+  if (prospectId == null || prospectId !== reviewProspectId) return;
+  chrome.runtime.sendMessage({ type: 'surplus:draft', prospectId }, (resp) => {
+    if (prospectId !== reviewProspectId) return; // panel moved on
+    const d = (!chrome.runtime.lastError && resp?.ok) ? resp.res : null;
+    if (d) {
+      if (!noteTouched && d.note) { rvNote.value = d.note; setNoteCount(); }
+      if (!msgTouched && d.message) rvMessage.value = d.message;
+      if (d.status === 'ready') { setDrafting(false); return; }
+      if (d.status === 'failed') {
+        setDrafting(false, 'Could not draft one, write your own or send without a note.');
+        return;
+      }
+    }
+    if (attempt >= 18) { setDrafting(false); return; } // ~22s ceiling
+    draftPollTimer = setTimeout(() => pollDraft(prospectId, attempt + 1), 1200);
+  });
+}
 
 function openReview(res, name) {
+  stopDraftPoll();
+  noteTouched = false;
+  msgTouched = false;
   reviewProspectId = res?.prospect?.prospect_id ?? null;
   rvName.textContent = name || res?.prospect?.name || 'this person';
   rvNote.value = res?.draft_note || '';
@@ -270,11 +320,19 @@ function openReview(res, name) {
   rvStatus.textContent = '';
   rvStatus.className = '';
   rvSend.disabled = reviewProspectId == null;
-  rvSend.textContent = 'Connect & send';
+  rvSend.textContent = 'Send connect';
   review.classList.add('show');
+  // If the draft isn't back yet, poll for it.
+  const pending = res?.draft_status === 'pending'
+    || (!rvNote.value && !rvMessage.value);
+  if (reviewProspectId != null && pending) {
+    setDrafting(true);
+    pollDraft(reviewProspectId, 0);
+  }
 }
 
 function closeReview() {
+  stopDraftPoll();
   review.classList.remove('show');
   reviewProspectId = null;
 }

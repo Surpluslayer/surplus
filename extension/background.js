@@ -191,6 +191,16 @@ async function captureProfile(profile) {
   return scanRes.json();
 }
 
+// Poll target for the async-composed draft. /scan returns fast with
+// draft_status "pending" and empty note/message; a detached worker composes
+// them and flips status to "ready" (or "failed"). The panel calls this on a
+// short interval until it lands.
+async function fetchDraft(prospectId) {
+  const res = await authedFetch(`/api/inperson/scan/${prospectId}/draft`);
+  if (!res.ok) throw new Error(`draft ${res.status}`);
+  return res.json();
+}
+
 // Fire the LinkedIn connect request (with note) + DM for a captured prospect.
 // note/message override the composed draft; the backend routes warm vs cold.
 async function sendCapture(prospectId, note, message) {
@@ -403,6 +413,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, error: String(e) });
       });
     return true; // async response: keep the channel open
+  }
+  if (msg?.type === 'surplus:draft') {
+    fetchDraft(msg.prospectId)
+      .then((res) => sendResponse({ ok: true, res }))
+      .catch((e) => sendResponse({ ok: false, error: String(e) }));
+    return true; // async
   }
   if (msg?.type === 'surplus:send') {
     sendCapture(msg.prospectId, msg.note, msg.message)

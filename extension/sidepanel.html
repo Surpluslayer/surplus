@@ -194,6 +194,19 @@
       #review.show { display: flex; }
       #review .rv-head { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
       #review .rv-head span { color: var(--acc); }
+      #review .rv-confirm {
+        display: flex; align-items: center; gap: 8px;
+        font-size: 14.5px; font-weight: 600; color: var(--ink);
+      }
+      #review .rv-confirm b { font-weight: 700; }
+      #review .rv-check {
+        flex: none; width: 20px; height: 20px; border-radius: 50%;
+        background: #1f9d62; color: #fff; font-size: 12px; font-weight: 700;
+        display: flex; align-items: center; justify-content: center;
+      }
+      #review .rv-optional {
+        margin: 0; font-size: 12px; line-height: 1.45; color: var(--ink-faint);
+      }
       #review .rv-label {
         font-size: 11px;
         text-transform: uppercase;
@@ -280,9 +293,12 @@
       </div>
 
       <div id="review">
-        <div class="rv-head">
-          Connect with <span id="rv-name">…</span>
+        <div class="rv-confirm">
+          <span class="rv-check">&#10003;</span>
+          <span><b id="rv-name">…</b> is in your book.</span>
         </div>
+        <p class="rv-optional">Send a connection request too? It's drafted below,
+          edit it or send as-is. Skipping keeps them tracked.</p>
         <label class="rv-label">
           Connection note <span class="rv-count" id="rv-note-count"></span>
         </label>
@@ -293,8 +309,8 @@
           placeholder="The follow-up message"></textarea>
         <div id="rv-status"></div>
         <div class="rv-actions">
-          <button id="rv-cancel" class="rv-secondary">Cancel</button>
-          <button id="rv-send" class="rv-primary">Connect &amp; send</button>
+          <button id="rv-cancel" class="rv-secondary">Done</button>
+          <button id="rv-send" class="rv-primary">Send connect</button>
         </div>
       </div>
     </div>
