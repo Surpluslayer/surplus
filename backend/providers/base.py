@@ -227,6 +227,11 @@ class CanonicalEvent:
     provider_lead_id: Optional[str]
     ts: datetime
     body: str = ""
+    # The provider-side account that RECEIVED this webhook (Unipile account_id).
+    # Identifies which of our users' connected seats the event belongs to, so the
+    # route can scope prospect resolution to that owner instead of matching the
+    # counterpart's provider_lead_id globally (see webhooks._resolve_prospect).
+    account_id: Optional[str] = None
     raw: dict = field(default_factory=dict)
 
 

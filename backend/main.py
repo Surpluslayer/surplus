@@ -34,6 +34,8 @@ from .routes import (
     # relationship side (the phone-first "book" / CRM) — book.py carries BOTH
     # routers (/api/book + /api/relationships); routes/relationships.py is a shim
     book, inperson, followups, integrations, settings,
+    # shared: referral flywheel (share link + tracker + prompt gate)
+    referral as referral_routes,
     # shared: data-subject rights (export / delete)
     privacy,
     accounts, teams, team_conflicts,
@@ -312,6 +314,7 @@ app.include_router(book.router)            # /api/book: Today feed, drafts, ask-
 app.include_router(book.relationships_router)  # /api/relationships: contact spine, star/VIP, imports
 app.include_router(inperson.router)        # phone capture (QR / paste / manual)
 app.include_router(followups.router)       # scheduled follow-up queue
+app.include_router(referral_routes.router)  # /api/referral: share link + tracker
 app.include_router(settings.router)        # per-user settings (autonomy mode)
 app.include_router(privacy.router)         # data-subject rights: export / delete
 app.include_router(integrations.router)    # OAuth source connectors (Google ...)
@@ -407,6 +410,26 @@ active LinkedIn page, and inject the profile reader.</li>
 <h2>Contact</h2>
 <p>Questions: <a href="mailto:support@surpluslayer.com">support@surpluslayer.com</a></p>
 </body></html>"""
+
+
+@app.get("/r/{code}", include_in_schema=False)
+def referral_link(code: str, request: Request):
+    """Referral share link (/r/<code>). Drop the surplus_ref cookie so the
+    attribution survives the OAuth redirect, then send the visitor to the
+    sign-up entry. Last-click, 60-day window (a considered B2B purchase)."""
+    from fastapi.responses import RedirectResponse
+    from .auth import _session_cookie_secure
+    code = (code or "").strip().lower()[:16]
+    resp = RedirectResponse(url="/?signup", status_code=302)
+    if code:
+        resp.set_cookie(
+            "surplus_ref", code,
+            max_age=60 * 24 * 3600,          # 60 days
+            httponly=True, samesite="lax",
+            secure=_session_cookie_secure(),
+            path="/",
+        )
+    return resp
 
 
 @app.get("/extension-privacy", include_in_schema=False)

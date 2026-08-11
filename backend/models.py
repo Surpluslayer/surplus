@@ -755,6 +755,27 @@ class User(Base):
     billing_period_start: Mapped[Optional[datetime]] = mapped_column(default=None)
     billing_period_end: Mapped[Optional[datetime]] = mapped_column(default=None)
 
+    # ─── Referral flywheel ────────────────────────────────────────────
+    # Stable, unique code that powers this user's share link (/r/<code>).
+    # Minted lazily the first time they open the referral surface, never
+    # rotated. NULL until then.
+    referral_code: Mapped[Optional[str]] = mapped_column(
+        String(16), default=None, unique=True, index=True)
+    # The code that referred THIS user, captured once at signup from the
+    # `surplus_ref` cookie. Read-only after signup; the reward resolver joins
+    # on it. NULL for organic signups.
+    referred_by_code: Mapped[Optional[str]] = mapped_column(
+        String(16), default=None, index=True)
+    # Stamped once, the first time a real "win" lands for a paying user (an
+    # inbound reply, or a booking). Gates the in-product referral prompt.
+    first_win_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+    # Set when the prompt has been shown, so the ask fires exactly once.
+    referral_prompted_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+    # Comp-time expiry from a vested referral reward (a free month). While this
+    # is in the future the billing_plans resolver treats the user as paid; it
+    # auto-expires with no Stripe mutation. NULL = no active comp.
+    comp_until: Mapped[Optional[datetime]] = mapped_column(default=None)
+
 
 # ─── Curation (Stage 1-5: ingested-audience workflow) ─────────────────
 # A separate row-type from Prospect (outbound-sourced) and Applicant
@@ -1888,3 +1909,50 @@ class TeamAuditLog(Base):
     # for policy flips). JSON text; NEVER relationship content.
     detail_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
+
+
+# ─── Referral flywheel ────────────────────────────────────────────────
+# One row per referred signup: the durable link between a referrer and the
+# person who joined through their code, plus the payout lifecycle. Kept as its
+# own table (not columns on User) so the reward has an auditable state machine.
+
+
+class Referral(Base):
+    """A referred signup and its reward lifecycle.
+
+    Status machine (see the referral design):
+        pending    : referee signed up through the code, not yet paid.
+        qualified  : referee paid + cleared the fraud gates; the free-month
+                     reward is accruing but HELD through the clawback window
+                     (hold_until). A refund inside the window flips to rejected.
+        rewarded   : hold cleared, the free month was granted to the referrer
+                     (referrer.comp_until bumped). Terminal, happy path.
+        rejected   : failed a gate, or clawed back on refund/cancel. Terminal.
+
+    One reward per referee: referee_id is unique, so a person can be referred
+    at most once regardless of how many links they clicked.
+    """
+    __tablename__ = "referrals"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Who shared the link. Indexed for the referrer's tracker query.
+    referrer_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # Who signed up through it. Unique: at most one referral per referee.
+    referee_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    # The referral_code that carried the attribution (denormalized for audit;
+    # the referrer may in theory re-mint, though we never rotate today).
+    code: Mapped[str] = mapped_column(String(16), index=True)
+    # pending | qualified | rewarded | rejected
+    status: Mapped[str] = mapped_column(String(12), default="pending", index=True)
+    # Why a terminal state was reached (a gate name, or "refund"/"chargeback").
+    reason: Mapped[Optional[str]] = mapped_column(String(40), default=None)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    # Referee paid + passed gates; the clawback hold starts here.
+    qualified_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+    # End of the clawback window. The vest sweep grants the reward once now
+    # passes this and no refund has landed.
+    hold_until: Mapped[Optional[datetime]] = mapped_column(default=None)
+    # Free month actually granted to the referrer (referrer.comp_until bumped).
+    rewarded_at: Mapped[Optional[datetime]] = mapped_column(default=None)
