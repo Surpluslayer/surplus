@@ -542,7 +542,16 @@ def compose(
         return Message(note=cleaned.note,
                        message=ensure_send_link(cleaned.message, send_link))
 
-    if (os.environ.get("OUTREACH_COMPOSE_DISABLE") or "").strip().lower() not in ("", "0", "false", "no"):
+    # A LinkedIn browse-capture (the extension marks these source="link") isn't a
+    # real in-person meeting and has no venue. Use the deterministic template, not
+    # the LLM : it can never say "great meeting you at LinkedIn", it's consistent,
+    # and it skips an LLM call for the most common capture. Real in-person
+    # captures (qr / paste / manual) keep the LLM path.
+    linkedin_capture = in_person and (
+        (getattr(prospect, "source", "") or "").strip().lower() == "link")
+    compose_disabled = (os.environ.get("OUTREACH_COMPOSE_DISABLE") or "") \
+        .strip().lower() not in ("", "0", "false", "no")
+    if linkedin_capture or compose_disabled:
         return _finish(_template())
 
     llm = _compose_via_claude(prospect, event, host_bio, framing,
@@ -562,6 +571,27 @@ def _event_label(event) -> str:
             or getattr(event, "event_name", None) or "the event").strip()
 
 
+# Labels that are NOT a real meeting place. The extension files browser captures
+# under a get-or-create event named "LinkedIn", and cold rows fall back to a
+# generic "the event" : in-person copy must not claim "great meeting you at
+# LinkedIn" (a real venue like "SF Tech Week" still gets referenced).
+_NON_PLACE_LABELS = {"", "linkedin", "the event", "event", "in person", "online"}
+
+
+def _meeting_place(event) -> str:
+    """The physical place to reference in in-person copy, or "" when there isn't
+    a real one (a LinkedIn/browser capture, or a generic fallback label). A bare
+    city counts as a place; a platform/generic label does not."""
+    label = (getattr(event, "label", None)
+             or getattr(event, "event_name", None) or "").strip()
+    if label.lower() in _NON_PLACE_LABELS:
+        label = ""
+    city = (getattr(event, "city", "") or "").strip()
+    if label and city:
+        return f"{label} in {city}"
+    return label or city
+
+
 def _framing_inperson(event, note: str | None = None,
                       next_step: str | None = None,
                       send_link: str | None = None) -> str:
@@ -572,16 +602,20 @@ def _framing_inperson(event, note: str | None = None,
     operator's personal line about the conversation (prospect.note) : woven in
     so the LLM can reference something concrete they actually talked about.
     """
-    label = _event_label(event)
-    city = (getattr(event, "city", "") or "").strip()
-    where = label + (f" in {city}" if city else "")
+    where = _meeting_place(event)
+    lead = (f"You just met this person face to face at {where}."
+            if where else "You just connected with this person.")
+    place_rule = ("" if where else
+                  " Do NOT name a place or venue in the copy (there was no "
+                  "physical location) : say 'great connecting' / 'great meeting "
+                  "you' with no 'at ...' clause.")
     parts = [
-        f"You just met this person face to face at {where}.",
+        lead,
         "Write a warm LinkedIn connection note and first message that continue "
         "that conversation. The connection note must be BRIEF : one or two short "
         "sentences that lead with the specific thing you talked about, so it "
-        "reads like a real callback rather than a template. Reference meeting in "
-        "person, keep it friendly, and propose ONE concrete light next step (a "
+        "reads like a real callback rather than a template." + place_rule
+        + " Keep it friendly, and propose ONE concrete light next step (a "
         "quick call, a follow-up). Do NOT re-pitch the event or sound like a "
         "cold lead.",
     ]
@@ -610,7 +644,11 @@ def _compose_inperson_template(prospect, event) -> Message:
     weaves in prospect.note when present. Connection note is run through
     _truncate_note so it always fits LinkedIn's connect-request cap."""
     first = ((prospect.name or "").strip().split() or ["there"])[0]
-    label = _event_label(event)
+    # Reference the venue only when there's a real one : a LinkedIn/browser
+    # capture has no place, so "Great meeting you at LinkedIn" becomes just
+    # "Great meeting you".
+    place = _meeting_place(event)
+    at = f" at {place}" if place else ""
     note = (getattr(prospect, "note", None) or "").strip()
     # Drop a conversational lead-in the operator may have typed ("we talked
     # about rock climbing" -> "rock climbing") so the template doesn't double up
@@ -628,14 +666,14 @@ def _compose_inperson_template(prospect, event) -> Message:
 
     if note and is_fact:
         connection = _truncate_note(
-            f"Great meeting you at {label}, {first} — love that you're {note}. "
+            f"Great meeting you{at}, {first} — love that you're {note}. "
             f"Let's connect!")
     elif note:
         connection = _truncate_note(
-            f"Loved chatting about {note} at {label}, {first} — let's connect!")
+            f"Loved chatting about {note}{at}, {first} — let's connect!")
     else:
         connection = _truncate_note(
-            f"Great meeting you at {label}, {first} — let's connect!")
+            f"Great meeting you{at}, {first} — let's connect!")
 
     chat = (f"Love that you're {note}" if (note and is_fact)
             else "Enjoyed our chat" + (f" about {note}" if note else ""))
@@ -648,7 +686,7 @@ def _compose_inperson_template(prospect, event) -> Message:
               "work around your schedule, or just say the word if there's "
               "something I can help with sooner.")
     message = "\n".join([
-        f"Great to meet you at {label}, {first}.",
+        f"Great to meet you{at}, {first}.",
         "",
         chat + " : wanted to connect here so we can keep it going.",
         "",
