@@ -513,15 +513,28 @@ def compose(
     # it : crucially the webhook auto-DM path (_trigger_auto_dm -> compose) so
     # an in-person prospect's post-accept DM is warm, not a cold re-pitch.
     in_person = (getattr(event, "kind", "") or "") == "in_person"
+    # A LinkedIn browse-capture (the extension marks these source="link") is NOT a
+    # real in-person meeting and has no venue. It gets its OWN framing that leads
+    # off the recipient's profile and never claims a meeting or a place -- so the
+    # LLM still personalizes (per-profile, not a repeated template), just without
+    # "great meeting you at LinkedIn".
+    linkedin_capture = in_person and (
+        (getattr(prospect, "source", "") or "").strip().lower() == "link")
     # The scheduling / demo link this send should carry (next_step URL, else
     # the host's reusable saved_send_link). Woven by the LLM via the framing
     # below AND guaranteed deterministically in _finish -- prompt rules alone
     # are exactly how links used to go missing.
     send_link = resolve_send_link(prospect, event) if in_person else None
-    framing = (_framing_inperson(event, getattr(prospect, "note", None),
-                                 getattr(prospect, "next_step", None),
-                                 send_link=send_link)
-               if in_person else _framing(event))
+    if linkedin_capture:
+        framing = _framing_linkedin(event, getattr(prospect, "note", None),
+                                    getattr(prospect, "next_step", None),
+                                    send_link=send_link)
+    elif in_person:
+        framing = _framing_inperson(event, getattr(prospect, "note", None),
+                                    getattr(prospect, "next_step", None),
+                                    send_link=send_link)
+    else:
+        framing = _framing(event)
 
     def _template() -> Message:
         return (_compose_inperson_template(prospect, event) if in_person
@@ -542,16 +555,7 @@ def compose(
         return Message(note=cleaned.note,
                        message=ensure_send_link(cleaned.message, send_link))
 
-    # A LinkedIn browse-capture (the extension marks these source="link") isn't a
-    # real in-person meeting and has no venue. Use the deterministic template, not
-    # the LLM : it can never say "great meeting you at LinkedIn", it's consistent,
-    # and it skips an LLM call for the most common capture. Real in-person
-    # captures (qr / paste / manual) keep the LLM path.
-    linkedin_capture = in_person and (
-        (getattr(prospect, "source", "") or "").strip().lower() == "link")
-    compose_disabled = (os.environ.get("OUTREACH_COMPOSE_DISABLE") or "") \
-        .strip().lower() not in ("", "0", "false", "no")
-    if linkedin_capture or compose_disabled:
+    if (os.environ.get("OUTREACH_COMPOSE_DISABLE") or "").strip().lower() not in ("", "0", "false", "no"):
         return _finish(_template())
 
     llm = _compose_via_claude(prospect, event, host_bio, framing,
@@ -625,6 +629,50 @@ def _framing_inperson(event, note: str | None = None,
             f"The specific thing you talked about: {note}. Open the connection "
             "note by referencing this directly (e.g. a fun fact like where "
             "they're from or a shared interest), so it feels personal.")
+    next_step = (next_step or "").strip()
+    if next_step:
+        parts.append(
+            f"For the first message, propose THIS specific next step: {next_step}. "
+            "Work it in naturally as the closing ask (include any link verbatim).")
+    send_link = (send_link or "").strip()
+    if send_link and send_link not in next_step:
+        parts.append(
+            f"Include this exact scheduling link once in the first message as "
+            f"part of the closing ask, copied verbatim, never altered: {send_link}")
+    return " ".join(parts)
+
+
+def _framing_linkedin(event, note: str | None = None,
+                      next_step: str | None = None,
+                      send_link: str | None = None) -> str:
+    """Framing for a LinkedIn browse-capture (extension, source="link").
+
+    You found this person on LinkedIn and want to connect : it is NOT an
+    in-person meeting and there is no venue, so the copy must NOT say "great
+    meeting you", must NOT claim you met, and must NOT name any place or event.
+    Personalization comes from their PROFILE (role, company, headline, About,
+    recent posts -- all supplied in the RECIPIENT block of the user message), so
+    each note is specific to the person rather than a repeated template.
+    """
+    parts = [
+        "You found this person on LinkedIn and want to connect with them. This "
+        "is NOT an in-person meeting: do NOT say 'great meeting you', do NOT "
+        "claim you met them, and do NOT name any place, city, or event. Write a "
+        "warm, genuine LinkedIn connection note and first message. The "
+        "connection note must be BRIEF (one or two short sentences) and must LEAD "
+        "with ONE specific, concrete thing about THIS person drawn from their "
+        "profile below (their role, company, headline, About, or a recent post) "
+        "so it reads personal, never templated. Keep it low-pressure and human; "
+        "no buzzwords, no 'I came across your profile' filler. This is a plain "
+        "LinkedIn connection : do NOT mention an event, do NOT offer to share "
+        "event details, and do NOT propose a call or meeting. Close with a "
+        "simple, warm reason to connect and stay in touch.",
+    ]
+    note = (note or "").strip()
+    if note:
+        parts.append(
+            f"The operator also noted this about them: {note}. Weave it in "
+            "naturally if it fits, but the profile specific is the priority.")
     next_step = (next_step or "").strip()
     if next_step:
         parts.append(

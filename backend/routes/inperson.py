@@ -89,6 +89,10 @@ class ScanIn(BaseModel):
     name: Optional[str] = None
     role: Optional[str] = None
     company: Optional[str] = None
+    # Profile text scraped straight off the LinkedIn page by the extension, so
+    # compose has real material even when Unipile can't resolve the person.
+    headline: Optional[str] = None      # the one-liner under the name
+    about: Optional[str] = None         # the About-section text -> prospect.bio
 
 
 class SendIn(BaseModel):
@@ -279,6 +283,13 @@ def scan_capture(
         p.role = body.role.strip()
     if body.company and body.company.strip():
         p.company = body.company.strip()
+    # Scraped profile text : store so compose can personalize. Fill-forward on
+    # every scan (a re-capture with fresh scrape wins); capture_enrich is
+    # fill-only so it never clobbers these.
+    if body.headline and body.headline.strip():
+        p.headline = body.headline.strip()[:300]
+    if body.about and body.about.strip():
+        p.bio = body.about.strip()[:2000]
     p.status = "pending"
     p.source = (body.source or "").strip() or None
     p.captured_at = datetime.now(timezone.utc)
