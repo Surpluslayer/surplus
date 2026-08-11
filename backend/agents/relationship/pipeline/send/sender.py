@@ -64,6 +64,35 @@ def automated_send_enabled(channel: str = "") -> bool:
     return (channel or "").strip().lower() in allow
 
 
+def automated_send_allowed_for_contact(db, user, contact, channel: str = "") -> bool:
+    """Should an automated send to THIS CONTACT on THIS CHANNEL actually
+    fire, once Rule 7.3 is factored in? Layered ON TOP of
+    automated_send_enabled(channel): an automated send needs the
+    channel/master gate to pass AND this to allow it -- same "needs BOTH"
+    pattern as every other layering in this file.
+
+    Resolves REAL signals -- the lawyer's bar_jurisdiction, the contact's
+    relationship_type, real send history from RelationshipInteraction -- via
+    agents.relationship.solicitation_signals.check(), then consults the
+    deterministic solicitation.evaluate() gate. No LLM in this path: a
+    send-gating decision with bar-complaint consequences should not depend
+    on model sampling.
+
+    MANUAL UI sends (send-now, approve-a-draft) never pass through here,
+    same as every other gate in this file -- a human approving one specific
+    message to one specific person is not what Rule 7.3 restricts.
+
+    Does not set matter_is_sensitive / triggering_event_date -- a caller
+    working a matter-adjacent send (e.g. a personal-injury practice's
+    follow-up) should call solicitation_signals.check() directly with those
+    set. This wrapper is the default path for ordinary relationship sends,
+    where neither applies."""
+    if not automated_send_enabled(channel):
+        return False
+    from ...solicitation_signals import check
+    return check(db, user, contact, channel).allowed
+
+
 AUTONOMY_MODES = ("off", "ask", "auto")
 
 
