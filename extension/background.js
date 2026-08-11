@@ -185,6 +185,11 @@ async function captureProfile(profile) {
       source: 'link',
       name: profile.name || null,
       role: profile.headline || null,
+      // Richer profile scraped straight off the page so compose has real
+      // material to personalize with, even when Unipile can't resolve them.
+      headline: profile.headline || null,
+      about: profile.about || null,
+      location: profile.location || null,
     }),
   });
   if (!scanRes.ok) throw new Error(`scan ${scanRes.status}`);

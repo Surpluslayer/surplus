@@ -55,6 +55,46 @@
     return !n || GENERIC.has(n.trim().toLowerCase());
   }
 
+  // First non-empty text among a list of selectors, scoped to `root`. LinkedIn
+  // obfuscates and A/B-tests its class names, so we try several and take the
+  // first that hits rather than depending on one brittle selector.
+  function firstText(root, selectors) {
+    for (const sel of selectors) {
+      const t = text((root || document).querySelector(sel));
+      if (t) return t;
+    }
+    return null;
+  }
+
+  // The "About" section body. Anchored on the #about node LinkedIn drops into
+  // the section, with header-text and span fallbacks for layout variants.
+  function aboutText() {
+    try {
+      const anchor = document.getElementById('about');
+      const section = anchor ? anchor.closest('section') : null;
+      const fromSection = (sec) =>
+        firstText(sec, [
+          '.inline-show-more-text span[aria-hidden="true"]',
+          '.display-flex.full-width span[aria-hidden="true"]',
+          '.inline-show-more-text',
+          'span[aria-hidden="true"]',
+        ]);
+      if (section) {
+        const t = fromSection(section);
+        if (t && !/^about$/i.test(t)) return t.slice(0, 1500);
+      }
+      // Fallback: find a section whose header reads "About", grab its body.
+      for (const h of document.querySelectorAll(
+        'section .pvs-header__title, section h2')) {
+        if (/^about$/i.test(text(h))) {
+          const t = fromSection(h.closest('section'));
+          if (t && !/^about$/i.test(t)) return t.slice(0, 1500);
+        }
+      }
+    } catch (e) { /* profile layout variant : just skip About */ }
+    return null;
+  }
+
   function parseProfile() {
     const url = location.href;
     if (!/linkedin\.com\/in\//.test(url)) return null;
@@ -69,15 +109,19 @@
     }
     if (!name) return null; // mid-transition: report() will retry
 
-    const headline =
-      text(document.querySelector('.text-body-medium.break-words')) ||
-      text(document.querySelector('.text-body-medium')) ||
-      null;
-    const location_ =
-      text(document.querySelector('.text-body-small.inline.t-black--light.break-words')) ||
-      null;
+    const headline = firstText(document, [
+      'main .text-body-medium.break-words',
+      '.text-body-medium.break-words',
+      'main section .text-body-medium',
+      '.text-body-medium',
+    ]);
+    const location_ = firstText(document, [
+      'main .text-body-small.inline.t-black--light.break-words',
+      '.text-body-small.inline.t-black--light.break-words',
+    ]);
+    const about = aboutText();
 
-    return { url, name, headline, location: location_, source: 'linkedin' };
+    return { url, name, headline, about, location: location_, source: 'linkedin' };
   }
 
   let lastReportedUrl = '';
