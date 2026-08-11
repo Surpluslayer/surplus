@@ -624,6 +624,12 @@ class User(Base):
     # (SURPLUS_AUTO_FOLLOWUPS) and does not consult this either.
     autonomy_mode: Mapped[str] = mapped_column(String(8), default="off")
 
+    # USPS 2-letter bar-admission state. NULL until set (onboarding or
+    # settings) -- the jurisdiction signal for the Rule 7.3 solicitation gate
+    # (backend/solicitation.py). Unset resolves to the fail-closed "unknown
+    # jurisdiction" rule, same as any code the table doesn't recognize.
+    bar_jurisdiction: Mapped[Optional[str]] = mapped_column(String(2), default=None)
+
     # ─── Email channel (Unipile GOOGLE / MICROSOFT account) ─────────────
     # A SECOND Unipile account on the same workspace, pointing at the user's
     # real mailbox (Gmail / Outlook). Independent of the LinkedIn seat above:
@@ -1027,6 +1033,13 @@ class Contact(Base):
     phone: Mapped[Optional[str]] = mapped_column(String(40), default=None)
     company: Mapped[Optional[str]] = mapped_column(String(120), default=None)
     company_domain: Mapped[Optional[str]] = mapped_column(String(160), default=None)
+    # Which Rule 7.3 exemption category this contact falls under (see
+    # solicitation.RelationshipType) -- existing_client / former_client /
+    # family_or_close_personal / lawyer / sophisticated_business_user, or NULL.
+    # NULL is the conservative default: an unset contact is treated as a
+    # prospect, the only category the gate restricts. Never auto-populated by
+    # capture/enrichment -- set explicitly, same posture as VIP starring.
+    relationship_type: Mapped[Optional[str]] = mapped_column(String(32), default=None)
     # The Unipile email thread the HOST CONFIRMED as "my thread with this
     # person" (manual link via /contacts/{id}/email-thread — never guessed).
     # Once set, the email channel reads (pull) and replies (push) within

@@ -293,6 +293,11 @@ def init_db() -> None:
         # also lets create_all pick up the new referrals table.
         _migrate_referrals,
         _migrate_fk_cascade,
+        # Rule 7.3 solicitation gate signals: the lawyer's bar jurisdiction and
+        # each contact's exemption category. Both nullable/fail-closed by
+        # default -- see backend/solicitation.py.
+        _migrate_user_bar_jurisdiction,
+        _migrate_contact_relationship_type,
     ]
 
     # Schema-revision sentinel: the loop below plus create_all's checkfirst is
@@ -1872,3 +1877,43 @@ def _migrate_fk_cascade() -> None:
             conn.execute(text(
                 f'ALTER TABLE {child} ADD CONSTRAINT "{conname}" '
                 f'FOREIGN KEY ({col}) REFERENCES {parent}(id) {clause}'))
+
+
+def _migrate_user_bar_jurisdiction() -> None:
+    """Add users.bar_jurisdiction (VARCHAR(2), NULL) : the lawyer's bar-admission
+    state, USPS 2-letter code. NULL until the user (or an onboarding flow) sets
+    it. This is the jurisdiction signal the Rule 7.3 solicitation gate
+    (backend/solicitation.py, resolved via
+    agents/relationship/solicitation_signals.py) needs to pick a jurisdiction's
+    rule -- unset resolves to the fail-closed "unknown jurisdiction" rule, same
+    as any jurisdiction code the table doesn't recognize."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "bar_jurisdiction" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN bar_jurisdiction VARCHAR(2)"))
+
+
+def _migrate_contact_relationship_type() -> None:
+    """Add contacts.relationship_type (VARCHAR(32), NULL) : which Rule 7.3
+    exemption category this contact falls under (existing_client /
+    former_client / family_or_close_personal / lawyer /
+    sophisticated_business_user), or NULL for the default -- an unknown
+    contact is treated as a prospect, the ONLY category the solicitation gate
+    actually restricts. Deliberately conservative: nothing about connecting a
+    channel or capturing a contact ever auto-populates this as an exemption --
+    exemptions are set explicitly (by the host, or eventually a resolved
+    Matter/client-status record), never inferred from scraped data."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "contacts" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("contacts")}
+    if "relationship_type" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text("ALTER TABLE contacts ADD COLUMN relationship_type VARCHAR(32)"))
