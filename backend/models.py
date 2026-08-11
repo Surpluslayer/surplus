@@ -630,6 +630,11 @@ class User(Base):
     # jurisdiction" rule, same as any code the table doesn't recognize.
     bar_jurisdiction: Mapped[Optional[str]] = mapped_column(String(2), default=None)
 
+    # Practice area (e.g. "corporate_ma", "litigation") -- the second axis,
+    # alongside relationship state, that the signal-relevance ranking trace
+    # (backend/demo/ranking_trace.py) scores against. NULL until set.
+    practice_area: Mapped[Optional[str]] = mapped_column(String(40), default=None)
+
     # ─── Email channel (Unipile GOOGLE / MICROSOFT account) ─────────────
     # A SECOND Unipile account on the same workspace, pointing at the user's
     # real mailbox (Gmail / Outlook). Independent of the LinkedIn seat above:

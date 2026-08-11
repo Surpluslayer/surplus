@@ -34,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import distributions as dist
 from . import provenance as prov
+from . import signal_taxonomy as tax
 from .. import models
 
 _UTC = timezone.utc
@@ -92,11 +93,13 @@ class GeneratedContact:
 def _make_lawyer_user(db, rng: random.Random, i: int, cohort_id: str) -> models.User:
     tier = _weighted_choice(rng, dist.USER_TIER_WEIGHTS)
     jurisdiction = rng.choice(["NY", "CA", "FL", None, None])  # some unset, honestly
+    practice_area = rng.choice(tax.PRACTICE_AREAS)
     user = models.User(
         email=f"demo-lawyer-{i:03d}@example.com",
         name=f"{rng.choice(_FIRST_NAMES)} {rng.choice(_LAST_NAMES)}",
         is_demo=True,
         bar_jurisdiction=jurisdiction,
+        practice_area=practice_area,
         autonomy_mode="ask",
     )
     db.add(user)
@@ -153,13 +156,15 @@ def _emit_session(db, rng: random.Random, user: models.User,
         return
     drafts_this_session = 0
 
-    def _touch(contact, interaction_type, title, summary, direction="outbound", minutes_offset=0):
+    def _touch(contact, interaction_type, title, summary, direction="outbound",
+               minutes_offset=0, meta=None, source_type="manual_note"):
         row = models.RelationshipInteraction(
             actor_user_id=user.id, contact_id=contact.id,
-            source_type="activity_update" if interaction_type == "note" else "manual_note",
+            source_type=source_type,
             interaction_type=interaction_type, direction=direction,
             occurred_at=when + timedelta(minutes=minutes_offset),
             title=title, summary=summary,
+            meta_json=__import__("json").dumps(meta) if meta else "{}",
         )
         db.add(row)
         db.flush()
@@ -179,18 +184,35 @@ def _emit_session(db, rng: random.Random, user: models.User,
                f"Looked into {gc.contact.name}'s recent activity.",
                direction="none", minutes_offset=minute)
 
+    practice_area = getattr(user, "practice_area", None)
     for _ in range(n_draft):
         gc = rng.choice(contacts)
         minute += rng.randint(1, 5)
-        disposition = _weighted_choice(rng, dist.DRAFT_DISPOSITION_WEIGHTS)
         kind = rng.choice(dist.DRAFTWORTHY_SIGNAL_KINDS)
+        category = rng.choice(tax.SIGNAL_CATEGORIES[kind])
+        aff = tax.affinity(practice_area, category)
+        # Disposition is AFFINITY-WEIGHTED, not drawn from the flat baseline
+        # distribution: a lawyer is more likely to engage with a signal that
+        # matches their practice area's seed affinity. This is what gives
+        # the eval backtest (eval_backtest.py) real, discoverable structure
+        # to find -- the pattern is constructed, not the backtest's result.
+        p_engage = 0.25 + 0.65 * aff
+        engaged = rng.random() < p_engage
+        if engaged:
+            disposition = "edited_then_sent" if rng.random() < 0.47 else "approved_as_is"
+        else:
+            disposition = "discarded"
         detail = _SIGNAL_DETAILS[kind].format(title=gc.contact.title or "a new role",
                                                company=gc.contact.company or "their company")
-        draft_row = _touch(
+        _touch(
             gc.contact, "message",
             f"Drafted follow-up ({gc.state_category})",
             f"Draft referencing: {gc.contact.name} {detail}. Disposition: {disposition}.",
             minutes_offset=minute,
+            meta={"signal_kind": kind, "signal_category": category,
+                  "practice_area": practice_area, "affinity_seed": round(aff, 3),
+                  "engaged": engaged, "disposition": disposition},
+            source_type="activity_update",  # this row IS the detected signal + response
         )
         drafts_this_session += 1
         if disposition == "edited_then_sent":
