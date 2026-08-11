@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
 from .. import models
+from .. import referral
 from ..db import get_service_db
 from ..jobs import run_detached
 from ..agents.relationship.spine import relationships
@@ -59,14 +60,31 @@ def _resolve_prospect(db: Session, ev: CanonicalEvent) -> Optional[models.Prospe
 
     Unipile webhooks don't carry our internal event_id / prospect_id; we look
     up by the linkedin_provider_id we cached at send_connection time.
+
+    A LinkedIn member's provider_id (ACoAA...) is the SAME across every account
+    that has interacted with them, so a bare global match by provider_lead_id
+    can resolve to the wrong tenant's Prospect when two users have prospected the
+    same person (the accept/reply/auto-DM would then land on, and send from, the
+    wrong account). The webhook's account_id says which of OUR users' seats
+    received the event; when it maps to a connected user we scope the lookup to
+    that owner's prospects. If the account is unmapped (e.g. the single-tenant
+    env operator account) we fall back to the legacy global match rather than
+    drop the event.
     """
     if ev.event_id and ev.prospect_id:
         return db.get(models.Prospect, ev.prospect_id)
-    if ev.provider_lead_id:
-        return db.query(models.Prospect).filter_by(
-            linkedin_provider_id=ev.provider_lead_id
+    if not ev.provider_lead_id:
+        return None
+    q = db.query(models.Prospect).filter_by(linkedin_provider_id=ev.provider_lead_id)
+    owner = None
+    if ev.account_id:
+        owner = db.query(models.User).filter(
+            models.User.unipile_account_id == ev.account_id
         ).first()
-    return None
+    if owner is not None:
+        q = (q.join(models.Event, models.Prospect.event_id == models.Event.id)
+              .filter(models.Event.user_id == owner.id))
+    return q.first()
 
 
 def _apply_canonical_event(
@@ -125,6 +143,18 @@ def _apply_canonical_event(
     owner_id = getattr(getattr(prospect, "event", None), "user_id", None)
     if owner_id is not None:
         relationships.link_contact(db, prospect, owner_id)
+
+    # Referral flywheel : an inbound reply is the owner's first real "win".
+    # Stamp it (fail-soft, once, paying users only) so the in-product referral
+    # ask can fire. Runs after the tenant-scoped resolution above, so the win
+    # lands on the correct owner (audit H3).
+    if ev.state == "message_replied" and owner_id is not None:
+        try:
+            owner = db.get(models.User, owner_id)
+            if owner is not None:
+                referral.stamp_first_win(db, owner, kind="reply")
+        except Exception as exc:  # noqa: BLE001 : never break webhook apply
+            print(f"  [referral] first_win hook failed (non-fatal): {exc}")
 
     db.commit()
     return True, "applied", prospect

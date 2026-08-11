@@ -47,10 +47,33 @@ def price_to_plan(price_id: Optional[str]) -> str:
     return "free"
 
 
+def comp_active(user, now: Optional[datetime] = None) -> bool:
+    """True while a vested referral reward (a free month) is live. Read off the
+    user's comp_until stamp; auto-expires with no Stripe call. This is the only
+    place comp is interpreted, so a future change of reward shape lands here."""
+    until = _aware(getattr(user, "comp_until", None))
+    if until is None:
+        return False
+    return (now or datetime.now(timezone.utc)) < until
+
+
 def plan_of(user) -> str:
-    """The user's plan, defaulting to 'free' for any unknown/missing value."""
+    """The user's plan, defaulting to 'free' for any unknown/missing value.
+
+    A live referral comp (comp_until in the future) grants Pro-tier access
+    without a Stripe subscription, so a referrer's free month is real even if
+    they never subscribed. It never DOWNGRADES a higher paid tier."""
     p = (getattr(user, "plan", None) or "free").strip().lower()
-    return p if p in PLAN_LIMITS else "free"
+    p = p if p in PLAN_LIMITS else "free"
+    if comp_active(user) and p not in ("pro", "unlimited"):
+        return "pro"
+    return p
+
+
+def is_paid(user) -> bool:
+    """True if the user is on any paying tier (or a live comp). Gates the
+    referral prompt: we only ask paying lawyers to refer."""
+    return plan_of(user) in ("starter", "pro", "unlimited")
 
 
 def limits_for(user) -> dict[str, Optional[int]]:

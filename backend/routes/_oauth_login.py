@@ -78,6 +78,13 @@ def callback(login_mod, request: Request, db, *, code, state, error):
 
     user = find_or_create_oauth_user(
         db, provider=provider, sub=ident["sub"], email=ident["email"], name=ident["name"])
+    # Referral attribution: a brand-new user (no prior session) counts as a
+    # signup, so bind the surplus_ref cookie now. Idempotent + fail-soft; a
+    # returning login has prior sessions and is skipped.
+    from .. import models as _models
+    from .. import referral as _referral
+    if db.query(_models.Session).filter_by(user_id=user.id).count() == 0:
+        _referral.capture_referral_code(db, user, request.cookies.get("surplus_ref"))
     _auto_connect(db, user_id=user.id, provider=provider,
                   email=ident["email"], tokens=tokens)
     sess = create_session(db, user, client=client)

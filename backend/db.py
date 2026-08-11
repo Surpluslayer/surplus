@@ -289,6 +289,9 @@ def init_db() -> None:
         # Runs LAST : re-points existing User/Contact child FKs to ON DELETE
         # CASCADE so the delete paths (merge/cleanup) stop 500ing on Postgres.
         _migrate_team_audit_log_table,
+        # Referral flywheel: users.referral_* columns + comp_until; the bump
+        # also lets create_all pick up the new referrals table.
+        _migrate_referrals,
         _migrate_fk_cascade,
     ]
 
@@ -1770,6 +1773,46 @@ def _migrate_email_pending_outreach() -> None:
     except Exception as exc:  # noqa: BLE001 : replica race / already exists
         print(f"  [migrate] email_pending_outreach create: "
               f"{type(exc).__name__}: {exc}", flush=True)
+
+
+def _migrate_referrals() -> None:
+    """Referral flywheel: add the 5 referral columns to users and (via the
+    schema-rev bump that registering this migration causes) let create_all pick
+    up the new `referrals` table.
+
+    Cross-dialect-safe + idempotent: every ADD COLUMN is NULL-defaulted so
+    existing rows backfill without a follow-up UPDATE, and present columns are
+    skipped. The unique index on referral_code is created explicitly on Postgres
+    (SQLite gets it from create_all via the model's unique=True)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    additions = {
+        "referral_code": "VARCHAR(16)",
+        "referred_by_code": "VARCHAR(16)",
+        "first_win_at": "TIMESTAMP",
+        "referral_prompted_at": "TIMESTAMP",
+        "comp_until": "TIMESTAMP",
+    }
+    with ENGINE.begin() as conn:
+        for name, ddl in additions.items():
+            if name in cols:
+                continue
+            conn.execute(text(f"ALTER TABLE users ADD COLUMN {name} {ddl}"))
+        if ENGINE.dialect.name == "postgresql":
+            # referral_code must be unique; referred_by_code is a plain lookup.
+            if "referral_code" not in cols:
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_referral_code "
+                    "ON users (referral_code)"
+                ))
+            if "referred_by_code" not in cols:
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_users_referred_by_code "
+                    "ON users (referred_by_code)"
+                ))
 
 
 def _migrate_fk_cascade() -> None:

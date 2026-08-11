@@ -1097,6 +1097,12 @@ class UnipileProvider(LinkedInProvider):
         elif isinstance(msg, str):
             body_text = msg
 
+        # The account that RECEIVED this webhook : which of our users' connected
+        # LinkedIn seats the event belongs to. The route uses it to scope the
+        # prospect lookup to that owner (fixes cross-tenant misattribution when
+        # two users have prospected the same person).
+        account_id = raw.get("account_id") or (raw.get("account") or {}).get("id")
+
         return CanonicalEvent(
             event_id=0,                     # filled in by the route via DB lookup
             prospect_id=0,                  # filled in by the route via DB lookup
@@ -1105,6 +1111,7 @@ class UnipileProvider(LinkedInProvider):
             provider_lead_id=str(provider_user_id) if provider_user_id else None,
             ts=ts,
             body=body_text,
+            account_id=str(account_id) if account_id else None,
             raw=raw,
         )
 

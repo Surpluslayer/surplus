@@ -90,6 +90,11 @@ def signup(body: SignupBody, request: Request, db: DbSession = Depends(get_db)) 
         db.commit()
         user = oldest
 
+    # Referral attribution: bind the surplus_ref cookie onto this fresh signup.
+    # Idempotent + fail-soft (won't overwrite, ignores unknown/self codes).
+    from .. import referral
+    referral.capture_referral_code(db, user, request.cookies.get("surplus_ref"))
+
     # Fire the verification email -- a 6-digit PIN code. `sent` is True only when an
     # email provider is configured AND accepted it. We REQUIRE the code only when it
     # actually went out, so a dormant provider can never lock a new user out.

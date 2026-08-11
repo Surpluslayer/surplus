@@ -536,6 +536,12 @@ export const api = {
   // roster:[...] }. Built server-side by scoring + update-detection over the
   // book (cached shape; loads instantly). refresh re-runs the batch.
   bookToday: () => request("/api/book/today"),
+  // Referral flywheel: the signed-in user's share link, banked months, referral
+  // list, and whether the in-product ask should show right now.
+  referralMe: () => request("/api/referral/me"),
+  // Stamp that the referral ask was shown, so it never shows again.
+  referralPrompted: () =>
+    request("/api/referral/prompted", { method: "POST" }),
   // The canonical relationship detail for one contact :
   // { name, title, firm, status, why, value, timeline:[{t,d,warn}], ... };
   // real spine contacts also carry { contact_summary, events, spine_timeline }

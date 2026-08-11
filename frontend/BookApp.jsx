@@ -87,6 +87,7 @@ export default function BookApp() {
   const [route, setRoute] = useState(null);      // {name:"detail",row} | {name:"account"} | {name:"connections"} | null
   const [draftFor, setDraftFor] = useState(null);// {name, contact_id, trigger}
   const [pending, setPending] = useState(null);  // {mode,query} handed to the other tab's ask bar
+  const [referral, setReferral] = useState(null);// {code,link,months_banked,should_prompt,referrals[]}
 
   // Fonts: load Inter + Newsreader only for this surface (the desktop App ships
   // its own type), injected once so the design tokens resolve.
@@ -116,6 +117,22 @@ export default function BookApp() {
   const load = useCallback(() => {
     setErr("");
     api.bookToday().then(setFeed).catch((e) => setErr(e.message || String(e)));
+  }, []);
+
+  // Referral surface: share link, banked months, and whether the first-win ask
+  // should show. Best-effort for a real (non-demo) signed-in user; failures are
+  // silent so the referral feature never blocks the Book.
+  const loadReferral = useCallback(() => {
+    api.referralMe().then(setReferral).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (user && user.id && !user.is_demo) loadReferral();
+  }, [user, loadReferral]);
+
+  // Dismiss the first-win ask (stamp it server-side so it never returns).
+  const dismissReferralPrompt = useCallback(() => {
+    setReferral((r) => (r ? { ...r, should_prompt: false } : r));
+    api.referralPrompted().catch(() => {});
   }, []);
 
   // ── Demo onboarding coach ─────────────────────────────────────────────────
@@ -219,10 +236,15 @@ export default function BookApp() {
                                  onDraftDone={() => {}} isDemo={!!user?.is_demo} />;
   } else if (route?.name === "account") {
     screen = <AccountScreen user={user} onBack={() => goTab("today")}
-                            onConnections={() => setRoute({ name: "connections" })} />;
+                            onConnections={() => setRoute({ name: "connections" })}
+                            onRefer={() => setRoute({ name: "refer" })} />;
   } else if (route?.name === "connections") {
     screen = <ConnectionsScreen user={user}
                                 onBack={() => setRoute({ name: "account" })} />;
+  } else if (route?.name === "refer") {
+    screen = <ReferScreen data={referral} onReload={loadReferral}
+                          onBack={() => goTab("today")}
+                          onPrompted={dismissReferralPrompt} />;
   } else if (tab === "book") {
     screen = <BookView feed={feed} err={err} user={user} onReload={load}
                        onAccount={() => setRoute({ name: "account" })}
@@ -246,6 +268,9 @@ export default function BookApp() {
                         onAdd={() => goTab("add")}
                         onRoute={onRoute}
                         pendingAsk={pending?.mode === "book" ? pending.query : null}
+                        showReferralPrompt={!!referral?.should_prompt}
+                        onRefer={() => setRoute({ name: "refer" })}
+                        onDismissReferral={dismissReferralPrompt}
                         onOpen={openDetail} onDraft={openDraft} />;
   }
 
@@ -426,7 +451,8 @@ function WaitingForOk({ user }) {
   );
 }
 
-function TodayView({ feed, err, user, onReload, onAccount, onAdd, onOpen, onDraft, onRoute, pendingAsk }) {
+function TodayView({ feed, err, user, onReload, onAccount, onAdd, onOpen, onDraft, onRoute, pendingAsk,
+                     showReferralPrompt, onRefer, onDismissReferral }) {
   const updates = feed?.updates || [];
   const needs = feed?.needs_outreach || [];
 
@@ -459,6 +485,10 @@ function TodayView({ feed, err, user, onReload, onAccount, onAdd, onOpen, onDraf
 
       {err && <div className="bk-err">{err} <button className="bk-link" onClick={onReload}>Retry</button></div>}
       {!feed && !err && <div className="bk-loading"><Loader2 className="bk-spin" size={18} /> Reading your book…</div>}
+
+      {showReferralPrompt && (
+        <ReferralPromptCard onRefer={onRefer} onDismiss={onDismissReferral} />
+      )}
 
       {feed && (
         <>
@@ -891,7 +921,7 @@ function DraftPanel({ detail, isDemo = false }) {
 
 // ── Account ───────────────────────────────────────────────────────────────────
 
-function AccountScreen({ user, onBack, onConnections }) {
+function AccountScreen({ user, onBack, onConnections, onRefer }) {
   const initials = _initials(user?.name);
   const plan = user?.billing?.plan_label || (user?.paid_at ? "Pro" : "Individual");
 
@@ -922,6 +952,15 @@ function AccountScreen({ user, onBack, onConnections }) {
             <ChevronRight size={17} className="bk-chev" />
           </span>
         </button>
+        {!user?.is_demo && onRefer && (
+          <button className="bk-set-row" onClick={onRefer}>
+            <span className="bk-set-lead"><Sparkles size={19} /><span className="bk-set-lbl">Refer a lawyer</span></span>
+            <span className="bk-set-right">
+              <span className="bk-set-val">Free month</span>
+              <ChevronRight size={17} className="bk-chev" />
+            </span>
+          </button>
+        )}
         <div className="bk-set-row">
           <span className="bk-set-lead"><CreditCard size={19} /><span className="bk-set-lbl">Plan</span></span>
           <span className="bk-set-right"><span className="bk-set-val">{plan}</span><ChevronRight size={17} className="bk-chev" /></span>
@@ -1287,6 +1326,140 @@ function ConnRow({ icon, name, sub, connected, loading, onConnect }) {
       ) : (
         <button className="bk-btn bk-btn--primary" onClick={onConnect}>Connect</button>
       )}
+    </div>
+  );
+}
+
+// ── Referral flywheel (growth) ───────────────────────────────────────────────
+// Distinct from the "Warm paths" referrals tab above (that finds INTROS through
+// your network); this is the product's own refer-a-lawyer program. Reached from
+// the first-win prompt in Today and the account menu, as a route (not a tab).
+
+function _referPill(status) {
+  if (status === "rewarded") return { cls: "won", label: "+1 month" };
+  if (status === "held") return { cls: "held", label: "Held" };
+  if (status === "rejected") return { cls: "closed", label: "Closed" };
+  return { cls: "sent", label: "Sent" };
+}
+
+// The in-product ask, shown once in Today after a paying user's first real win.
+function ReferralPromptCard({ onRefer, onDismiss }) {
+  return (
+    <div className="bk-refer-prompt">
+      <button className="bk-refer-dismiss" onClick={onDismiss} aria-label="Dismiss">
+        <X size={15} />
+      </button>
+      <p className="bk-refer-prompt-h">Know another lawyer who'd want this?</p>
+      <p className="bk-refer-prompt-p">
+        You just felt what it does. Give a solo or small-firm lawyer a free month,
+        and bank one yourself when they subscribe.
+      </p>
+      <div className="bk-refer-prompt-actions">
+        <button className="bk-refer-cta" onClick={onRefer}>Refer a lawyer</button>
+        <button className="bk-refer-later" onClick={onDismiss}>Maybe later</button>
+      </div>
+    </div>
+  );
+}
+
+// The share + tracker screen (share link, LinkedIn / message share, banked
+// months, and the list of people you've referred with their reward state).
+function ReferScreen({ data, onReload, onBack, onPrompted }) {
+  const [copied, setCopied] = useState(false);
+  // Opening the screen counts as having been asked, so the Today card retires.
+  useEffect(() => { if (onPrompted) onPrompted(); }, []); // eslint-disable-line
+  useEffect(() => { if (!data && onReload) onReload(); }, [data, onReload]);
+
+  const link = data?.link || "";
+  const pitch = "I've been using Surplus to keep up with my clients and contacts "
+    + "without the busywork. Free month if you join through my link: " + link;
+
+  const copy = () => {
+    if (!link) return;
+    try {
+      navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) { /* clipboard blocked; the link is visible to copy by hand */ }
+  };
+  const shareLinkedIn = () => {
+    const url = "https://www.linkedin.com/feed/?shareActive=true&text="
+      + encodeURIComponent(pitch);
+    window.open(url, "_blank", "noopener");
+  };
+  const shareMessage = () => {
+    if (navigator.share) { navigator.share({ text: pitch }).catch(() => {}); }
+    else { copy(); }
+  };
+
+  const rows = data?.referrals || [];
+  const banked = data?.months_banked || 0;
+
+  return (
+    <div className="bk-scroll">
+      <div className="bk-detail-head">
+        <button className="bk-back" onClick={onBack} aria-label="Back to Today">
+          <ChevronLeft size={20} />
+        </button>
+        <span className="bk-crumb">Today</span>
+      </div>
+
+      <header className="bk-topbar">
+        <div>
+          <p className="bk-eyebrow">Refer a lawyer</p>
+          <p className="bk-display">Give a month, get a month</p>
+        </div>
+      </header>
+
+      <p className="bk-refer-hero">
+        Get a free month for every lawyer who subscribes through your link.
+        They get their first month free too.
+      </p>
+
+      <div className="bk-refer-linkbox">
+        <span className="bk-refer-link">{link || "Preparing your link…"}</span>
+        <button className="bk-refer-copy" onClick={copy} disabled={!link}>
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <button className="bk-refer-share bk-refer-share--li" onClick={shareLinkedIn}
+              disabled={!link}>Share on LinkedIn</button>
+      <button className="bk-refer-share" onClick={shareMessage} disabled={!link}>
+        Send in a message
+      </button>
+
+      <div className="bk-refer-stat">
+        <span className="bk-refer-stat-big">{banked}</span>
+        <span className="bk-refer-stat-lbl">
+          free month{banked === 1 ? "" : "s"} banked
+        </span>
+      </div>
+
+      {rows.length > 0 && (
+        <>
+          <SectionHead label="People you referred" count={rows.length} />
+          <div className="bk-group">
+            {rows.map((r, i) => {
+              const pill = _referPill(r.status);
+              return (
+                <div className="bk-refer-row" key={i}>
+                  <div className="bk-refer-row-main">
+                    <p className="bk-refer-name">{r.name}</p>
+                    <p className="bk-refer-detail">{r.detail}</p>
+                  </div>
+                  <span className={"bk-refer-pill bk-refer-pill--" + pill.cls}>
+                    {pill.label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      <p className="bk-refer-fine">
+        Your free month applies when they start a paid plan.
+      </p>
     </div>
   );
 }
@@ -2459,4 +2632,63 @@ const BOOK_CSS = `
   color:#fff; border:0; border-radius:var(--r-md); padding:9px 14px;
   font-size:13px; font-weight:500; cursor:pointer; font-family:var(--font-ui);}
 .bk-onb-next:active{transform:scale(.98);}
+
+/* ── Referral flywheel (growth) ──────────────────────────────────────────── */
+/* First-win ask card in Today. */
+.bk-refer-prompt{position:relative; margin:4px 16px 14px; padding:16px 16px 14px;
+  background:linear-gradient(180deg,var(--accent-bg),var(--bg));
+  border:1px solid #c9dbfb; border-radius:var(--r-lg);
+  box-shadow:0 2px 4px rgba(31,79,208,.06),0 10px 24px rgba(31,79,208,.10);}
+.bk-refer-dismiss{position:absolute; top:9px; right:9px; border:0; background:transparent;
+  color:var(--faint); cursor:pointer; padding:2px; line-height:0;}
+.bk-refer-prompt-h{font-size:15px; font-weight:700; letter-spacing:-.01em;
+  color:var(--ink); margin:0 18px 5px 0;}
+.bk-refer-prompt-p{font-size:12.5px; color:var(--muted); margin:0 0 13px;}
+.bk-refer-prompt-actions{display:flex; align-items:center; gap:10px;}
+.bk-refer-cta{background:var(--accent); color:#fff; border:0; border-radius:999px;
+  font-weight:700; font-size:13px; padding:10px 18px; cursor:pointer;
+  font-family:var(--font-ui);}
+.bk-refer-cta:active{transform:scale(.98);}
+.bk-refer-later{background:transparent; border:0; color:var(--muted); font-size:12.5px;
+  font-weight:600; cursor:pointer; font-family:var(--font-ui);}
+
+/* Share + tracker screen. */
+.bk-refer-hero{margin:2px 16px 14px; font-size:13px; color:var(--muted);}
+.bk-refer-linkbox{display:flex; align-items:center; gap:8px; margin:0 16px 12px;
+  padding:10px 12px; background:var(--surface); border:1px dashed var(--line-2);
+  border-radius:var(--r-md);}
+.bk-refer-link{flex:1; min-width:0; font-family:ui-monospace,'SF Mono',Menlo,monospace;
+  font-size:12.5px; color:var(--ink); overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap;}
+.bk-refer-copy{flex:none; border:0; background:transparent; color:var(--accent);
+  font-weight:700; font-size:12px; cursor:pointer; font-family:var(--font-ui);}
+.bk-refer-copy:disabled{color:var(--faint); cursor:default;}
+.bk-refer-share{display:block; width:calc(100% - 32px); margin:0 16px 8px;
+  padding:11px; border:1px solid var(--line-2); background:var(--bg); color:var(--ink);
+  border-radius:999px; font-weight:600; font-size:13px; cursor:pointer;
+  font-family:var(--font-ui);}
+.bk-refer-share:active{transform:scale(.99);}
+.bk-refer-share:disabled{opacity:.5; cursor:default;}
+.bk-refer-share--li{background:#0a66c2; border-color:#0a66c2; color:#fff;}
+.bk-refer-stat{display:flex; align-items:baseline; gap:8px; margin:16px 16px 6px;
+  padding:15px 16px; background:var(--bg); border:1px solid var(--line);
+  border-radius:var(--r-lg); box-shadow:0 1px 2px rgba(20,25,35,.05);}
+.bk-refer-stat-big{font-size:27px; font-weight:800; letter-spacing:-.02em;
+  color:var(--ink); font-family:var(--font-display);}
+.bk-refer-stat-lbl{font-size:13px; font-weight:600; color:var(--muted);}
+.bk-refer-row{display:flex; align-items:center; gap:10px; padding:11px 4px;
+  border-bottom:1px solid var(--line);}
+.bk-refer-row:last-child{border-bottom:0;}
+.bk-refer-row-main{flex:1; min-width:0;}
+.bk-refer-name{font-size:13px; font-weight:600; color:var(--ink); margin:0;}
+.bk-refer-detail{font-size:11.5px; color:var(--muted); margin:2px 0 0;}
+.bk-refer-pill{flex:none; font-size:10px; font-weight:700; padding:4px 9px;
+  border-radius:999px; font-family:ui-monospace,'SF Mono',Menlo,monospace;
+  letter-spacing:.02em; white-space:nowrap;}
+.bk-refer-pill--won{background:var(--success-bg); color:var(--success);}
+.bk-refer-pill--held{background:var(--warning-bg); color:var(--warning);}
+.bk-refer-pill--sent{background:var(--surface); color:var(--muted);}
+.bk-refer-pill--closed{background:var(--surface); color:var(--faint);}
+.bk-refer-fine{margin:14px 16px 20px; font-size:11px; color:var(--faint);
+  text-align:center;}
 `;

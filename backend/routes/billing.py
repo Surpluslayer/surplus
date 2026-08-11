@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from .. import billing_plans as bp
 from .. import models
+from .. import referral
 from ..auth import (
     SESSION_COOKIE,
     create_session,
@@ -436,6 +437,17 @@ async def stripe_webhook(request: Request,
             print(f"  [billing.webhook] stamped paid_at on user.id={uid_int}")
         db.commit()
 
+        # Referral flywheel : a referred user just converted to a PAID
+        # subscription. Open the referral under a clawback hold and grant the
+        # referee their welcome comp month. Idempotent + fail-soft: never break
+        # the billing ack. One-time (non-subscription) unlocks don't qualify.
+        if sub_id or obj.get("mode") == "subscription":
+            try:
+                referral.on_referee_paid(db, user)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [billing.webhook] referral qualify failed "
+                      f"(non-fatal): {exc}")
+
     elif et in ("customer.subscription.updated",
                 "customer.subscription.created"):
         user = _user_by_subscription(db, obj)
@@ -461,6 +473,15 @@ async def stripe_webhook(request: Request,
         db.commit()
         print(f"  [billing.webhook] subscription canceled → free "
               f"user.id={user.id}")
+
+        # Referral flywheel : if this user was referred and their reward is
+        # still inside the clawback hold, cancelling reverses it so the
+        # referrer's free month never lands. An already-vested reward stands.
+        try:
+            referral.claw_back_for_referee(db, user, reason="cancel")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [billing.webhook] referral clawback failed "
+                  f"(non-fatal): {exc}")
 
     # Unknown event types ack quietly so Stripe stops retrying. Persist the
     # ledger marker for them too (the branches above already committed it

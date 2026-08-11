@@ -56,6 +56,12 @@ def _demo_purge_gap_seconds() -> int:
     return max(300, int(os.environ.get("DEMO_PURGE_GAP_SECONDS", "3600")))
 
 
+def _referral_vest_gap_seconds() -> int:
+    # How often to vest due referral rewards (default hourly). The clawback hold
+    # is measured in days, so an hourly grant is more than timely enough.
+    return max(300, int(os.environ.get("REFERRAL_VEST_GAP_SECONDS", "3600")))
+
+
 def _gathering_gap_seconds() -> int:
     # How often to re-gather conversation context (LinkedIn DMs + email
     # correspondents) per user. Default every 6h; claim-guarded like the
@@ -208,6 +214,22 @@ def _run_once() -> dict:
         except Exception as exc:  # noqa: BLE001
             print(f"[updates.scheduler] demo purge failed: {type(exc).__name__}: {exc}",
                   flush=True)
+    # Referral vest sweep on its OWN claim: grant the referrer's free month for
+    # any referral whose clawback hold has cleared with no refund. Hourly is
+    # plenty (the hold is measured in days); idempotent, so a double-run can't
+    # double-grant.
+    if _claim("referral_vest", _referral_vest_gap_seconds()):
+        try:
+            from ...db import SessionLocal
+            from ... import referral
+            rdb = SessionLocal()
+            try:
+                referral.vest_due_referrals(rdb)
+            finally:
+                rdb.close()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[updates.scheduler] referral vest failed: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
     # Proactive sweep (cadence + dated triggers) on its OWN claim, so it runs even
     # when the updates sweep is claimed elsewhere or finds nothing due.
     try:
