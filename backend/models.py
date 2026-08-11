@@ -1969,3 +1969,40 @@ class Referral(Base):
     hold_until: Mapped[Optional[datetime]] = mapped_column(default=None)
     # Free month actually granted to the referrer (referrer.comp_until bumped).
     rewarded_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+
+
+class DemoProvenance(Base):
+    """Provenance tag for one generated demo/seed row -- which table+row it
+    covers, and how it was produced. A SIDE TABLE, not new columns on the
+    production models it tags: a generated Contact/Event/RelationshipInteraction
+    is byte-for-byte the same shape as a real one. Delete this table and every
+    generated row becomes indistinguishable, in schema, from production data --
+    which is the point: "replacing demo records with real telemetry later
+    requires minimal architectural change" means the production tables were
+    never touched to begin with.
+
+    Queried by engineering/analytics, not surfaced record-by-record in the UI
+    (see backend/demo/cohort.py's module docstring for the product-facing
+    posture: a single "Demo Environment" indicator, not a label on every row)."""
+    __tablename__ = "demo_provenance"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    table_name: Mapped[str] = mapped_column(String(60), index=True)
+    row_id: Mapped[int] = mapped_column(index=True)
+    data_environment: Mapped[str] = mapped_column(String(20), default="demo")
+    # e.g. "generated_from_assumed_distribution" (the baseline layer, calibrated
+    # against real schema/taxonomy/cadence constants but not live telemetry --
+    # see distributions.py for exactly which) or "generated_beyond_baseline"
+    # (the extended relationship-intelligence layer -- see extended.py). Never
+    # "generated_from_usage_distribution" unless a row is actually derived from
+    # real measured usage data, which nothing in this repo currently is.
+    data_provenance: Mapped[str] = mapped_column(String(60))
+    source_schema: Mapped[str] = mapped_column(String(60), default="production_event_schema")
+    # Groups every row from one generation run, so a re-run or a partial
+    # rollback doesn't need to guess which rows belong together.
+    cohort_id: Mapped[str] = mapped_column(String(40), index=True)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("table_name", "row_id", name="uq_demo_provenance_row"),
+    )
