@@ -76,6 +76,20 @@ function LogLine({ e }) {
   );
 }
 
+// A long-lived tail of what the PRODUCT is doing (ask-bar runs, Draft
+// taps), narrated with the real machinery each sets off. Separate from the
+// on-demand streams below because it stays open for the whole session
+// rather than being replaced by the next boot/contact stream.
+function useActivityStream(append) {
+  useEffect(() => {
+    const es = new EventSource("/api/observe/stream/activity", { withCredentials: true });
+    es.addEventListener("log", (ev) => {
+      try { append(JSON.parse(ev.data)); } catch { /* partial frame */ }
+    });
+    return () => es.close();
+  }, [append]);
+}
+
 // One SSE connection appending into a shared buffer.
 function useLogStream(append) {
   const esRef = useRef(null);
@@ -120,6 +134,7 @@ export default function ObservePanel({ selection }) {
   }, []);
 
   const open = useLogStream(append);
+  useActivityStream(append);
 
   // Auth probe + boot stream on mount.
   useEffect(() => {

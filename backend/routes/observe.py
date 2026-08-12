@@ -33,6 +33,7 @@ from .. import models
 from ..auth import current_user
 from ..db import get_db
 from ..observe import adapters, logstream, pipeline
+from ..observe import bus as logstream_bus
 from ..observe.harnesses import ablation, jurisdiction_regression, relationship_eval
 from ..observe.harnesses import replay as replay_harness
 from ..observe.harnesses import signal_library_eval, synthetic_scenarios
@@ -183,6 +184,38 @@ def stream_boot(user: models.User = Depends(current_user)):
         return logstream.boot_events(wdb, wdb.get(models.User, user_id))
 
     return _sse(events)
+
+
+@router.get("/stream/activity")
+def stream_activity(user: models.User = Depends(current_user)):
+    """Tail what the PRODUCT is doing right now -- ask-bar runs and Draft
+    taps, narrated with the real machinery each one sets off (which model,
+    cache, gate, fallback). Fed by backend/observe/bus.py, which
+    routes/book.py publishes to as those requests run.
+
+    Long-lived: holds the connection open and polls the in-process buffer,
+    emitting a comment heartbeat so the edge can't time it out. See bus.py
+    on why this is in-process only."""
+    import time as _time
+    account_id = user.id
+
+    def gen():
+        yield ": open\n\n"
+        cursor = logstream_bus.latest_seq()   # only NEW activity, not history
+        last_beat = _time.monotonic()
+        while True:
+            events = logstream_bus.since(account_id, cursor)
+            for ev in events:
+                cursor = max(cursor, ev["seq"])
+                yield f"event: log\ndata: {json.dumps(ev)}\n\n"
+            if events:
+                last_beat = _time.monotonic()
+            elif _time.monotonic() - last_beat > 15:
+                last_beat = _time.monotonic()
+                yield ": keepalive\n\n"
+            _time.sleep(0.4)
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.get("/stream/contact/{contact_id}")
