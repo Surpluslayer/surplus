@@ -216,3 +216,37 @@ def test_iter_stages_yields_incrementally(db):
     assert first.name == "ingestion"          # arrives before the rest run
     names = [first.name] + [s.name for s in it]
     assert names == list(pipeline.STAGE_ORDER)
+
+
+def test_seeded_cohort_survives_the_demo_purge_sweep(db):
+    """cohort.generate() populates last_login_at and sets is_demo=True, so
+    every seeded lawyer matched the stale-demo-user sweep and the whole
+    evaluation dataset would vanish once past DEMO_TTL_HOURS. A per-visit
+    demo workspace should still be reaped; a provenance-tagged evaluation
+    cohort should not."""
+    from datetime import datetime, timedelta, timezone
+    from backend.routes.demo import _cleanup_stale_demo_users
+
+    cohort.generate(db, n_lawyers=3, days=14, cohort_id="purge-cohort")
+    seeded = db.execute(select(models.User).where(
+        models.User.email.like("demo-lawyer-%"))).scalars().all()
+    assert seeded
+    seeded_ids = {u.id for u in seeded}
+
+    # Age every demo user well past the TTL.
+    old = datetime.now(timezone.utc) - timedelta(hours=500)
+    for u in seeded:
+        u.last_login_at = old
+
+    # A genuine per-visit demo user, same flag, no provenance tag.
+    visitor = models.User(email="visitor@demo.surpluslayer.com", is_demo=True,
+                          last_login_at=old)
+    db.add(visitor)
+    db.commit()
+    visitor_id = visitor.id
+
+    _cleanup_stale_demo_users(db, limit=100)
+
+    surviving = {u.id for u in db.execute(select(models.User)).scalars().all()}
+    assert seeded_ids <= surviving, "seeded evaluation cohort was purged"
+    assert visitor_id not in surviving, "per-visit demo user should still be reaped"

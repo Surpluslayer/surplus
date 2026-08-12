@@ -57,7 +57,7 @@ from ..auth import DEMO_USER_EMAIL_DOMAIN, create_session, is_demo_user, set_ses
 from ..db import get_db
 from ..demo_seed import build_demo_payload, seed_demo_workspace
 from ..hosts import is_first_party, is_inperson_host, request_browser_host
-from ..models import Contact, Event, RelationshipInteraction, Session, User
+from ..models import Contact, DemoProvenance, Event, RelationshipInteraction, Session, User
 from ..rate_limit import per_ip_rate_limit
 
 
@@ -245,6 +245,27 @@ def _demo_ttl_hours() -> int:
         return 48
 
 
+def _seeded_cohort_user_ids(db: DbSession) -> set:
+    """Users belonging to a deliberately seeded evaluation cohort
+    (backend/demo/cohort.py, tagged in DemoProvenance).
+
+    These share the is_demo flag with per-visit demo users but are NOT the
+    same thing: a visitor demo workspace is ephemeral and should be reaped,
+    while a seeded cohort is the evaluation dataset the Observe harnesses
+    score against. cohort.generate() populates last_login_at, so without
+    this exclusion every seeded lawyer -- and their contacts and
+    interactions -- was eligible for deletion once past the TTL, and the
+    evaluation dataset would silently disappear a couple of days after an
+    operator seeded it.
+    """
+    try:
+        rows = db.query(DemoProvenance.row_id).filter(
+            DemoProvenance.table_name == "users").all()
+        return {r[0] for r in rows}
+    except Exception:  # noqa: BLE001 -- table missing on an old schema: reap as before
+        return set()
+
+
 def _cleanup_stale_demo_users(db: DbSession, *, limit: int = 50) -> int:
     """Best-effort sweep of expired per-visit demo users so the public door
     can't grow the users table without bound. Deletes the demo user's owned
@@ -252,13 +273,15 @@ def _cleanup_stale_demo_users(db: DbSession, *, limit: int = 50) -> int:
 
     Bounded (a small batch per call) and fully wrapped so a cleanup hiccup can
     never break a fresh visitor's demo start. Only ever touches rows on the
-    isolated demo email domain.
+    isolated demo email domain, and never a provenance-tagged evaluation
+    cohort (see _seeded_cohort_user_ids).
     """
     from sqlalchemy import or_
     ttl = _demo_ttl_hours()
     if not ttl:
         return 0
     cutoff = datetime.now(timezone.utc) - timedelta(hours=ttl)
+    protected = _seeded_cohort_user_ids(db)
     stale = (
         db.query(User)
         .filter(or_(User.is_demo.is_(True),
@@ -272,6 +295,8 @@ def _cleanup_stale_demo_users(db: DbSession, *, limit: int = 50) -> int:
     # Per-user transaction so one bad row (an unexpected FK) skips, not blocks.
     for u in stale:
         if not is_demo_user(u):  # defensive : never touch a real row
+            continue
+        if u.id in protected:     # seeded evaluation cohort, not a visitor demo
             continue
         try:
             # The demo user's own interactions (covers their demo contacts too).
