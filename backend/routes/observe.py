@@ -219,10 +219,18 @@ def _sse(gen_events):
 
 
 @router.get("/stream/boot")
-def stream_boot(user: models.User = Depends(current_user)):
+def stream_boot(user: models.User = Depends(current_user), db: DbSession = Depends(get_db)):
     """Report the live updates pipeline, then run every harness for real,
     streaming one line per execution."""
     user_id = user.id
+    # Depends(current_user) resolves through Depends(get_db) internally, and
+    # FastAPI caches that dependency per request -- declaring `db` here gets
+    # the SAME session, so closing it actually releases the one connection
+    # this request opened. Without this, the connection sits pinned for the
+    # whole streamed harness suite (this endpoint fires once per opened
+    # Observe tab); see stream_activity's own docstring for why that's a
+    # real DB_POOL_SIZE + DB_MAX_OVERFLOW exhaustion risk, not a nitpick.
+    db.close()
 
     def events(wdb):
         # Re-load in the stream's own session; the request-scoped one is
@@ -311,6 +319,13 @@ def stream_contact(contact_id: int, channel: str = Query(default="linkedin_dm"),
     by line to the real drafted message."""
     owner, contact = _owned_contact(db, user, contact_id)
     owner_id, contact_id_ = owner.id, contact.id
+    # Same fix as stream_activity/stream_boot: read what's needed, then
+    # release the pooled connection before the stream (fed by its own
+    # separate session inside events()) holds it for the whole response.
+    # This endpoint fires on every card clicked in the Book, so it's the
+    # most frequent of the three -- pinning here is the highest-volume
+    # instance of the exact bug 2a0583f fixed for /stream/activity.
+    db.close()
 
     def events(wdb):
         w_owner = wdb.get(models.User, owner_id)
