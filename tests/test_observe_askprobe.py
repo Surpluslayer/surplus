@@ -214,3 +214,85 @@ def test_publish_never_closes_a_session_it_did_not_create(db, user):
     assert loaded.email, "publish detached the caller's object by closing its session"
     joined = " | ".join(e["msg"] for e in bus.since(user.id, 0))
     assert "written while the caller holds a session" in joined
+
+
+# ── the write must not sit on the request thread ────────────────────────────
+
+def test_publishing_does_not_block_the_request(monkeypatch):
+    """The regression this was written for.
+
+    publish() opened a session, INSERTed and COMMITted inline. On a real ask
+    that measured ~0.55s PER LINE -- each one queuing for a pooled connection
+    against six concurrent drafting threads -- so roughly ten seconds of a
+    28-second ask was the instrumentation, whose whole contract is that it
+    never affects the ask.
+    """
+    import time
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    import backend.db as bdb
+    from backend.db import Base as _Base
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                           poolclass=StaticPool)
+    _Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    # Stand in for a networked Postgres: every statement costs a round trip.
+    @event.listens_for(engine, "before_cursor_execute")
+    def _slow(conn, cur, statement, params, context, executemany):
+        time.sleep(0.02)
+
+    monkeypatch.setattr(bdb, "SessionLocal", Session)
+    bus.use_session_factory(None)          # background writer, as in production
+    try:
+        t0 = time.perf_counter()
+        for i in range(19):                # one ask's worth of narration
+            bus.publish(7, "info", "src", f"line {i:02d}")
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+
+        assert elapsed_ms < 150, (
+            f"publishing 19 lines cost the request {elapsed_ms:.0f}ms; the write "
+            "is back on the request thread")
+
+        assert bus.flush(5.0), "the writer never drained the queue"
+        db = Session()
+        rows = db.query(models.ObserveActivity).order_by(
+            models.ObserveActivity.id).all()
+        assert len(rows) == 19, f"lines were lost: {len(rows)}/19"
+        assert [r.msg.split()[-1] for r in rows] == [f"{i:02d}" for i in range(19)], \
+            "a single writer must preserve publish order -- the id is the cursor"
+    finally:
+        bus.use_session_factory(None)
+
+
+def test_a_full_queue_drops_loudly_rather_than_blocking(monkeypatch):
+    """Backpressure must never reach the request. Dropping is the right
+    trade for a live tail, but a silently lossy log is worse than one that
+    admits the gap."""
+    import queue as _queue
+
+    bus.use_session_factory(None)
+    monkeypatch.setattr(bus, "_QUEUE", _queue.Queue(maxsize=2))
+    monkeypatch.setattr(bus, "_ensure_writer", lambda: None)   # nothing drains
+    before = bus.dropped_count()
+
+    for i in range(10):
+        bus.publish(8, "info", "src", f"line {i}")
+
+    assert bus.dropped_count() - before == 8, "drops were not counted"
+
+
+def test_timestamps_record_when_the_work_happened(monkeypatch):
+    """Batched writes land later than the event. The timestamp has to say
+    when the line was produced, not when the writer got to it."""
+    from datetime import datetime, timezone
+
+    bus.use_session_factory(None)
+    monkeypatch.setattr(bus, "_ensure_writer", lambda: None)
+    before = datetime.now(timezone.utc)
+    row = bus._row(9, "info", "src", "msg", {})
+    after = datetime.now(timezone.utc)
+    assert before <= row["created_at"] <= after

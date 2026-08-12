@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import random
 import threading
 from datetime import datetime, timedelta, timezone
@@ -99,34 +100,65 @@ def _ttl_minutes() -> int:
         return 30
 
 
-def publish(account_id: int, level: str, src: str, msg: str, **extra) -> None:
-    """Record one product-side event. Never raises -- a logging failure must
-    not affect the ask or draft that produced it.
+# ── the write path: OFF the request thread ───────────────────────────────
+#
+# publish() used to open a session, INSERT and COMMIT inline. Measured on a
+# real ask: consecutive publishes with NO work between them landed ~0.55s
+# apart, because each one queues for a pooled connection against 6 concurrent
+# drafting threads and 8 total connections. At ~19 lines per ask that is
+# roughly ten seconds added to a request the user is waiting on -- by the
+# instrumentation, whose entire contract is that it never affects the ask.
+#
+# So the request thread now only enqueues, and one background writer drains
+# the queue in batches. A single writer also keeps insertion order equal to
+# publish order, so the autoincrement id stays a valid stream cursor.
+_QUEUE: "queue.Queue" = queue.Queue(maxsize=4000)
+_writer: "threading.Thread | None" = None
+_dropped = 0
+_BATCH = 200
+# Enqueued but not yet committed. An EMPTY QUEUE IS NOT A FINISHED WRITE --
+# the writer holds a batch in hand while it commits, so flush() has to wait on
+# this counter rather than on Queue.empty(). Waiting on the queue alone lost
+# 17 of 19 lines in a test that asserted every line lands.
+_pending = 0
 
-    Uses its own short-lived session rather than the caller's: the caller is
-    mid-request and may roll back, and an Observe write must never be part of
-    that transaction (nor leave the caller's session dirty).
-    """
-    global _pruned_once
+
+def _ensure_writer() -> None:
+    global _writer
+    if _writer is not None and _writer.is_alive():
+        return
+    with _lock:
+        if _writer is not None and _writer.is_alive():
+            return
+        t = threading.Thread(target=_drain_forever, name="observe-bus-writer",
+                             daemon=True)
+        t.start()
+        _writer = t
+
+
+def _drain_forever() -> None:
+    while True:
+        try:
+            first = _QUEUE.get()
+            batch = [first]
+            while len(batch) < _BATCH:
+                try:
+                    batch.append(_QUEUE.get_nowait())
+                except queue.Empty:
+                    break
+            _write_batch(batch, tracked=True)
+        except Exception:  # noqa: BLE001 -- the writer must never die
+            pass
+
+
+def _write_batch(batch: list, *, tracked: bool = False) -> None:
+    """One session and one commit for the whole batch."""
+    global _pruned_once, _pending
     try:
         from .. import models
-
-        payload = None
-        if extra:
-            try:
-                payload = json.dumps(extra, default=str)
-            except Exception:  # noqa: BLE001 -- a bad extra must not lose the line
-                payload = None
-
         db = _make_session()
         try:
-            db.add(models.ObserveActivity(
-                user_id=int(account_id),
-                level=str(level)[:10],
-                src=str(src)[:160],
-                msg=str(msg),
-                extra_json=payload,
-            ))
+            db.add_all([models.ObserveActivity(**row) for row in batch])
             db.commit()
 
             with _lock:
@@ -140,6 +172,75 @@ def publish(account_id: int, level: str, src: str, msg: str, **extra) -> None:
                 db.commit()
         finally:
             db.close()
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        if tracked:
+            with _lock:
+                _pending -= len(batch)
+
+
+def _row(account_id: int, level: str, src: str, msg: str, extra: dict) -> dict:
+    payload = None
+    if extra:
+        try:
+            payload = json.dumps(extra, default=str)
+        except Exception:  # noqa: BLE001 -- a bad extra must not lose the line
+            payload = None
+    # Stamped HERE, not at insert time: the timestamp has to say when the work
+    # happened, not when the writer got around to recording it.
+    return {"user_id": int(account_id), "level": str(level)[:10],
+            "src": str(src)[:160], "msg": str(msg), "extra_json": payload,
+            "created_at": datetime.now(_UTC)}
+
+
+def flush(timeout: float = 2.0) -> bool:
+    """Block until every enqueued line has been COMMITTED. For tests and
+    shutdown, never the request path -- that is the whole point of the queue.
+
+    Waits on the in-flight counter, not on Queue.empty(): the writer pops a
+    batch before committing it, so the queue goes empty while the rows are
+    still unwritten."""
+    import time as _time
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        with _lock:
+            if _pending == 0:
+                return True
+        _time.sleep(0.005)
+    return False
+
+
+def dropped_count() -> int:
+    """Lines discarded because the queue was full. Surfaced rather than
+    hidden: a silently lossy log is worse than one that admits a gap."""
+    return _dropped
+
+
+def publish(account_id: int, level: str, src: str, msg: str, **extra) -> None:
+    """Record one product-side event. Never raises and never blocks -- a
+    logging failure, or a slow database, must not affect the ask or draft
+    that produced it.
+
+    Writes are batched onto a background thread (see above). When a session
+    factory has been injected (tests), the write happens inline instead so
+    assertions do not race the writer.
+    """
+    global _dropped, _pending
+    try:
+        row = _row(account_id, level, src, msg, extra)
+        if _session_factory is not None:
+            _write_batch([row])       # tests: deterministic, no writer thread
+            return
+        _ensure_writer()
+        with _lock:
+            _pending += 1
+        try:
+            _QUEUE.put_nowait(row)
+        except queue.Full:
+            with _lock:
+                _pending -= 1
+                _dropped += 1
     except Exception:  # noqa: BLE001
         pass
 

@@ -50,6 +50,12 @@ def client(monkeypatch):
     # the wrong person.
     seed_db = Session()
     monkeypatch.setattr("backend.db.SessionLocal", lambda: seed_db)
+    # bus writes are batched onto a background thread in production, so a test
+    # that reads the log the instant the request returns would race the writer.
+    # The injected factory puts the bus in its deterministic synchronous mode
+    # (see bus.publish) -- same seam tests/test_observe_askprobe.py uses.
+    from backend.observe import bus as _bus
+    _bus.use_session_factory(lambda: seed_db)
 
     cohort.generate(seed_db, n_lawyers=2, days=14, cohort_id="draft-stream-narration")
     user = seed_db.execute(select(models.User)).scalars().first()
@@ -70,6 +76,7 @@ def client(monkeypatch):
     with TestClient(app) as c:
         yield c, user_id, contact_id, contact_name
     app.dependency_overrides.clear()
+    _bus.use_session_factory(None)
 
 
 def test_draft_stream_narrates_heuristic_fallback(client, monkeypatch):

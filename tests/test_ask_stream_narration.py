@@ -45,6 +45,12 @@ def client(monkeypatch):
     # (real default) database instead of this test's isolated one.
     seed_db = Session()
     monkeypatch.setattr("backend.db.SessionLocal", lambda: seed_db)
+    # bus writes are batched onto a background thread in production, so a test
+    # that reads the log the instant the request returns would race the writer.
+    # The injected factory puts the bus in its deterministic synchronous mode
+    # (see bus.publish) -- same seam tests/test_observe_askprobe.py uses.
+    from backend.observe import bus as _bus
+    _bus.use_session_factory(lambda: seed_db)
 
     cohort.generate(seed_db, n_lawyers=3, days=30, cohort_id="ask-stream-narration")
     user = seed_db.execute(select(models.User)).scalars().first()
@@ -63,6 +69,7 @@ def client(monkeypatch):
     with TestClient(app) as c:
         yield c, user_id
     app.dependency_overrides.clear()
+    _bus.use_session_factory(None)
 
 
 def test_who_has_gone_quiet_chip_narrates_the_full_lifecycle(client, monkeypatch):
