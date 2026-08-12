@@ -82,7 +82,7 @@ def test_boot_events_stream_real_harness_results(db):
 def test_boot_events_warn_and_skip_when_there_is_no_dataset(db):
     events = list(logstream.boot_events(db))
     msgs = " | ".join(e["msg"] for e in events)
-    assert "no demo cohort in this database" in msgs
+    assert "no evaluation cohort in this database" in msgs
     # The one dataset-free harness still runs; the four data-driven ones skip.
     assert "jurisdiction_regression" in msgs
     assert "SKIPPED" in msgs
@@ -98,7 +98,8 @@ def test_coverage_harnesses_are_not_reported_as_failures(db):
         if e.get("harness") in ("ablation", "relationship_evaluation") and e.get("kind"):
             assert e["kind"] == "coverage"
             assert e["level"] != "error"
-            assert "lawyers with a resolved outcome" in e["msg"]
+            # Reported as coverage ("N/M lawyers"), never as "N/M pass".
+            assert "lawyers" in e["msg"] and "pass" not in e["msg"]
 
 
 def test_contact_events_show_the_scoring_arithmetic_and_jurisdiction_checks(db):
@@ -336,9 +337,56 @@ def test_boot_reports_the_updates_pipeline_before_the_harnesses(db):
     joined = " | ".join(msgs)
 
     assert "updates pipeline -- detect → target → draft" in joined
+    account_at = next(i for i, m in enumerate(msgs) if m == "account")
     pipeline_at = next(i for i, m in enumerate(msgs) if "updates pipeline" in m)
-    harness_at = next(i for i, m in enumerate(msgs) if "running jurisdiction_regression" in m)
-    assert pipeline_at < harness_at, "harnesses reported before the pipeline they evaluate"
+    harness_at = next(i for i, m in enumerate(msgs) if "jurisdiction_regression" in m)
+    assert account_at < pipeline_at < harness_at, \
+        "boot log order must be account -> pipeline -> evaluation"
+
+
+def test_harnesses_do_not_dominate_the_boot_log(db):
+    """The rebalance. Each harness gets ONE line carrying its headline number;
+    three lines each made them roughly half the log and pushed the account
+    state a reader actually opens the page for off the top of the screen."""
+    cohort.generate(db, n_lawyers=6, days=30, cohort_id="balance-cohort")
+    user = db.execute(select(models.User)).scalars().first()
+    events = list(logstream.boot_events(db, user))
+
+    for harness_id in ("jurisdiction_regression", "historical_replay", "ablation",
+                        "relationship_evaluation", "signal_library_evaluation"):
+        result_lines = [e for e in events
+                        if e.get("harness") == harness_id and e.get("kind")]
+        assert len(result_lines) == 1, f"{harness_id} emitted {len(result_lines)} result lines"
+
+    # ...and the headline number still survives on that one line.
+    by_id = {e["harness"]: e["msg"] for e in events if e.get("kind")}
+    assert "leakage=" in by_id["historical_replay"]
+    assert "ndcg@5" in by_id["ablation"]
+    assert "accuracy=" in by_id["signal_library_evaluation"]
+
+    harness_lines = sum(1 for e in events if e.get("harness"))
+    assert harness_lines < len(events) / 2, \
+        f"harnesses are {harness_lines} of {len(events)} lines -- still dominating"
+
+
+def test_account_section_reports_real_state(db):
+    """The section that answers 'what is this doing for ME' -- read from real
+    rows, and honest when a field is unset."""
+    cohort.generate(db, n_lawyers=6, days=30, cohort_id="acct-cohort")
+    user = db.execute(select(models.User)).scalars().first()
+    user.bar_jurisdiction = None
+    db.commit()
+
+    joined = " | ".join(e["msg"] for e in logstream.account_events(db, user))
+    assert user.email in joined
+    assert "bar=NOT SET" in joined, "an unset jurisdiction must be stated, not omitted"
+    assert "book:" in joined and "contacts" in joined
+    assert "outreach:" in joined
+
+
+def test_account_section_says_so_when_there_is_no_signed_in_user(db):
+    joined = " | ".join(e["msg"] for e in logstream.account_events(db, None))
+    assert "no signed-in account" in joined
 
 
 def test_updates_pipeline_reports_cadence_funnel_and_recent_signals(db):

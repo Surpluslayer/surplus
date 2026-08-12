@@ -19,7 +19,29 @@ EXTENDED = "generated_beyond_baseline"
 # BASELINE/EXTENDED. Reuses this same tag/cohort_row_counts/delete_cohort
 # machinery rather than building a parallel one.
 SYNTHETIC = "synthetic_known_answer_scenario"
-PROVENANCE_VALUES = frozenset({BASELINE, EXTENDED, SYNTHETIC})
+# A REAL production row -- a genuinely synced contact or interaction --
+# REFERENCED into an evaluation cohort. Nothing generated it; the tag only
+# records "this row is part of the set the harnesses evaluate over".
+#
+# It exists because the alternative was labelling real synced rows BASELINE,
+# i.e. "generated_from_assumed_distribution", which is simply false about
+# where the data came from. In a system whose entire claim is that its
+# provenance is honest, a tag that lies about origin is the worst possible
+# thing to leave in the table.
+OBSERVED = "observed_real_account_data"
+PROVENANCE_VALUES = frozenset({BASELINE, EXTENDED, SYNTHETIC, OBSERVED})
+
+# The values that mark a row this package CREATED, and may therefore destroy.
+# OBSERVED is deliberately absent: see delete_cohort.
+GENERATED_VALUES = frozenset({BASELINE, EXTENDED, SYNTHETIC})
+
+# Cohorts that are legitimate EVALUATION datasets. SYNTHETIC is deliberately
+# absent: those four hand-built fixtures are a known-answer correctness check,
+# and because synthetic_scenarios.setup() writes them lazily during its own
+# run they are always the newest rows in the table -- so "newest cohort wins"
+# silently pointed every aggregate harness at a 4-contact fixture set. See
+# observe/logstream.evaluation_cohort_id.
+EVALUATION_VALUES = frozenset({BASELINE, EXTENDED, OBSERVED})
 
 
 def tag(db, row, *, provenance: str, cohort_id: str) -> models.DemoProvenance:
@@ -57,17 +79,31 @@ def cohort_row_counts(db, cohort_id: str) -> dict:
 
 
 def delete_cohort(db, cohort_id: str) -> int:
-    """Delete every row this cohort generated, across every tagged table, by
+    """Delete every row this cohort GENERATED, across every tagged table, by
     walking the provenance index -- not by re-deriving which rows belong to
     the cohort from product logic. Returns the number of rows deleted (not
     counting the provenance rows themselves). Used by tests and by a
-    reset-the-demo-cohort operator action; never called from product code."""
+    reset-the-demo-cohort operator action; never called from product code.
+
+    OBSERVED rows are REFERENCES to real production data, not things this
+    package created, so they are never deleted here -- only their tags are,
+    which removes them from the cohort and leaves the rows untouched.
+
+    This is not a hypothetical guard. When seed_operator began tagging real
+    synced rows instead of generating new ones, this function -- recommended
+    by that module's own docstring as the way to clean up -- deleted a real
+    account's entire book: 40 contacts and 40 interactions, gone. Deleting
+    only what we created is the invariant that makes tagging real rows safe
+    at all.
+    """
     from sqlalchemy import select
     tags = db.execute(
         select(models.DemoProvenance).where(models.DemoProvenance.cohort_id == cohort_id)
     ).scalars().all()
     by_table: dict[str, list[int]] = {}
     for t in tags:
+        if t.data_provenance not in GENERATED_VALUES:
+            continue        # a reference to real data -- untag, never delete
         by_table.setdefault(t.table_name, []).append(t.row_id)
 
     # Delete children before parents to respect FKs on backends without

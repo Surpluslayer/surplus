@@ -80,7 +80,7 @@ _HARNESS_ORDER = (
 def evaluation_cohort_id(db):
     """The cohort the data-driven harnesses should evaluate against.
 
-    Restricted to BASELINE provenance on purpose. Picking the plain newest
+    Restricted to prov.EVALUATION_VALUES on purpose. Picking the plain newest
     tag instead (as an earlier version did) selected
     `synthetic-scenarios-v1` -- the four hand-built known-answer fixtures
     that synthetic_scenarios.setup() writes lazily DURING the harness run,
@@ -89,13 +89,19 @@ def evaluation_cohort_id(db):
     fixture set instead of the generated cohort, so replay/ablation/
     relationship numbers came back as "3/3" and "1/1" and looked broken.
     Synthetic fixtures are a correctness check, never the evaluation
-    dataset."""
+    dataset.
+
+    The set (rather than BASELINE alone) is what lets an OBSERVED cohort --
+    a real account's own data, referenced in by backend/demo/seed_operator.py
+    -- actually become the evaluation dataset. Matching only BASELINE would
+    silently ignore it, which is the failure mode this whole predicate exists
+    to prevent."""
     from sqlalchemy import select
     from .. import models
     from ..demo import provenance as prov
     return db.execute(
         select(models.DemoProvenance.cohort_id)
-        .where(models.DemoProvenance.data_provenance == prov.BASELINE)
+        .where(models.DemoProvenance.data_provenance.in_(tuple(prov.EVALUATION_VALUES)))
         .order_by(models.DemoProvenance.id.desc()).limit(1)
     ).scalar_one_or_none()
 
@@ -107,11 +113,17 @@ def boot_events(db, user=None):
     comment; it's still reachable on demand via GET /api/observe/harness/
     synthetic_scenarios.
 
-    Order is deliberate. "What has the system actually been doing" (the
-    updates pipeline that produced the feed on screen) comes before "does it
-    hold up under evaluation" (the harnesses) -- reading the harness results
-    first invites treating them as the whole story, when they are the
-    evaluation OF the pipeline above them."""
+    Order and PROPORTION are both deliberate:
+
+      1. account   -- who this is, how big the book is, what outreach exists
+      2. pipeline  -- what the product has actually been doing
+      3. evaluation -- whether that holds up, one line per harness
+
+    The harnesses are the evaluation OF the work above them, so reading them
+    first invites treating them as the whole story. They also used to spend
+    three lines each, which made them roughly half the boot log and pushed
+    the account state -- the thing a reader actually opens the page for --
+    off the top of the screen. Same harnesses, same numbers, one line each."""
     from .harnesses import (ablation, jurisdiction_regression, relationship_eval,
                              signal_library_eval)
     from .harnesses import replay as replay_harness
@@ -121,17 +133,26 @@ def boot_events(db, user=None):
     yield line(INFO, "backend.observe.versions",
                " · ".join(f"{k}={v}" for k, v in ver.VERSIONS.items()))
 
+    # 1. Who this is and what state their book is in.
+    for ev in account_events(db, user):
+        yield ev
+
+    # 2. What the product has actually been doing.
     for ev in updates_pipeline_events(db, user):
         yield ev
 
+    # 3. Only then: whether it holds up under evaluation.
+    yield line(STEP, "backend.observe.logstream:boot_events",
+               "evaluation -- harnesses over a fixed dataset")
     cohort_id = evaluation_cohort_id(db)
     if cohort_id:
         yield line(INFO, "backend.observe.logstream:evaluation_cohort_id",
-                   f"evaluation dataset resolved: cohort_id={cohort_id}")
+                   f"  dataset: cohort_id={cohort_id}")
     else:
         yield line(WARN, "backend.observe.logstream:evaluation_cohort_id",
-                   "no demo cohort in this database -- the four data-driven harnesses "
-                   "have nothing to evaluate against (run: python -m backend.demo.cohort)")
+                   "  no evaluation cohort in this database -- the four data-driven "
+                   "harnesses have nothing to evaluate against "
+                   "(run: python -m backend.demo.cohort)")
 
     runners = {
         "jurisdiction_regression": lambda: jurisdiction_regression.run(),
@@ -152,42 +173,49 @@ def boot_events(db, user=None):
     for harness_id, needs_cohort, pass_fail in _HARNESS_ORDER:
         src = modules[harness_id]
         if needs_cohort and not cohort_id:
-            yield line(WARN, src, f"{harness_id}: SKIPPED (needs an evaluation dataset)",
+            yield line(WARN, src,
+                       f"  {harness_id:<26} SKIPPED -- needs an evaluation dataset",
                        harness=harness_id)
             continue
-        yield line(STEP, src, f"running {harness_id}", harness=harness_id)
         try:
             result, ms = _timed(runners[harness_id])
         except Exception as exc:  # noqa: BLE001
-            yield line(ERR, src, f"{harness_id}: FAILED {type(exc).__name__}: {exc}",
+            yield line(ERR, src,
+                       f"  {harness_id:<26} FAILED {type(exc).__name__}: {exc}",
                        harness=harness_id)
             continue
 
+        # One line per harness: name, score, time, and the number that carries
+        # its claim. The old three-line-per-harness form buried the account
+        # state above it.
+        suffix = _harness_summary(harness_id, result)
         if pass_fail:
             total_pass += result.cases_passed
             total_cases += result.cases_total
             lvl = OK if result.cases_failed == 0 else ERR
-            yield line(lvl, src,
-                       f"{harness_id}: {result.cases_passed}/{result.cases_total} passed "
-                       f"in {ms:.1f}ms",
-                       harness=harness_id, passed=result.cases_passed,
-                       total=result.cases_total, kind="pass_fail")
+            score = f"{result.cases_passed}/{result.cases_total} pass"
+            kind = "pass_fail"
         else:
-            yield line(OK, src,
-                       f"{harness_id}: evaluated {result.cases_passed}/{result.cases_total} "
-                       f"lawyers with a resolved outcome in {ms:.1f}ms",
-                       harness=harness_id, passed=result.cases_passed,
-                       total=result.cases_total, kind="coverage")
-
-        for detail in _harness_detail_lines(harness_id, result):
-            yield detail
+            # cases_passed here is COVERAGE (lawyers with a resolved outcome),
+            # not pass/fail -- rendering it as a failure misreports a healthy
+            # run, so it never contributes to the suite total.
+            lvl = OK if result.cases_passed else WARN
+            score = f"{result.cases_passed}/{result.cases_total} lawyers"
+            kind = "coverage"
+        yield line(lvl, src,
+                   f"  {harness_id:<26} {score:<16} {ms:>8.1f}ms"
+                   + (f"  · {suffix}" if suffix else ""),
+                   harness=harness_id, passed=result.cases_passed,
+                   total=result.cases_total, kind=kind)
 
         for f in (result.failures or [])[:5]:
-            yield line(ERR, src, f"  failure: {f.get('scenario_id') or f}", harness=harness_id)
+            yield line(ERR, src, f"    failure: {f.get('scenario_id') or f}",
+                       harness=harness_id)
 
     yield line(OK if total_pass == total_cases else WARN,
                "backend.observe.logstream:boot_events",
-               f"harness suite complete -- {total_pass}/{total_cases} pass/fail cases passed")
+               f"  suite: {total_pass}/{total_cases} pass/fail cases passed "
+               f"(coverage harnesses counted separately, see above)")
 
 
 def updates_pipeline_events(db, user=None):
@@ -352,6 +380,112 @@ def _ago(seconds: float) -> str:
     if seconds < 172800:
         return f"{seconds // 3600}h"
     return f"{seconds // 86400}d"
+
+
+def account_events(db, user=None):
+    """Who this account is and what state it is actually in.
+
+    The boot log used to open on versions and then spend most of its lines on
+    the harness suite, which answers "does the intelligence hold up under
+    evaluation" -- a question nobody has yet when they open the page. The
+    first question is "what is this thing doing for ME", and that has a
+    factual answer: the book's size, how much history is on record, how much
+    outreach has been drafted, and what came of it.
+
+    Everything here is a read. No sweep, no fetch, no draft.
+    """
+    import json
+    from sqlalchemy import func, select
+    from .. import models
+
+    src = "backend.observe.logstream:account_events"
+    if user is None:
+        yield line(WARN, src, "no signed-in account resolved -- account state unavailable")
+        return
+
+    yield line(STEP, src, "account")
+
+    jur = user.bar_jurisdiction or "NOT SET (gate falls back to fail-closed unknown)"
+    practice = user.practice_area or "NOT SET (practice_fit uses a neutral 0.5)"
+    yield line(INFO, "backend.models:User",
+               f"  {user.email} · bar={jur} · practice_area={practice}")
+
+    n_contacts = db.execute(select(func.count(models.Contact.id))
+                            .where(models.Contact.user_id == user.id)).scalar() or 0
+    n_inter = db.execute(select(func.count(models.RelationshipInteraction.id))
+                         .where(models.RelationshipInteraction.actor_user_id == user.id)
+                         ).scalar() or 0
+    newest = db.execute(select(func.max(models.RelationshipInteraction.occurred_at))
+                        .where(models.RelationshipInteraction.actor_user_id == user.id)
+                        ).scalar()
+    when = f"newest {_ago((datetime.now(_UTC) - _aware_dt(newest)).total_seconds())} ago" \
+        if newest is not None else "no interactions on record"
+    yield line(INFO if n_contacts else WARN, "backend.models:Contact",
+               f"  book: {n_contacts} contacts · {n_inter} interactions on record · {when}")
+
+    # What the outreach loop has actually produced for this account, by real
+    # recorded disposition -- not an estimate.
+    drafts = db.execute(
+        select(models.RelationshipInteraction.meta_json)
+        .where(models.RelationshipInteraction.actor_user_id == user.id,
+               models.RelationshipInteraction.title.like("Drafted follow-up%"))
+    ).scalars().all()
+    by_disp: dict = {}
+    for raw in drafts:
+        try:
+            d = (json.loads(raw or "{}") or {}).get("disposition")
+        except Exception:  # noqa: BLE001
+            d = None
+        by_disp[d or "no outcome recorded yet"] = by_disp.get(
+            d or "no outcome recorded yet", 0) + 1
+    if drafts:
+        resolved = sum(v for k, v in by_disp.items() if k != "no outcome recorded yet")
+        yield line(OK, "backend.agents.relationship.updates_engine:autodraft",
+                   f"  outreach: {len(drafts)} drafted · {resolved} with a recorded outcome")
+        for k, v in sorted(by_disp.items(), key=lambda kv: -kv[1]):
+            yield line(INFO, "backend.observe.cohort_query:most_recent_draft_relevance",
+                       f"    {k:<28} {v}")
+    else:
+        yield line(WARN, "backend.agents.relationship.updates_engine:autodraft",
+                   "  outreach: nothing drafted for this account yet -- the harnesses "
+                   "below grade against drafted outcomes, so they will have nothing "
+                   "to evaluate until the updates sweep has run here")
+
+
+def _harness_summary(harness_id: str, result) -> str:
+    """The ONE number per harness that carries its claim, as a suffix on the
+    harness's own result line.
+
+    This used to be a separate INFO line under a separate STEP line, so five
+    harnesses spent fifteen-plus lines and dominated the boot log -- pushing
+    the account state that people actually open the page for off the top.
+    Same numbers, same source (the real HarnessResult.metrics), one line."""
+    m = result.metrics or {}
+    if harness_id == "historical_replay":
+        return (f"leakage={m.get('temporal_leakage_violations')} · "
+                f"reconstruction_failures={m.get('reconstruction_failures')} · "
+                f"agreement={m.get('prediction_outcome_agreement_rate')}")
+    if harness_id == "ablation":
+        a = (m.get("A_signal_practice") or {}).get("ndcg_at_k")
+        c = (m.get("C_plus_relationship") or {}).get("ndcg_at_k")
+        return (f"ndcg@5 {a} → {c} · mean rank delta="
+                f"{m.get('mean_rank_delta_A_to_C')}")
+    if harness_id == "relationship_evaluation":
+        if m.get("sufficient_data_for_aggregate_claim"):
+            return (f"NDCG@5 lift vs baseline="
+                    f"{m.get('ndcg_lift_relationship_vs_baseline')} over "
+                    f"{m.get('n_cases_total')} cases")
+        return (f"only {m.get('n_cases_total')} resolved cases -- below the threshold "
+                f"to claim an aggregate lift")
+    if harness_id == "signal_library_evaluation":
+        cls = m.get("classification") or {}
+        return (f"accuracy={cls.get('overall_accuracy')} over "
+                f"{cls.get('n_fixtures')} fixtures ({cls.get('classifier')})")
+    if harness_id == "jurisdiction_regression":
+        by_cat = m.get("by_category") or {}
+        return (f"{m.get('rule_version')} · {len(by_cat)} categories, "
+                f"all rules exercised")
+    return ""
 
 
 def _harness_detail_lines(harness_id: str, result):

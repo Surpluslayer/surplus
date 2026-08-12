@@ -1608,6 +1608,26 @@ function _placeholderFor(mode, variant) {
     : "Ask about your book, updates, and who to reach out to…";
 }
 
+// Observe (additive, no product behavior changes): announce an ask the
+// INSTANT it is submitted, so the execution log reacts to the keystroke
+// rather than staying silent until the server's own narration comes back
+// over the activity stream. Those two are different facts and the log shows
+// both -- this line is the browser saying "I sent it", the backend's
+// `── ask bar:` line is a worker saying "I ran it". `src` is frontend.* so a
+// client-side line can never be mistaken for backend execution.
+//
+// A window event rather than a prop: the Observe panel lives in a separate
+// React root (main-inperson.jsx), same reason the click wiring uses
+// data-observe-* attributes and a delegated listener instead of callbacks.
+function _observe(level, msg) {
+  try {
+    window.dispatchEvent(new CustomEvent("surplus:observe", {
+      detail: { ts: new Date().toISOString(), level,
+                src: "frontend.BookApp:AskBar", msg },
+    }));
+  } catch { /* Observe must never affect the product */ }
+}
+
 // `mode` = which tab this bar lives in ("book" | "referral"). onRoute(tab, query)
 // lets the bar hand a query to the OTHER tab: auto-switch on a confident
 // mismatch, or a manual switch from the cross-hint. pendingAsk is a query handed
@@ -1623,22 +1643,33 @@ function AskBar({ variant, mode = "book", onOpen, onDraft, onRoute, pendingAsk }
     const text = (query ?? q).trim();
     if (!text || busy) return;
     setBusy(true); setErr(""); setRes(null); setQ(text); setPhase("Thinking…");
+    const _t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
+    _observe("step", `── ask submitted: ${JSON.stringify(text)} `
+                     + `→ POST /api/book/ask/stream (mode=${mode}) ─────────────`);
     try {
       // Streamed: the ranked people show the instant selection finishes, then
       // each draft fills in as it lands. A heartbeat keeps the connection alive
       // so a slow moment shows "drafting…" instead of a 524 "server took too long".
       await api.bookAskStream(text, {
         mode,
-        onStatus: ({ phase: ph, name }) =>
+        onStatus: ({ phase: ph, name }) => {
+          _observe("info", `  server phase: ${ph}${name ? ` (${name})` : ""}`);
           setPhase(ph === "drafting" ? `Drafting ${name || "…"}` :
-                   ph === "selecting" ? "Finding who to follow up with…" : "Thinking…"),
+                   ph === "selecting" ? "Finding who to follow up with…" : "Thinking…");
+        },
         onPeople: ({ people, answer, network_hits, routed_to, cross_hint }) => {
           // Confident mismatch: hand the query to the other tab and stop rendering
           // here (this bar unmounts on the switch, so don't paint a stale answer).
           if (routed_to && routed_to !== mode && onRoute) {
+            _observe("warn", `  routed to the ${routed_to} tab -- this bar is ${mode}`);
             onRoute(routed_to, text);
             return;
           }
+          _observe("ok", `  ${(people || []).length} people returned to the UI in `
+                         + `${Math.round((typeof performance !== "undefined"
+                                          ? performance.now() : Date.now()) - _t0)}ms`
+                         + `${(network_hits || []).length
+                              ? ` · ${network_hits.length} network hits` : ""}`);
           setRes({
             answer: answer || "",
             people: people || [],
@@ -1653,9 +1684,15 @@ function AskBar({ variant, mode = "book", onOpen, onDraft, onRoute, pendingAsk }
             people[index] = { ...people[index], draft: (people[index].draft || "") + t };
             return { ...r, people };
           }),
-        onError: ({ detail }) => setErr(detail || "Couldn't ask the agent"),
+        onError: ({ detail }) => {
+          _observe("error", `  stream error: ${detail || "unknown"}`);
+          setErr(detail || "Couldn't ask the agent");
+        },
       });
-    } catch (e) { setErr(e.message || "Couldn't ask the agent"); }
+    } catch (e) {
+      _observe("error", `  ask failed: ${e.message || e}`);
+      setErr(e.message || "Couldn't ask the agent");
+    }
     finally { setBusy(false); setPhase(""); }
   };
 
