@@ -306,6 +306,31 @@ def test_boot_stream_releases_the_request_scoped_session_before_streaming(client
         "request-scoped session was still open when the harness suite started"
 
 
+def test_boot_stream_sends_done_after_an_error_so_the_browser_stops_reconnecting(client, monkeypatch):
+    """EventSource treats any server-closed connection it didn't request via
+    .close() as dropped and auto-reconnects, reissuing the same GET -- the
+    frontend's "done" listener is the ONLY thing that calls es.close(). If an
+    exception mid-stream ends the generator with just "event: error" and no
+    "event: done", the browser silently reruns the whole harness suite,
+    forever, instead of surfacing the failure once."""
+    from backend.observe import logstream
+
+    c, _cohort_id, _lawyer_id, _contact_id, _draft_id, Session, _rid = client
+
+    def broken_boot_events(db, user=None):
+        yield from []
+        raise RuntimeError("boom")
+        yield  # pragma: no cover - unreachable, keeps this a generator
+    monkeypatch.setattr(logstream, "boot_events", broken_boot_events)
+
+    with c.stream("GET", "/api/observe/stream/boot") as r:
+        assert r.status_code == 200
+        body = "".join(r.iter_text())
+    assert "event: error" in body
+    assert "event: done" in body
+    assert body.index("event: error") < body.index("event: done")
+
+
 def test_contact_stream_releases_the_request_scoped_session_before_streaming(client, monkeypatch):
     """Same property as the boot-stream test above, for stream/contact/{id}
     -- the HIGHEST-volume of the three Observe streams, since it fires on

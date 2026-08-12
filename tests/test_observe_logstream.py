@@ -220,6 +220,33 @@ def test_feedback_loop_status_reports_a_learned_taxonomy_once_it_exists(db):
     assert "seed 0.90" in joined, "the seed and the blended value are both shown"
 
 
+def test_feedback_loop_status_counts_production_shaped_drafts_too(db):
+    """A real account's draft lives on an activity_update row's meta_json,
+    not a separately titled "Drafted follow-up" row (that's the demo cohort
+    shape only). Matching only the demo title here made this section say
+    "no recorded outcomes yet" for a lawyer whose account_events() line,
+    moments earlier in the same trace, already reported a resolved one."""
+    from backend.agents.relationship import outcomes
+
+    user = models.User(email="prod2@example.com", is_demo=False, practice_area="litigation")
+    db.add(user)
+    db.flush()
+    contact = models.Contact(user_id=user.id, primary_identity_key="p:2", name="C")
+    db.add(contact)
+    db.commit()
+    db.add(models.RelationshipInteraction(
+        actor_user_id=user.id, contact_id=contact.id,
+        occurred_at=datetime.now(timezone.utc),
+        source_type="activity_update", interaction_type="job_change",
+        title="Changed roles",
+        meta_json=json.dumps({"signal_category": "litigation_filed", "draft": "hello"})))
+    db.commit()
+    outcomes.record_draft_outcome(db, user.id, contact.id, sent_body="hello")
+
+    joined = " | ".join(e["msg"] for e in logstream.feedback_loop_status(db, user))
+    assert "CLOSED: 1 resolved outcomes" in joined
+
+
 def test_ranking_candidates_are_bounded_on_a_large_book(db):
     """A real book of hundreds of contacts scored every one of them, several
     queries each, with nothing emitted until all eight stages finished --
