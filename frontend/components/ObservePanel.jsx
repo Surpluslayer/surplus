@@ -475,7 +475,13 @@ export default function ObservePanel() {
                 </div>
               ))}
               {!opportunities.length && !error && (
-                <div style={{ fontSize: 12.5, color: C.faint }}>No signaled opportunities for this lawyer.</div>
+                <div style={{ fontSize: 12.5, color: C.faint }}>
+                  {cohorts.length === 0
+                    ? "No demo cohorts found. Seed one with: python -m backend.demo.cohort"
+                    : !cohortId
+                    ? "Select a cohort above."
+                    : "No signaled opportunities for this lawyer."}
+                </div>
               )}
             </div>
             <div style={{ flex: 1, minWidth: 340, position: "sticky", top: 20 }}>
