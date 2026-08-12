@@ -320,3 +320,66 @@ def test_draft_events_prefer_a_stored_autodraft_over_a_model_call(db):
     assert "reusing stored autodraft" in joined
     assert "no model call needed" in joined
     assert out["interaction_id"] is not None
+
+
+def test_boot_reports_the_updates_pipeline_before_the_harnesses(db):
+    """The feed on screen raises "what has the system been doing"; the
+    harnesses answer "does it hold up under evaluation". The pipeline state
+    must come first, or the harness numbers read as the whole story."""
+    cohort.generate(db, n_lawyers=4, days=30, cohort_id="flow-cohort")
+    user = db.execute(select(models.User)).scalars().first()
+
+    msgs = [e["msg"] for e in logstream.boot_events(db, user)]
+    joined = " | ".join(msgs)
+
+    assert "updates pipeline -- detect → target → draft" in joined
+    pipeline_at = next(i for i, m in enumerate(msgs) if "updates pipeline" in m)
+    harness_at = next(i for i, m in enumerate(msgs) if "running jurisdiction_regression" in m)
+    assert pipeline_at < harness_at, "harnesses reported before the pipeline they evaluate"
+
+
+def test_updates_pipeline_reports_cadence_funnel_and_recent_signals(db):
+    cohort.generate(db, n_lawyers=4, days=30, cohort_id="pipe-cohort")
+    user = db.execute(select(models.User)).scalars().first()
+
+    joined = " | ".join(e["msg"] for e in logstream.updates_pipeline_events(db, user))
+
+    assert "cadence: sweep every" in joined and "re-check vip every" in joined
+    # due-vs-cached split, so unchanged contacts are visibly not re-fetched
+    assert "due for re-check now" in joined
+    assert "still inside their tier window (cached, not re-fetched)" in joined
+    # the detect -> draft -> outcome funnel
+    assert "carry a stored autodraft" in joined
+    assert "have a recorded outcome" in joined
+    assert "by kind:" in joined
+    # per-signal detail with the real elapsed time
+    assert "detected" in joined and "drafted" in joined
+
+
+def test_updates_pipeline_never_triggers_a_sweep(db, monkeypatch):
+    """Opening a debugger must not fire BrightData/Exa fetches or autodrafts
+    -- that would spend money and mutate data as a side effect of a page
+    load. This asserts the read-only contract directly."""
+    from backend.agents.relationship import updates_engine as ue
+
+    called = []
+    monkeypatch.setattr(ue, "run_sweep",
+                        lambda *a, **k: called.append("run_sweep"), raising=False)
+    monkeypatch.setattr(ue, "autodraft",
+                        lambda *a, **k: called.append("autodraft"), raising=False)
+
+    cohort.generate(db, n_lawyers=3, days=14, cohort_id="nosweep")
+    user = db.execute(select(models.User)).scalars().first()
+    list(logstream.updates_pipeline_events(db, user))
+
+    assert called == [], f"page load triggered live work: {called}"
+
+
+def test_updates_pipeline_survives_a_missing_scheduler_claims_table(db):
+    """scheduler_claims doesn't exist until the first sweep runs; that must
+    be reported, not raised."""
+    cohort.generate(db, n_lawyers=2, days=14, cohort_id="noclaims")
+    user = db.execute(select(models.User)).scalars().first()
+    events = list(logstream.updates_pipeline_events(db, user))
+    joined = " | ".join(e["msg"] for e in events)
+    assert "no sweep has run in this database" in joined or "last ran" in joined

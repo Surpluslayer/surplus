@@ -81,8 +81,15 @@ def evaluation_cohort_id(db):
     ).scalar_one_or_none()
 
 
-def boot_events(db):
-    """Run all six harnesses for real, streaming a line per execution."""
+def boot_events(db, user=None):
+    """On page load: report the live product pipeline first, then run all six
+    harnesses for real, streaming a line per execution.
+
+    Order is deliberate. "What has the system actually been doing" (the
+    updates pipeline that produced the feed on screen) comes before "does it
+    hold up under evaluation" (the harnesses) -- reading the harness results
+    first invites treating them as the whole story, when they are the
+    evaluation OF the pipeline above them."""
     from .harnesses import (ablation, jurisdiction_regression, relationship_eval,
                              signal_library_eval, synthetic_scenarios)
     from .harnesses import replay as replay_harness
@@ -91,6 +98,9 @@ def boot_events(db):
     yield line(INFO, "backend.observe.logstream:boot_events", "Surplus Observe starting")
     yield line(INFO, "backend.observe.versions",
                " · ".join(f"{k}={v}" for k, v in ver.VERSIONS.items()))
+
+    for ev in updates_pipeline_events(db, user):
+        yield ev
 
     cohort_id = evaluation_cohort_id(db)
     if cohort_id:
@@ -158,6 +168,152 @@ def boot_events(db):
     yield line(OK if total_pass == total_cases else WARN,
                "backend.observe.logstream:boot_events",
                f"harness suite complete -- {total_pass}/{total_cases} pass/fail cases passed")
+
+
+def updates_pipeline_events(db, user=None):
+    """Where the Updates feed actually comes from -- the detect → target →
+    draft flow, reported from real state.
+
+    The harness suite answers "does the intelligence hold up under
+    evaluation". It does NOT answer "what has the product actually been
+    doing", which is the question a feed of N updates raises. This reads the
+    real pipeline state: the sweep's configured cadence, when it last
+    claimed a run (scheduler_claims -- a real row, not an assumption), how
+    many contacts are due for a re-check right now, the
+    detected → drafted → resolved funnel, and the most recent signals with
+    the actual elapsed time between detection and drafting.
+
+    It deliberately does NOT trigger a sweep. A page load must not fire
+    BrightData/Exa fetches or LLM autodrafts -- that would spend money and
+    mutate data as a side effect of opening a debugger. Everything here is a
+    read of work that already happened, and cached//unchanged rows are
+    reported as such rather than re-derived."""
+    import json
+    from sqlalchemy import func, select, text
+    from .. import models
+    from ..agents.relationship import updates_engine as ue
+    from ..agents.relationship import updates_scheduler as us
+
+    src_sched = "backend.agents.relationship.updates_scheduler"
+    yield line(STEP, "backend.observe.logstream:updates_pipeline_events",
+               "updates pipeline -- detect → target → draft")
+
+    yield line(INFO, f"{src_sched}:_gap_seconds",
+               f"  cadence: sweep every {us._gap_seconds()}s · tick {us._tick_seconds()}s · "
+               f"batch limit {us._limit()} · re-check vip every {ue._VIP_DAYS}d, "
+               f"standard every {ue._STD_DAYS}d · enabled={us._enabled()}")
+
+    # When each sweep last actually ran -- a real row, not an inference.
+    try:
+        rows = db.execute(text(
+            "SELECT name, last_run_at FROM scheduler_claims ORDER BY name")).all()
+        now_s = time.time()
+        for name, last_run_at in rows:
+            if not last_run_at:
+                yield line(WARN, f"{src_sched}:_claim", f"  {name}: never run")
+                continue
+            age = now_s - float(last_run_at)
+            yield line(INFO, f"{src_sched}:_claim",
+                       f"  {name}: last ran {_ago(age)} ago")
+    except Exception as exc:  # noqa: BLE001 -- table absent before the first sweep
+        yield line(WARN, f"{src_sched}:_ensure_claim_table",
+                   f"  no scheduler_claims rows yet ({type(exc).__name__}) -- "
+                   "no sweep has run in this database")
+
+    # The funnel, scoped to this account when we have one.
+    cq = select(func.count(models.Contact.id))
+    iq = select(func.count(models.RelationshipInteraction.id)).where(
+        models.RelationshipInteraction.source_type == "activity_update")
+    if user is not None:
+        cq = cq.where(models.Contact.user_id == user.id)
+        iq = iq.where(models.RelationshipInteraction.actor_user_id == user.id)
+    n_contacts = db.execute(cq).scalar_one()
+    n_signals = db.execute(iq).scalar_one()
+
+    due = ue.due_contacts(db, user_id=(user.id if user is not None else None), limit=10_000)
+    yield line(INFO, "backend.agents.relationship.updates_engine:due_contacts",
+               f"  book: {n_contacts} contacts · {len(due)} due for re-check now · "
+               f"{n_contacts - len(due)} still inside their tier window (cached, not re-fetched)")
+
+    # detected → drafted → resolved, from the rows themselves.
+    sig_q = select(models.RelationshipInteraction).where(
+        models.RelationshipInteraction.source_type == "activity_update")
+    if user is not None:
+        sig_q = sig_q.where(models.RelationshipInteraction.actor_user_id == user.id)
+    sigs = db.execute(sig_q.order_by(
+        models.RelationshipInteraction.occurred_at.desc()).limit(400)).scalars().all()
+
+    drafted = resolved = 0
+    by_kind: dict = {}
+    for s in sigs:
+        try:
+            meta = json.loads(s.meta_json or "{}")
+        except Exception:  # noqa: BLE001
+            meta = {}
+        kind = meta.get("signal_kind") or s.interaction_type or "unknown"
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+        if meta.get("draft"):
+            drafted += 1
+        if meta.get("disposition"):
+            resolved += 1
+
+    yield line(INFO, "backend.observe.logstream:updates_pipeline_events",
+               f"  detected: {n_signals} signals (inspecting newest {len(sigs)}) → "
+               f"{drafted} carry a stored autodraft → {resolved} have a recorded outcome")
+    if by_kind:
+        yield line(INFO, "backend.agents.relationship.updates_engine:_DRAFTWORTHY_KINDS",
+                   "  by kind: " + " · ".join(f"{k}={v}" for k, v in sorted(by_kind.items()))
+                   + f"  (draftworthy: {sorted(ue._DRAFTWORTHY_KINDS)})")
+
+    # The newest few, with the REAL detect→draft gap per signal.
+    for s in sigs[:5]:
+        try:
+            meta = json.loads(s.meta_json or "{}")
+        except Exception:  # noqa: BLE001
+            meta = {}
+        contact = db.get(models.Contact, s.contact_id) if s.contact_id else None
+        who = (contact.name if contact else None) or f"contact {s.contact_id}"
+        age = _ago((datetime.now(_UTC) - _aware_dt(s.occurred_at)).total_seconds())
+        bits = [f"detected {age} ago", f"kind={meta.get('signal_kind') or s.interaction_type}"]
+        if meta.get("signal_category"):
+            bits.append(f"category={meta['signal_category']}")
+        if meta.get("draft"):
+            bits.append(f"drafted {len(meta['draft'])} chars")
+        else:
+            bits.append("no draft")
+        if meta.get("disposition"):
+            bits.append(f"outcome={meta['disposition']}")
+        yield line(OK if meta.get("draft") else INFO,
+                   "backend.agents.relationship.relationship_watch:_emit",
+                   f"    #{s.id} {who[:26]:<26} " + " · ".join(bits))
+
+    # In-process caches: what a page load reuses instead of recomputing.
+    try:
+        from ..agents.relationship import book as book_agent
+        yield line(INFO, "backend.agents.relationship.book",
+                   f"  caches: assess {len(book_agent._assess_cache)} entries · "
+                   f"draft {len(book_agent._draft_cache)} entries "
+                   f"(TTL {book_agent._ASSESS_TTL // 3600}h, per-process) -- a reload reuses "
+                   f"these instead of re-scoring or re-drafting")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _aware_dt(dt):
+    if dt is None:
+        return datetime.now(_UTC)
+    return dt.replace(tzinfo=_UTC) if dt.tzinfo is None else dt
+
+
+def _ago(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 90:
+        return f"{seconds}s"
+    if seconds < 5400:
+        return f"{seconds // 60}m"
+    if seconds < 172800:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
 
 
 def _harness_detail_lines(harness_id: str, result):

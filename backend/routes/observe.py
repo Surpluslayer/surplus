@@ -173,8 +173,16 @@ def _sse(gen_events):
 
 @router.get("/stream/boot")
 def stream_boot(user: models.User = Depends(current_user)):
-    """Run every harness for real, streaming one line per execution."""
-    return _sse(logstream.boot_events)
+    """Report the live updates pipeline, then run every harness for real,
+    streaming one line per execution."""
+    user_id = user.id
+
+    def events(wdb):
+        # Re-load in the stream's own session; the request-scoped one is
+        # closed by the time the body is consumed.
+        return logstream.boot_events(wdb, wdb.get(models.User, user_id))
+
+    return _sse(events)
 
 
 @router.get("/stream/contact/{contact_id}")
