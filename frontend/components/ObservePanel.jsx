@@ -141,11 +141,6 @@ export default function ObservePanel({ selection }) {
   const [booting, setBooting] = useState(true);
   const [authError, setAuthError] = useState(false);
   const [follow, setFollow] = useState(true);
-  // The log names the fix for a missing evaluation dataset -- but the fix is a
-  // POST, which nobody can issue from an address bar. When that state is
-  // detected the panel offers the button that does it.
-  const [needsDataset, setNeedsDataset] = useState(false);
-  const [seeding, setSeeding] = useState(false);
   // The log tells you the evaluation dataset is missing and names the fix --
   // but the fix is a POST, which nobody can issue from an address bar. So
   // when that state is detected the panel offers the button that does it.
@@ -176,7 +171,6 @@ export default function ObservePanel({ selection }) {
         const floor = Math.max(0, prev.length - REORDER_WINDOW);
         while (i > floor && Date.parse(prev[i - 1].ts) > t) i--;
       }
-      if ((e.msg || "").includes("no usable evaluation cohort")) setNeedsDataset(true);
       const next = i === prev.length
         ? prev.concat([item])
         : prev.slice(0, i).concat([item], prev.slice(i));
@@ -187,29 +181,6 @@ export default function ObservePanel({ selection }) {
 
 
   const open = useLogStream(append);
-
-  const seedDataset = useCallback(() => {
-    if (seeding) return;
-    setSeeding(true);
-    append({ ts: new Date().toISOString(), level: "step", src: "frontend.ObservePanel",
-             msg: "── building an evaluation dataset → POST /api/observe/evaluation-dataset ──" });
-    fetch("/api/observe/evaluation-dataset?lawyers=25&days=30",
-          { method: "POST", credentials: "same-origin" })
-      .then(r => r.json().then(d => ({ ok: r.ok, d })))
-      .then(({ ok, d }) => {
-        if (!ok) throw new Error(d && d.detail ? d.detail : "request failed");
-        append({ ts: new Date().toISOString(), level: "ok",
-                 src: "backend.routes.observe:create_evaluation_dataset",
-                 msg: `  cohort_id=${d.cohort_id} · ${d.lawyers_resolvable} lawyers `
-                      + `resolvable · provenance=${d.provenance}` });
-        setNeedsDataset(false);
-        open("/api/observe/stream/boot", { onDone: () => setBooting(false) });
-      })
-      .catch(e => append({ ts: new Date().toISOString(), level: "error",
-                           src: "frontend.ObservePanel",
-                           msg: `  could not build a dataset: ${e.message || e}` }))
-      .finally(() => setSeeding(false));
-  }, [append, open, seeding]);
 
   const seedDataset = useCallback(() => {
     if (seeding) return;
@@ -312,16 +283,6 @@ export default function ObservePanel({ selection }) {
           <span style={{ fontSize: 10.5, color: T.dim, fontFamily: MONO }}>
             {booting ? "running harness suite…" : `${lines.length} lines`}
           </span>
-          {needsDataset && (
-            <button onClick={seedDataset} disabled={seeding} style={{
-              marginLeft: "auto", fontSize: 10.5, fontWeight: 700,
-              color: seeding ? T.dim : T.bg, background: seeding ? "transparent" : T.warn,
-              border: `1px solid ${T.warn}`, borderRadius: 5, padding: "3px 8px",
-              cursor: seeding ? "default" : "pointer", fontFamily: MONO,
-            }}>
-              {seeding ? "building…" : "build evaluation dataset"}
-            </button>
-          )}
           {needsDataset && (
             <button onClick={seedDataset} disabled={seeding} style={{
               marginLeft: "auto", fontSize: 10.5, fontWeight: 700,
