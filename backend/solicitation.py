@@ -86,6 +86,15 @@ class JurisdictionRule:
     disclosure_text: Optional[str]
     sensitive_matter_cooldown_days: int  # 0 = no cooldown rule
     max_solicitations_per_window: Optional[tuple[int, int]]  # (count, days)
+    # Pointer to the bar provision this entry was MODELED ON, when one was
+    # recorded alongside the values. Deliberately None where no citation was
+    # recorded rather than filled in with a plausible-looking rule number: an
+    # unverified citation on a compliance record is worse than a visibly
+    # missing one, because it reads as authority nobody actually checked.
+    # backend/observe/logstream.py surfaces the None case as a gap for
+    # counsel to close. Populating these is a legal-review task, not a
+    # coding one.
+    citation: Optional[str] = None
 
 
 # ILLUSTRATIVE VALUES ONLY -- see module docstring. Not legal advice, not
@@ -98,6 +107,10 @@ JURISDICTION_RULES: dict[str, JurisdictionRule] = {
         disclosure_text="ADVERTISEMENT",
         sensitive_matter_cooldown_days=30,  # Fla. Bar Reg. 4-7.18(b)(1)(A) shape
         max_solicitations_per_window=(1, 30),
+        # The only citation this table carries, and it was already recorded
+        # in-code beside the cooldown value above. Still unverified against
+        # current bar text -- see the block comment above this dict.
+        citation="Fla. Bar Reg. 4-7.18(b)(1)(A) (shape only, unverified)",
     ),
     "NY": JurisdictionRule(
         state="NY",

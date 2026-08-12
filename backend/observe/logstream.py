@@ -1,0 +1,542 @@
+"""backend/observe/logstream.py : Observe's execution log.
+
+Every line this module emits corresponds to REAL work that just ran -- a
+harness that actually executed, a pipeline stage that actually computed, a
+jurisdiction rule that was actually checked against real values. Nothing
+here is decorative filler printed to look busy: if a line says a step took
+12.4ms, that is a measured `time.perf_counter()` delta around the real
+call, and if it prints a score, that score came back from the real scorer.
+
+`src` on each line is the actual module:function that produced it, so a
+reader can go straight to the code that ran.
+
+Emits plain dicts; routes/observe.py wraps them as SSE frames.
+"""
+from __future__ import annotations
+
+import time
+from datetime import datetime, timezone
+
+_UTC = timezone.utc
+
+# Log levels, mapped to how the UI colors a line.
+INFO, OK, WARN, ERR, STEP = "info", "ok", "warn", "error", "step"
+
+
+def _now_iso() -> str:
+    return datetime.now(_UTC).isoformat()
+
+
+def line(level: str, src: str, msg: str, **extra) -> dict:
+    return {"ts": _now_iso(), "level": level, "src": src, "msg": msg, **extra}
+
+
+def _timed(fn):
+    t0 = time.perf_counter()
+    result = fn()
+    return result, (time.perf_counter() - t0) * 1000.0
+
+
+# ── boot: run every harness, one line per real execution ─────────────────
+
+# (harness_id, needs_evaluation_dataset, counts_are_pass_fail)
+#
+# The last flag matters for honest reporting. Most harnesses use
+# cases_passed/cases_total as genuine pass/fail. ablation and
+# relationship_evaluation do NOT: there, cases_total is "lawyers considered"
+# and cases_passed is "lawyers that had a resolved outcome to evaluate
+# against" -- so 9/10 means one lawyer's data wasn't evaluable, not that a
+# case failed. Rendering that as a red FAILED line (as an earlier version
+# did) reports a healthy run as broken.
+_HARNESS_ORDER = (
+    ("jurisdiction_regression", False, True),
+    ("synthetic_scenarios", False, True),
+    ("historical_replay", True, True),
+    ("ablation", True, False),
+    ("relationship_evaluation", True, False),
+    ("signal_library_evaluation", True, True),
+)
+
+
+def evaluation_cohort_id(db):
+    """The cohort the data-driven harnesses should evaluate against.
+
+    Restricted to BASELINE provenance on purpose. Picking the plain newest
+    tag instead (as an earlier version did) selected
+    `synthetic-scenarios-v1` -- the four hand-built known-answer fixtures
+    that synthetic_scenarios.setup() writes lazily DURING the harness run,
+    which makes them the newest rows in the table by construction. The
+    aggregate harnesses then reported real arithmetic over a 4-contact
+    fixture set instead of the generated cohort, so replay/ablation/
+    relationship numbers came back as "3/3" and "1/1" and looked broken.
+    Synthetic fixtures are a correctness check, never the evaluation
+    dataset."""
+    from sqlalchemy import select
+    from .. import models
+    from ..demo import provenance as prov
+    return db.execute(
+        select(models.DemoProvenance.cohort_id)
+        .where(models.DemoProvenance.data_provenance == prov.BASELINE)
+        .order_by(models.DemoProvenance.id.desc()).limit(1)
+    ).scalar_one_or_none()
+
+
+def boot_events(db):
+    """Run all six harnesses for real, streaming a line per execution."""
+    from .harnesses import (ablation, jurisdiction_regression, relationship_eval,
+                             signal_library_eval, synthetic_scenarios)
+    from .harnesses import replay as replay_harness
+    from . import versions as ver
+
+    yield line(INFO, "backend.observe.logstream:boot_events", "Surplus Observe starting")
+    yield line(INFO, "backend.observe.versions",
+               " · ".join(f"{k}={v}" for k, v in ver.VERSIONS.items()))
+
+    cohort_id = evaluation_cohort_id(db)
+    if cohort_id:
+        yield line(INFO, "backend.observe.logstream:evaluation_cohort_id",
+                   f"evaluation dataset resolved: cohort_id={cohort_id}")
+    else:
+        yield line(WARN, "backend.observe.logstream:evaluation_cohort_id",
+                   "no demo cohort in this database -- the four data-driven harnesses "
+                   "have nothing to evaluate against (run: python -m backend.demo.cohort)")
+
+    runners = {
+        "jurisdiction_regression": lambda: jurisdiction_regression.run(),
+        "synthetic_scenarios": lambda: synthetic_scenarios.run(db),
+        "historical_replay": lambda: replay_harness.run(db, cohort_id),
+        "ablation": lambda: ablation.run(db, cohort_id),
+        "relationship_evaluation": lambda: relationship_eval.run(db, cohort_id),
+        "signal_library_evaluation": lambda: signal_library_eval.run(db, cohort_id),
+    }
+    modules = {
+        "jurisdiction_regression": "backend.observe.harnesses.jurisdiction_regression:run",
+        "synthetic_scenarios": "backend.observe.harnesses.synthetic_scenarios:run",
+        "historical_replay": "backend.observe.harnesses.replay:run",
+        "ablation": "backend.observe.harnesses.ablation:run",
+        "relationship_evaluation": "backend.observe.harnesses.relationship_eval:run",
+        "signal_library_evaluation": "backend.observe.harnesses.signal_library_eval:run",
+    }
+
+    total_pass = total_cases = 0
+    for harness_id, needs_cohort, pass_fail in _HARNESS_ORDER:
+        src = modules[harness_id]
+        if needs_cohort and not cohort_id:
+            yield line(WARN, src, f"{harness_id}: SKIPPED (needs an evaluation dataset)",
+                       harness=harness_id)
+            continue
+        yield line(STEP, src, f"running {harness_id}", harness=harness_id)
+        try:
+            result, ms = _timed(runners[harness_id])
+        except Exception as exc:  # noqa: BLE001
+            yield line(ERR, src, f"{harness_id}: FAILED {type(exc).__name__}: {exc}",
+                       harness=harness_id)
+            continue
+
+        if pass_fail:
+            total_pass += result.cases_passed
+            total_cases += result.cases_total
+            lvl = OK if result.cases_failed == 0 else ERR
+            yield line(lvl, src,
+                       f"{harness_id}: {result.cases_passed}/{result.cases_total} passed "
+                       f"in {ms:.1f}ms",
+                       harness=harness_id, passed=result.cases_passed,
+                       total=result.cases_total, kind="pass_fail")
+        else:
+            yield line(OK, src,
+                       f"{harness_id}: evaluated {result.cases_passed}/{result.cases_total} "
+                       f"lawyers with a resolved outcome in {ms:.1f}ms",
+                       harness=harness_id, passed=result.cases_passed,
+                       total=result.cases_total, kind="coverage")
+
+        for detail in _harness_detail_lines(harness_id, result):
+            yield detail
+
+        for f in (result.failures or [])[:5]:
+            yield line(ERR, src, f"  failure: {f.get('scenario_id') or f}", harness=harness_id)
+
+    yield line(OK if total_pass == total_cases else WARN,
+               "backend.observe.logstream:boot_events",
+               f"harness suite complete -- {total_pass}/{total_cases} pass/fail cases passed")
+
+
+def _harness_detail_lines(harness_id: str, result):
+    """The two or three numbers per harness that actually carry the claim --
+    pulled from the real HarnessResult.metrics, not restated prose."""
+    m = result.metrics or {}
+    src = f"backend.observe.harnesses.{harness_id}"
+
+    if harness_id == "historical_replay":
+        yield line(INFO, src,
+                   f"  temporal_leakage_violations={m.get('temporal_leakage_violations')} "
+                   f"· reconstruction_failures={m.get('reconstruction_failures')} "
+                   f"· prediction/outcome agreement={m.get('prediction_outcome_agreement_rate')}")
+    elif harness_id == "ablation":
+        a = m.get("A_signal_practice") or {}
+        c = m.get("C_plus_relationship") or {}
+        yield line(INFO, src,
+                   f"  ndcg@5  signal+practice={a.get('ndcg_at_k')} "
+                   f"→ +behavior+relationship={c.get('ndcg_at_k')} "
+                   f"· mean rank delta={m.get('mean_rank_delta_A_to_C')}")
+    elif harness_id == "relationship_evaluation":
+        if m.get("sufficient_data_for_aggregate_claim"):
+            yield line(INFO, src,
+                       f"  relationship NDCG@5 lift vs baseline="
+                       f"{m.get('ndcg_lift_relationship_vs_baseline')} over {m.get('n_cases_total')} cases")
+        else:
+            yield line(WARN, src,
+                       f"  only {m.get('n_cases_total')} resolved cases -- below the "
+                       f"threshold to claim an aggregate lift; "
+                       f"relationship-sensitive cases={m.get('relationship_sensitive_cases')}, "
+                       f"aligned with observed action={m.get('cases_where_change_aligned_with_observed_action')}")
+    elif harness_id == "signal_library_evaluation":
+        cls = m.get("classification") or {}
+        yield line(INFO, src,
+                   f"  classifier accuracy={cls.get('overall_accuracy')} "
+                   f"over {cls.get('n_fixtures')} labeled fixtures ({cls.get('classifier')})")
+    elif harness_id == "jurisdiction_regression":
+        by_cat = m.get("by_category") or {}
+        yield line(INFO, src,
+                   f"  rule_version={m.get('rule_version')} · categories: "
+                   + ", ".join(f"{k} {v['passed']}/{v['total']}" for k, v in by_cat.items()))
+    elif harness_id == "synthetic_scenarios":
+        for case in (m.get("cases") or []):
+            lvl = OK if case.get("passed") else ERR
+            yield line(lvl, src, f"  {case.get('scenario_id')}: "
+                                  f"expected {case.get('expected')}")
+
+
+# ── per-contact: the agent's actual run, stage by stage ──────────────────
+
+def contact_events(db, user, contact, channel: str = "linkedin_dm"):
+    """Stream the real computation for one contact: every pipeline stage,
+    the ranking factors and how they combine into the score, then the
+    jurisdiction rule set applied line by line to the real drafted message."""
+    from . import adapters, pipeline
+    from .harnesses import ablation
+    from ..demo import ranking_trace as rt
+
+    yield line(INFO, "backend.observe.logstream:contact_events",
+               f"trace requested · contact_id={contact.id} name={contact.name!r} "
+               f"account={user.email}")
+
+    # ── pipeline ──
+    yield line(STEP, "backend.observe.pipeline:compute_pipeline_trace",
+               "running execution pipeline")
+    trace, ms = _timed(lambda: pipeline.compute_pipeline_trace(db, user, contact, None, channel))
+    for s in trace.stages:
+        lvl = {"success": OK, "warning": WARN, "failure": ERR}.get(s.status, INFO)
+        yield line(lvl, f"backend.observe.pipeline:_{s.name}",
+                   f"{s.name}: {s.decision} ({s.latency_ms:.2f}ms, {s.version})")
+        if s.fallback:
+            yield line(WARN, f"backend.observe.pipeline:_{s.name}", f"  fallback: {s.fallback}")
+        if s.error:
+            yield line(ERR, f"backend.observe.pipeline:_{s.name}", f"  error: {s.error}")
+    yield line(INFO, "backend.observe.pipeline:compute_pipeline_trace",
+               f"pipeline complete: {trace.to_dict()['overall_status']} in {ms:.1f}ms")
+
+    # ── ranking: show the arithmetic, not just the result ──
+    yield line(STEP, "backend.demo.ranking_trace:compute_trace",
+               "scoring opportunity -- factor × weight breakdown")
+    rtrace, rms = _timed(lambda: rt.compute_trace(db, user, contact))
+    running = 0.0
+    for f in rtrace.factors:
+        w = rt.FACTOR_WEIGHTS[f.name]
+        contribution = f.value * w
+        running += contribution
+        ev = ", ".join(f"{k}={v}" for k, v in (f.evidence or {}).items() if v is not None)
+        yield line(INFO, f"backend.demo.ranking_trace:_{f.name}",
+                   f"  {f.name:<24} {f.value:.3f} × {w:.2f} = {contribution:.4f}"
+                   + (f"   [{ev}]" if ev else ""))
+    yield line(OK, "backend.demo.ranking_trace:compute_trace",
+               f"opportunity_score = {running:.4f}  (sum of weighted factors, {rms:.1f}ms)")
+
+    # ── ablation: a real re-ranking loop, one full pass per feature group ──
+    candidates = _sibling_contacts(db, user)
+    groups = ("relationship", "behavior", "signal_affinity", "timing")
+    if len(candidates) > 1:
+        yield line(STEP, "backend.observe.harnesses.ablation:ablate_one",
+                   f"ablation loop: {len(groups)} iterations, each re-ranking all "
+                   f"{len(candidates)} candidates from scratch "
+                   f"({len(groups) * len(candidates) * 2} scoring passes total)")
+        for i, group in enumerate(groups, start=1):
+            try:
+                res, ams = _timed(
+                    lambda g=group: ablation.ablate_one(db, user, contact, candidates, g))
+            except Exception as exc:  # noqa: BLE001
+                yield line(ERR, "backend.observe.harnesses.ablation:ablate_one",
+                           f"  [{i}/{len(groups)}] {group}: {type(exc).__name__}: {exc}")
+                continue
+            delta = res["rank_delta"]
+            yield line(OK if delta else INFO, "backend.observe.harnesses.ablation:ablate_one",
+                       f"  [{i}/{len(groups)}] without {group:<16} rank "
+                       f"#{res['full_system']['rank']} → #{res['without_group']['rank']}  "
+                       f"(score {res['full_system']['score']} → {res['without_group']['score']}, "
+                       f"{delta:+d} positions, {ams:.0f}ms)")
+
+    # ── jurisdiction: the real rule set, check by check, on the real draft ──
+    for ev in jurisdiction_events(db, user, contact, channel):
+        yield ev
+
+    for ev in feedback_loop_status(db, user):
+        yield ev
+
+    yield line(OK, "backend.observe.logstream:contact_events", "trace complete")
+
+
+def feedback_loop_status(db, user):
+    """State plainly which parts of the outcome→ranking loop are actually
+    wired, because "the system learns from outcomes" is the single easiest
+    thing to imply and not have.
+
+    What is closed today: outcomes are RECORDED (draft dispositions land in
+    meta_json) and READ back by ranking_trace._historical_behavior, so a
+    lawyer's own past engagement per signal category does move their next
+    score. That is a real, live loop and the log says so.
+
+    What is NOT closed: signal_taxonomy.affinity() still returns SEED values.
+    update_affinity_from_outcomes() exists and is tested, but nothing in
+    production calls it -- verified by grep, not assumed. So the cross-lawyer
+    taxonomy does not improve with usage yet, and any claim that it does
+    would be false."""
+    import json
+    from sqlalchemy import select
+    from .. import models
+    from ..demo import signal_taxonomy as tax
+
+    src = "backend.demo.signal_taxonomy"
+    yield line(STEP, "backend.observe.logstream:feedback_loop_status",
+               "outcome → ranking loop status")
+
+    rows = db.execute(
+        select(models.RelationshipInteraction)
+        .where(models.RelationshipInteraction.actor_user_id == user.id,
+               models.RelationshipInteraction.title.like("Drafted follow-up%"))
+    ).scalars().all()
+    resolved = 0
+    for r in rows:
+        try:
+            if json.loads(r.meta_json or "{}").get("disposition"):
+                resolved += 1
+        except Exception:  # noqa: BLE001
+            pass
+
+    yield line(OK if resolved else WARN, "backend.demo.ranking_trace:_historical_behavior",
+               f"  CLOSED: {resolved} resolved outcomes for this lawyer feed "
+               f"historical_behavior on their next score")
+    yield line(WARN, src,
+               "  OPEN:   signal_taxonomy.affinity() returns SEED priors -- "
+               "update_affinity_from_outcomes() is implemented and tested but is not "
+               "called anywhere in production, so the cross-lawyer taxonomy does not "
+               "yet improve with usage")
+    yield line(INFO, src,
+               f"  affinity table version={tax.__name__} seed · "
+               f"{len(tax.SIGNAL_AFFINITY_SEED)} practice areas × "
+               f"{len(tax.ALL_SIGNAL_CATEGORIES)} signal categories")
+
+
+def _sibling_contacts(db, user) -> list:
+    from sqlalchemy import select
+    from .. import models
+    return list(db.execute(
+        select(models.Contact).where(models.Contact.user_id == user.id).limit(200)
+    ).scalars().all())
+
+
+def _latest_draft_text(db, user, contact) -> tuple:
+    """The real drafted message for this contact -- the SAME text the product
+    shows, so the jurisdiction check below applies to what a lawyer would
+    actually send.
+
+    Two sources, in the order the product itself resolves them:
+      1. meta_json["draft"] on the newest detected-signal interaction. This
+         is where production's updates_engine.autodraft() stores a
+         pre-written follow-up; there is no drafts table.
+      2. The live composer, when no stored draft exists (generated cohort
+         rows carry signal metadata but no draft body). Reuses
+         pipeline.compose.drafting.compose_followup -- the same call
+         routes/book.py's /draft endpoint makes -- rather than
+         reimplementing drafting here.
+    Returns (text, source_label, interaction_id|None).
+    """
+    import json
+    from sqlalchemy import select
+    from .. import models
+    rows = db.execute(
+        select(models.RelationshipInteraction)
+        .where(models.RelationshipInteraction.contact_id == contact.id,
+               models.RelationshipInteraction.source_type == "activity_update")
+        .order_by(models.RelationshipInteraction.occurred_at.desc()).limit(5)
+    ).scalars().all()
+    for r in rows:
+        try:
+            meta = json.loads(r.meta_json or "{}")
+        except Exception:  # noqa: BLE001
+            continue
+        if meta.get("draft"):
+            return meta["draft"], "meta_json.draft (updates_engine.autodraft)", r.id
+
+    try:
+        from ..agents.relationship.pipeline.compose import drafting
+        msg = drafting.compose_followup(db, user.id, contact,
+                                        reason="catching up", channel="linkedin_dm")
+        if msg and msg.get("body"):
+            return msg["body"], "pipeline.compose.drafting:compose_followup (live)", None
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Same last resort routes/book.py's /draft endpoint uses when the shared
+    # composer returns nothing (no ANTHROPIC_API_KEY, or a miss): the
+    # deterministic heuristic drafter. Without this the jurisdiction check
+    # has no message to inspect on any environment without a model key.
+    try:
+        from ..agents.relationship import book as book_agent
+        from ..routes.book import _find_contact_fast
+        cdict = _find_contact_fast(db, user, str(contact.id))
+        if cdict:
+            msg = book_agent.draft_message_cached(
+                cdict, "catching up", channel="linkedin_dm",
+                user_name=(getattr(user, "name", None) or "").split(" ")[0] or "there")
+            if msg and msg.get("body"):
+                return (msg["body"],
+                        "agents.relationship.book:draft_message_cached (heuristic)", None)
+    except Exception:  # noqa: BLE001
+        pass
+    return None, None, None
+
+
+def jurisdiction_events(db, user, contact, channel: str = "linkedin_dm"):
+    """Walk backend/solicitation.py's real rule set over this account's real
+    jurisdiction and this contact's real drafted message.
+
+    The per-check lines below mirror `solicitation.evaluate()`'s documented
+    precedence (exemption → real-time channel → sensitive-matter cooldown →
+    volume cap) using the SAME rule table and the SAME resolved context, and
+    the authoritative verdict at the end comes from calling the real
+    `evaluate()` -- the trace explains the decision, it never replaces it.
+    """
+    from ..agents.relationship import solicitation_signals as sig
+    from ..solicitation import (JURISDICTION_RULES, _EXEMPT_RELATIONSHIP_TYPES,
+                                _UNKNOWN_JURISDICTION_RULE, evaluate)
+
+    src = "backend.solicitation:evaluate"
+    yield line(STEP, "backend.agents.relationship.solicitation_signals:resolve_context",
+               "resolving jurisdiction context from account + contact")
+
+    ctx = sig.resolve_context(db, user, contact, channel)
+    raw_jur = (getattr(user, "bar_jurisdiction", None) or "").strip()
+    rule = JURISDICTION_RULES.get(ctx.jurisdiction.upper(), _UNKNOWN_JURISDICTION_RULE)
+
+    if raw_jur:
+        yield line(INFO, src, f"jurisdiction: {rule.state} (users.bar_jurisdiction={raw_jur!r})")
+    else:
+        yield line(WARN, src,
+                   "jurisdiction: users.bar_jurisdiction is NOT SET on this account -- "
+                   "falling back to the fail-closed unknown-jurisdiction rule")
+    yield line(INFO, src,
+               f"rule set: realtime_barred={sorted(rule.prohibited_realtime_channels)} "
+               f"· disclosure_required={rule.requires_disclosure_label}"
+               + (f" ({rule.disclosure_text!r})" if rule.disclosure_text else "")
+               + f" · cooldown_days={rule.sensitive_matter_cooldown_days}"
+               f" · volume_cap={rule.max_solicitations_per_window}")
+    if rule.citation:
+        yield line(INFO, src, f"modeled on: {rule.citation}")
+    else:
+        yield line(WARN, src,
+                   f"NO CITATION recorded for the {rule.state} entry -- these values are "
+                   "illustrative and were never verified against current bar text. "
+                   "Not usable as a compliance record until counsel fills this in "
+                   "(backend/solicitation.py JurisdictionRule.citation)")
+    yield line(INFO, src,
+               f"context: channel={ctx.channel!r} relationship_type={ctx.relationship_type.value!r} "
+               f"recent_solicitations_in_window={ctx.recent_solicitation_count_in_window}")
+
+    # check 1 -- exemption
+    exempt = ctx.relationship_type in _EXEMPT_RELATIONSHIP_TYPES
+    yield line(OK if exempt else INFO, src,
+               f"  [1/4] exemption          relationship_type={ctx.relationship_type.value} → "
+               + ("EXEMPT (rule 7.3 solicitation limits do not apply)" if exempt else "not exempt, continue"))
+
+    if not exempt:
+        # check 2 -- real-time channel
+        barred = ctx.channel in rule.prohibited_realtime_channels
+        yield line(ERR if barred else OK, src,
+                   f"  [2/4] realtime channel   {ctx.channel!r} in barred set → "
+                   + ("BLOCK" if barred else "permitted (not a real-time channel)"))
+
+        # check 3 -- sensitive-matter cooldown
+        if rule.sensitive_matter_cooldown_days > 0:
+            yield line(INFO, src,
+                       f"  [3/4] cooldown           {rule.state} requires "
+                       f"{rule.sensitive_matter_cooldown_days}d; matter_is_sensitive="
+                       f"{ctx.matter_is_sensitive}")
+        else:
+            yield line(OK, src,
+                       f"  [3/4] cooldown           {rule.state} configures no sensitive-matter "
+                       f"cooldown → n/a")
+
+        # check 4 -- volume cap
+        if rule.max_solicitations_per_window is None:
+            yield line(OK, src,
+                       f"  [4/4] volume cap         {rule.state} configures no cap → n/a")
+        else:
+            cap, window = rule.max_solicitations_per_window
+            over = ctx.recent_solicitation_count_in_window >= cap
+            yield line(ERR if over else OK, src,
+                       f"  [4/4] volume cap         {ctx.recent_solicitation_count_in_window}/{cap} "
+                       f"per {window}d → " + ("BLOCK" if over else "under cap"))
+
+    verdict = evaluate(ctx)
+    yield line(OK if verdict.allowed else ERR, src,
+               f"VERDICT: {'PASS' if verdict.allowed else 'BLOCK'} -- {verdict.reason}")
+
+    # ── the disclosure check, run against the REAL drafted message ──
+    if not rule.requires_disclosure_label:
+        yield line(INFO, src,
+                   f"{rule.state} requires no advertising label on written solicitation -- "
+                   "no message-body check needed")
+        return
+
+    draft, draft_src, interaction_id = _latest_draft_text(db, user, contact)
+    if not draft:
+        yield line(WARN, "backend.observe.logstream:_latest_draft_text",
+                   f"{rule.state} requires a {rule.disclosure_text!r} label, but no drafted "
+                   "message could be resolved for this contact (no stored draft, and the "
+                   "live composer returned nothing)")
+        return
+
+    yield line(STEP, "backend.observe.logstream:jurisdiction_events",
+               f"checking drafted message against {rule.state}'s {rule.disclosure_text!r} "
+               f"labeling requirement · source={draft_src}"
+               + (f" interaction_id={interaction_id}" if interaction_id else ""))
+    label = (rule.disclosure_text or "").lower()
+    # Wrap to readable widths so a one-paragraph draft still reads line by
+    # line rather than as a single truncated blob.
+    import textwrap
+    lines = []
+    for para in draft.splitlines():
+        if not para.strip():
+            continue
+        lines.extend(textwrap.wrap(para.strip(), width=96) or [para.strip()])
+
+    hit_index = None
+    for i, ln in enumerate(lines, start=1):
+        hit = bool(label) and label in ln.lower()
+        if hit and hit_index is None:
+            hit_index = i
+        yield line(OK if hit else INFO, "backend.observe.logstream:jurisdiction_events",
+                   f"  L{i:<3} {ln}" + ("   ← required label appears here" if hit else ""))
+
+    present = bool(label) and label in draft.lower()
+    if present:
+        yield line(OK, src,
+                   f"disclosure label {rule.disclosure_text!r}: PRESENT (line L{hit_index}) "
+                   f"→ satisfies {rule.state}'s labeling requirement")
+    else:
+        yield line(ERR, src,
+                   f"disclosure label {rule.disclosure_text!r}: MISSING from all "
+                   f"{len(lines)} lines → {rule.state} requires this label on written "
+                   f"solicitation; this draft needs REVIEW before send")
+        yield line(WARN, src,
+                   f"  first line as sent would be: {lines[0][:96]!r}"
+                   if lines else "  draft is empty")
