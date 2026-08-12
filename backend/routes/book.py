@@ -199,11 +199,17 @@ def _real(val: Optional[str]) -> str:
     return "" if s.lower() == "unknown" else s
 
 
-def _book_from_spine(db: Session, user: models.User) -> list[dict]:
+def _book_from_spine(db: Session, user: models.User, contacts=None) -> list[dict]:
     """Map the real Contact spine into the book shape. Empty when the user has
-    no contacts — caller falls back to the demo book."""
+    no contacts — caller falls back to the demo book.
+
+    `contacts`: an already-loaded roster. A caller that needs the ORM rows for
+    its own work (ask_stream does, for enrichment and id mapping) would
+    otherwise fetch all of them a SECOND time -- 650 rows materialised twice
+    per ask on a real book."""
     t = time.monotonic()
-    contacts = rel_agent.list_contacts(db, user.id)
+    if contacts is None:
+        contacts = rel_agent.list_contacts(db, user.id)
     t_list = time.monotonic() - t
     if not contacts:
         return []
@@ -379,7 +385,7 @@ def _book_fingerprint(db: Session, user_id: int) -> tuple:
         return (object(),)
 
 
-def _load_book(db: Session, user: models.User) -> list[dict]:
+def _load_book(db: Session, user: models.User, contacts=None) -> list[dict]:
     """Real book from the spine; only DEMO users fall back to the demo roster
     (a real account with an empty spine gets an empty book, not fake clients).
 
@@ -395,7 +401,7 @@ def _load_book(db: Session, user: models.User) -> list[dict]:
                f"in {time.monotonic()-t0:.2f}s")
         return hit[1]
 
-    book = _book_from_spine(db, user)
+    book = _book_from_spine(db, user, contacts=contacts)
     from ..auth import is_demo_user
     if is_demo_user(user):
         # In the demo, a real capture must ADD to the seeded roster, not replace
@@ -718,8 +724,13 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
             wuser = wdb.query(models.User).get(user_id)
             events.put(("status", {"phase": "selecting"}))
             _narrate(askprobe.ask_started, user_id, q)
-            book = _load_book(wdb, wuser)
+            # One roster fetch, used for BOTH the book build and the
+            # enrichment/id-mapping below. These were two separate
+            # list_contacts calls, so every ask materialised the whole book
+            # twice -- and on a warm book cache the second fetch was pure
+            # waste, since _load_book never touched the database at all.
             contacts_orm = rel_agent.list_contacts(wdb, user_id)
+            book = _load_book(wdb, wuser, contacts=contacts_orm)
             _narrate(askprobe.book_loaded, user_id, len(book), len(contacts_orm))
             t_sel = time.monotonic()
             res = book_agent.ask_agent(book, q)          # selection (Haiku, gated)
