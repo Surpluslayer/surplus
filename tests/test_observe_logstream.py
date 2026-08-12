@@ -250,3 +250,73 @@ def test_seeded_cohort_survives_the_demo_purge_sweep(db):
     surviving = {u.id for u in db.execute(select(models.User)).scalars().all()}
     assert seeded_ids <= surviving, "seeded evaluation cohort was purged"
     assert visitor_id not in surviving, "per-visit demo user should still be reaped"
+
+
+def test_draft_events_report_the_heuristic_path_when_no_model_key(db, monkeypatch):
+    """No ANTHROPIC_API_KEY must be stated outright, not silently papered over
+    with a fallback draft that looks like model output."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    cohort.generate(db, n_lawyers=2, days=14, cohort_id="nokey")
+    user = db.execute(select(models.User)).scalars().first()
+    contact = models.Contact(user_id=user.id, primary_identity_key="nk:1", name="No Key")
+    db.add(contact)
+    db.commit()
+
+    out = {}
+    joined = " | ".join(e["msg"] for e in logstream.draft_events(db, user, contact, out))
+    assert "ANTHROPIC_API_KEY is not set" in joined
+    assert "heuristic" in joined
+    assert out["text"]
+    assert "heuristic" in out["source"]
+
+
+def test_draft_events_stream_live_model_progress(db, monkeypatch):
+    """The LLM call is the slowest, least deterministic step in the trace and
+    was previously invisible. Only the token SOURCE is stubbed -- the
+    instrumentation around it (first-token latency, delta count, model name,
+    total) is the real code under test."""
+    import time as _t
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    from backend.agents.relationship.pipeline.compose import drafting
+
+    body = "Congratulations on the acquisition. " * 6
+
+    def fake_stream(db_, user_id, contact_, *, reason, channel="email", intent=None):
+        for i in range(0, len(body), 8):
+            _t.sleep(0.001)
+            yield body[i:i + 8]
+
+    monkeypatch.setattr(drafting, "compose_stream", fake_stream)
+
+    cohort.generate(db, n_lawyers=2, days=14, cohort_id="livedraft")
+    user = db.execute(select(models.User)).scalars().first()
+    contact = models.Contact(user_id=user.id, primary_identity_key="lv:1", name="Live Draft")
+    db.add(contact)
+    db.commit()
+
+    out = {}
+    events = list(logstream.draft_events(db, user, contact, out))
+    joined = " | ".join(e["msg"] for e in events)
+
+    assert "streaming token-by-token" in joined
+    assert "first token after" in joined
+    assert "streaming…" in joined, "no incremental progress while tokens arrived"
+    assert "draft composed:" in joined
+    assert out["text"].strip() == body.strip()
+    assert "compose_stream" in out["source"]
+
+
+def test_draft_events_prefer_a_stored_autodraft_over_a_model_call(db):
+    """A stored autodraft is the message the product already shows; recomposing
+    it would spend a model call and could show text the product never used."""
+    cohort.generate(db, n_lawyers=3, days=30, cohort_id="stored")
+    row = db.execute(select(models.RelationshipInteraction).where(
+        models.RelationshipInteraction.title.like("Drafted follow-up%"))).scalars().first()
+    user = db.get(models.User, row.actor_user_id)
+    contact = db.get(models.Contact, row.contact_id)
+
+    out = {}
+    joined = " | ".join(e["msg"] for e in logstream.draft_events(db, user, contact, out))
+    assert "reusing stored autodraft" in joined
+    assert "no model call needed" in joined
+    assert out["interaction_id"] is not None
