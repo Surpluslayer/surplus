@@ -185,6 +185,71 @@ def test_put_settings_writes_only_the_signed_in_user(db):
     assert other.autonomy_mode == "off"
 
 
+def test_put_settings_sets_practice_area_and_bar_jurisdiction(db):
+    """Both used to be settable only via the demo cohort generator or a
+    one-off admin script -- a real account had no self-serve way to ever
+    set either, which is why Observe's account section says NOT SET
+    forever for a real user who did everything right."""
+    user, _ev, _p = _seed(db)
+    out = settings_route.put_settings(
+        settings_route.SettingsPut(practice_area="corporate_ma", bar_jurisdiction="ny"),
+        db=db, user=user)
+    assert out.practice_area == "corporate_ma"
+    assert out.bar_jurisdiction == "NY"  # normalized to upper
+    db.refresh(user)
+    assert user.practice_area == "corporate_ma"
+    assert user.bar_jurisdiction == "NY"
+
+
+def test_put_settings_rejects_unknown_practice_area_422(db):
+    user, _ev, _p = _seed(db)
+    with pytest.raises(HTTPException) as exc:
+        settings_route.put_settings(
+            settings_route.SettingsPut(practice_area="startup law"), db=db, user=user)
+    assert exc.value.status_code == 422
+    db.refresh(user)
+    assert user.practice_area is None  # unchanged
+
+
+def test_put_settings_rejects_unknown_bar_jurisdiction_422(db):
+    user, _ev, _p = _seed(db)
+    with pytest.raises(HTTPException) as exc:
+        settings_route.put_settings(
+            settings_route.SettingsPut(bar_jurisdiction="ZZ"), db=db, user=user)
+    assert exc.value.status_code == 422
+    db.refresh(user)
+    assert user.bar_jurisdiction is None  # unchanged
+
+
+def test_put_settings_can_clear_practice_area_and_jurisdiction(db):
+    user, _ev, _p = _seed(db)
+    settings_route.put_settings(
+        settings_route.SettingsPut(practice_area="ip", bar_jurisdiction="CA"),
+        db=db, user=user)
+    settings_route.put_settings(
+        settings_route.SettingsPut(practice_area=None, bar_jurisdiction=None),
+        db=db, user=user)
+    db.refresh(user)
+    assert user.practice_area is None
+    assert user.bar_jurisdiction is None
+
+
+def test_put_settings_leaves_practice_area_untouched_when_omitted(db):
+    """A request that only sets autonomy_mode must not clobber a
+    previously-set practice_area/bar_jurisdiction -- PATCH semantics, not
+    PUT-replaces-everything."""
+    user, _ev, _p = _seed(db)
+    settings_route.put_settings(
+        settings_route.SettingsPut(practice_area="litigation", bar_jurisdiction="TX"),
+        db=db, user=user)
+    settings_route.put_settings(
+        settings_route.SettingsPut(autonomy_mode="auto"), db=db, user=user)
+    db.refresh(user)
+    assert user.practice_area == "litigation"
+    assert user.bar_jurisdiction == "TX"
+    assert user.autonomy_mode == "auto"
+
+
 def test_me_exposes_autonomy_mode(db):
     import json
     from backend.routes import auth as auth_route
