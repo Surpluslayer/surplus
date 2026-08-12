@@ -5,6 +5,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import BookApp from "./BookApp.jsx";
+import ObservePanel from "./components/ObservePanel.jsx";
 import { ErrorBoundary, installPreloadRecovery } from "./lib/resilience.jsx";
 import { api } from "./lib/api.js";
 import { saveActiveEvent } from "./CaptureShared.jsx";
@@ -28,6 +29,17 @@ function wantsDemo() {
   } catch { return false; }
 }
 
+// Surplus Observe: the account-aware "open the hood" debugger
+// (components/ObservePanel.jsx -> /api/observe/*). Requires a real signed-in
+// session same as BookApp — no separate token/query-param auth, unlike the
+// older RankingTrace.jsx demo surface.
+function wantsObserve() {
+  try {
+    const p = window.location.pathname || "";
+    return p === "/observe" || p.startsWith("/observe/");
+  } catch { return false; }
+}
+
 function mountBook() {
   ReactDOM.createRoot(document.getElementById("root")).render(
     <React.StrictMode>
@@ -38,7 +50,19 @@ function mountBook() {
   );
 }
 
-if (wantsDemo()) {
+function mountObserve() {
+  ReactDOM.createRoot(document.getElementById("root")).render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <ObservePanel />
+      </ErrorBoundary>
+    </React.StrictMode>
+  );
+}
+
+if (wantsObserve()) {
+  mountObserve();
+} else if (wantsDemo()) {
   // Start the demo session first (mints an isolated demo user + cookie + seed)
   // so BookApp's first /me + /book/today calls are authenticated, then mount
   // Book. BookApp shows the "exploring with sample data / sign in" banner for

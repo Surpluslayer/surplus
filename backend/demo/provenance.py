@@ -14,7 +14,12 @@ from .. import models
 # silently invent a new, unqueryable provenance category.
 BASELINE = "generated_from_assumed_distribution"
 EXTENDED = "generated_beyond_baseline"
-PROVENANCE_VALUES = frozenset({BASELINE, EXTENDED})
+# A hand-constructed known-answer scenario (backend/observe/harnesses/
+# synthetic_scenarios.py) -- NOT a scaled reproduction of real usage like
+# BASELINE/EXTENDED. Reuses this same tag/cohort_row_counts/delete_cohort
+# machinery rather than building a parallel one.
+SYNTHETIC = "synthetic_known_answer_scenario"
+PROVENANCE_VALUES = frozenset({BASELINE, EXTENDED, SYNTHETIC})
 
 
 def tag(db, row, *, provenance: str, cohort_id: str) -> models.DemoProvenance:
