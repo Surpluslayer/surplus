@@ -245,6 +245,108 @@ def test_activity_stream_does_not_pin_a_pool_connection(client, monkeypatch):
         bus.use_session_factory(None)
 
 
+def _track_get_db_session(app, Session):
+    """A get_db override that records the id() of the session it hands out,
+    so a test can ask "was THIS SPECIFIC session closed", not "was any
+    session anywhere closed". That distinction matters here because the
+    fixture's own current_user override (_current_real_caller) creates and
+    immediately closes its OWN unrelated session on every call -- a naive
+    global close-counter would show "closed" from that alone and pass
+    whether or not the route under test does anything right."""
+    from backend.db import get_db
+    session_ids = set()
+
+    def _override():
+        s = Session()
+        session_ids.add(id(s))
+        try:
+            yield s
+        finally:
+            s.close()
+    app.dependency_overrides[get_db] = _override
+    return session_ids
+
+
+def test_boot_stream_releases_the_request_scoped_session_before_streaming(client, monkeypatch):
+    """stream/activity got this fix (2a0583f); stream/boot and stream/contact
+    inherit the SAME risk from the SAME cause -- Depends(current_user)
+    resolves through Depends(get_db), and FastAPI caches that per request, so
+    an explicit db: Depends(get_db) parameter on the route resolves to the
+    SAME session current_user already opened. FastAPI holds a yield-based
+    dependency's session open until the response completes, which for an SSE
+    endpoint is the whole stream -- unless the route closes it itself, which
+    is exactly what this proves happened BEFORE the harness suite's first
+    line, not merely by the time the response happens to finish."""
+    from backend.observe import logstream
+
+    c, _cohort_id, _lawyer_id, _contact_id, _draft_id, Session, _rid = client
+    tracked_ids = _track_get_db_session(app, Session)
+
+    closed_ids = set()
+    real_close = Session.class_.close
+
+    def counting_close(self):
+        closed_ids.add(id(self))
+        return real_close(self)
+    monkeypatch.setattr(Session.class_, "close", counting_close)
+
+    closed_before_first_line = {"v": None}
+    real_boot_events = logstream.boot_events
+
+    def spying_boot_events(db, user=None):
+        closed_before_first_line["v"] = bool(tracked_ids & closed_ids)
+        yield from real_boot_events(db, user)
+    monkeypatch.setattr(logstream, "boot_events", spying_boot_events)
+
+    with c.stream("GET", "/api/observe/stream/boot") as r:
+        assert r.status_code == 200
+        "".join(r.iter_text())
+    assert tracked_ids, "the route never resolved a get_db session at all"
+    assert closed_before_first_line["v"] is True, \
+        "request-scoped session was still open when the harness suite started"
+
+
+def test_contact_stream_releases_the_request_scoped_session_before_streaming(client, monkeypatch):
+    """Same property as the boot-stream test above, for stream/contact/{id}
+    -- the HIGHEST-volume of the three Observe streams, since it fires on
+    every card clicked in the Book, not once per opened tab."""
+    from backend.observe import logstream
+
+    c, _cohort_id, _lawyer_id, contact_id, _draft_id, Session, _rid = client
+    # _sse()'s generator opens its OWN session via `from ..db import
+    # SessionLocal; wdb = SessionLocal()` -- the request-scoped `db` this
+    # test is exercising is a SEPARATE thing entirely. Without pointing the
+    # module-level SessionLocal at this test's isolated engine, wdb.get(...)
+    # inside stream_contact's events() resolves against the real default
+    # database, finds nothing, and takes the early-return branch -- which
+    # means contact_events (and this test's spy on it) never runs at all.
+    monkeypatch.setattr("backend.db.SessionLocal", Session)
+    tracked_ids = _track_get_db_session(app, Session)
+
+    closed_ids = set()
+    real_close = Session.class_.close
+
+    def counting_close(self):
+        closed_ids.add(id(self))
+        return real_close(self)
+    monkeypatch.setattr(Session.class_, "close", counting_close)
+
+    closed_before_first_line = {"v": None}
+    real_contact_events = logstream.contact_events
+
+    def spying_contact_events(db, user, contact, channel="linkedin_dm"):
+        closed_before_first_line["v"] = bool(tracked_ids & closed_ids)
+        yield from real_contact_events(db, user, contact, channel)
+    monkeypatch.setattr(logstream, "contact_events", spying_contact_events)
+
+    with c.stream("GET", f"/api/observe/stream/contact/{contact_id}") as r:
+        assert r.status_code == 200
+        "".join(r.iter_text())
+    assert tracked_ids, "the route never resolved a get_db session at all"
+    assert closed_before_first_line["v"] is True, \
+        "request-scoped session was still open when the contact trace started"
+
+
 # ── cohort-level authorization (a REAL, non-demo cohort -- e.g. one seeded by
 # backend/demo/seed_operator.py --unipile-users -- must be as self-scoped as
 # a single contact is; see routes/observe.py's _cohort_visible_to) ─────────
