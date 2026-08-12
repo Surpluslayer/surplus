@@ -77,6 +77,76 @@ _HARNESS_ORDER = (
 )
 
 
+# Harnesses whose headline number is computed against an outcome LABEL.
+# jurisdiction_regression is absent because it checks hand-written rule
+# expectations against the real gate -- no labels involved -- and
+# signal_library_evaluation because it grades a reference classifier and
+# already says so in its own summary.
+_LABEL_DEPENDENT = frozenset({"historical_replay", "ablation",
+                               "relationship_evaluation"})
+
+
+def label_provenance(db, cohort_id) -> str:
+    """Where this cohort's OUTCOME LABELS came from: "generated", "observed",
+    "mixed", or "unknown".
+
+    This decides whether the numbers below it are evidence or a wiring check,
+    so it is computed rather than assumed. See circularity_note()."""
+    if not cohort_id:
+        return "unknown"
+    from sqlalchemy import select
+    from .. import models
+    from ..demo import provenance as prov
+    values = {v for (v,) in db.execute(
+        select(models.DemoProvenance.data_provenance)
+        .where(models.DemoProvenance.cohort_id == cohort_id).distinct()).all()}
+    if not values:
+        return "unknown"
+    generated = bool(values & set(prov.GENERATED_VALUES))
+    observed = prov.OBSERVED in values
+    if generated and observed:
+        return "mixed"
+    return "generated" if generated else ("observed" if observed else "unknown")
+
+
+def circularity_note(provenance: str) -> tuple:
+    """(level, message) for what the label provenance means, stated plainly.
+
+    On a GENERATED cohort the engagement label is manufactured by
+    backend/demo/cohort.py as
+
+        aff = tax.affinity(practice_area, category)
+        p_engage = 0.25 + 0.65 * aff
+
+    -- the SAME seed affinity table practice_fit scores with. So an NDCG lift
+    over that data shows the ranker recovering the generator's own rule. That
+    is a real wiring check (the factors are plumbed through, the weights
+    apply, the metric computes) and it is NOT evidence about real books. The
+    generator's own comment says the pattern is constructed; leaving that in
+    a source comment while printing 0.70 on screen invites reading a
+    self-fulfilling number as a performance claim."""
+    if provenance == "generated":
+        return (WARN,
+                "  labels: GENERATED -- backend/demo/cohort.py draws engagement from "
+                "p_engage = 0.25 + 0.65 x affinity(practice_area, category), the same "
+                "seed table practice_fit scores with. The label-dependent harnesses "
+                "below therefore measure whether the ranker RECOVERS THE GENERATOR'S "
+                "RULE, not whether it ranks a real book well. A wiring check, not "
+                "evidence")
+    if provenance == "observed":
+        return (OK,
+                "  labels: OBSERVED -- real recorded dispositions (a lawyer sent or "
+                "snoozed), independent of the factors being scored. The numbers below "
+                "are evidence, to the extent the sample supports them")
+    if provenance == "mixed":
+        return (WARN,
+                "  labels: MIXED generated and observed in one cohort -- the numbers "
+                "below blend a self-fulfilling signal with a real one and cannot be "
+                "cleanly interpreted as either")
+    return (WARN, "  labels: provenance unknown -- cannot say whether the numbers "
+                  "below are evidence or a wiring check")
+
+
 def evaluation_cohort_id(db):
     """The cohort the data-driven harnesses should evaluate against.
 
@@ -164,9 +234,12 @@ def boot_events(db, user=None):
     yield line(STEP, "backend.observe.logstream:boot_events",
                "evaluation -- harnesses over a fixed dataset")
     cohort_id = evaluation_cohort_id(db)
+    provenance = label_provenance(db, cohort_id)
     if cohort_id:
         yield line(INFO, "backend.observe.logstream:evaluation_cohort_id",
                    f"  dataset: cohort_id={cohort_id}")
+        lvl, note = circularity_note(provenance)
+        yield line(lvl, "backend.observe.logstream:circularity_note", note)
     else:
         yield line(WARN, "backend.observe.logstream:evaluation_cohort_id",
                    "  no usable evaluation cohort -- the four data-driven harnesses "
@@ -212,6 +285,8 @@ def boot_events(db, user=None):
         # its claim. The old three-line-per-harness form buried the account
         # state above it.
         suffix = _harness_summary(harness_id, result)
+        if harness_id in _LABEL_DEPENDENT and provenance != "observed":
+            suffix += f"  [labels={provenance}: recovers the generator's rule]"
         if pass_fail:
             total_pass += result.cases_passed
             total_cases += result.cases_total
@@ -469,11 +544,15 @@ def account_events(db, user=None):
             d or "no outcome recorded yet", 0) + 1
     if drafts:
         resolved = sum(v for k, v in by_disp.items() if k != "no outcome recorded yet")
-        yield line(OK, "backend.agents.relationship.updates_engine:autodraft",
+        yield line(OK if resolved else WARN,
+                   "backend.agents.relationship.updates_engine:autodraft",
                    f"  outreach: {len(drafts)} drafted · {resolved} with a recorded outcome")
-        for k, v in sorted(by_disp.items(), key=lambda kv: -kv[1]):
-            yield line(INFO, "backend.observe.cohort_query:most_recent_draft_relevance",
-                       f"    {k:<28} {v}")
+        # Only break the total down when there is actually a breakdown. With
+        # every draft undecided the single row just restates the line above.
+        if resolved:
+            for k, v in sorted(by_disp.items(), key=lambda kv: -kv[1]):
+                yield line(INFO, "backend.observe.cohort_query:most_recent_draft_relevance",
+                           f"    {k:<28} {v}")
     else:
         yield line(WARN, "backend.agents.relationship.updates_engine:autodraft",
                    "  outreach: nothing drafted for this account yet -- the harnesses "
@@ -491,9 +570,18 @@ def _harness_summary(harness_id: str, result) -> str:
     Same numbers, same source (the real HarnessResult.metrics), one line."""
     m = result.metrics or {}
     if harness_id == "historical_replay":
+        # leakage/reconstruction are INVARIANTS -- true or false regardless of
+        # any label, and the load-bearing part of this harness. agreement is a
+        # binary-outcome rate, so a value near 0.5 is chance; printing it bare
+        # invites reading noise as a finding (0.4742 and 0.5292 on two runs of
+        # the same code).
+        agree = m.get("prediction_outcome_agreement_rate")
+        note = ""
+        if isinstance(agree, (int, float)) and 0.45 <= agree <= 0.55:
+            note = " (≈chance for a binary outcome)"
         return (f"leakage={m.get('temporal_leakage_violations')} · "
                 f"reconstruction_failures={m.get('reconstruction_failures')} · "
-                f"agreement={m.get('prediction_outcome_agreement_rate')}")
+                f"agreement={agree}{note}")
     if harness_id == "ablation":
         a = (m.get("A_signal_practice") or {}).get("ndcg_at_k")
         c = (m.get("C_plus_relationship") or {}).get("ndcg_at_k")
@@ -588,11 +676,12 @@ def contact_events(db, user, contact, channel: str = "linkedin_dm"):
                f"trace requested · contact_id={contact.id} name={contact.name!r} "
                f"account={user.email}")
 
-    modal_on = _modal_on()
-    yield line(INFO, "backend.jobs:use_modal",
-               f"Modal batch dispatch: {'ON' if modal_on else 'OFF'} (USE_MODAL) -- not "
-               "reachable from this trace either way; pipeline/ranking/ablation/draft/"
-               "jurisdiction all run in-process on this worker")
+    # Deliberately NOT re-stated here: Modal's on/off state, the judge model's
+    # role, and per-worker cache hashes. All three are true, none of them is
+    # something THIS CLICK did, and repeating them on every trace buried the
+    # eight pipeline stages and the scoring arithmetic that are. Modal is
+    # still reported where it is actually a fact about the run -- the ask
+    # narration in backend/observe/askprobe.py.
 
     # ── pipeline: emit each stage the moment it finishes ──
     candidates, total_available = pipeline.resolve_candidates(db, user, contact, None)
@@ -605,9 +694,6 @@ def contact_events(db, user, contact, channel: str = "linkedin_dm"):
     else:
         yield line(INFO, "backend.observe.pipeline:resolve_candidates",
                    f"ranking against all {len(candidates)} contacts in this book")
-
-    for ev in cache_status_events(db, user, contact, channel):
-        yield ev
 
     yield line(STEP, "backend.observe.pipeline:iter_stages", "running execution pipeline")
     t_pipe = time.perf_counter()
@@ -684,9 +770,6 @@ def contact_events(db, user, contact, channel: str = "linkedin_dm"):
                "resolving this contact's draft")
     resolved: dict = {}
     for ev in draft_events(db, user, contact, resolved, channel):
-        yield ev
-
-    for ev in judge_model_status():
         yield ev
 
     # ── jurisdiction: the real rule set, check by check, on the real draft ──

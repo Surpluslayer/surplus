@@ -430,19 +430,27 @@ def test_jurisdiction_events_reuses_a_passed_in_resolved_draft(db, monkeypatch):
     assert "test:hand-off" in joined
 
 
-def test_contact_events_reports_modal_dispatch_state(db, monkeypatch):
+def test_the_contact_trace_reports_only_what_this_click_did(db, monkeypatch):
+    """Modal's on/off state, the judge model's role and per-worker cache
+    hashes are all true, and none of them is something a CONTACT CLICK did.
+    Repeating them on every trace buried the eight pipeline stages and the
+    scoring arithmetic that are. Modal is still reported where it is a fact
+    about the run -- see test_observe_askprobe's Modal coverage on the ask
+    narration, which is the path Modal could actually affect."""
+    monkeypatch.setenv("USE_MODAL", "1")
     cohort.generate(db, n_lawyers=2, days=14, cohort_id="modal-cohort")
     user = db.execute(select(models.User)).scalars().first()
     contact = db.execute(select(models.Contact).where(
         models.Contact.user_id == user.id)).scalars().first()
 
-    monkeypatch.delenv("USE_MODAL", raising=False)
-    joined_off = " | ".join(e["msg"] for e in logstream.contact_events(db, user, contact))
-    assert "Modal batch dispatch: OFF" in joined_off
+    joined = " | ".join(e["msg"] for e in logstream.contact_events(db, user, contact))
+    for noise in ("Modal batch dispatch", "JUDGE_MODEL=", "assess cache", "draft cache"):
+        assert noise not in joined, f"{noise!r} is not something this click did"
 
-    monkeypatch.setenv("USE_MODAL", "1")
-    joined_on = " | ".join(e["msg"] for e in logstream.contact_events(db, user, contact))
-    assert "Modal batch dispatch: ON" in joined_on
+    # ...and what a reader actually came for is still all there.
+    for signal in ("running execution pipeline", "factor × weight breakdown",
+                    "opportunity_score =", "ablation loop", "VERDICT:"):
+        assert signal in joined, f"trimming removed {signal!r}"
 
 
 def test_judge_model_status_distinguishes_live_infra_from_dead_code(db):
@@ -703,3 +711,89 @@ def test_a_missing_dataset_tells_the_reader_how_to_fix_it(db):
     joined = " | ".join(e["msg"] for e in events)
     assert "will report 0/0" in joined
     assert "POST /api/observe/evaluation-dataset" in joined
+
+
+# ── the numbers must say whether they are evidence or a wiring check ────────
+
+def test_generated_labels_are_declared_as_circular(db):
+    """backend/demo/cohort.py draws the engagement label from
+    p_engage = 0.25 + 0.65 * affinity(practice_area, category) -- the same
+    seed table practice_fit scores with. An NDCG lift over that shows the
+    ranker recovering the generator's own rule. Printing 0.77 without saying
+    so invites reading a self-fulfilling number as a performance claim."""
+    cohort.generate(db, n_lawyers=6, days=30, cohort_id="circ-cohort")
+    user = db.execute(select(models.User)).scalars().first()
+    events = list(logstream.boot_events(db, user))
+    joined = " | ".join(e["msg"] for e in events)
+
+    assert "labels: GENERATED" in joined
+    assert "same seed table practice_fit scores with" in joined
+    assert "not evidence" in joined.lower()
+
+    # ...and on the individual lines, so one screenshotted line is not
+    # misleading on its own.
+    by_id = {e["harness"]: e["msg"] for e in events if e.get("kind")}
+    for harness_id in ("ablation", "relationship_evaluation", "historical_replay"):
+        assert "labels=generated" in by_id[harness_id], \
+            f"{harness_id} reported a label-dependent number with no provenance"
+
+
+def test_label_free_harnesses_are_not_tagged_as_circular(db):
+    """jurisdiction_regression checks hand-written rule expectations against
+    the real gate and signal_library_evaluation grades a reference classifier
+    -- neither depends on an outcome label, so neither may carry the caveat."""
+    cohort.generate(db, n_lawyers=6, days=30, cohort_id="circ-cohort2")
+    user = db.execute(select(models.User)).scalars().first()
+    by_id = {e["harness"]: e["msg"] for e in logstream.boot_events(db, user)
+             if e.get("kind")}
+    for harness_id in ("jurisdiction_regression", "signal_library_evaluation"):
+        assert "labels=" not in by_id[harness_id], \
+            f"{harness_id} does not use outcome labels; the caveat misapplies"
+
+
+def test_observed_labels_are_declared_as_evidence(db):
+    """The inverse. Real recorded dispositions are independent of the factors
+    being scored, and the log has to distinguish that case or the caveat is
+    just boilerplate."""
+    user = models.User(email="real@example.com", name="Real", is_demo=False,
+                       practice_area="litigation")
+    db.add(user)
+    db.flush()
+    prov.tag(db, user, provenance=prov.OBSERVED, cohort_id="obs-cohort")
+    db.commit()
+
+    assert logstream.label_provenance(db, "obs-cohort") == "observed"
+    level, note = logstream.circularity_note("observed")
+    assert level == logstream.OK
+    assert "real recorded dispositions" in note
+    assert "independent of the factors being scored" in note
+
+
+def test_a_mixed_cohort_is_not_reported_as_either(db):
+    """Blending generated and real labels in one cohort cannot be read as
+    either, and saying "observed" would be the more flattering lie."""
+    cohort.generate(db, n_lawyers=2, days=14, cohort_id="mixed-cohort")
+    user = models.User(email="r2@example.com", name="R2", is_demo=False)
+    db.add(user)
+    db.flush()
+    prov.tag(db, user, provenance=prov.OBSERVED, cohort_id="mixed-cohort")
+    db.commit()
+
+    assert logstream.label_provenance(db, "mixed-cohort") == "mixed"
+    level, note = logstream.circularity_note("mixed")
+    assert level == logstream.WARN and "cannot be cleanly interpreted" in note
+
+
+def test_a_near_chance_agreement_rate_says_so(db):
+    """historical_replay's agreement is a binary-outcome rate: 0.4742 on one
+    run and 0.5292 on the next is noise, and printing it bare invites reading
+    noise as a finding. leakage/reconstruction are invariants and stay bare."""
+    class _R:
+        metrics = {"temporal_leakage_violations": 0, "reconstruction_failures": 0,
+                   "prediction_outcome_agreement_rate": 0.5292}
+    assert "≈chance" in logstream._harness_summary("historical_replay", _R())
+
+    class _S:
+        metrics = {"temporal_leakage_violations": 0, "reconstruction_failures": 0,
+                   "prediction_outcome_agreement_rate": 0.83}
+    assert "≈chance" not in logstream._harness_summary("historical_replay", _S())

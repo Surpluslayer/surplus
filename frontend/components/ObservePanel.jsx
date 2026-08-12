@@ -3,30 +3,23 @@
 // /api/observe/stream/boot and every harness runs for real, one line each.
 // Click a contact in the Book to the left and its trace is APPENDED to the
 // same log: pipeline stages, the ranking arithmetic factor by factor, the
-// ablation deltas, the draft/judge/Modal/cache lines, then the jurisdiction
-// rule set walked check by check over that contact's real drafted message.
+// ablation deltas, then the jurisdiction rule set walked check by check over
+// that contact's real drafted message.
 //
 // Every line comes from backend/observe/logstream.py and corresponds to work
 // that actually executed -- `src` is the real module:function that produced
 // it, and every duration is a measured perf_counter delta. Nothing here is
 // printed to look busy.
 //
-// This is deliberately ONE flow, not a log plus a separate summary reduction
-// of the same log. A summary panel was tried and reverted: it re-derived
-// "the ranking factors" by matching on `src` prefixes, and
-// feedback_loop_status's CLOSED/OPEN line for historical_behavior happens to
-// share its src with compute_trace's own historical_behavior factor line --
-// so the summary silently duplicated that row and made a real, non-zero
-// relationship reading look like "0". A single source of truth can't drift
-// from itself that way. Readability instead comes from visual structure
-// WITHIN the one stream: each STEP line starts a new section, and the lines
-// under it are lightly banded so a reader's eye can chunk the log without a
-// second view that has to be kept in sync with the first.
+// This replaced a card/accordion layout that fetched each section with
+// Promise.all and rendered nothing until ALL of them resolved -- so one slow
+// endpoint left the whole panel stuck on "loading...". A stream has no such
+// coupling: each line paints the moment its work finishes.
 import React, { useState, useEffect, useRef, useCallback } from "react";
 
 // Terminal palette -- dark, high contrast, deliberately close to a deploy log.
 const T = {
-  bg: "#0d1117", panel: "#111823", band: "#0f1620", line: "#1f2733",
+  bg: "#0d1117", panel: "#111823", line: "#1f2733",
   dim: "#5b6673", text: "#c9d3df", bright: "#e8eef6",
   ok: "#3fb950", warn: "#d29922", err: "#f85149", step: "#58a6ff",
   accent: "#58a6ff",
@@ -50,7 +43,7 @@ function shortSrc(src) {
   return (src || "").replace(/^backend\./, "");
 }
 
-function LogLine({ e, banded }) {
+function LogLine({ e }) {
   const color = LEVEL_COLOR[e.level] || T.text;
   const tag = LEVEL_TAG[e.level] || "";
   // A line that names a harness, or announces a step, is a section marker --
@@ -60,12 +53,9 @@ function LogLine({ e, banded }) {
 
   return (
     <div style={{
-      display: "flex", gap: 10, padding: "1px 10px", margin: "0 -10px",
-      alignItems: "baseline", fontFamily: MONO, fontSize: 11.5, lineHeight: 1.55,
-      whiteSpace: "pre-wrap", wordBreak: "break-word",
-      background: banded ? T.band : "transparent",
-      borderTop: isMarker ? `1px solid ${T.line}` : "none",
-      marginTop: isMarker ? 6 : 0, paddingTop: isMarker ? 5 : 1,
+      display: "flex", gap: 10, padding: "1px 0", alignItems: "baseline",
+      fontFamily: MONO, fontSize: 11.5, lineHeight: 1.55, whiteSpace: "pre-wrap",
+      wordBreak: "break-word",
     }}>
       <span style={{ color: T.dim, flexShrink: 0, fontSize: 10.5 }}>{hhmmss(e.ts)}</span>
       <span style={{ color, flexShrink: 0, width: 34, fontSize: 10,
@@ -151,6 +141,16 @@ export default function ObservePanel({ selection }) {
   const [booting, setBooting] = useState(true);
   const [authError, setAuthError] = useState(false);
   const [follow, setFollow] = useState(true);
+  // The log names the fix for a missing evaluation dataset -- but the fix is a
+  // POST, which nobody can issue from an address bar. When that state is
+  // detected the panel offers the button that does it.
+  const [needsDataset, setNeedsDataset] = useState(false);
+  const [seeding, setSeeding] = useState(false);
+  // The log tells you the evaluation dataset is missing and names the fix --
+  // but the fix is a POST, which nobody can issue from an address bar. So
+  // when that state is detected the panel offers the button that does it.
+  const [needsDataset, setNeedsDataset] = useState(false);
+  const [seeding, setSeeding] = useState(false);
   const bottomRef = useRef(null);
   const scrollRef = useRef(null);
   const seq = useRef(0);
@@ -169,12 +169,14 @@ export default function ObservePanel({ selection }) {
   const append = useCallback((e) => {
     setLines(prev => {
       const item = { ...e, _k: seq.current++ };
+      if ((e.msg || "").includes("no usable evaluation cohort")) setNeedsDataset(true);
       const t = Date.parse(e.ts);
       let i = prev.length;
       if (!Number.isNaN(t)) {
         const floor = Math.max(0, prev.length - REORDER_WINDOW);
         while (i > floor && Date.parse(prev[i - 1].ts) > t) i--;
       }
+      if ((e.msg || "").includes("no usable evaluation cohort")) setNeedsDataset(true);
       const next = i === prev.length
         ? prev.concat([item])
         : prev.slice(0, i).concat([item], prev.slice(i));
@@ -183,7 +185,55 @@ export default function ObservePanel({ selection }) {
     });
   }, []);
 
+
   const open = useLogStream(append);
+
+  const seedDataset = useCallback(() => {
+    if (seeding) return;
+    setSeeding(true);
+    append({ ts: new Date().toISOString(), level: "step", src: "frontend.ObservePanel",
+             msg: "── building an evaluation dataset → POST /api/observe/evaluation-dataset ──" });
+    fetch("/api/observe/evaluation-dataset?lawyers=25&days=30",
+          { method: "POST", credentials: "same-origin" })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok) throw new Error(d && d.detail ? d.detail : "request failed");
+        append({ ts: new Date().toISOString(), level: "ok",
+                 src: "backend.routes.observe:create_evaluation_dataset",
+                 msg: `  cohort_id=${d.cohort_id} · ${d.lawyers_resolvable} lawyers `
+                      + `resolvable · provenance=${d.provenance}` });
+        setNeedsDataset(false);
+        open("/api/observe/stream/boot", { onDone: () => setBooting(false) });
+      })
+      .catch(e => append({ ts: new Date().toISOString(), level: "error",
+                           src: "frontend.ObservePanel",
+                           msg: `  could not build a dataset: ${e.message || e}` }))
+      .finally(() => setSeeding(false));
+  }, [append, open, seeding]);
+
+  const seedDataset = useCallback(() => {
+    if (seeding) return;
+    setSeeding(true);
+    append({ ts: new Date().toISOString(), level: "step",
+             src: "frontend.ObservePanel",
+             msg: "── building an evaluation dataset → POST /api/observe/evaluation-dataset ──" });
+    fetch("/api/observe/evaluation-dataset?lawyers=25&days=30",
+          { method: "POST", credentials: "same-origin" })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok) throw new Error(d && d.detail ? d.detail : "request failed");
+        append({ ts: new Date().toISOString(), level: "ok",
+                 src: "backend.routes.observe:create_evaluation_dataset",
+                 msg: `  cohort_id=${d.cohort_id} · ${d.lawyers_resolvable} lawyers `
+                      + `resolvable · provenance=${d.provenance}` });
+        setNeedsDataset(false);
+        open("/api/observe/stream/boot", { onDone: () => setBooting(false) });
+      })
+      .catch(e => append({ ts: new Date().toISOString(), level: "error",
+                           src: "frontend.ObservePanel",
+                           msg: `  could not build a dataset: ${e.message || e}` }))
+      .finally(() => setSeeding(false));
+  }, [append, open, seeding]);
   useClientEvents(append);
   useActivityStream(append);
   // useLogStream's single EventSource ref is shared by the boot stream and
@@ -249,11 +299,6 @@ export default function ObservePanel({ selection }) {
     );
   }
 
-  // Section banding: alternate a faint background every time a STEP line (a
-  // section marker) is hit, purely a rendering aid over the SAME lines array
-  // -- nothing here is a second computed view that could disagree with it.
-  let band = false;
-
   return (
     <div style={{ fontFamily: FONT, background: T.bg, minHeight: "100%",
                   display: "flex", flexDirection: "column", height: "100%" }}>
@@ -267,15 +312,29 @@ export default function ObservePanel({ selection }) {
           <span style={{ fontSize: 10.5, color: T.dim, fontFamily: MONO }}>
             {booting ? "running harness suite…" : `${lines.length} lines`}
           </span>
-          {selection && selection.name && (
-            <span style={{ fontSize: 10.5, color: T.bright, fontFamily: MONO,
-                          fontWeight: 700 }}>
-              · {selection.name}
-            </span>
+          {needsDataset && (
+            <button onClick={seedDataset} disabled={seeding} style={{
+              marginLeft: "auto", fontSize: 10.5, fontWeight: 700,
+              color: seeding ? T.dim : T.bg, background: seeding ? "transparent" : T.warn,
+              border: `1px solid ${T.warn}`, borderRadius: 5, padding: "3px 8px",
+              cursor: seeding ? "default" : "pointer", fontFamily: MONO,
+            }}>
+              {seeding ? "building…" : "build evaluation dataset"}
+            </button>
+          )}
+          {needsDataset && (
+            <button onClick={seedDataset} disabled={seeding} style={{
+              marginLeft: "auto", fontSize: 10.5, fontWeight: 700,
+              color: seeding ? T.dim : T.bg, background: seeding ? "transparent" : T.warn,
+              border: `1px solid ${T.warn}`, borderRadius: 5, padding: "3px 8px",
+              cursor: seeding ? "default" : "pointer", fontFamily: MONO,
+            }}>
+              {seeding ? "building…" : "build evaluation dataset"}
+            </button>
           )}
           {!follow && (
             <button onClick={() => { setFollow(true); }} style={{
-              marginLeft: "auto", fontSize: 10.5, fontWeight: 700, color: T.accent,
+              marginLeft: needsDataset ? 8 : "auto", fontSize: 10.5, fontWeight: 700, color: T.accent,
               background: "transparent", border: `1px solid ${T.line}`, borderRadius: 5,
               padding: "3px 8px", cursor: "pointer", fontFamily: MONO,
             }}>
@@ -289,19 +348,20 @@ export default function ObservePanel({ selection }) {
         </div>
       </div>
 
+      {/* No summary panel above the log. It rendered a REDUCTION OF THE SAME
+          LINES, so every fact appeared twice on one screen and a reader had
+          to work out which half was authoritative -- the log below is, since
+          it is the thing streamed from the backend. One view, read top to
+          bottom, is the whole point of a deploy-log shape. */}
       <div ref={scrollRef} onScroll={onScroll}
-           style={{ flex: 1, overflowY: "auto", padding: "10px 16px 40px",
+           style={{ flex: 1, overflowY: "auto", padding: "0 16px 40px",
                     background: T.bg }}>
         {lines.length === 0 && (
           <div style={{ color: T.dim, fontFamily: MONO, fontSize: 11.5 }}>
             connecting…
           </div>
         )}
-        {lines.map(e => {
-          const isMarker = e.level === "step" || (e.harness && e.kind);
-          if (isMarker) band = !band;
-          return <LogLine key={e._k} e={e} banded={band} />;
-        })}
+        {lines.map(e => <LogLine key={e._k} e={e} />)}
         <div ref={bottomRef} />
       </div>
     </div>
