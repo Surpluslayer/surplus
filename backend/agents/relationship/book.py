@@ -538,6 +538,26 @@ def _ask_payload(book: list[dict]) -> list[dict]:
     return slim
 
 
+# Asks whose answer IS the cadence ordering ("who's gone quiet") rank within the
+# needs-outreach pool first; everything else ranks the whole book. One tuple, so
+# the SQL pre-rank in routes/book.py splits the roster on the SAME predicate this
+# does -- two copies of this list would silently diverge.
+_CADENCE_WORDS = ("cool", "cold", "dormant", "quiet", "follow", "outreach",
+                  "touch", "reconnect", "reach out", "lost", "overdue")
+
+
+def is_cadence_query(query: str) -> bool:
+    q = (query or "").lower()
+    return any(k in q for k in _CADENCE_WORDS)
+
+
+def ask_cap() -> int:
+    """How many contacts the selection prompt may carry. The max(20, ...) floor
+    matters: it is the cap that REALLY applies, so anything reporting or
+    pre-computing against the raw env value would describe a different run."""
+    return max(20, int(os.environ.get("ASK_BOOK_CAP", "80")))
+
+
 def _prioritized_for_ask(book: list[dict], query: str, cap: int) -> list[dict]:
     """Rank a large book down to the CAP most-relevant contacts before the
     selection LLM sees it, so the prompt (and thus latency) stays bounded no
@@ -553,10 +573,7 @@ def _prioritized_for_ask(book: list[dict], query: str, cap: int) -> list[dict]:
     # the whole book to pick a cap must not fire an LLM call per contact (that was
     # a 494-call 'You score the health' storm that starved the real ask).
     scored = [(c, _score_health_heuristic(c)) for c in book]
-    cadence = any(k in q for k in ("cool", "cold", "dormant", "quiet", "follow",
-                                   "outreach", "touch", "reconnect", "reach out",
-                                   "lost", "overdue"))
-    if cadence:
+    if is_cadence_query(q):
         pool = [(c, h) for (c, h) in scored if h.get("needs_outreach")] or scored
     else:
         pool = scored
@@ -572,8 +589,11 @@ def ask_agent(book: list[dict], query: str) -> dict:
     avoids the model inventing generic, em-dash-laden messages over a big book.
 
     A big book is pre-ranked down to ASK_BOOK_CAP contacts (default 80) so the
-    selection prompt stays small and fast even at thousands of contacts."""
-    cap = max(20, int(os.environ.get("ASK_BOOK_CAP", "80")))
+    selection prompt stays small and fast even at thousands of contacts. When
+    the caller already pre-ranked in SQL (routes/book.py:_book_for_ask), the
+    book arrives at or under the cap and this is a no-op -- the two rankings
+    are the same function, so running it twice cannot reorder anything."""
+    cap = ask_cap()
     book = _prioritized_for_ask(book, query, cap)
     user = (
         "The user's book (scored contacts):\n"

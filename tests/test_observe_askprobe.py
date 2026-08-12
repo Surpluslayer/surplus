@@ -114,6 +114,72 @@ def test_prerank_reports_the_real_cap_behavior(db, user, monkeypatch):
     assert "top 20" in _msgs(user.id, before)
 
 
+def test_prerank_log_says_which_of_the_two_implementations_ran(db, user):
+    """There are two pre-ranks that pick the same people for very different
+    money: the in-agent one ranks rows that were already built, the SQL one
+    decides who to build. A log that reported only "N → top C" would print the
+    same line for a run that built 650 rows and a run that built 80."""
+    before = bus.latest_seq()
+    askprobe.prerank_done(user.id, {"path": "sql", "roster": 650, "cap": 80,
+                                    "ranked": 80, "index_ms": 41.0,
+                                    "with_touch": 612, "cadence": True})
+    lines = bus.since(user.id, before)
+    joined = " | ".join(e["msg"] for e in lines)
+    assert "pre-rank (SQL): 650 contacts → top 80" in joined
+    assert "MAX(occurred_at)" in joined
+    assert "built 80 book rows, not 650" in joined
+    assert "570 past the cap" in joined, "the avoided work was not quantified"
+    # The src column is how an engineer gets from a line to the code that
+    # emitted it, so the SQL path has to name the function that really ran.
+    srcs = {e["src"] for e in lines}
+    assert "backend.routes.book:_spine_prerank" in srcs
+    assert ("backend.agents.relationship.spine.relationships:last_touch_index"
+            in srcs)
+
+    before = bus.latest_seq()
+    askprobe.prerank_done(user.id, {"path": "cache", "roster": 650, "cap": 80})
+    assert "book cache is warm" in _msgs(user.id, before)
+
+    before = bus.latest_seq()
+    askprobe.prerank_done(user.id, {"path": "full", "roster": 12, "cap": 80,
+                                    "why": "book of 12 is at or under the cap"})
+    joined = _msgs(user.id, before)
+    assert "in-agent over the built book" in joined
+    assert "book of 12 is at or under the cap" in joined
+
+
+def test_selection_does_not_re_report_a_prerank_that_already_ran(db, user):
+    """On the SQL path the book arrives already narrowed, so
+    _prioritized_for_ask is a no-op. Reporting "80 ≤ cap 80, whole book sent to
+    selection" there would read as though nothing had been ranked at all."""
+    book = [{"name": f"C{i}"} for i in range(80)]
+    before = bus.latest_seq()
+    askprobe.selection_done(user.id, "q", book, {"people": []}, 10.0,
+                            prerank={"path": "sql", "roster": 650, "cap": 80})
+    joined = _msgs(user.id, before)
+    assert "whole book sent to selection" not in joined
+    assert "selection:" in joined, "the selection line itself must still appear"
+
+
+def test_drafting_does_not_name_a_model_it_cannot_call(db, user, monkeypatch):
+    """The log contradicted itself: it warned "no ANTHROPIC_API_KEY" at the top
+    of an ask and then, three lines later, reported N drafts "via
+    claude-sonnet-4-6, streamed token-by-token". stream_from_context yields
+    nothing without a key, so those cards actually arrived empty."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    from backend.agents import llm
+    before = bus.latest_seq()
+    askprobe.drafting_started(user.id, 6, 0, 6)
+    joined = _msgs(user.id, before)
+    assert llm.MODEL not in joined, "named a model with no key configured"
+    assert "yields NOTHING without a key" in joined
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    before = bus.latest_seq()
+    askprobe.drafting_started(user.id, 6, 0, 6)
+    assert llm.MODEL in _msgs(user.id, before)
+
+
 def test_draft_tap_distinguishes_composer_from_heuristic(db, user, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     from backend.agents import llm

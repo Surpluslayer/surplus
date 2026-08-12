@@ -78,23 +78,72 @@ def book_loaded(user_id: int, n_book: int, n_orm: int) -> None:
                 f"  book loaded: {n_book} scored contacts · {n_orm} durable Contact rows")
 
 
-def selection_done(user_id: int, query: str, book: list, res: dict, ms: float) -> None:
+def prerank_done(user_id: int, info: dict) -> None:
+    """Where the pre-rank happened for THIS ask, and why there.
+
+    There are two implementations of the same ranking and the log has to say
+    which one ran, because they cost very different things: the in-agent one
+    (_prioritized_for_ask) ranks rows that were already built, so a big book
+    pays for every row it then discards; the SQL one decides who to build FROM
+    a last-touch aggregate, so the discarded rows are never built at all.
+    Reporting "pre-rank: N → top C" without saying which would describe the
+    same line for a run that built 650 rows and a run that built 80."""
+    info = info or {}
+    path, cap = info.get("path"), info.get("cap")
+    roster = info.get("roster")
+    if path == "sql":
+        pool = ("the needs-outreach pool" if info.get("cadence")
+                else "the whole roster")
+        bus.publish(user_id, OK, "backend.routes.book:_spine_prerank",
+                    f"  pre-rank (SQL): {roster} contacts → top {cap} in "
+                    f"{info.get('index_ms', 0):.0f}ms, ranked over {pool} by "
+                    f"_score_health_heuristic — deterministic, no model call")
+        bus.publish(user_id, INFO,
+                    "backend.agents.relationship.spine.relationships:last_touch_index",
+                    f"    ranked from a last-touch index ({info.get('with_touch')} of "
+                    f"{roster} contacts have a timestamped touch), not from built "
+                    f"rows: two GROUP BY MAX(occurred_at) aggregates plus the "
+                    f"already-loaded prospect capture/outreach timestamps")
+        built = info.get("ranked")
+        bus.publish(user_id, INFO, "backend.routes.book:_book_from_spine",
+                    f"    so this ask built {built} book rows, not {roster} — the "
+                    f"{max(0, (roster or 0) - (built or 0))} past the cap would have "
+                    f"been built and then discarded by selection")
+    elif path == "cache":
+        bus.publish(user_id, INFO, "backend.routes.book:_load_book",
+                    f"  pre-rank: skipped the SQL path — book cache is warm, so the "
+                    f"{roster} rows already exist and _prioritized_for_ask ranks "
+                    f"them in memory")
+    else:
+        bus.publish(user_id, INFO,
+                    "backend.agents.relationship.book:_prioritized_for_ask",
+                    f"  pre-rank: in-agent over the built book — "
+                    f"{info.get('why') or 'full build'}")
+
+
+def selection_done(user_id: int, query: str, book: list, res: dict, ms: float,
+                   prerank: dict | None = None) -> None:
     """The candidate-selection step: a deterministic pre-rank, then (if a key
     exists) one cheap-model call that picks who to act on."""
     cap = max(20, int(os.environ.get("ASK_BOOK_CAP", "80")))
     n_book = len(book or [])
     _draft_model, select_model = _models()
 
-    if n_book > cap:
-        bus.publish(user_id, INFO,
-                    "backend.agents.relationship.book:_prioritized_for_ask",
-                    f"  pre-rank: {n_book} contacts → top {cap} by "
-                    f"_score_health_heuristic (deterministic, no model call) so the "
-                    f"selection prompt stays bounded")
-    else:
-        bus.publish(user_id, INFO,
-                    "backend.agents.relationship.book:_prioritized_for_ask",
-                    f"  pre-rank: {n_book} contacts ≤ cap {cap}, whole book sent to selection")
+    # When the caller pre-ranked in SQL, prerank_done already reported it and
+    # _prioritized_for_ask was a no-op on the narrowed book -- saying "N ≤ cap,
+    # whole book sent to selection" here would read as though nothing had been
+    # ranked at all.
+    if (prerank or {}).get("path") != "sql":
+        if n_book > cap:
+            bus.publish(user_id, INFO,
+                        "backend.agents.relationship.book:_prioritized_for_ask",
+                        f"  pre-rank: {n_book} contacts → top {cap} by "
+                        f"_score_health_heuristic (deterministic, no model call) so the "
+                        f"selection prompt stays bounded")
+        else:
+            bus.publish(user_id, INFO,
+                        "backend.agents.relationship.book:_prioritized_for_ask",
+                        f"  pre-rank: {n_book} contacts ≤ cap {cap}, whole book sent to selection")
 
     people = (res or {}).get("people") or []
     if _llm_available():
@@ -117,16 +166,27 @@ def selection_done(user_id: int, query: str, book: list, res: dict, ms: float) -
 def drafting_started(user_id: int, n_stream: int, n_heuristic: int, inline_cap: int) -> None:
     draft_model, _select = _models()
     total, _bg = _gate_caps()
+    have_key = _llm_available()
     bus.publish(user_id, STEP,
                 "backend.agents.relationship.pipeline.compose.drafting",
                 f"  drafting {n_stream + n_heuristic} of the selected "
                 f"(ASK_INLINE_DRAFTS={inline_cap}) · ThreadPoolExecutor(max_workers=6) "
                 f"· rate gate caps {total} concurrent model calls")
-    if n_stream:
+    if n_stream and have_key:
         bus.publish(user_id, INFO,
                     "backend.agents.relationship.pipeline.compose.drafting:stream_from_context",
                     f"    {n_stream} via {draft_model}, streamed token-by-token, with the "
                     f"host's voice profile and that contact's real prior thread")
+    elif n_stream:
+        # stream_from_context's own contract: "yields nothing when no key is
+        # set". Naming the model here would have the log describe a token
+        # stream that produced zero tokens, three lines under its own
+        # "no ANTHROPIC_API_KEY" warning.
+        bus.publish(user_id, WARN,
+                    "backend.agents.relationship.pipeline.compose.drafting:stream_from_context",
+                    f"    {n_stream} routed to the streaming composer, which yields "
+                    f"NOTHING without a key -- these {n_stream} cards arrive with a "
+                    f"reason and no drafted message")
     if n_heuristic:
         bus.publish(user_id, INFO,
                     "backend.agents.relationship.book:draft_message_cached",
