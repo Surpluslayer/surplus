@@ -50,11 +50,35 @@ function mountBook() {
   );
 }
 
+// Side by side with the REAL, unmodified Surplus product -- not a
+// standalone replacement page. BookApp mounts exactly as it does on every
+// other path (same session, same behavior; nothing about it is changed for
+// this or any other user, per this feature's own "do not modify the
+// existing product" constraint). ip-root already self-constrains to a
+// 430px phone-frame width (CaptureShared.jsx's IP_CSS), so it renders as a
+// natural left column; Observe fills the remaining width as an independent
+// right-hand panel with its own object picker -- there is no live
+// click-through wiring FROM Book INTO Observe yet (that would require
+// touching BookApp.jsx itself), so pick the same lawyer/contact in both.
+function ObserveSplitView() {
+  return (
+    <div style={{ display: "flex", minHeight: "100dvh", background: "#f4f5f7" }}>
+      <div style={{ flex: "0 0 auto" }}>
+        <BookApp />
+      </div>
+      <div style={{ flex: "1 1 auto", minWidth: 0, borderLeft: "1px solid #e6e8ee",
+                    overflowY: "auto" }}>
+        <ObservePanel />
+      </div>
+    </div>
+  );
+}
+
 function mountObserve() {
   ReactDOM.createRoot(document.getElementById("root")).render(
     <React.StrictMode>
       <ErrorBoundary>
-        <ObservePanel />
+        <ObserveSplitView />
       </ErrorBoundary>
     </React.StrictMode>
   );

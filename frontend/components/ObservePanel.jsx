@@ -419,7 +419,8 @@ export default function ObservePanel() {
   useEffect(() => { load(); }, [load]);
 
   return (
-    <div style={{ fontFamily: FONT, maxWidth: 980, margin: "0 auto", padding: "32px 20px 80px" }}>
+    <div style={{ fontFamily: FONT, padding: "24px 24px 80px", background: C.bg,
+                  minHeight: "100%" }}>
       <div style={{ marginBottom: 4, fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
                     textTransform: "uppercase", color: C.accent }}>
         <FlaskConical size={12} style={{ verticalAlign: -2, marginRight: 5 }} />
