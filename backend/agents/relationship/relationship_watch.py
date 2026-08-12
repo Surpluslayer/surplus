@@ -94,6 +94,18 @@ def _emit(db: Session, contact: models.Contact, kind: str,
         "title": ri.title,
         "summary": ri.summary,
     }
+    # Durable funnel bookkeeping (backend/observe/funnel.py) for THIS signal:
+    # signal_detected always, plus matched_practice/matched_signal_library/
+    # relationship_context/high_confidence when this signal's real scoring
+    # against the owner's current book reaches them. Lazy import (same
+    # circular-import reason as autodraft below); best-effort, and funnel.py's
+    # own function is itself wrapped, so a scoring bug here is fully inert.
+    try:
+        from ...observe import funnel
+        funnel.record_signal_funnel(db, contact, ri)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [_emit.funnel] contact={contact.id} skipped: "
+              f"{type(exc).__name__}: {exc}", flush=True)
     # Auto-draft a follow-up for EVERY emitted update, no matter which watcher
     # found it (Bright Data, Exa, or the Unipile CRM refresh) -- so the Updates
     # feed always has a ready message. Lazy import avoids a circular import;

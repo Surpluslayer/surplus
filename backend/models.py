@@ -2011,3 +2011,42 @@ class DemoProvenance(Base):
     __table_args__ = (
         UniqueConstraint("table_name", "row_id", name="uq_demo_provenance_row"),
     )
+
+
+class FunnelEvent(Base):
+    """One signal's passage through one stage of the detection->outreach
+    funnel (backend/observe/funnel.py). Append-only, written at the moment
+    each stage is real (signal detection, real scoring, a real send) --
+    never recomputed retroactively, because practice_fit/relationship
+    context/ranking score are all evaluated against the CURRENT state of
+    the book; re-deriving them later for "as of 30 days ago" would silently
+    answer a different question than "what did the system actually decide
+    at the time." This table is the durable record a future funnel-UI PR
+    reads from -- see that module's docstring for the exact stage set and
+    where each is recorded.
+
+    A side table, same posture as DemoProvenance: nothing on Contact/
+    RelationshipInteraction changes shape because this exists."""
+    __tablename__ = "funnel_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    contact_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("contacts.id"), default=None, index=True,
+    )
+    # The RelationshipInteraction this event traces back to, when the stage is
+    # about one detected signal (every stage except "sent", which is about an
+    # outbound send that may reference a different, later interaction row).
+    interaction_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("relationship_interactions.id"), default=None, index=True,
+    )
+    # One of funnel.STAGES -- kept as a plain indexed string (not an Enum
+    # column) so a new stage never needs a migration, same tradeoff
+    # RelationshipInteraction.source_type/interaction_type already make.
+    stage: Mapped[str] = mapped_column(String(40), index=True)
+    # The score that produced this stage, when the stage IS a score
+    # (practice-fit affinity, opportunity score) -- None for stages that are
+    # pass/fail rather than a number (signal_detected, matched_signal_library,
+    # relationship_context, sent).
+    value: Mapped[Optional[float]] = mapped_column(default=None)
+    occurred_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)

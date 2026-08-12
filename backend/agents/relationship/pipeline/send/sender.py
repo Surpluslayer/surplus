@@ -270,7 +270,20 @@ def send_and_log(
             from ...spine.relationships import link_contact
             owner_id = getattr(prospect.event, "user_id", None)
             if owner_id is not None:
-                link_contact(db, prospect, owner_id)
+                linked_contact = link_contact(db, prospect, owner_id)
+                # Durable funnel bookkeeping (backend/observe/funnel.py) for a
+                # real, confirmed LinkedIn send. Lazy import (this module sits
+                # deep in the send path; avoid widening its import surface at
+                # load time), best-effort -- funnel.record_sent is itself
+                # wrapped, so this can never affect a real send's outcome.
+                if linked_contact is not None:
+                    try:
+                        from .....observe import funnel
+                        funnel.record_sent(db, user_id=owner_id,
+                                           contact_id=linked_contact.id, channel="linkedin")
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"  [send.funnel] contact={linked_contact.id} skipped: "
+                              f"{type(exc).__name__}: {exc}", flush=True)
     return res
 
 

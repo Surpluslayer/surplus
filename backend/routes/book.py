@@ -49,6 +49,23 @@ from ..integrations.unipile_config import unipile_creds
 # interleave in one Railway stream (grep `[book]`).
 _trace = book_agent._btrace
 
+
+def _narrate(fn, *args, **kwargs) -> None:
+    """Call one backend.observe.askprobe function, swallowing any exception.
+    askprobe.py's own docstring promises "instrumentation must never break a
+    real ask" -- true for exceptions INSIDE bus.publish (bus.py swallows
+    those itself), but every askprobe function does real work BEFORE that
+    call (_llm_available, _models, _gate_caps, string formatting), and a
+    bug there is a real exception a caller who calls askprobe.* directly
+    would propagate straight into the ask/draft it's narrating. This is the
+    one place that promise is actually enforced -- call askprobe through
+    here, not directly, at every ask_stream/draft_stream call site."""
+    try:
+        fn(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [book.narrate] {getattr(fn, '__name__', fn)} skipped: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+
 # Relationship-type tags = the capture "This person is…" set. They drive the
 # Book filter pills + search vocabulary. Legacy `recruiting` folds into hiring.
 BOOK_TAGS = ["sales", "hiring", "investor", "partner", "follow_up"]
@@ -588,13 +605,10 @@ def draft(body: DraftIn, db: Session = Depends(get_db),
     _trace(f"POST /draft user={user.id} to={contact.get('name')!r} "
            f"channel={body.channel} trigger={body.trigger!r} engine={engine} "
            f"in {time.monotonic()-t0:.2f}s")
-    try:
-        from ..observe import askprobe
-        askprobe.draft_tap(user.id, contact.get("name") or "?", engine, body.channel,
-                           body.trigger or "", (time.monotonic() - t0) * 1000,
-                           len((msg or {}).get("body") or ""))
-    except Exception:  # noqa: BLE001 -- instrumentation must never break a draft
-        pass
+    from ..observe import askprobe
+    _narrate(askprobe.draft_tap, user.id, contact.get("name") or "?", engine, body.channel,
+            body.trigger or "", (time.monotonic() - t0) * 1000,
+            len((msg or {}).get("body") or ""))
     return {"channel": body.channel, **msg}
 
 
@@ -619,14 +633,18 @@ def draft_stream(body: DraftIn, db: Session = Depends(get_db),
         wdb = SessionLocal()
         t0 = time.monotonic()
         streamed = False
+        body_chars = 0
+        resolved_name = nm or "?"
         try:
             wuser = wdb.query(models.User).get(user_id)
             orm = _find_contact_orm(wdb, wuser, cid)
             if orm is not None:
+                resolved_name = orm.name or resolved_name
                 from ..agents.relationship.pipeline.compose import drafting
                 for chunk in drafting.compose_stream(wdb, user_id, orm,
                                                      reason=trigger, channel=channel):
                     streamed = True
+                    body_chars += len(chunk)
                     yield f"event: token\ndata: {json.dumps({'t': chunk})}\n\n"
             if not streamed:
                 # No real contact (demo slug) or no key: emit the heuristic body
@@ -635,9 +653,21 @@ def draft_stream(body: DraftIn, db: Session = Depends(get_db),
                 contact = _find_contact(book, contact_id=cid, name=nm) or \
                     {"name": nm or "there", "title": "", "firm": "",
                      "interaction_history": ""}
+                resolved_name = contact.get("name") or resolved_name
                 msg = book_agent.draft_message_cached(
                     contact, trigger, channel=channel, user_name=name)
-                yield f"event: token\ndata: {json.dumps({'t': msg.get('body') or ''})}\n\n"
+                body = msg.get("body") or ""
+                body_chars = len(body)
+                yield f"event: token\ndata: {json.dumps({'t': body})}\n\n"
+            # Same narration /draft (above) sends -- this stream is
+            # DraftSheet's PRIMARY path (bookDraftStream is tried first;
+            # bookDraft only runs as a fallback when the stream fails to
+            # open), so without this a real Draft tap almost never reached
+            # the Observe activity log, only the rare fallback did.
+            from ..observe import askprobe
+            _narrate(askprobe.draft_tap, user_id, resolved_name,
+                    "shared" if streamed else "heuristic",
+                    channel, trigger or "", (time.monotonic() - t0) * 1000, body_chars)
             yield f"event: done\ndata: {json.dumps({'total_s': round(time.monotonic()-t0, 1)})}\n\n"
             _trace(f"POST /draft/stream user={user_id} to={nm!r} "
                    f"in {time.monotonic()-t0:.1f}s (streamed={streamed})")
@@ -676,23 +706,25 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
         from ..db import SessionLocal
         from ..agents.relationship.pipeline.compose import drafting
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        # Mirror this run's real steps into the Observe log. Fire-and-forget:
-        # backend/observe/bus.py swallows its own errors, so instrumentation
-        # can never break an ask.
+        # Mirror this run's real steps into the Observe log via _narrate --
+        # bus.publish itself swallows errors, but each askprobe.* function
+        # does real work (model-name/gate lookups, formatting) BEFORE that
+        # call, and an exception there is NOT swallowed unless the call site
+        # itself guards it. _narrate is that guard (see its own docstring).
         from ..observe import askprobe
         wdb = SessionLocal()
         t0 = time.monotonic()
         try:
             wuser = wdb.query(models.User).get(user_id)
             events.put(("status", {"phase": "selecting"}))
-            askprobe.ask_started(user_id, q)
+            _narrate(askprobe.ask_started, user_id, q)
             book = _load_book(wdb, wuser)
             contacts_orm = rel_agent.list_contacts(wdb, user_id)
-            askprobe.book_loaded(user_id, len(book), len(contacts_orm))
+            _narrate(askprobe.book_loaded, user_id, len(book), len(contacts_orm))
             t_sel = time.monotonic()
             res = book_agent.ask_agent(book, q)          # selection (Haiku, gated)
-            askprobe.selection_done(user_id, q, book, res,
-                                    (time.monotonic() - t_sel) * 1000)
+            _narrate(askprobe.selection_done, user_id, q, book, res,
+                    (time.monotonic() - t_sel) * 1000)
             res = enrich_book_ask(wuser, q, contacts_orm, res,
                                   force=(body.mode == "referral"))
             people = res.get("people") or []
@@ -760,7 +792,7 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
                 events.put(("person", {"index": idx, "contact_id": p.get("contact_id"),
                                        "name": p.get("name")}))
 
-            askprobe.drafting_started(user_id, len(targets), len(heuristic), inline)
+            _narrate(askprobe.drafting_started, user_id, len(targets), len(heuristic), inline)
             if targets or heuristic:
                 with ThreadPoolExecutor(max_workers=6) as ex:
                     futs = [ex.submit(_stream_one, idx, p, ctx) for idx, p, ctx in targets]
@@ -770,7 +802,7 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
                             fut.result()
                         except Exception:  # noqa: BLE001 : one bad draft must not sink the stream
                             pass
-            askprobe.ask_done(user_id, len(people), (time.monotonic() - t0) * 1000)
+            _narrate(askprobe.ask_done, user_id, len(people), (time.monotonic() - t0) * 1000)
             events.put(("done", {"total_s": round(time.monotonic() - t0, 1),
                                  "count": len(people),
                                  "network_hits": network_hits}))

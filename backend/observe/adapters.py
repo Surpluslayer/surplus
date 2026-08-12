@@ -128,7 +128,8 @@ def targeting_trace(db, user: models.User, contact: models.Contact) -> DecisionT
 
 # ── Relationship ─────────────────────────────────────────────────────────
 
-def _relationship_context(db, user: models.User, contact: models.Contact) -> dict:
+def _relationship_context(db, user: models.User, contact: models.Contact,
+                          *, as_of=None) -> dict:
     """Supplementary, UNSCORED relationship evidence -- real and computable
     from the current schema, but deliberately NOT folded into
     ranking_trace's weighted factors (that scoring system is already tested
@@ -150,8 +151,17 @@ def _relationship_context(db, user: models.User, contact: models.Contact) -> dic
     captured by historical_behavior), and "practice overlap" has no
     real meaning for a lawyer <-> non-lawyer Contact pair -- practice_fit
     (signal-category affinity) is the closest real analog and is already a
-    separate, scored factor."""
-    interactions = rt._all_interactions(db, contact.id)
+    separate, scored factor.
+
+    `as_of`, when given, is forwarded to _all_interactions as an inclusive
+    cutoff (see that function's own `<=` semantics) -- pass a timestamp
+    strictly BEFORE the interaction you're evaluating context FOR, or that
+    interaction counts as its own relationship history (backend/observe/
+    funnel.py's record_signal_funnel needs this: called synchronously right
+    after a signal is detected, the freshly emitted row is already flushed
+    and queryable, so an unfiltered call would make every contact's very
+    FIRST signal look like it already had relationship context)."""
+    interactions = rt._all_interactions(db, contact.id, as_of=as_of)
     duration_days = None
     if interactions:
         first = interactions[0].occurred_at
