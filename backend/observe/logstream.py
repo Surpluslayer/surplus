@@ -350,22 +350,10 @@ def feedback_loop_status(db, user):
                f"{len(tax.ALL_SIGNAL_CATEGORIES)} signal categories")
 
 
-def _latest_draft_text(db, user, contact) -> tuple:
-    """The real drafted message for this contact -- the SAME text the product
-    shows, so the jurisdiction check below applies to what a lawyer would
-    actually send.
-
-    Two sources, in the order the product itself resolves them:
-      1. meta_json["draft"] on the newest detected-signal interaction. This
-         is where production's updates_engine.autodraft() stores a
-         pre-written follow-up; there is no drafts table.
-      2. The live composer, when no stored draft exists (generated cohort
-         rows carry signal metadata but no draft body). Reuses
-         pipeline.compose.drafting.compose_followup -- the same call
-         routes/book.py's /draft endpoint makes -- rather than
-         reimplementing drafting here.
-    Returns (text, source_label, interaction_id|None).
-    """
+def _stored_draft(db, contact) -> tuple:
+    """The pre-written follow-up production's updates_engine.autodraft()
+    stashes on the detected-signal interaction's meta_json. There is no
+    drafts table -- that key IS the store."""
     import json
     from sqlalchemy import select
     from .. import models
@@ -381,35 +369,111 @@ def _latest_draft_text(db, user, contact) -> tuple:
         except Exception:  # noqa: BLE001
             continue
         if meta.get("draft"):
-            return meta["draft"], "meta_json.draft (updates_engine.autodraft)", r.id
+            return meta["draft"], r.id
+    return None, None
 
-    try:
+
+# How often to emit a progress line while tokens stream in. Every delta would
+# be hundreds of lines for one short message; this keeps the log readable
+# while still moving continuously, the way a build step's output does.
+_STREAM_PROGRESS_EVERY_CHARS = 60
+
+
+def draft_events(db, user, contact, out: dict, channel: str = "linkedin_dm"):
+    """Resolve the drafted message, STREAMING what the composer actually does.
+
+    Drafting is the slowest and least deterministic thing in this trace -- an
+    LLM call in the host's voice -- and it was previously invisible: the log
+    jumped from the ranking straight to a finished draft, so the one part
+    genuinely working in real time was the one part with no output. Now each
+    real step reports itself: which source resolved the draft, whether a model
+    key exists at all, which model, when the first token landed, and progress
+    as the body materializes.
+
+    Writes the result into `out` ("text", "source", "interaction_id") because
+    a generator's return value isn't reachable from a `yield from`.
+    """
+    stored, iid = _stored_draft(db, contact)
+    if stored:
+        yield line(OK, "backend.agents.relationship.updates_engine:autodraft",
+                   f"draft: reusing stored autodraft ({len(stored)} chars, "
+                   f"interaction_id={iid}) -- no model call needed")
+        out.update(text=stored, source="meta_json.draft (updates_engine.autodraft)",
+                   interaction_id=iid)
+        return
+
+    from ..agents.relationship.book import _anthropic_available
+    if not _anthropic_available():
+        yield line(WARN, "backend.agents.relationship.book:_anthropic_available",
+                   "ANTHROPIC_API_KEY is not set -- no model call is possible in this "
+                   "environment; falling back to the deterministic heuristic drafter")
+    else:
+        from ..agents import llm
         from ..agents.relationship.pipeline.compose import drafting
-        msg = drafting.compose_followup(db, user.id, contact,
-                                        reason="catching up", channel="linkedin_dm")
-        if msg and msg.get("body"):
-            return msg["body"], "pipeline.compose.drafting:compose_followup (live)", None
-    except Exception:  # noqa: BLE001
-        pass
+        yield line(STEP, "backend.agents.relationship.pipeline.compose.drafting:compose_stream",
+                   f"composing draft live · model={llm.MODEL} · channel={channel} "
+                   f"· streaming token-by-token")
+        t0 = time.perf_counter()
+        first_ms = None
+        chunks = 0
+        buf = []
+        emitted_at = 0
+        try:
+            for delta in drafting.compose_stream(db, user.id, contact,
+                                                  reason="catching up", channel=channel):
+                if first_ms is None:
+                    first_ms = (time.perf_counter() - t0) * 1000.0
+                    yield line(INFO, "backend.agents.relationship.book:stream_text",
+                               f"  first token after {first_ms:.0f}ms")
+                chunks += 1
+                buf.append(delta)
+                n = sum(len(b) for b in buf)
+                if n - emitted_at >= _STREAM_PROGRESS_EVERY_CHARS:
+                    emitted_at = n
+                    yield line(INFO, "backend.agents.relationship.book:stream_text",
+                               f"  streaming… {n} chars / {chunks} deltas")
+            body = "".join(buf).strip()
+        except Exception as exc:  # noqa: BLE001 -- streaming is best-effort
+            body = ""
+            yield line(ERR, "backend.agents.relationship.book:stream_text",
+                       f"  stream failed: {type(exc).__name__}: {exc}")
+
+        total_ms = (time.perf_counter() - t0) * 1000.0
+        if body:
+            yield line(OK, "backend.agents.relationship.pipeline.compose.drafting:compose_stream",
+                       f"draft composed: {len(body)} chars in {total_ms:.0f}ms "
+                       f"({chunks} deltas"
+                       + (f", first token {first_ms:.0f}ms)" if first_ms else ")"))
+            out.update(text=body, source=f"drafting:compose_stream (live, {llm.MODEL})",
+                       interaction_id=None)
+            return
+        yield line(WARN, "backend.agents.relationship.pipeline.compose.drafting:compose_stream",
+                   f"model returned nothing after {total_ms:.0f}ms -- falling back to the "
+                   "deterministic heuristic drafter")
 
     # Same last resort routes/book.py's /draft endpoint uses when the shared
-    # composer returns nothing (no ANTHROPIC_API_KEY, or a miss): the
-    # deterministic heuristic drafter. Without this the jurisdiction check
-    # has no message to inspect on any environment without a model key.
+    # composer returns nothing (no key, or a miss): the heuristic drafter.
     try:
         from ..agents.relationship import book as book_agent
         from ..routes.book import _find_contact_fast
+        t0 = time.perf_counter()
         cdict = _find_contact_fast(db, user, str(contact.id))
         if cdict:
             msg = book_agent.draft_message_cached(
-                cdict, "catching up", channel="linkedin_dm",
+                cdict, "catching up", channel=channel,
                 user_name=(getattr(user, "name", None) or "").split(" ")[0] or "there")
             if msg and msg.get("body"):
-                return (msg["body"],
-                        "agents.relationship.book:draft_message_cached (heuristic)", None)
-    except Exception:  # noqa: BLE001
-        pass
-    return None, None, None
+                yield line(OK, "backend.agents.relationship.book:draft_message_cached",
+                           f"draft: heuristic drafter produced {len(msg['body'])} chars "
+                           f"in {(time.perf_counter() - t0) * 1000:.0f}ms (no model call)")
+                out.update(text=msg["body"],
+                           source="book:draft_message_cached (heuristic, deterministic)",
+                           interaction_id=None)
+                return
+    except Exception as exc:  # noqa: BLE001
+        yield line(ERR, "backend.agents.relationship.book:draft_message_cached",
+                   f"heuristic drafter failed: {type(exc).__name__}: {exc}")
+    out.update(text=None, source=None, interaction_id=None)
 
 
 def jurisdiction_events(db, user, contact, channel: str = "linkedin_dm"):
@@ -504,12 +568,19 @@ def jurisdiction_events(db, user, contact, channel: str = "linkedin_dm"):
                    "no message-body check needed")
         return
 
-    draft, draft_src, interaction_id = _latest_draft_text(db, user, contact)
+    # Resolving the draft is itself real work (often a live model call), so it
+    # streams its own progress rather than appearing as a finished string.
+    resolved: dict = {}
+    for ev in draft_events(db, user, contact, resolved, channel):
+        yield ev
+    draft = resolved.get("text")
+    draft_src, interaction_id = resolved.get("source"), resolved.get("interaction_id")
+
     if not draft:
-        yield line(WARN, "backend.observe.logstream:_latest_draft_text",
+        yield line(WARN, "backend.observe.logstream:draft_events",
                    f"{rule.state} requires a {rule.disclosure_text!r} label, but no drafted "
-                   "message could be resolved for this contact (no stored draft, and the "
-                   "live composer returned nothing)")
+                   "message could be resolved for this contact (no stored draft, and no "
+                   "composer produced one)")
         return
 
     yield line(STEP, "backend.observe.logstream:jurisdiction_events",
