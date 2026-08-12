@@ -170,12 +170,24 @@ def _signal_relevance(signal, *, as_of: datetime | None = None) -> RankingFactor
 
 
 def _practice_fit(user, signal) -> RankingFactor:
+    """Two sources for `category`, tried in order: backend/demo/cohort.py's
+    own `signal_category` meta key (demo-cohort data only), then, when that's
+    absent, a real mapping off PRODUCTION's actual interaction_type +
+    meta_json fields (tax.production_signal_category) -- so this factor is
+    genuinely computed on a real account's book, not permanently pinned to
+    the neutral 0.5 fallback. `category_source` in the evidence says
+    honestly which path produced the category (or that neither did)."""
     meta = json.loads(signal.meta_json or "{}") if signal and signal.meta_json else {}
     category = meta.get("signal_category")
+    category_source = "demo_signal_category" if category else None
+    if not category and signal is not None:
+        category = tax.production_signal_category(getattr(signal, "interaction_type", None), meta)
+        category_source = "production_interaction_type" if category else "unmapped"
     aff = tax.affinity(getattr(user, "practice_area", None), category)
     return RankingFactor("practice_fit", aff, {
         "lawyer_practice_area": getattr(user, "practice_area", None),
         "signal_category": category, "affinity_source": "seed_table",
+        "category_source": category_source,
     })
 
 

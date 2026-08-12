@@ -66,6 +66,56 @@ SIGNAL_AFFINITY_SEED: dict[str, dict[str, float]] = {
 }
 
 
+# Production's REAL interaction_type/meta_json vocabulary (confirmed by
+# direct trace of agents/relationship/updates_engine.py's _emit call sites --
+# never signal_category/signal_kind, which is demo-cohort-only): job_change
+# rows carry new_title/new_company/prev_company; new_post rows carry
+# milestone_type. Mapped here onto this table's EXISTING fine-grained
+# categories so practice_fit is computed the same way regardless of whether
+# the underlying row came from backend/demo/cohort.py or a real production
+# detection sweep -- one affinity table, two ways to arrive at a category.
+_JOB_TITLE_KEYWORDS = (
+    (("general counsel", " gc ", "gc,"), "gc_appointment"),
+    (("founder", "co-founder"), "founder_departure"),
+)
+_MILESTONE_KEYWORDS = (
+    (("acqui",), "acquisition_announced"),
+    # "invest" alone is a substring of "investigation" -- "investor"/
+    # "investment" are specific enough not to collide with the regulatory
+    # bucket below (a real false positive caught by this module's own tests).
+    (("fund", "raise", "investor", "investment"), "funding_announcement"),
+    (("litigat", "lawsuit", "suit"), "litigation_filed"),
+    (("regulat", "investigation"), "regulatory_action"),
+    (("launch", "product"), "product_launch"),
+)
+
+
+def production_signal_category(interaction_type: str | None, meta: dict) -> str | None:
+    """Best-effort mapping from a PRODUCTION RelationshipInteraction's real
+    interaction_type + meta_json shape onto this module's fine-grained
+    category taxonomy. Returns None -- not a guess -- when no honest mapping
+    exists: production's `promotion`/`profile_update`/`account_cooling`
+    kinds have no fine-grained bucket here, and affinity() already treats a
+    None category as neutral 0.5 rather than a fabricated confidence."""
+    if interaction_type == "job_change":
+        title = (meta.get("new_title") or "").lower()
+        if not title:
+            return None
+        for keywords, category in _JOB_TITLE_KEYWORDS:
+            if any(k in title for k in keywords):
+                return category
+        return "exec_appointment"
+    if interaction_type == "new_post":
+        milestone = (meta.get("milestone_type") or "").lower()
+        if not milestone:
+            return None
+        for keywords, category in _MILESTONE_KEYWORDS:
+            if any(k in milestone for k in keywords):
+                return category
+        return None
+    return None
+
+
 def affinity(practice_area: str | None, signal_category: str | None) -> float:
     """Look up the (practice_area, signal_category) affinity. Unknown or
     unset inputs return a neutral 0.5 -- fail toward "uninformative", not

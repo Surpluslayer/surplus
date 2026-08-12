@@ -498,6 +498,10 @@ function TodayView({ feed, err, user, onReload, onAccount, onAdd, onOpen, onDraf
           <div className="bk-group">
             {updates.map((u, i) => (
               <div key={`u${i}`}
+                   data-observe-type={u.update_id != null ? "signal" : "lawyer"}
+                   data-observe-id={u.update_id != null ? u.update_id : u.contact_id}
+                   data-observe-contact-id={u.contact_id}
+                   data-observe-name={u.name}
                    className={"bk-upd" + (_is_new(u.detected_at, seenAtRef.current) ? " bk-upd--pop" : "")}>
                 <Row onOpen={u.contact_id ? () => onOpen(u) : null}>
                   <div className="bk-main">
@@ -524,7 +528,9 @@ function TodayView({ feed, err, user, onReload, onAccount, onAdd, onOpen, onDraf
           <SectionHead label="Needs outreach" count={needs.length} />
           <div className="bk-group">
             {needs.map((n, i) => (
-              <Row key={`n${i}`} onOpen={n.contact_id ? () => onOpen(n) : null}>
+              <Row key={`n${i}`} onOpen={n.contact_id ? () => onOpen(n) : null}
+                   data-observe-type="lawyer" data-observe-id={n.contact_id}
+                   data-observe-contact-id={n.contact_id} data-observe-name={n.name}>
                 <div className="bk-main">
                   <p className="bk-name">{n.name}<StarToggle contactId={n.contact_id} vip={n.vip} /></p>
                   <p className="bk-sub">{n.reason}</p>
@@ -662,7 +668,9 @@ function BookView({ feed, err, user, onReload, onAccount, onAdd, onOpen, onDraft
         <>
           <div className="bk-group">
             {visible.map((r, i) => (
-              <Row key={i} onOpen={() => onOpen(r)}>
+              <Row key={i} onOpen={() => onOpen(r)}
+                   data-observe-type="lawyer" data-observe-id={r.contact_id}
+                   data-observe-contact-id={r.contact_id} data-observe-name={r.name}>
                 <div className="bk-main">
                   <p className="bk-name">{r.name}<StarToggle contactId={r.contact_id} vip={r.vip} /></p>
                   <p className="bk-sub">{[r.title, r.firm].filter(Boolean).join(" · ")}</p>
@@ -743,7 +751,8 @@ function RelationshipScreen({ row, onBack, onDeleted, isDemo = false }) {
   ].filter(Boolean).join(" · ");
 
   return (
-    <div className="bk-scroll">
+    <div className="bk-scroll" data-observe-type="lawyer" data-observe-id={id}
+         data-observe-contact-id={id} data-observe-name={row?.name || d?.name}>
       <div className="bk-detail-head">
         <button className="bk-back" onClick={onBack} aria-label="Back to book"><ChevronLeft size={20} /></button>
         <span className="bk-crumb">Your book</span>
@@ -1711,7 +1720,9 @@ function AskBar({ variant, mode = "book", onOpen, onDraft, onRoute, pendingAsk }
           {mode !== "referral" && (res.people || []).length > 0 && (
             <div className="bk-answer-people">
               {res.people.map((p, i) => (
-                <div key={i} className="bk-answer-person">
+                <div key={i} className="bk-answer-person"
+                     data-observe-type="lawyer" data-observe-id={p.contact_id}
+                     data-observe-contact-id={p.contact_id} data-observe-name={p.name}>
                   <div className="bk-ap-main">
                     <div className="bk-ap-name">{p.name}</div>
                     {p.reason && <div className="bk-ap-reason">{p.reason}</div>}
@@ -1958,10 +1969,18 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
 
 // ── shared bits ────────────────────────────────────────────────────────────────
 
-function Row({ children, onOpen }) {
+// `...rest` forwards any extra props (e.g. data-observe-* attributes) as
+// plain DOM attributes. Additive only -- no existing caller passes extra
+// props, so this changes nothing for them; it exists so a row can be
+// addressed by something outside this component without changing its
+// markup shape (`.bk-row + .bk-row` is an adjacent-sibling CSS selector for
+// the border between rows -- wrapping a Row in another element instead of
+// extending it would silently break that separator).
+function Row({ children, onOpen, ...rest }) {
   return (
     <div className={"bk-row" + (onOpen ? " bk-row--tap" : "")}
-         onClick={onOpen || undefined} role={onOpen ? "button" : undefined}>
+         onClick={onOpen || undefined} role={onOpen ? "button" : undefined}
+         {...rest}>
       {children}
     </div>
   );
