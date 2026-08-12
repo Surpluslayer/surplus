@@ -302,6 +302,7 @@ def init_db() -> None:
         _migrate_user_practice_area,
         _migrate_observe_activity_table,
         _migrate_funnel_events_table,
+        _migrate_signal_affinity_table,
     ]
 
     # Schema-revision sentinel: the loop below plus create_all's checkfirst is
@@ -1935,6 +1936,14 @@ def _migrate_observe_activity_table() -> None:
     create_all and pick the new table up. Without it, the model would exist in
     code and the table would never appear in production, because the
     schema_rev sentinel skips create_all entirely on a matching revision."""
+    return
+
+
+def _migrate_signal_affinity_table() -> None:
+    """No-op beyond bumping the schema revision, for models.SignalAffinity --
+    the learned practice-area x signal-category counts. Plain new table, so
+    create_all builds it; appending here is what makes an already-stamped
+    database re-run create_all and pick it up."""
     return
 
 

@@ -644,11 +644,12 @@ def feedback_loop_status(db, user):
     lawyer's own past engagement per signal category does move their next
     score. That is a real, live loop and the log says so.
 
-    What is NOT closed: signal_taxonomy.affinity() still returns SEED values.
-    update_affinity_from_outcomes() exists and is tested, but nothing in
-    production calls it -- verified by grep, not assumed. So the cross-lawyer
-    taxonomy does not improve with usage yet, and any claim that it does
-    would be false."""
+    The cross-lawyer taxonomy is now closed too, but only as far as the
+    evidence goes. affinity() blends the seed prior with counts learned from
+    REAL recorded outcomes (agents/relationship/outcomes.py writes one when a
+    lawyer actually sends or snoozes; the affinity_refresh sweep aggregates
+    them). With no outcomes yet it is still exactly the seed, and this says
+    so with the count rather than implying the table has learned something."""
     import json
     from sqlalchemy import select
     from .. import models
@@ -674,13 +675,30 @@ def feedback_loop_status(db, user):
     yield line(OK if resolved else WARN, "backend.demo.ranking_trace:_historical_behavior",
                f"  CLOSED: {resolved} resolved outcomes for this lawyer feed "
                f"historical_behavior on their next score")
-    yield line(WARN, src,
-               "  OPEN:   signal_taxonomy.affinity() returns SEED priors -- "
-               "update_affinity_from_outcomes() is implemented and tested but is not "
-               "called anywhere in production, so the cross-lawyer taxonomy does not "
-               "yet improve with usage")
+    learned = tax.load_learned(db)
+    observed = sum(total for _engaged, total in learned.values())
+    if observed:
+        yield line(OK, src,
+                   f"  CLOSED: signal_taxonomy.affinity() blends {len(learned)} learned "
+                   f"(practice_area, signal_category) pairs over {observed} recorded "
+                   f"outcomes into the seed prior (prior_strength="
+                   f"{tax.PRIOR_STRENGTH} pseudo-observations)")
+        for (area, cat), (engaged, total) in sorted(
+                learned.items(), key=lambda kv: -kv[1][1])[:5]:
+            seed = tax.seed_affinity(area, cat)
+            now = tax.blended_affinity(area, cat, engaged, total)
+            yield line(INFO, src,
+                       f"    {area}/{cat:<24} seed {seed:.2f} → {now:.2f}  "
+                       f"({engaged}/{total} engaged)")
+    else:
+        yield line(WARN, src,
+                   "  SEED ONLY: no recorded outcomes yet, so affinity() returns the "
+                   "seed prior unchanged. Outcomes are written when a lawyer sends "
+                   "(approved_as_is / edited_then_sent) or snoozes (discarded); the "
+                   "affinity_refresh sweep aggregates them. Undecided drafts are "
+                   "deliberately NOT counted as rejections")
     yield line(INFO, src,
-               f"  affinity table version={tax.__name__} seed · "
+               f"  affinity table version={tax.__name__} · "
                f"{len(tax.SIGNAL_AFFINITY_SEED)} practice areas × "
                f"{len(tax.ALL_SIGNAL_CATEGORIES)} signal categories")
 

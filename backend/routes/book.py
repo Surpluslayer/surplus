@@ -1687,7 +1687,22 @@ def snooze_contact_endpoint(
     Their dated triggers (birthday) still surface. Owner-scoped (404 if not owned)."""
     _owned_contact(db, contact_id, user)
     from ..agents.relationship.pipeline.proactive import cadence
-    return cadence.snooze_contact(db, user.id, contact_id, days=days)
+    result = cadence.snooze_contact(db, user.id, contact_id, days=days)
+    # A real decision on a surfaced draft: the lawyer saw it and chose not to
+    # act. This is one of only two places production records an outcome, and
+    # it is what lets signal_taxonomy learn a rate rather than only positives.
+    from ..agents.relationship import outcomes
+    outcomes.record_outcome_safely(db, user.id, contact_id, disposition="discarded")
+    return result
+
+
+def _record_send_outcome(db, user, contact_id: int, sent_text: str) -> None:
+    """A real send closes the outcome loop for whichever drafted follow-up
+    prompted it. The disposition is DERIVED, not asked for: identical to the
+    stored draft means approved_as_is, changed means edited_then_sent. Guarded
+    -- a bookkeeping failure must never turn a successful send into an error."""
+    from ..agents.relationship import outcomes
+    outcomes.record_outcome_safely(db, user.id, contact_id, sent_body=sent_text)
 
 
 @relationships_router.delete("/contacts/{contact_id}/snooze")
@@ -1998,6 +2013,7 @@ def schedule_contact_followup(
             if res.error and res.state == "failed":
                 raise HTTPException(409, _send_fail_hint(res.error, contact.name, "Email"))
             booked = _fire_booking_after_send(db, user, contact, booking_payload, text)
+            _record_send_outcome(db, user, contact_id, text)
             return {"status": "sent", "contact_id": contact_id,
                     "prospect_id": prospect.id, "channel": "email",
                     "dry_run": res.dry_run, **({"booking": booked} if booked else {})}
@@ -2010,6 +2026,7 @@ def schedule_contact_followup(
         if getattr(res, "error", None):
             raise HTTPException(409, _send_fail_hint(res.error, contact.name))
         booked = _fire_booking_after_send(db, user, contact, booking_payload, text)
+        _record_send_outcome(db, user, contact_id, text)
         return {"status": "sent", "contact_id": contact_id,
                 "prospect_id": prospect.id, "message": text,
                 **({"booking": booked} if booked else {})}

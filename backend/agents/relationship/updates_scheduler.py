@@ -56,6 +56,16 @@ def _demo_purge_gap_seconds() -> int:
     return max(300, int(os.environ.get("DEMO_PURGE_GAP_SECONDS", "3600")))
 
 
+def _affinity_gap_seconds() -> int:
+    """How often to recompute the learned signal-affinity table. Daily by
+    default: it is an aggregate over accumulated outcomes, so recomputing it
+    more often just re-reads the same rows."""
+    try:
+        return max(300, int((os.environ.get("AFFINITY_REFRESH_GAP_SECONDS") or "86400").strip()))
+    except ValueError:
+        return 86400
+
+
 def _referral_vest_gap_seconds() -> int:
     # How often to vest due referral rewards (default hourly). The clawback hold
     # is measured in days, so an hourly grant is more than timely enough.
@@ -218,6 +228,27 @@ def _run_once() -> dict:
     # any referral whose clawback hold has cleared with no refund. Hourly is
     # plenty (the hold is measured in days); idempotent, so a double-run can't
     # double-grant.
+    # Learned signal affinity, on its own claim. This is the sweep that makes
+    # signal_taxonomy accumulate: it aggregates the dispositions that
+    # agents/relationship/outcomes.py records when a lawyer actually sends or
+    # snoozes, and persists engaged/total per (practice_area, signal_category).
+    # Without it the function existed, was tested, and never ran -- which
+    # Observe reported as an OPEN loop rather than pretending otherwise.
+    if _claim("affinity_refresh", _affinity_gap_seconds()):
+        try:
+            from ...db import SessionLocal
+            from ...demo import signal_taxonomy as tax
+            adb = SessionLocal()
+            try:
+                stats = tax.refresh_from_outcomes(adb)
+                if stats.get("pairs"):
+                    print(f"[updates.scheduler] affinity refreshed: {stats}", flush=True)
+            finally:
+                adb.close()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[updates.scheduler] affinity refresh failed: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+
     if _claim("referral_vest", _referral_vest_gap_seconds()):
         try:
             from ...db import SessionLocal

@@ -2084,3 +2084,35 @@ class ObserveActivity(Base):
     msg: Mapped[str] = mapped_column(Text)
     # Any structured extras the probe attached, as a JSON object string.
     extra_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class SignalAffinity(Base):
+    """Learned practice-area x signal-category affinity, accumulated from REAL
+    recorded outcomes (backend/agents/relationship/outcomes.py).
+
+    backend/demo/signal_taxonomy.py ships a SEED table -- a documented prior,
+    honestly labelled as a guess. This table is what makes the claim "the
+    taxonomy improves with usage" true rather than aspirational: it stores the
+    observed engaged/total counts per (practice_area, signal_category), and
+    affinity() blends them into the seed prior.
+
+    Counts only. No message text, no contact, no lawyer identity -- the point
+    is a cross-account prior about which signal kinds are worth acting on for
+    a given practice area, and that needs nothing more than two integers.
+    """
+    __tablename__ = "signal_affinity"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    practice_area: Mapped[str] = mapped_column(String(40), index=True)
+    signal_category: Mapped[str] = mapped_column(String(40), index=True)
+    # Outcomes where the lawyer acted (sent, with or without edits).
+    engaged: Mapped[int] = mapped_column(default=0)
+    # Outcomes with ANY recorded disposition. Drafts nobody has decided on yet
+    # are excluded entirely rather than counted as rejections -- "not yet
+    # looked at" is not evidence of disinterest.
+    total: Mapped[int] = mapped_column(default=0)
+    updated_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("practice_area", "signal_category", name="uq_signal_affinity_pair"),
+    )
