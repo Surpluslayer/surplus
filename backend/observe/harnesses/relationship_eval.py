@@ -87,6 +87,7 @@ def case_inspection(db, user, contact, candidates: list) -> dict:
     score, and the observed outcome -- Observe spec section 6's "strongest
     technical demo in the entire system"."""
     from ... import models
+    from ...agents.relationship import outcomes as _outcomes
     from ...demo import ranking_trace as rt
 
     trace = rt.compute_trace(db, user, contact)
@@ -95,13 +96,16 @@ def case_inspection(db, user, contact, candidates: list) -> dict:
 
     ablated = ablation.ablate_one(db, user, contact, candidates, remove_group="relationship")
 
-    outcome_row = db.execute(
+    # Both draft shapes -- see agents/relationship/outcomes.py. A real
+    # contact's only draft is usually the production shape, not the
+    # demo-cohort title this used to match exclusively.
+    candidate_rows = db.execute(
         select(models.RelationshipInteraction)
         .where(models.RelationshipInteraction.contact_id == contact.id,
-               models.RelationshipInteraction.title.like("Drafted follow-up%"))
+               _outcomes.drafted_filter())
         .order_by(models.RelationshipInteraction.occurred_at.desc())
-        .limit(1)
-    ).scalar_one_or_none()
+    ).scalars().all()
+    outcome_row = next((r for r in candidate_rows if _outcomes.is_drafted(r)), None)
     outcome = None
     if outcome_row is not None:
         meta = json.loads(outcome_row.meta_json or "{}")

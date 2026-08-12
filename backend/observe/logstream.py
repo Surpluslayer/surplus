@@ -904,19 +904,24 @@ def feedback_loop_status(db, user):
     import json
     from sqlalchemy import select
     from .. import models
+    from ..agents.relationship import outcomes as _outcomes
     from ..demo import signal_taxonomy as tax
 
     src = "backend.demo.signal_taxonomy"
     yield line(STEP, "backend.observe.logstream:feedback_loop_status",
                "outcome → ranking loop status")
 
+    # Both draft shapes -- see account_events() above for why counting only
+    # the demo-cohort title here would silently disagree with that line.
     rows = db.execute(
         select(models.RelationshipInteraction)
         .where(models.RelationshipInteraction.actor_user_id == user.id,
-               models.RelationshipInteraction.title.like("Drafted follow-up%"))
+               _outcomes.drafted_filter())
     ).scalars().all()
     resolved = 0
     for r in rows:
+        if not _outcomes.is_drafted(r):
+            continue
         try:
             if json.loads(r.meta_json or "{}").get("disposition"):
                 resolved += 1

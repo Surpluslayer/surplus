@@ -108,6 +108,33 @@ def test_relationship_eval_case_inspection_matches_ablate_one(db, cohort_id):
     assert "with_relationship" in case and "without_relationship" in case
 
 
+def test_relationship_eval_case_inspection_reads_a_production_shaped_draft(db, cohort_id):
+    """A real contact's draft lives on an activity_update row's meta_json,
+    not the demo cohort's separately titled "Drafted follow-up" row -- match
+    only the demo title here and observed_outcome comes back None even
+    though a real disposition was recorded."""
+    import json
+    from datetime import datetime, timezone
+    from backend import models
+    from sqlalchemy import select
+
+    user = db.execute(select(models.User)).scalars().first()
+    contacts = db.execute(select(models.Contact).where(
+        models.Contact.user_id == user.id)).scalars().all()
+    contact = contacts[0]
+    db.add(models.RelationshipInteraction(
+        actor_user_id=user.id, contact_id=contact.id,
+        occurred_at=datetime.now(timezone.utc),
+        source_type="activity_update", interaction_type="job_change",
+        title="Changed roles",
+        meta_json=json.dumps({"draft": "hello", "disposition": "approved_as_is",
+                              "engaged": True})))
+    db.commit()
+
+    case = relationship_eval.case_inspection(db, user, contact, contacts)
+    assert case["observed_outcome"] == {"engaged": True, "disposition": "approved_as_is"}
+
+
 # ── signal library evaluation ───────────────────────────────────────────
 
 def test_signal_library_classification_eval_is_real_and_scored(db, cohort_id):

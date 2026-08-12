@@ -259,6 +259,12 @@ def _sse(gen_events):
         except Exception as exc:  # noqa: BLE001
             payload = {"detail": f"{type(exc).__name__}: {exc}"}
             yield f"event: error\ndata: {json.dumps(payload)}\n\n"
+            # Without this, the generator just ends and the browser's
+            # EventSource treats that as a dropped connection: it
+            # auto-reconnects and reruns the whole boot/contact trace,
+            # forever, since onDone() (the only thing that calls es.close())
+            # never fires on the error path otherwise.
+            yield "event: done\ndata: {}\n\n"
         finally:
             wdb.close()
     return StreamingResponse(gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
