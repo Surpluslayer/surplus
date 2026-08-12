@@ -92,6 +92,20 @@ _MILESTONE_KEYWORDS = (
 )
 
 
+# Production's ACTUAL milestone vocabulary, from updates_engine._POST_SYSTEM:
+#   "type":"raise|launch|role|award|milestone"
+# Only two of those five ever matched the keyword table below ("raise" ->
+# funding, "launch" -> product), so `role`, `award` and `milestone` fell
+# through to None and every such signal logged "unclassified" -- which pins
+# practice_fit at a neutral 0.5 and leaves historical_behavior with "no signal
+# category to compare against". `role` has an honest home here. `award` and
+# `milestone` genuinely do not: this taxonomy has eight categories and none of
+# them means "generic good news", so they stay None rather than being forced
+# into the nearest-looking bucket.
+_PRODUCTION_MILESTONE_TYPES = {"raise", "launch", "role", "award", "milestone"}
+_NO_HONEST_BUCKET = {"award", "milestone"}
+
+
 def production_signal_category(interaction_type: str | None, meta: dict) -> str | None:
     """Best-effort mapping from a PRODUCTION RelationshipInteraction's real
     interaction_type + meta_json shape onto this module's fine-grained
@@ -114,8 +128,41 @@ def production_signal_category(interaction_type: str | None, meta: dict) -> str 
         for keywords, category in _MILESTONE_KEYWORDS:
             if any(k in milestone for k in keywords):
                 return category
+        if milestone == "role":
+            # A role announced in a post is the same event a job_change row
+            # describes, so reuse that reading rather than inventing a
+            # parallel one -- headline/summary carry the title text here.
+            text = f"{meta.get('headline') or ''} {meta.get('summary') or ''}".lower()
+            for keywords, category in _JOB_TITLE_KEYWORDS:
+                if any(k in text for k in keywords):
+                    return category
+            return "exec_appointment"
         return None
     return None
+
+
+def unmapped_reason(interaction_type: str | None, meta: dict) -> str:
+    """Why production_signal_category() returned None, in terms an engineer can
+    act on. "no mapping for this interaction_type/milestone_type" without the
+    VALUES is not actionable -- it took reading _POST_SYSTEM to discover that
+    three of production's five milestone types had no bucket at all."""
+    if interaction_type == "job_change":
+        return ("job_change with no new_title on meta_json -- nothing to read a "
+                "seniority bucket from")
+    if interaction_type == "new_post":
+        milestone = (meta.get("milestone_type") or "").lower()
+        if not milestone:
+            return "new_post with no milestone_type on meta_json"
+        if milestone in _NO_HONEST_BUCKET:
+            return (f"milestone_type={milestone!r} -- a real production value with no "
+                    f"honest bucket among this taxonomy's {len(ALL_SIGNAL_CATEGORIES)} "
+                    f"categories (none of them means 'generic good news'), so it is "
+                    f"left unclassified rather than forced into the nearest one")
+        return (f"milestone_type={milestone!r} is outside production's known set "
+                f"{sorted(_PRODUCTION_MILESTONE_TYPES)}")
+    return (f"interaction_type={interaction_type!r} has no fine-grained category "
+            f"in this taxonomy (production also emits promotion / profile_update / "
+            f"account_cooling, none of which map)")
 
 
 # How much observed evidence it takes to move a seed value meaningfully.

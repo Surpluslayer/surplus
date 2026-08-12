@@ -148,9 +148,16 @@ def _signal_library(db, contact) -> tuple:
         category = tax.production_signal_category(signal.interaction_type, meta)
         category_source = "production_interaction_type" if category else None
     if not category:
+        # Name the VALUES that failed to map. The old wording said only that
+        # there was "no mapping for this interaction_type/milestone_type",
+        # which is unactionable -- it took reading updates_engine._POST_SYSTEM
+        # to discover that three of production's five milestone types
+        # (role/award/milestone) had no bucket at all.
         return ("warning", "unclassified",
-                {"interaction_type": signal.interaction_type, "signal_kind": meta.get("signal_kind")},
-                "no fine-grained category mapping for this interaction_type/milestone_type")
+                {"interaction_type": signal.interaction_type,
+                 "milestone_type": meta.get("milestone_type"),
+                 "signal_kind": meta.get("signal_kind")},
+                tax.unmapped_reason(signal.interaction_type, meta))
     return ("success", f"classified as {category}",
             {"signal_category": category, "category_source": category_source,
              "signal_kind": meta.get("signal_kind")}, None)
