@@ -122,6 +122,87 @@ class RankingTrace:
         }
 
 
+@dataclass
+class RankingData:
+    """Everything the factors need, fetched in bulk ONCE for a ranking run.
+
+    The per-factor helpers below each did their own query, per contact. That
+    is fine for one trace and quadratic for a ranking: scoring 60 candidates
+    issued 2 queries per candidate, and the ablation loop re-ran the whole
+    thing 8 more times (4 levers x full/without), so one contact click cost
+    ~1,560 queries. Worse, _historical_behavior's query is account-wide --
+    every "Drafted follow-up" row this lawyer ever produced -- so a book with
+    ~660 drafts re-fetched and re-JSON-parsed all 660 of them once per
+    candidate per pass: ~200,000 parses for a single click. On a networked
+    Postgres that measured ~150s.
+
+    This is a pure caching layer: same rows, same filters, same arithmetic --
+    just fetched once. `as_of` is baked in at prefetch time, so a
+    point-in-time replay stays point-in-time (the harness that guards against
+    future leakage still passes untouched).
+    """
+    interactions: dict = field(default_factory=dict)      # contact_id -> ascending rows
+    latest_signal: dict = field(default_factory=dict)     # contact_id -> row | None
+    # signal_category -> (seen, saved, dismissed), account-wide
+    behavior: dict = field(default_factory=dict)
+
+
+# SQLite caps host parameters per statement (999 on older builds), so a book
+# larger than that would blow up an IN (...) of every contact id.
+_ID_CHUNK = 400
+
+
+def prefetch(db, user, contacts: list, *, as_of: datetime | None = None) -> RankingData:
+    """Bulk-load what compute_trace needs for `contacts`. Two queries plus one
+    chunk per 400 contacts, instead of two per contact."""
+    ids = [c.id for c in contacts]
+    cutoff = _aware(as_of) if as_of is not None else None
+
+    by_contact: dict = {cid: [] for cid in ids}
+    for i in range(0, len(ids), _ID_CHUNK):
+        chunk = ids[i:i + _ID_CHUNK]
+        rows = db.execute(
+            select(models.RelationshipInteraction)
+            .where(models.RelationshipInteraction.contact_id.in_(chunk))
+            .order_by(models.RelationshipInteraction.occurred_at.asc())
+        ).scalars().all()
+        for r in rows:
+            if cutoff is not None and _aware(r.occurred_at) > cutoff:
+                continue
+            by_contact.setdefault(r.contact_id, []).append(r)
+
+    latest: dict = {}
+    for cid, rows in by_contact.items():
+        signals = [r for r in rows if r.source_type == "activity_update"]
+        # Ordered ascending, so the newest is last. Tie-break on id to stay
+        # deterministic where two signals share a timestamp.
+        latest[cid] = max(signals, key=lambda r: (_aware(r.occurred_at), r.id)) if signals else None
+
+    # Account-wide draft history, aggregated by category once rather than
+    # re-scanned per candidate.
+    behavior: dict = {}
+    draft_rows = db.execute(
+        select(models.RelationshipInteraction)
+        .where(models.RelationshipInteraction.actor_user_id == user.id,
+               models.RelationshipInteraction.title.like("Drafted follow-up%"))
+    ).scalars().all()
+    for r in draft_rows:
+        if cutoff is not None and _aware(r.occurred_at) > cutoff:
+            continue
+        m = json.loads(r.meta_json or "{}")
+        cat = m.get("signal_category")
+        if not cat:
+            continue
+        seen, saved, dismissed = behavior.get(cat, (0, 0, 0))
+        if m.get("engaged"):
+            saved += 1
+        else:
+            dismissed += 1
+        behavior[cat] = (seen + 1, saved, dismissed)
+
+    return RankingData(interactions=by_contact, latest_signal=latest, behavior=behavior)
+
+
 def _latest_signal(db, contact_id: int, *, as_of: datetime | None = None):
     """Most recent detected-signal interaction on this contact (real
     source_type taxonomy: 'activity_update'). `as_of`, when given, restricts
@@ -224,7 +305,8 @@ def _relationship_trajectory(interactions: list, *, as_of: datetime | None = Non
     })
 
 
-def _historical_behavior(db, user, signal, *, as_of: datetime | None = None) -> RankingFactor:
+def _historical_behavior(db, user, signal, *, as_of: datetime | None = None,
+                          behavior: dict | None = None) -> RankingFactor:
     """EMPIRICAL, not seed: how has THIS lawyer actually engaged with drafts
     on this signal_category historically? Computed from meta_json on every
     prior 'Drafted follow-up' interaction this lawyer generated -- the one
@@ -241,6 +323,17 @@ def _historical_behavior(db, user, signal, *, as_of: datetime | None = None) -> 
     category = meta.get("signal_category")
     if not category:
         return RankingFactor("historical_behavior", 0.5, {"reason": "no signal category to compare against"})
+
+    # Precomputed by prefetch(): identical aggregation, done once for the whole
+    # run instead of re-scanning every draft this account ever produced for
+    # each candidate being scored.
+    if behavior is not None:
+        seen, saved, dismissed = behavior.get(category, (0, 0, 0))
+        value = (saved / seen) if seen else 0.5
+        return RankingFactor("historical_behavior", value, {
+            "signal_category": category, "seen": seen,
+            "saved": saved, "dismissed": dismissed,
+        })
 
     rows = db.execute(
         select(models.RelationshipInteraction)
@@ -281,7 +374,8 @@ def _renormalized_weights(names: list[str]) -> dict:
 
 
 def compute_trace(db, user, contact, *, as_of: datetime | None = None,
-                   include_factors: list[str] | None = None) -> RankingTrace:
+                   include_factors: list[str] | None = None,
+                   data: RankingData | None = None) -> RankingTrace:
     """`as_of`: freeze the world at this timestamp (backend/observe's replay
     harness) -- every factor below is computed using only interactions/
     signals at-or-before `as_of`. `include_factors`: restrict to this subset
@@ -297,9 +391,19 @@ def compute_trace(db, user, contact, *, as_of: datetime | None = None,
     (`[n for g in FACTOR_GROUPS.values() for n in g]`) would otherwise pass
     a name twice, computing that factor twice and silently double-counting
     its contribution to the score despite the renormalized weight only
-    counting it once. Safe regardless of how the caller built the list."""
-    signal = _latest_signal(db, contact.id, as_of=as_of)
-    interactions = _all_interactions(db, contact.id, as_of=as_of)
+    counting it once. Safe regardless of how the caller built the list.
+
+    `data`: a RankingData from prefetch(), so a ranking run reads each row
+    once instead of once per candidate. Purely a cache -- omit it and every
+    factor falls back to its own query, computing exactly the same values."""
+    if data is not None and contact.id in data.interactions:
+        interactions = data.interactions[contact.id]
+        signal = data.latest_signal.get(contact.id)
+        behavior = data.behavior
+    else:
+        signal = _latest_signal(db, contact.id, as_of=as_of)
+        interactions = _all_interactions(db, contact.id, as_of=as_of)
+        behavior = None
 
     factor_fns = {
         "signal_relevance": lambda: _signal_relevance(signal, as_of=as_of),
@@ -307,7 +411,8 @@ def compute_trace(db, user, contact, *, as_of: datetime | None = None,
         "relationship_strength": lambda: _relationship_strength(interactions),
         "relationship_recency": lambda: _relationship_recency(interactions, as_of=as_of),
         "relationship_trajectory": lambda: _relationship_trajectory(interactions, as_of=as_of),
-        "historical_behavior": lambda: _historical_behavior(db, user, signal, as_of=as_of),
+        "historical_behavior": lambda: _historical_behavior(db, user, signal, as_of=as_of,
+                                                            behavior=behavior),
     }
     names = (list(dict.fromkeys(include_factors)) if include_factors is not None
              else list(FACTOR_WEIGHTS.keys()))
@@ -319,8 +424,16 @@ def compute_trace(db, user, contact, *, as_of: datetime | None = None,
 
 
 def rank_opportunities(db, user, contacts: list, *, as_of: datetime | None = None,
-                        include_factors: list[str] | None = None) -> list[RankingTrace]:
-    traces = [compute_trace(db, user, c, as_of=as_of, include_factors=include_factors)
+                        include_factors: list[str] | None = None,
+                        data: RankingData | None = None) -> list[RankingTrace]:
+    """`data`: pass a prefetch() result to reuse one bulk load across several
+    rankings of the SAME contacts at the SAME as_of -- what the ablation loop
+    does, re-ranking the identical candidate set once per lever. Omitted, one
+    is built here for this run."""
+    if data is None:
+        data = prefetch(db, user, contacts, as_of=as_of)
+    traces = [compute_trace(db, user, c, as_of=as_of, include_factors=include_factors,
+                            data=data)
               for c in contacts]
     traces.sort(key=lambda t: t.opportunity_score, reverse=True)
     for i, t in enumerate(traces, start=1):

@@ -54,7 +54,8 @@ def _rank_with_model(db, user, contacts, model_key: str) -> dict:
     return {t.contact_id: (t.rank, t.opportunity_score) for t in traces}
 
 
-def ablate_one(db, user, contact, candidates: list, remove_group: str) -> dict:
+def ablate_one(db, user, contact, candidates: list, remove_group: str,
+                data=None) -> dict:
     """Single-opportunity UI action: full-system score/rank for `contact`
     among `candidates`, vs. the same ranking with one factor group removed.
     `remove_group` must be a key in ranking_trace.FACTOR_GROUPS -- including
@@ -74,8 +75,16 @@ def ablate_one(db, user, contact, candidates: list, remove_group: str) -> dict:
     removed = set(rt.FACTOR_GROUPS[remove_group])
     without_names = [n for n in full_names if n not in removed]
 
-    full = rt.rank_opportunities(db, user, candidates, include_factors=full_names)
-    without = rt.rank_opportunities(db, user, candidates, include_factors=without_names)
+    # Both rankings score the SAME candidates from the SAME rows -- only the
+    # factor subset differs -- so the underlying data is loaded once and
+    # shared. Callers looping over several levers should pass `data` in so it
+    # is loaded once for the whole loop rather than once per lever.
+    if data is None:
+        data = rt.prefetch(db, user, candidates)
+    full = rt.rank_opportunities(db, user, candidates, include_factors=full_names,
+                                 data=data)
+    without = rt.rank_opportunities(db, user, candidates, include_factors=without_names,
+                                    data=data)
     full_by_id = {t.contact_id: t for t in full}
     without_by_id = {t.contact_id: t for t in without}
     ft, wt = full_by_id[contact.id], without_by_id[contact.id]
