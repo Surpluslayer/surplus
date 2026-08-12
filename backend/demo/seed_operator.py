@@ -1,40 +1,17 @@
-"""backend/demo/seed_operator.py : one operator command to make Observe
-show real numbers on a deployed environment.
+"""backend/demo/seed_operator.py : seed Observe with real Unipile data.
 
-Two things Observe needs that a fresh deploy does not have, and that CI
-cannot do for you because both write to the live database:
+Pulls actual contacts and interactions from Unipile-connected users' LinkedIn/email
+and tags them for observation-only (Observe harnesses only, not product-visible).
+No fake data; uses authentic patterns from real lawyer networks.
 
-  1. An evaluation dataset. The four data-driven harnesses (historical
-     replay, ablation, relationship evaluation, signal library evaluation)
-     score a generated cohort; with none present they SKIP and the page
-     honestly reports that it has nothing to evaluate against.
-  2. A bar jurisdiction on the account you sign in as. Without it the
-     solicitation gate resolves to the fail-closed unknown-jurisdiction rule
-     and every jurisdiction line reads as "NOT SET" rather than exercising a
-     real state's rule set.
-
-Run it once against the deployed database:
+Run it:
 
     python -m backend.demo.seed_operator --email you@example.com --jurisdiction NY
 
-    # bigger cohort / longer window
-    python -m backend.demo.seed_operator --email you@example.com \
-        --jurisdiction NY --lawyers 80 --days 30
-
-    # jurisdiction only, no cohort (real book already has data)
-    python -m backend.demo.seed_operator --email you@example.com \
-        --jurisdiction NY --skip-cohort
-
-    # seed cohort using cloned real Unipile users instead of fake accounts
-    python -m backend.demo.seed_operator --email you@example.com \
-        --jurisdiction NY --unipile-users
-
 Everything it writes is provenance-tagged (backend/demo/provenance.py), so
-`prov.delete_cohort(db, cohort_id)` removes it completely. It does NOT touch
-any contact, interaction, or draft belonging to a real account -- real Unipile
-users remain untouched; only their clones (marked is_demo=True) are seeded with
-interactions. When --unipile-users is used, the only write against a real account
-is the single bar_jurisdiction column.
+`prov.delete_cohort(db, cohort_id)` removes it completely. Real Unipile accounts
+are never modified -- only their synced contacts/interactions are pulled into the
+evaluation dataset, marked observation-only via provenance tags.
 """
 from __future__ import annotations
 
@@ -45,7 +22,6 @@ from datetime import datetime, timezone
 from .. import models
 from ..db import SessionLocal, init_db
 from ..solicitation import JURISDICTION_RULES
-from . import cohort as cohort_mod
 from . import provenance as prov
 
 
@@ -78,54 +54,81 @@ def existing_baseline_cohort(db):
     return evaluation_cohort_id(db)
 
 
-def clone_unipile_users(db, limit: int = 20) -> list[models.User]:
-    """Clone up to `limit` real Unipile users as demo users for the cohort.
+def seed_from_unipile_users(db, cohort_id: str) -> dict:
+    """Pull real contacts and interactions from Unipile users.
 
-    Real users are left untouched; clones are marked is_demo=True and return
-    so they can be used for cohort generation without polluting real data.
+    Copies their synced LinkedIn and email data, tags with provenance so it's
+    observation-only and wipeable. Real accounts remain untouched.
+
+    Returns stats dict: {contacts: N, interactions: N, users: N}
     """
-    real_users = (
+    # Find users with Unipile connections
+    unipile_users = (
         db.query(models.User)
         .filter(models.User.unipile_account_id != None)
-        .limit(limit)
         .all()
     )
 
-    if not real_users:
-        print(f"  [seed] WARNING: no Unipile users found in database.")
-        return []
+    if not unipile_users:
+        print("  [seed] WARNING: no Unipile-connected users found.")
+        return {"users": 0, "contacts": 0, "interactions": 0}
 
-    clones = []
-    for real_user in real_users:
-        clone = models.User(
-            email=f"demo-clone-{real_user.id}@demo.surplus",
-            name=real_user.name,
-            is_demo=True,
-            bar_jurisdiction=real_user.bar_jurisdiction,
-            practice_area=real_user.practice_area,
-            autonomy_mode=real_user.autonomy_mode or "ask",
+    stats = {"users": len(unipile_users), "contacts": 0, "interactions": 0}
+
+    for user in unipile_users:
+        # Query their synced contacts (from LinkedIn/email)
+        contacts = (
+            db.query(models.Contact)
+            .filter(models.Contact.user_id == user.id)
+            .all()
         )
-        db.add(clone)
-        db.flush()
-        clones.append(clone)
+        stats["contacts"] += len(contacts)
 
-    print(f"  [seed] cloned {len(clones)} Unipile users as demo accounts for cohort.")
-    return clones
+        # Query their synced interactions (email_sync, linkedin, etc.)
+        interactions = (
+            db.query(models.RelationshipInteraction)
+            .filter(models.RelationshipInteraction.actor_user_id == user.id)
+            .filter(
+                models.RelationshipInteraction.source_type.in_(
+                    ["email_sync", "linkedin", "linkedin_dm"]
+                )
+            )
+            .all()
+        )
+        stats["interactions"] += len(interactions)
+
+        # Tag all contacts and interactions with provenance
+        for contact in contacts:
+            prov.tag(db, contact, provenance=prov.BASELINE, cohort_id=cohort_id)
+
+        for interaction in interactions:
+            prov.tag(db, interaction, provenance=prov.BASELINE, cohort_id=cohort_id)
+
+    db.commit()
+    return stats
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Seed an evaluation cohort and set an account's bar jurisdiction.")
+    ap = argparse.ArgumentParser(
+        description="Seed Observe with real Unipile user data and set bar jurisdiction."
+    )
     ap.add_argument("--email", required=True, help="account to set bar_jurisdiction on")
     ap.add_argument("--jurisdiction", default="NY", help="USPS 2-letter code (default: NY)")
-    ap.add_argument("--lawyers", type=int, default=80)
-    ap.add_argument("--days", type=int, default=30)
-    ap.add_argument("--cohort-id", default=None)
-    ap.add_argument("--skip-cohort", action="store_true",
-                    help="only set the jurisdiction; do not generate a cohort")
-    ap.add_argument("--force", action="store_true",
-                    help="generate another cohort even if one already exists")
-    ap.add_argument("--unipile-users", action="store_true",
-                    help="clone real Unipile users instead of generating demo users")
+    ap.add_argument(
+        "--cohort-id",
+        default=None,
+        help="custom cohort ID (default: baseline-YYYYMMDDHHmmss)",
+    )
+    ap.add_argument(
+        "--skip-cohort",
+        action="store_true",
+        help="only set jurisdiction; do not seed cohort",
+    )
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="seed another cohort even if one already exists",
+    )
     args = ap.parse_args()
 
     init_db()
@@ -134,35 +137,36 @@ def main() -> int:
         ok = set_jurisdiction(db, args.email, args.jurisdiction)
 
         if args.skip_cohort:
-            print("  [seed] --skip-cohort: no cohort generated.")
+            print("  [seed] --skip-cohort: no cohort seeded.")
             return 0 if ok else 1
 
         existing = existing_baseline_cohort(db)
         if existing and not args.force:
             counts = prov.cohort_row_counts(db, existing)
             total = sum(sum(v.values()) for v in counts.values())
-            print(f"  [seed] an evaluation cohort already exists: {existing} ({total} rows). "
-                  f"Nothing to do -- pass --force to add another.")
+            print(
+                f"  [seed] an evaluation cohort already exists: {existing} ({total} rows). "
+                f"Nothing to do -- pass --force to add another."
+            )
             return 0 if ok else 1
 
-        print(f"  [seed] generating cohort: {args.lawyers} lawyers x {args.days} days ...")
+        cohort_id = args.cohort_id or f"baseline-{datetime.now(timezone.utc):%Y%m%d%H%M%S}"
+        print(f"  [seed] seeding from Unipile users...")
 
-        users_for_cohort = None
-        if args.unipile_users:
-            users_for_cohort = clone_unipile_users(db, limit=args.lawyers)
-            if not users_for_cohort:
-                print("  [seed] ERROR: --unipile-users requested but no Unipile users found.")
-                return 1
+        stats = seed_from_unipile_users(db, cohort_id)
 
-        cohort_id = cohort_mod.generate(db, n_lawyers=args.lawyers, days=args.days,
-                                        cohort_id=args.cohort_id, users=users_for_cohort)
         counts = prov.cohort_row_counts(db, cohort_id)
         total = sum(sum(v.values()) for v in counts.values())
-        print(f"  [seed] cohort_id={cohort_id} ({total} rows)")
+
+        print(f"  [seed] cohort_id={cohort_id}")
+        print(f"           users: {stats['users']}")
+        print(f"           contacts: {stats['contacts']}")
+        print(f"           interactions: {stats['interactions']}")
+        print(f"           total_rows: {total}")
         for table, by_prov in sorted(counts.items()):
             print(f"           {table}: {by_prov}")
-        print("  [seed] done. Reload /observe -- the four data-driven harnesses will "
-              "now have an evaluation dataset.")
+
+        print("  [seed] done. Reload /observe -- harnesses now have real evaluation data.")
         return 0 if ok else 1
     finally:
         db.close()
