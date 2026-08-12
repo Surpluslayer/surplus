@@ -135,6 +135,17 @@ export default function ObservePanel({ selection }) {
 
   const open = useLogStream(append);
   useActivityStream(append);
+  // useLogStream's single EventSource ref is shared by the boot stream and
+  // every contact stream, so whichever open() call runs LAST wins. The auth
+  // probe below is async (a network round-trip); if a reader clicks a card
+  // in the Book before it resolves, the click's open(stream/contact/…) would
+  // otherwise be silently clobbered the moment the probe finishes and opens
+  // the boot stream -- an active, on-screen contact trace replaced out from
+  // under the reader with harness output they didn't ask for. This flag
+  // makes the click win: once a selection has happened, the boot stream is
+  // never opened, since the reader has already moved past "what ran on
+  // load" to "why did THIS happen".
+  const hasSelectedRef = useRef(false);
 
   // Auth probe + boot stream on mount.
   useEffect(() => {
@@ -143,6 +154,7 @@ export default function ObservePanel({ selection }) {
       .then(r => {
         if (cancelled) return;
         if (r.status === 401) { setAuthError(true); setBooting(false); return; }
+        if (hasSelectedRef.current) { setBooting(false); return; }
         open("/api/observe/stream/boot", { onDone: () => setBooting(false) });
       })
       .catch(() => { if (!cancelled) setBooting(false); });
@@ -152,6 +164,7 @@ export default function ObservePanel({ selection }) {
   // Append a contact trace whenever the Book selection changes.
   useEffect(() => {
     if (!selection || !selection.contactId) return;
+    hasSelectedRef.current = true;
     append({
       ts: new Date().toISOString(), level: "step", src: "frontend.ObservePanel",
       msg: `── clicked ${selection.name || `contact ${selection.contactId}`} `
