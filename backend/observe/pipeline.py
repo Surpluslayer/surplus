@@ -11,9 +11,10 @@ execution status.
 jurisdiction stage that correctly BLOCKS an action is `status="success"` (it
 ran correctly and produced a real answer) -- `status="warning"` means the
 stage hit a REAL, already-documented fallback path elsewhere in this
-codebase (unset practice_area -> neutral 0.5 affinity, unset bar_jurisdiction
--> fail-closed unknown-jurisdiction rule, unset relationship_type -> PROSPECT
-default, zero interactions -> cold start), and `status="failure"` means the
+codebase (unset practice_area -> demo.signal_taxonomy's corporate_ma
+default, unset bar_jurisdiction -> solicitation.py's NY default, unset
+relationship_type -> PROSPECT default, zero interactions -> cold start), and
+`status="failure"` means the
 stage's own computation raised an exception -- captured per-stage so one
 stage's failure doesn't blank out the rest of the pipeline trace, matching
 the checklist's "show fallbacks/errors when something failed".
@@ -33,6 +34,7 @@ from .trace import DEMO, OBSERVED, now as trace_now
 from .. import models
 from ..agents.relationship import solicitation_signals as sig
 from ..demo import ranking_trace as rt
+from ..demo import signal_taxonomy as tax
 
 _UTC = timezone.utc
 
@@ -168,7 +170,9 @@ def _targeting(db, user, contact) -> tuple:
     fallback = None
     status = "success"
     if not getattr(user, "practice_area", None):
-        status, fallback = "warning", "practice_area unset -- neutral 0.5 affinity fallback applied"
+        status, fallback = "warning", (
+            "practice_area unset -- defaulting to "
+            f"{tax.effective_practice_area(user)!r} (demo.signal_taxonomy._DEFAULT_PRACTICE_AREA)")
     return (status, trace.decision, {"score": trace.score,
             "factors": [f.to_dict() for f in trace.features]}, fallback)
 
@@ -199,7 +203,10 @@ def _jurisdiction(db, user, contact, channel) -> tuple:
     fallback = None
     status = "success"
     if not getattr(user, "bar_jurisdiction", None):
-        status, fallback = "warning", "bar_jurisdiction unset -- fail-closed unknown-jurisdiction rule applied"
+        from .. import solicitation as solic
+        status, fallback = "warning", (
+            f"bar_jurisdiction unset -- defaulting to "
+            f"{solic._DEFAULT_JURISDICTION!r} (solicitation.py._DEFAULT_JURISDICTION)")
     return (status, trace.decision, {"policy_result": trace.policy_result}, fallback)
 
 

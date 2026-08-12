@@ -130,18 +130,20 @@ JURISDICTION_RULES: dict[str, JurisdictionRule] = {
     ),
 }
 
-# Fail-closed default for any state not yet in the table above: no known
-# jurisdiction, so treat every non-exempt send as the most restrictive case
-# rather than silently allowing it. Mirrors the fail-closed pattern already
-# used for webhook signature verification (routes/webhooks.py).
-_UNKNOWN_JURISDICTION_RULE = JurisdictionRule(
-    state="UNKNOWN",
-    prohibited_realtime_channels=REALTIME_CHANNELS,
-    requires_disclosure_label=True,
-    disclosure_text="ADVERTISEMENT",
-    sensitive_matter_cooldown_days=30,
-    max_solicitations_per_window=(1, 30),
-)
+# Default for any state not yet in the table above (including an unset
+# bar_jurisdiction). This is a single-tenant demo/observability tool with one
+# NY-barred account, not a real multi-jurisdiction deployment -- so rather
+# than reporting a synthetic "UNKNOWN" jurisdiction (which never corresponds
+# to a real bar and made every fallback trace line misdescribe which rule
+# was actually in effect), an unmatched jurisdiction here falls through to
+# NY's rule. This is a deliberately weaker posture than a real fail-closed
+# default (NY carries no cooldown/volume cap, unlike a maximally-restrictive
+# placeholder would) -- fine for this account, which really is NY-barred, but
+# WRONG for a real multi-tenant product: a lawyer barred somewhere else with
+# no bar_jurisdiction on file would silently get NY's (looser) rules instead
+# of the most-restrictive fallback. Revisit before this code serves any
+# account whose real jurisdiction isn't NY.
+_DEFAULT_JURISDICTION = "NY"
 
 
 @dataclass(frozen=True)
@@ -166,13 +168,23 @@ class Verdict:
     disclosure_text: Optional[str] = None
 
 
+def resolve_rule(jurisdiction: str) -> JurisdictionRule:
+    """The rule an evaluate() call would apply for this jurisdiction code:
+    the matching table entry, or the `_DEFAULT_JURISDICTION` fallback when
+    there isn't one. Exposed so callers explaining a decision (Observe's
+    trace) resolve the SAME rule evaluate() itself will use, rather than
+    duplicating -- and risking drifting from -- the lookup."""
+    return JURISDICTION_RULES.get((jurisdiction or "").upper()) \
+        or JURISDICTION_RULES[_DEFAULT_JURISDICTION]
+
+
 def evaluate(ctx: SolicitationContext) -> Verdict:
     """Deterministic. No LLM in this path -- a send-gating decision with bar-
     complaint consequences should not depend on model sampling."""
     if ctx.relationship_type in _EXEMPT_RELATIONSHIP_TYPES:
         return Verdict(allowed=True, reason=f"exempt: {ctx.relationship_type.value}")
 
-    rule = JURISDICTION_RULES.get(ctx.jurisdiction.upper(), _UNKNOWN_JURISDICTION_RULE)
+    rule = resolve_rule(ctx.jurisdiction)
 
     if ctx.channel in rule.prohibited_realtime_channels:
         return Verdict(

@@ -505,8 +505,10 @@ def account_events(db, user=None):
 
     yield line(STEP, src, "account")
 
-    jur = user.bar_jurisdiction or "NOT SET (gate falls back to fail-closed unknown)"
-    practice = user.practice_area or "NOT SET (practice_fit uses a neutral 0.5)"
+    from ..demo import signal_taxonomy as tax
+    from .. import solicitation as solic
+    jur = user.bar_jurisdiction or f"NOT SET (defaults to {solic._DEFAULT_JURISDICTION!r})"
+    practice = user.practice_area or f"NOT SET (defaults to {tax.effective_practice_area(user)!r})"
     yield line(INFO, "backend.models:User",
                f"  {user.email} · bar={jur} · practice_area={practice}")
 
@@ -1106,8 +1108,7 @@ def jurisdiction_events(db, user, contact, channel: str = "linkedin_dm",
     still relied on by tests that call it directly.
     """
     from ..agents.relationship import solicitation_signals as sig
-    from ..solicitation import (JURISDICTION_RULES, _EXEMPT_RELATIONSHIP_TYPES,
-                                _UNKNOWN_JURISDICTION_RULE, evaluate)
+    from ..solicitation import _EXEMPT_RELATIONSHIP_TYPES, evaluate, resolve_rule
 
     src = "backend.solicitation:evaluate"
     yield line(STEP, "backend.agents.relationship.solicitation_signals:resolve_context",
@@ -1115,14 +1116,14 @@ def jurisdiction_events(db, user, contact, channel: str = "linkedin_dm",
 
     ctx = sig.resolve_context(db, user, contact, channel)
     raw_jur = (getattr(user, "bar_jurisdiction", None) or "").strip()
-    rule = JURISDICTION_RULES.get(ctx.jurisdiction.upper(), _UNKNOWN_JURISDICTION_RULE)
+    rule = resolve_rule(ctx.jurisdiction)
 
     if raw_jur:
         yield line(INFO, src, f"jurisdiction: {rule.state} (users.bar_jurisdiction={raw_jur!r})")
     else:
         yield line(WARN, src,
-                   "jurisdiction: users.bar_jurisdiction is NOT SET on this account -- "
-                   "falling back to the fail-closed unknown-jurisdiction rule")
+                   f"jurisdiction: users.bar_jurisdiction is NOT SET on this account -- "
+                   f"defaulting to {rule.state} (solicitation.py._DEFAULT_JURISDICTION)")
     yield line(INFO, src,
                f"rule set: realtime_barred={sorted(rule.prohibited_realtime_channels)} "
                f"· disclosure_required={rule.requires_disclosure_label}"

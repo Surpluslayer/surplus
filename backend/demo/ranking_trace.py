@@ -268,7 +268,7 @@ def _practice_fit(user, signal, learned: dict | None = None) -> RankingFactor:
     if not category and signal is not None:
         category = tax.production_signal_category(getattr(signal, "interaction_type", None), meta)
         category_source = "production_interaction_type" if category else "unmapped"
-    area = getattr(user, "practice_area", None)
+    area = tax.effective_practice_area(user)
     aff = tax.affinity(area, category, learned=learned)
 
     # Say which table the number came from, and on how much evidence. A

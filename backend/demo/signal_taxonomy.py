@@ -22,6 +22,24 @@ PRACTICE_AREAS = (
     "ip", "regulatory",
 )
 
+# Same posture as solicitation.py's _DEFAULT_JURISDICTION: this is a
+# single-tenant demo/observability tool for one account whose real practice
+# is startup law, which predates any startup-law-specific bucket in this
+# taxonomy's 6 categories. corporate_ma is the closest existing one --
+# formation, financing, equity, and exits are its core content -- so an
+# unset practice_area defaults there via effective_practice_area() below
+# instead of the uninformative neutral 0.5. Revisit before this serves an
+# account whose real practice isn't startup-adjacent corporate work.
+_DEFAULT_PRACTICE_AREA = "corporate_ma"
+
+
+def effective_practice_area(user) -> str:
+    """The practice_area affinity/ranking should actually use for `user`:
+    their real value if set, else `_DEFAULT_PRACTICE_AREA`. Centralizes the
+    default so every consumer (ranking, funnel, outcomes, Observe's trace)
+    agrees on it instead of each falling back to neutral 0.5 independently."""
+    return (getattr(user, "practice_area", None) or "").strip() or _DEFAULT_PRACTICE_AREA
+
 # Coarse signal kind (real, matches updates_engine._DRAFTWORTHY_KINDS) ->
 # finer-grained category (demo-only, legal-BD specific).
 SIGNAL_CATEGORIES = {

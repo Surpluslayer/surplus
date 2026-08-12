@@ -147,7 +147,7 @@ def test_jurisdiction_events_report_an_unset_bar_jurisdiction_honestly(db):
 
     joined = " | ".join(e["msg"] for e in logstream.jurisdiction_events(db, user, contact))
     assert "bar_jurisdiction is NOT SET" in joined
-    assert "fail-closed" in joined
+    assert "defaulting to NY" in joined
 
 
 def test_generated_signal_rows_carry_a_draft_like_production_autodraft(db):
