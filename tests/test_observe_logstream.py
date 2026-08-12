@@ -179,3 +179,74 @@ def test_feedback_loop_status_does_not_claim_the_taxonomy_learns(db):
     assert "CLOSED:" in joined and "historical_behavior" in joined
     assert "OPEN:" in joined
     assert "not called anywhere in production" in joined
+
+
+def test_ranking_candidates_are_bounded_on_a_large_book(db):
+    """A real book of hundreds of contacts scored every one of them, several
+    queries each, with nothing emitted until all eight stages finished --
+    which reads as a hang. The candidate set is bounded and the subject
+    contact is always included."""
+    from backend.observe import pipeline
+    cohort.generate(db, n_lawyers=2, days=14, cohort_id="big-cohort")
+    user = db.execute(select(models.User)).scalars().first()
+    base = db.execute(select(models.Contact).where(
+        models.Contact.user_id == user.id)).scalars().all()
+    for i in range(300):
+        db.add(models.Contact(user_id=user.id, primary_identity_key=f"big:{i}", name=f"C{i}"))
+    db.commit()
+
+    subject = base[0]
+    candidates, total = pipeline.resolve_candidates(db, user, subject, None)
+    assert total > pipeline.MAX_RANKING_CANDIDATES
+    assert len(candidates) <= pipeline.MAX_RANKING_CANDIDATES + 1
+    assert subject in candidates, "the contact being traced must always be scored"
+
+
+def test_iter_stages_yields_incrementally(db):
+    """compute_pipeline_trace consumes iter_stages, so a streaming caller
+    gets each stage as it completes rather than all eight at the end."""
+    from backend.observe import pipeline
+    cohort.generate(db, n_lawyers=2, days=14, cohort_id="iter-cohort")
+    user = db.execute(select(models.User)).scalars().first()
+    contact = db.execute(select(models.Contact).where(
+        models.Contact.user_id == user.id)).scalars().first()
+
+    it = pipeline.iter_stages(db, user, contact)
+    first = next(it)
+    assert first.name == "ingestion"          # arrives before the rest run
+    names = [first.name] + [s.name for s in it]
+    assert names == list(pipeline.STAGE_ORDER)
+
+
+def test_seeded_cohort_survives_the_demo_purge_sweep(db):
+    """cohort.generate() populates last_login_at and sets is_demo=True, so
+    every seeded lawyer matched the stale-demo-user sweep and the whole
+    evaluation dataset would vanish once past DEMO_TTL_HOURS. A per-visit
+    demo workspace should still be reaped; a provenance-tagged evaluation
+    cohort should not."""
+    from datetime import datetime, timedelta, timezone
+    from backend.routes.demo import _cleanup_stale_demo_users
+
+    cohort.generate(db, n_lawyers=3, days=14, cohort_id="purge-cohort")
+    seeded = db.execute(select(models.User).where(
+        models.User.email.like("demo-lawyer-%"))).scalars().all()
+    assert seeded
+    seeded_ids = {u.id for u in seeded}
+
+    # Age every demo user well past the TTL.
+    old = datetime.now(timezone.utc) - timedelta(hours=500)
+    for u in seeded:
+        u.last_login_at = old
+
+    # A genuine per-visit demo user, same flag, no provenance tag.
+    visitor = models.User(email="visitor@demo.surpluslayer.com", is_demo=True,
+                          last_login_at=old)
+    db.add(visitor)
+    db.commit()
+    visitor_id = visitor.id
+
+    _cleanup_stale_demo_users(db, limit=100)
+
+    surviving = {u.id for u in db.execute(select(models.User)).scalars().all()}
+    assert seeded_ids <= surviving, "seeded evaluation cohort was purged"
+    assert visitor_id not in surviving, "per-visit demo user should still be reaped"

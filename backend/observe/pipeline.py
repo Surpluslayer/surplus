@@ -208,28 +208,66 @@ def _output(db, contact) -> tuple:
     return (status, trace.decision, {"outcome": trace.outcome}, fallback)
 
 
-def compute_pipeline_trace(db, user: models.User, contact: models.Contact,
-                            candidates: list | None = None, channel: str = "linkedin_dm") -> PipelineTrace:
+# Ranking scores EVERY candidate independently, and each score costs several
+# queries -- including one in _historical_behavior that reloads the lawyer's
+# whole drafted-follow-up history. Against a real book of hundreds of
+# contacts that is quadratic and takes minutes, which is exactly how a live
+# account hung on "running execution pipeline" with nothing after it.
+#
+# The candidate set is therefore BOUNDED. This changes what the rank number
+# means -- it is a rank within a sampled candidate set, not the whole book --
+# so callers surface the bound rather than hiding it (see logstream's
+# "ranking against N of M" line). The subject contact is always included, so
+# its own factors and score are exact; only its ORDINAL is relative to the
+# sample.
+MAX_RANKING_CANDIDATES = 60
+
+
+def resolve_candidates(db, user: models.User, contact: models.Contact,
+                        candidates: list | None = None) -> tuple:
+    """(bounded_candidates, total_available). Prefers contacts that carry a
+    detected signal, since those are the ones a ranking is actually about."""
     if candidates is None:
         candidates = list(db.execute(
             select(models.Contact).where(models.Contact.user_id == user.id)
         ).scalars().all())
+    total = len(candidates)
+    if total > MAX_RANKING_CANDIDATES:
+        signaled, plain = [], []
+        for c in candidates:
+            (signaled if rt._latest_signal(db, c.id) is not None else plain).append(c)
+        candidates = (signaled + plain)[:MAX_RANKING_CANDIDATES]
     if contact not in candidates:
         candidates = candidates + [contact]
+    return candidates, total
 
-    stages = [
-        _run_stage("ingestion", ver.INGESTION_VERSION, lambda: _ingestion(db, contact)),
-        _run_stage("entity_resolution", ver.ENTITY_RESOLUTION_VERSION,
-                   lambda: _entity_resolution(db, contact)),
-        _run_stage("signal_library", ver.SIGNAL_LIBRARY_VERSION, lambda: _signal_library(db, contact)),
-        _run_stage("targeting", ver.FEATURE_SCHEMA_VERSION, lambda: _targeting(db, user, contact)),
-        _run_stage("relationship", ver.RELATIONSHIP_FEATURE_VERSION,
-                   lambda: _relationship(db, user, contact)),
-        _run_stage("ranking", ver.RANKER_VERSION, lambda: _ranking(db, user, contact, candidates)),
-        _run_stage("jurisdiction", ver.JURISDICTION_POLICY_VERSION,
-                   lambda: _jurisdiction(db, user, contact, channel)),
-        _run_stage("output", ver.FEATURE_SCHEMA_VERSION, lambda: _output(db, contact)),
-    ]
+
+def iter_stages(db, user: models.User, contact: models.Contact,
+                 candidates: list | None = None, channel: str = "linkedin_dm"):
+    """Yield each PipelineStage AS IT COMPLETES.
+
+    compute_pipeline_trace() below consumes this, so the two can't drift.
+    Streaming callers iterate it directly: running all eight stages and only
+    then emitting them is what made a slow ranking stage look like a hang
+    instead of like work in progress."""
+    candidates, _total = resolve_candidates(db, user, contact, candidates)
+    for name, version, fn in (
+        ("ingestion", ver.INGESTION_VERSION, lambda: _ingestion(db, contact)),
+        ("entity_resolution", ver.ENTITY_RESOLUTION_VERSION, lambda: _entity_resolution(db, contact)),
+        ("signal_library", ver.SIGNAL_LIBRARY_VERSION, lambda: _signal_library(db, contact)),
+        ("targeting", ver.FEATURE_SCHEMA_VERSION, lambda: _targeting(db, user, contact)),
+        ("relationship", ver.RELATIONSHIP_FEATURE_VERSION, lambda: _relationship(db, user, contact)),
+        ("ranking", ver.RANKER_VERSION, lambda: _ranking(db, user, contact, candidates)),
+        ("jurisdiction", ver.JURISDICTION_POLICY_VERSION,
+         lambda: _jurisdiction(db, user, contact, channel)),
+        ("output", ver.FEATURE_SCHEMA_VERSION, lambda: _output(db, contact)),
+    ):
+        yield _run_stage(name, version, fn)
+
+
+def compute_pipeline_trace(db, user: models.User, contact: models.Contact,
+                            candidates: list | None = None, channel: str = "linkedin_dm") -> PipelineTrace:
+    stages = list(iter_stages(db, user, contact, candidates, channel))
 
     provenance = DEMO if getattr(user, "is_demo", False) else OBSERVED
     return PipelineTrace(account_id=user.id, object_id=str(contact.id), timestamp=trace_now(),

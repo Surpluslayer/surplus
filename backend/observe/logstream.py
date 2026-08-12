@@ -220,11 +220,23 @@ def contact_events(db, user, contact, channel: str = "linkedin_dm"):
                f"trace requested · contact_id={contact.id} name={contact.name!r} "
                f"account={user.email}")
 
-    # ── pipeline ──
-    yield line(STEP, "backend.observe.pipeline:compute_pipeline_trace",
-               "running execution pipeline")
-    trace, ms = _timed(lambda: pipeline.compute_pipeline_trace(db, user, contact, None, channel))
-    for s in trace.stages:
+    # ── pipeline: emit each stage the moment it finishes ──
+    candidates, total_available = pipeline.resolve_candidates(db, user, contact, None)
+    if total_available > len(candidates):
+        yield line(WARN, "backend.observe.pipeline:resolve_candidates",
+                   f"ranking against {len(candidates)} of {total_available} contacts "
+                   f"(capped at {pipeline.MAX_RANKING_CANDIDATES}, signal-carrying first) -- "
+                   f"scoring every contact costs several queries each, so rank here is an "
+                   f"ordinal within this sample; this contact's own factors and score are exact")
+    else:
+        yield line(INFO, "backend.observe.pipeline:resolve_candidates",
+                   f"ranking against all {len(candidates)} contacts in this book")
+
+    yield line(STEP, "backend.observe.pipeline:iter_stages", "running execution pipeline")
+    t_pipe = time.perf_counter()
+    statuses = []
+    for s in pipeline.iter_stages(db, user, contact, candidates, channel):
+        statuses.append(s.status)
         lvl = {"success": OK, "warning": WARN, "failure": ERR}.get(s.status, INFO)
         yield line(lvl, f"backend.observe.pipeline:_{s.name}",
                    f"{s.name}: {s.decision} ({s.latency_ms:.2f}ms, {s.version})")
@@ -232,8 +244,10 @@ def contact_events(db, user, contact, channel: str = "linkedin_dm"):
             yield line(WARN, f"backend.observe.pipeline:_{s.name}", f"  fallback: {s.fallback}")
         if s.error:
             yield line(ERR, f"backend.observe.pipeline:_{s.name}", f"  error: {s.error}")
-    yield line(INFO, "backend.observe.pipeline:compute_pipeline_trace",
-               f"pipeline complete: {trace.to_dict()['overall_status']} in {ms:.1f}ms")
+    overall = ("failure" if "failure" in statuses
+               else "warning" if "warning" in statuses else "success")
+    yield line(INFO, "backend.observe.pipeline:iter_stages",
+               f"pipeline complete: {overall} in {(time.perf_counter() - t_pipe) * 1000:.1f}ms")
 
     # ── ranking: show the arithmetic, not just the result ──
     yield line(STEP, "backend.demo.ranking_trace:compute_trace",
@@ -252,7 +266,8 @@ def contact_events(db, user, contact, channel: str = "linkedin_dm"):
                f"opportunity_score = {running:.4f}  (sum of weighted factors, {rms:.1f}ms)")
 
     # ── ablation: a real re-ranking loop, one full pass per feature group ──
-    candidates = _sibling_contacts(db, user)
+    # Reuses the SAME bounded candidate set the ranking stage used, so the
+    # before/after ranks are comparable and the loop stays bounded.
     groups = ("relationship", "behavior", "signal_affinity", "timing")
     if len(candidates) > 1:
         yield line(STEP, "backend.observe.harnesses.ablation:ablate_one",
@@ -333,14 +348,6 @@ def feedback_loop_status(db, user):
                f"  affinity table version={tax.__name__} seed · "
                f"{len(tax.SIGNAL_AFFINITY_SEED)} practice areas × "
                f"{len(tax.ALL_SIGNAL_CATEGORIES)} signal categories")
-
-
-def _sibling_contacts(db, user) -> list:
-    from sqlalchemy import select
-    from .. import models
-    return list(db.execute(
-        select(models.Contact).where(models.Contact.user_id == user.id).limit(200)
-    ).scalars().all())
 
 
 def _latest_draft_text(db, user, contact) -> tuple:
