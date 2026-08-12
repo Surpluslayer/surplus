@@ -243,3 +243,81 @@ def test_activity_stream_does_not_pin_a_pool_connection(client, monkeypatch):
         assert closed["n"] > 0, "the request-scoped session was never closed"
     finally:
         bus.use_session_factory(None)
+
+
+# ── cohort-level authorization (a REAL, non-demo cohort -- e.g. one seeded by
+# backend/demo/seed_operator.py --unipile-users -- must be as self-scoped as
+# a single contact is; see routes/observe.py's _cohort_visible_to) ─────────
+
+def _tag_real_cohort(Session, cohort_id: str, *, owner_email: str):
+    """A minimal stand-in for what seed_operator.seed_from_unipile_users now
+    produces: a REAL (is_demo=False) user, a contact, and a users-table
+    DemoProvenance tag -- the exact shape cohort_query.users_and_contacts
+    needs to resolve a lawyer for this cohort."""
+    from backend.demo import provenance as prov
+    s = Session()
+    owner = models.User(email=owner_email, name="Real Owner", is_demo=False)
+    s.add(owner)
+    s.commit()
+    s.refresh(owner)
+    contact = models.Contact(user_id=owner.id, primary_identity_key="real:1", name="Real Client")
+    s.add(contact)
+    s.commit()
+    s.refresh(contact)
+    prov.tag(s, owner, provenance=prov.BASELINE, cohort_id=cohort_id)
+    prov.tag(s, contact, provenance=prov.BASELINE, cohort_id=cohort_id)
+    s.commit()
+    owner_id = owner.id
+    s.close()
+    return owner_id
+
+
+def test_real_cohort_is_invisible_to_a_different_real_caller(client):
+    """Without cohort-level authorization, any signed-in account could pass
+    an arbitrary cohort_id to a harness/trace route and read back another
+    real lawyer's aggregated book -- no per-contact check ever runs, because
+    these routes never resolve a single owned contact the way trace/lawyer
+    etc. do."""
+    c, _demo_cohort_id, _lawyer_id, _contact_id, _draft_id, Session, _rid = client
+    real_cohort_id = "unipile-real-cohort"
+    _tag_real_cohort(Session, real_cohort_id, owner_email="owner@firm.com")
+
+    for path, params in (
+        ("harness/ablation", {"cohort_id": real_cohort_id}),
+        ("harness/relationship_evaluation", {"cohort_id": real_cohort_id}),
+        ("harness/signal_library_evaluation", {"cohort_id": real_cohort_id}),
+        ("harness/historical_replay", {"cohort_id": real_cohort_id}),
+        ("trace/signal_library/gc_appointment", {"cohort_id": real_cohort_id}),
+    ):
+        r = c.get(f"/api/observe/{path}", params=params)
+        assert r.status_code == 404, f"{path} -> {r.status_code}: {r.text}"
+
+    # And it must not even be listed as an option to a caller who can't see it.
+    r = c.get("/api/observe/cohorts")
+    assert real_cohort_id not in [row["cohort_id"] for row in r.json()["cohorts"]]
+
+
+def test_real_cohort_is_visible_to_its_own_owner(client):
+    c, _demo_cohort_id, _lawyer_id, _contact_id, _draft_id, Session, _rid = client
+    real_cohort_id = "unipile-real-cohort"
+    owner_id = _tag_real_cohort(Session, real_cohort_id, owner_email="owner2@firm.com")
+
+    def _current_owner():
+        s = Session()
+        try:
+            return s.get(models.User, owner_id)
+        finally:
+            s.expunge_all()
+            s.close()
+    app.dependency_overrides[current_user] = _current_owner
+
+    r = c.get("/api/observe/cohorts")
+    assert real_cohort_id in [row["cohort_id"] for row in r.json()["cohorts"]]
+
+    # Reaches real harness logic instead of being rejected at the auth gate --
+    # not asserting 200, since a 1-contact fixture may not satisfy every
+    # harness's own data requirements, only that it isn't the 404 this test
+    # exists to distinguish from.
+    r = c.get("/api/observe/harness/signal_library_evaluation",
+              params={"cohort_id": real_cohort_id})
+    assert r.status_code != 404, r.text

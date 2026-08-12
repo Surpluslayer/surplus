@@ -46,8 +46,10 @@ router = APIRouter(prefix="/api/observe", tags=["observe"])
 
 @router.get("/cohorts")
 def list_cohorts(user: models.User = Depends(current_user), db: DbSession = Depends(get_db)):
-    """Lists every provenance-tagged cohort, plus `evaluation_cohort_id` --
-    the one the data-driven harnesses should actually evaluate against.
+    """Lists every provenance-tagged cohort THIS CALLER may see (see
+    _cohort_visible_to -- a real Unipile-seeded cohort is invisible to
+    everyone but the real lawyer it belongs to), plus `evaluation_cohort_id`
+    -- the one the data-driven harnesses should actually evaluate against.
     Callers must use that field rather than picking an arbitrary element of
     `cohorts`: the synthetic known-answer fixture cohort also appears in
     this list, and selecting it silently evaluates the aggregate harnesses
@@ -58,9 +60,13 @@ def list_cohorts(user: models.User = Depends(current_user), db: DbSession = Depe
     cohorts: dict = {}
     for cohort_id, provenance in rows:
         cohorts.setdefault(cohort_id, []).append(provenance)
+    visible = {c: p for c, p in cohorts.items() if _cohort_visible_to(db, user, c)}
+    eval_id = logstream.evaluation_cohort_id(db)
+    if eval_id is not None and eval_id not in visible:
+        eval_id = None  # never point a caller at a cohort they can't see
     return {
-        "cohorts": [{"cohort_id": c, "provenance": p} for c, p in cohorts.items()],
-        "evaluation_cohort_id": logstream.evaluation_cohort_id(db),
+        "cohorts": [{"cohort_id": c, "provenance": p} for c, p in visible.items()],
+        "evaluation_cohort_id": eval_id,
     }
 
 
@@ -112,6 +118,37 @@ def _authorize(caller: models.User, target) -> models.User:
     if target.is_demo or target.id == caller.id:
         return target
     raise HTTPException(status_code=404, detail="not found")
+
+
+def _cohort_visible_to(db: DbSession, caller: models.User, cohort_id: str) -> bool:
+    """_authorize()'s single-target rule, generalized to a whole cohort: every
+    REAL (non-demo) user tagged into `cohort_id` must be `caller` themselves.
+
+    A cohort made entirely of backend/demo/cohort.py's synthetic is_demo=True
+    lawyers is visible to any signed-in account (the shared, seeded dataset
+    IS the point). A cohort seeded from real Unipile users (backend/demo/
+    seed_operator.py --unipile-users, which tags the real User row so the
+    cohort-based harnesses can resolve it at all) is visible only to those
+    real users' own accounts -- otherwise any signed-in caller could pass an
+    arbitrary cohort_id to a harness/trace route and read back another real
+    lawyer's aggregated book (contact names, engagement outcomes) with no
+    ownership check at all. An unknown/empty cohort_id is not visible."""
+    user_tags = db.execute(select(models.DemoProvenance).where(
+        models.DemoProvenance.cohort_id == cohort_id,
+        models.DemoProvenance.table_name == "users")).scalars().all()
+    if not user_tags:
+        return False
+    users = db.execute(select(models.User).where(
+        models.User.id.in_([t.row_id for t in user_tags]))).scalars().all()
+    return all(u.is_demo or u.id == caller.id for u in users)
+
+
+def _authorize_cohort(db: DbSession, caller: models.User, cohort_id: str) -> None:
+    """Raising counterpart of _cohort_visible_to, for every route that takes
+    a cohort_id directly (the harness/*, trace/signal_library/* routes).
+    404 (not 403) -- same "don't leak existence" posture as _authorize()."""
+    if not _cohort_visible_to(db, caller, cohort_id):
+        raise HTTPException(status_code=404, detail="not found")
 
 
 def _owned_contact(db: DbSession, caller: models.User, contact_id: int):
@@ -354,6 +391,7 @@ def trace_pipeline(contact_id: int, candidate_ids: str | None = Query(default=No
 @router.get("/trace/signal_library/{category}")
 def trace_signal_library(category: str, cohort_id: str = Query(...),
                           user: models.User = Depends(current_user), db: DbSession = Depends(get_db)):
+    _authorize_cohort(db, user, cohort_id)
     return adapters.signal_library_trace(db, user.id, cohort_id, category).to_dict()
 
 
@@ -362,6 +400,7 @@ def trace_signal_library(category: str, cohort_id: str = Query(...),
 @router.get("/harness/ablation")
 def harness_ablation(cohort_id: str = Query(...), k: int = Query(default=5),
                       user: models.User = Depends(current_user), db: DbSession = Depends(get_db)):
+    _authorize_cohort(db, user, cohort_id)
     return ablation.run(db, cohort_id, k=k).to_dict()
 
 
@@ -369,6 +408,7 @@ def harness_ablation(cohort_id: str = Query(...), k: int = Query(default=5),
 def harness_relationship_evaluation(cohort_id: str = Query(...), k: int = Query(default=5),
                                      user: models.User = Depends(current_user),
                                      db: DbSession = Depends(get_db)):
+    _authorize_cohort(db, user, cohort_id)
     return relationship_eval.run(db, cohort_id, k=k).to_dict()
 
 
@@ -376,6 +416,7 @@ def harness_relationship_evaluation(cohort_id: str = Query(...), k: int = Query(
 def harness_signal_library_evaluation(cohort_id: str = Query(...),
                                        user: models.User = Depends(current_user),
                                        db: DbSession = Depends(get_db)):
+    _authorize_cohort(db, user, cohort_id)
     return signal_library_eval.run(db, cohort_id).to_dict()
 
 
@@ -388,6 +429,7 @@ def harness_jurisdiction_regression(user: models.User = Depends(current_user)):
 def harness_historical_replay(cohort_id: str = Query(...),
                                user: models.User = Depends(current_user),
                                db: DbSession = Depends(get_db)):
+    _authorize_cohort(db, user, cohort_id)
     return replay_harness.run(db, cohort_id).to_dict()
 
 
