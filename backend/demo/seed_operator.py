@@ -97,6 +97,14 @@ def seed_from_unipile_users(db, cohort_id: str) -> dict:
         )
         stats["interactions"] += len(interactions)
 
+        # Tag the lawyer THEMSELVES, not just their rows -- cohort_query.
+        # users_and_contacts() (shared by every cohort-based harness) resolves
+        # a cohort's lawyers strictly from a table_name=="users" tag. Without
+        # this, every harness silently found zero lawyers for a Unipile-seeded
+        # cohort, regardless of how many contacts/interactions were tagged
+        # below.
+        prov.tag(db, user, provenance=prov.BASELINE, cohort_id=cohort_id)
+
         # Tag all contacts and interactions with provenance
         for contact in contacts:
             prov.tag(db, contact, provenance=prov.BASELINE, cohort_id=cohort_id)

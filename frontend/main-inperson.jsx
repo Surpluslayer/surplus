@@ -96,7 +96,13 @@ function ObserveSplitView() {
     setSelection({
       type: el.getAttribute("data-observe-type"),
       id,
-      contactId: el.getAttribute("data-observe-contact-id") || id,
+      // No `|| id` fallback: `id` (data-observe-id) is an INTERACTION id on
+      // a signal card, not a contact id -- falling back to it would trace
+      // the wrong entity with no indication anything went wrong. Every real
+      // data-observe-* site in BookApp.jsx sets data-observe-contact-id
+      // explicitly; a missing one means "no contact to trace", which
+      // ObservePanel already handles (it just doesn't open a stream).
+      contactId: el.getAttribute("data-observe-contact-id") || null,
       name: el.getAttribute("data-observe-name") || null,
       at: Date.now(),
     });

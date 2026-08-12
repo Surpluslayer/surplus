@@ -1940,15 +1940,15 @@ function DraftSheet({ draft, onClose, isDemo = false }) {
                 <>
                   <button data-onb="send" className="bk-btn bk-btn--primary bk-btn--block"
                           disabled={!!working} onClick={sendNow}
-                          data-observe-type="lawyer" data-observe-id={detail.contact_id}
-                          data-observe-contact-id={detail.contact_id} data-observe-name={detail.name}>
+                          data-observe-type="lawyer" data-observe-id={draft.contact_id}
+                          data-observe-contact-id={draft.contact_id} data-observe-name={draft.name}>
                     <Send size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
                     {working === "send" ? "Sending…" : "Send via LinkedIn"}
                   </button>
                   <button className="bk-btn bk-btn--block"
                           disabled={!!working} onClick={emailSend}
-                          data-observe-type="lawyer" data-observe-id={detail.contact_id}
-                          data-observe-contact-id={detail.contact_id} data-observe-name={detail.name}>
+                          data-observe-type="lawyer" data-observe-id={draft.contact_id}
+                          data-observe-contact-id={draft.contact_id} data-observe-name={draft.name}>
                     <Mail size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
                     {working === "email" ? "Sending…" : "Send via Email"}
                   </button>
