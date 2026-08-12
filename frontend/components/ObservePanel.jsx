@@ -76,6 +76,26 @@ function LogLine({ e }) {
   );
 }
 
+// Client-side product events (BookApp dispatches `surplus:observe` the
+// instant an ask is submitted). These land with ZERO round trip, so typing a
+// query paints a line immediately instead of the log sitting silent until
+// the server's own narration arrives over the activity stream below.
+//
+// Both are shown because they are different facts: this is the browser
+// saying "I sent it", the backend lines are a worker saying "I ran it". A
+// gap between them is itself the useful signal -- it means the request is in
+// flight, or that the worker handling it never reported.
+function useClientEvents(append) {
+  useEffect(() => {
+    const onEvt = (e) => {
+      const d = e && e.detail;
+      if (d && d.msg) append(d);
+    };
+    window.addEventListener("surplus:observe", onEvt);
+    return () => window.removeEventListener("surplus:observe", onEvt);
+  }, [append]);
+}
+
 // A long-lived tail of what the PRODUCT is doing (ask-bar runs, Draft
 // taps), narrated with the real machinery each sets off. Separate from the
 // on-demand streams below because it stays open for the whole session
@@ -125,15 +145,36 @@ export default function ObservePanel({ selection }) {
   const scrollRef = useRef(null);
   const seq = useRef(0);
 
+  // Lines arrive from three sources with different latencies: client events
+  // land instantly, the activity stream polls every ~500ms, and boot/contact
+  // streams push as work completes. Appending blindly interleaves them out of
+  // order -- a client line stamped :27.323 rendering ABOVE a server line
+  // stamped :27.058, which in a log reads as the server having answered
+  // before the request was sent.
+  //
+  // So insert by timestamp, scanning back only a short way: far enough to fix
+  // the arrival skew between sources, short enough that this stays O(1) per
+  // line and that already-read history never reshuffles under the reader.
+  const REORDER_WINDOW = 60;
   const append = useCallback((e) => {
     setLines(prev => {
-      const next = prev.concat([{ ...e, _k: seq.current++ }]);
+      const item = { ...e, _k: seq.current++ };
+      const t = Date.parse(e.ts);
+      let i = prev.length;
+      if (!Number.isNaN(t)) {
+        const floor = Math.max(0, prev.length - REORDER_WINDOW);
+        while (i > floor && Date.parse(prev[i - 1].ts) > t) i--;
+      }
+      const next = i === prev.length
+        ? prev.concat([item])
+        : prev.slice(0, i).concat([item], prev.slice(i));
       // Bounded so a long session can't grow without limit.
       return next.length > 2000 ? next.slice(next.length - 2000) : next;
     });
   }, []);
 
   const open = useLogStream(append);
+  useClientEvents(append);
   useActivityStream(append);
   // useLogStream's single EventSource ref is shared by the boot stream and
   // every contact stream, so whichever open() call runs LAST wins. The auth
