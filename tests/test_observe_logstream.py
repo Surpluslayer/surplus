@@ -10,6 +10,7 @@ they reported real arithmetic over the wrong dataset.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -358,6 +359,143 @@ def test_draft_events_prefer_a_stored_autodraft_over_a_model_call(db):
     assert "reusing stored autodraft" in joined
     assert "no model call needed" in joined
     assert out["interaction_id"] is not None
+
+
+def test_draft_narrates_even_when_the_jurisdiction_needs_no_disclosure_label(db):
+    """Gap: draft_events used to run ONLY inside jurisdiction_events, gated
+    behind requires_disclosure_label -- so a CA-barred lawyer (CA's rule has
+    requires_disclosure_label=False) never saw ANY LLM/drafting activity in a
+    contact-click trace. contact_events now resolves the draft unconditionally
+    before jurisdiction runs."""
+    cohort.generate(db, n_lawyers=3, days=30, cohort_id="ca-cohort")
+    row = db.execute(select(models.RelationshipInteraction).where(
+        models.RelationshipInteraction.title.like("Drafted follow-up%"))).scalars().first()
+    user = db.get(models.User, row.actor_user_id)
+    user.bar_jurisdiction = "CA"
+    db.commit()
+    contact = db.get(models.Contact, row.contact_id)
+
+    events = list(logstream.contact_events(db, user, contact))
+    joined = " | ".join(e["msg"] for e in events)
+
+    assert "resolving this contact's draft" in joined
+    assert "no advertising label on written solicitation" in joined
+    assert "no label check needed for CA" in joined
+    # and the draft resolution itself actually ran (stored autodraft path,
+    # since cohort.generate() writes one onto meta_json["draft"]).
+    assert "reusing stored autodraft" in joined or "draft resolved via" in joined
+
+
+def test_jurisdiction_events_standalone_still_resolves_its_own_draft(db):
+    """`resolved=None` (the default) must keep jurisdiction_events
+    independently callable -- existing standalone tests rely on this."""
+    cohort.generate(db, n_lawyers=3, days=30, cohort_id="standalone-ca")
+    row = db.execute(select(models.RelationshipInteraction).where(
+        models.RelationshipInteraction.title.like("Drafted follow-up%"))).scalars().first()
+    user = db.get(models.User, row.actor_user_id)
+    user.bar_jurisdiction = "CA"
+    db.commit()
+    contact = db.get(models.Contact, row.contact_id)
+
+    joined = " | ".join(e["msg"] for e in logstream.jurisdiction_events(db, user, contact))
+    assert "no advertising label on written solicitation" in joined
+    assert "draft resolved via" in joined or "reusing stored autodraft" in joined
+
+
+def test_jurisdiction_events_reuses_a_passed_in_resolved_draft(db, monkeypatch):
+    """When `resolved` is supplied, jurisdiction_events must NOT re-run
+    draft_events -- it reuses the caller's already-resolved draft."""
+    cohort.generate(db, n_lawyers=3, days=30, cohort_id="reuse-cohort")
+    row = db.execute(select(models.RelationshipInteraction).where(
+        models.RelationshipInteraction.title.like("Drafted follow-up%"))).scalars().first()
+    user = db.get(models.User, row.actor_user_id)
+    user.bar_jurisdiction = "NY"
+    db.commit()
+    contact = db.get(models.Contact, row.contact_id)
+
+    calls = []
+
+    def counting_draft_events(*a, **k):
+        calls.append(1)
+        yield from ()
+
+    monkeypatch.setattr(logstream, "draft_events", counting_draft_events)
+
+    resolved = {"text": "Attorney Advertising: a hand-off draft.",
+               "source": "test:hand-off", "interaction_id": None}
+    events = list(logstream.jurisdiction_events(db, user, contact, resolved=resolved))
+
+    assert calls == [], "jurisdiction_events must not re-resolve a draft it was already given"
+    joined = " | ".join(e["msg"] for e in events)
+    assert "test:hand-off" in joined
+
+
+def test_contact_events_reports_modal_dispatch_state(db, monkeypatch):
+    cohort.generate(db, n_lawyers=2, days=14, cohort_id="modal-cohort")
+    user = db.execute(select(models.User)).scalars().first()
+    contact = db.execute(select(models.Contact).where(
+        models.Contact.user_id == user.id)).scalars().first()
+
+    monkeypatch.delenv("USE_MODAL", raising=False)
+    joined_off = " | ".join(e["msg"] for e in logstream.contact_events(db, user, contact))
+    assert "Modal batch dispatch: OFF" in joined_off
+
+    monkeypatch.setenv("USE_MODAL", "1")
+    joined_on = " | ".join(e["msg"] for e in logstream.contact_events(db, user, contact))
+    assert "Modal batch dispatch: ON" in joined_on
+
+
+def test_judge_model_status_distinguishes_live_infra_from_dead_code(db):
+    joined = " | ".join(e["msg"] for e in logstream.judge_model_status())
+    from backend.agents import llm
+    assert f"JUDGE_MODEL={llm.JUDGE_MODEL}" in joined
+    assert "real cheap-tier infra" in joined
+    assert f"MODEL={llm.MODEL}" in joined
+    assert "judge_relevance_batch" in joined
+    assert "verified dead code" in joined
+
+
+def test_cache_status_events_reports_a_real_assess_and_draft_hit(db):
+    from backend.agents.relationship import book as book_agent
+    from backend.routes.book import _find_contact_fast
+
+    cohort.generate(db, n_lawyers=2, days=14, cohort_id="cachehit-cohort")
+    user = db.execute(select(models.User)).scalars().first()
+    contact = db.execute(select(models.Contact).where(
+        models.Contact.user_id == user.id)).scalars().first()
+
+    cdict = _find_contact_fast(db, user, str(contact.id))
+    assert cdict is not None
+    akey = book_agent._assess_key(cdict)
+    dkey = book_agent._draft_key(cdict, "catching up", "linkedin_dm")
+    book_agent._assess_cache[akey] = (time.time(), {"health": "warm"}, None)
+    book_agent._draft_cache[dkey] = (time.time(), {"body": "cached draft"})
+    try:
+        joined = " | ".join(e["msg"] for e in
+                            logstream.cache_status_events(db, user, contact, "linkedin_dm"))
+        assert "assess cache: HIT" in joined
+        assert "draft cache: HIT" in joined
+        assert "this worker only" in joined
+    finally:
+        book_agent._assess_cache.pop(akey, None)
+        book_agent._draft_cache.pop(dkey, None)
+
+
+def test_cache_status_events_reports_a_real_miss(db):
+    from backend.agents.relationship import book as book_agent
+
+    cohort.generate(db, n_lawyers=2, days=14, cohort_id="cachemiss-cohort")
+    user = db.execute(select(models.User)).scalars().first()
+    contact = db.execute(select(models.Contact).where(
+        models.Contact.user_id == user.id)).scalars().first()
+
+    book_agent._assess_cache.clear()
+    book_agent._draft_cache.clear()
+    joined = " | ".join(e["msg"] for e in
+                        logstream.cache_status_events(db, user, contact, "linkedin_dm"))
+    assert "assess cache: MISS" in joined
+    assert "draft cache: MISS" in joined
+    assert "another worker may already hold" in joined
 
 
 def test_boot_reports_the_updates_pipeline_before_the_harnesses(db):
