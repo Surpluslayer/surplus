@@ -588,6 +588,13 @@ def draft(body: DraftIn, db: Session = Depends(get_db),
     _trace(f"POST /draft user={user.id} to={contact.get('name')!r} "
            f"channel={body.channel} trigger={body.trigger!r} engine={engine} "
            f"in {time.monotonic()-t0:.2f}s")
+    try:
+        from ..observe import askprobe
+        askprobe.draft_tap(user.id, contact.get("name") or "?", engine, body.channel,
+                           body.trigger or "", (time.monotonic() - t0) * 1000,
+                           len((msg or {}).get("body") or ""))
+    except Exception:  # noqa: BLE001 -- instrumentation must never break a draft
+        pass
     return {"channel": body.channel, **msg}
 
 
@@ -669,14 +676,23 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
         from ..db import SessionLocal
         from ..agents.relationship.pipeline.compose import drafting
         from concurrent.futures import ThreadPoolExecutor, as_completed
+        # Mirror this run's real steps into the Observe log. Fire-and-forget:
+        # backend/observe/bus.py swallows its own errors, so instrumentation
+        # can never break an ask.
+        from ..observe import askprobe
         wdb = SessionLocal()
         t0 = time.monotonic()
         try:
             wuser = wdb.query(models.User).get(user_id)
             events.put(("status", {"phase": "selecting"}))
+            askprobe.ask_started(user_id, q)
             book = _load_book(wdb, wuser)
             contacts_orm = rel_agent.list_contacts(wdb, user_id)
+            askprobe.book_loaded(user_id, len(book), len(contacts_orm))
+            t_sel = time.monotonic()
             res = book_agent.ask_agent(book, q)          # selection (Haiku, gated)
+            askprobe.selection_done(user_id, q, book, res,
+                                    (time.monotonic() - t_sel) * 1000)
             res = enrich_book_ask(wuser, q, contacts_orm, res,
                                   force=(body.mode == "referral"))
             people = res.get("people") or []
@@ -744,6 +760,7 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
                 events.put(("person", {"index": idx, "contact_id": p.get("contact_id"),
                                        "name": p.get("name")}))
 
+            askprobe.drafting_started(user_id, len(targets), len(heuristic), inline)
             if targets or heuristic:
                 with ThreadPoolExecutor(max_workers=6) as ex:
                     futs = [ex.submit(_stream_one, idx, p, ctx) for idx, p, ctx in targets]
@@ -753,6 +770,7 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
                             fut.result()
                         except Exception:  # noqa: BLE001 : one bad draft must not sink the stream
                             pass
+            askprobe.ask_done(user_id, len(people), (time.monotonic() - t0) * 1000)
             events.put(("done", {"total_s": round(time.monotonic() - t0, 1),
                                  "count": len(people),
                                  "network_hits": network_hits}))
