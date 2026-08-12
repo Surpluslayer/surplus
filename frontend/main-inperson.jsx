@@ -106,7 +106,16 @@ function ObserveSplitView() {
     <div style={{ display: "flex", height: "100dvh", overflow: "hidden",
                   background: "#f4f5f7" }}>
       <div style={{ flex: `0 0 ${BOOK_COLUMN_PX}px`, width: BOOK_COLUMN_PX,
-                    height: "100dvh", overflowY: "auto" }}
+                    height: "100dvh", overflowY: "auto",
+                    // `transform` on this wrapper creates a new CSS containing
+                    // block for any `position: fixed` descendant -- BookApp
+                    // uses position:fixed for its compose/send modal (built
+                    // for a full-viewport phone-first surface), which without
+                    // this escaped the 430px column and covered the whole
+                    // split view including Observe. translateZ(0) is a
+                    // no-op transform chosen purely for this containment
+                    // side effect; nothing about BookApp itself changes.
+                    transform: "translateZ(0)" }}
            onClickCapture={handleBookClick}>
         <BookApp />
       </div>
