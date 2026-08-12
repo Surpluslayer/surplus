@@ -22,8 +22,8 @@ frontend decision, out of scope for this module, and named as a remaining
 step rather than silently skipped.
 
 Run it:
-    python -m backend.demo.cohort_seed              # writes to the configured DB
-    python -m backend.demo.cohort_seed --lawyers 80 --days 30
+    python -m backend.demo.cohort                   # writes to the configured DB
+    python -m backend.demo.cohort --lawyers 80 --days 30
 """
 from __future__ import annotations
 
