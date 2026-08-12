@@ -251,23 +251,26 @@ def contact_events(db, user, contact, channel: str = "linkedin_dm"):
     yield line(OK, "backend.demo.ranking_trace:compute_trace",
                f"opportunity_score = {running:.4f}  (sum of weighted factors, {rms:.1f}ms)")
 
-    # ── ablation: what actually moved the number ──
+    # ── ablation: a real re-ranking loop, one full pass per feature group ──
     candidates = _sibling_contacts(db, user)
+    groups = ("relationship", "behavior", "signal_affinity", "timing")
     if len(candidates) > 1:
         yield line(STEP, "backend.observe.harnesses.ablation:ablate_one",
-                   f"ablating feature groups against {len(candidates)} candidates")
-        for group in ("relationship", "behavior", "signal_affinity", "timing"):
+                   f"ablation loop: {len(groups)} iterations, each re-ranking all "
+                   f"{len(candidates)} candidates from scratch "
+                   f"({len(groups) * len(candidates) * 2} scoring passes total)")
+        for i, group in enumerate(groups, start=1):
             try:
                 res, ams = _timed(
                     lambda g=group: ablation.ablate_one(db, user, contact, candidates, g))
             except Exception as exc:  # noqa: BLE001
                 yield line(ERR, "backend.observe.harnesses.ablation:ablate_one",
-                           f"  {group}: {type(exc).__name__}: {exc}")
+                           f"  [{i}/{len(groups)}] {group}: {type(exc).__name__}: {exc}")
                 continue
             delta = res["rank_delta"]
             yield line(OK if delta else INFO, "backend.observe.harnesses.ablation:ablate_one",
-                       f"  without {group:<16} rank #{res['full_system']['rank']} → "
-                       f"#{res['without_group']['rank']}  "
+                       f"  [{i}/{len(groups)}] without {group:<16} rank "
+                       f"#{res['full_system']['rank']} → #{res['without_group']['rank']}  "
                        f"(score {res['full_system']['score']} → {res['without_group']['score']}, "
                        f"{delta:+d} positions, {ams:.0f}ms)")
 
@@ -275,7 +278,61 @@ def contact_events(db, user, contact, channel: str = "linkedin_dm"):
     for ev in jurisdiction_events(db, user, contact, channel):
         yield ev
 
+    for ev in feedback_loop_status(db, user):
+        yield ev
+
     yield line(OK, "backend.observe.logstream:contact_events", "trace complete")
+
+
+def feedback_loop_status(db, user):
+    """State plainly which parts of the outcome→ranking loop are actually
+    wired, because "the system learns from outcomes" is the single easiest
+    thing to imply and not have.
+
+    What is closed today: outcomes are RECORDED (draft dispositions land in
+    meta_json) and READ back by ranking_trace._historical_behavior, so a
+    lawyer's own past engagement per signal category does move their next
+    score. That is a real, live loop and the log says so.
+
+    What is NOT closed: signal_taxonomy.affinity() still returns SEED values.
+    update_affinity_from_outcomes() exists and is tested, but nothing in
+    production calls it -- verified by grep, not assumed. So the cross-lawyer
+    taxonomy does not improve with usage yet, and any claim that it does
+    would be false."""
+    import json
+    from sqlalchemy import select
+    from .. import models
+    from ..demo import signal_taxonomy as tax
+
+    src = "backend.demo.signal_taxonomy"
+    yield line(STEP, "backend.observe.logstream:feedback_loop_status",
+               "outcome → ranking loop status")
+
+    rows = db.execute(
+        select(models.RelationshipInteraction)
+        .where(models.RelationshipInteraction.actor_user_id == user.id,
+               models.RelationshipInteraction.title.like("Drafted follow-up%"))
+    ).scalars().all()
+    resolved = 0
+    for r in rows:
+        try:
+            if json.loads(r.meta_json or "{}").get("disposition"):
+                resolved += 1
+        except Exception:  # noqa: BLE001
+            pass
+
+    yield line(OK if resolved else WARN, "backend.demo.ranking_trace:_historical_behavior",
+               f"  CLOSED: {resolved} resolved outcomes for this lawyer feed "
+               f"historical_behavior on their next score")
+    yield line(WARN, src,
+               "  OPEN:   signal_taxonomy.affinity() returns SEED priors -- "
+               "update_affinity_from_outcomes() is implemented and tested but is not "
+               "called anywhere in production, so the cross-lawyer taxonomy does not "
+               "yet improve with usage")
+    yield line(INFO, src,
+               f"  affinity table version={tax.__name__} seed · "
+               f"{len(tax.SIGNAL_AFFINITY_SEED)} practice areas × "
+               f"{len(tax.ALL_SIGNAL_CATEGORIES)} signal categories")
 
 
 def _sibling_contacts(db, user) -> list:
@@ -382,6 +439,14 @@ def jurisdiction_events(db, user, contact, channel: str = "linkedin_dm"):
                + (f" ({rule.disclosure_text!r})" if rule.disclosure_text else "")
                + f" · cooldown_days={rule.sensitive_matter_cooldown_days}"
                f" · volume_cap={rule.max_solicitations_per_window}")
+    if rule.citation:
+        yield line(INFO, src, f"modeled on: {rule.citation}")
+    else:
+        yield line(WARN, src,
+                   f"NO CITATION recorded for the {rule.state} entry -- these values are "
+                   "illustrative and were never verified against current bar text. "
+                   "Not usable as a compliance record until counsel fills this in "
+                   "(backend/solicitation.py JurisdictionRule.citation)")
     yield line(INFO, src,
                f"context: channel={ctx.channel!r} relationship_type={ctx.relationship_type.value!r} "
                f"recent_solicitations_in_window={ctx.recent_solicitation_count_in_window}")
@@ -445,15 +510,33 @@ def jurisdiction_events(db, user, contact, channel: str = "linkedin_dm"):
                f"labeling requirement · source={draft_src}"
                + (f" interaction_id={interaction_id}" if interaction_id else ""))
     label = (rule.disclosure_text or "").lower()
-    lines = [ln for ln in draft.splitlines() if ln.strip()]
+    # Wrap to readable widths so a one-paragraph draft still reads line by
+    # line rather than as a single truncated blob.
+    import textwrap
+    lines = []
+    for para in draft.splitlines():
+        if not para.strip():
+            continue
+        lines.extend(textwrap.wrap(para.strip(), width=96) or [para.strip()])
+
+    hit_index = None
     for i, ln in enumerate(lines, start=1):
-        hit = label and label in ln.lower()
+        hit = bool(label) and label in ln.lower()
+        if hit and hit_index is None:
+            hit_index = i
         yield line(OK if hit else INFO, "backend.observe.logstream:jurisdiction_events",
-                   f"  L{i:<3} {ln.strip()[:110]}" + ("   ← contains required label" if hit else ""))
-    present = label in draft.lower()
-    yield line(OK if present else ERR, src,
-               f"disclosure label {rule.disclosure_text!r}: "
-               + (f"PRESENT in draft → compliant"
-                  if present else
-                  f"MISSING from draft → {rule.state} requires this label on solicitation; "
-                  f"needs REVIEW before send"))
+                   f"  L{i:<3} {ln}" + ("   ← required label appears here" if hit else ""))
+
+    present = bool(label) and label in draft.lower()
+    if present:
+        yield line(OK, src,
+                   f"disclosure label {rule.disclosure_text!r}: PRESENT (line L{hit_index}) "
+                   f"→ satisfies {rule.state}'s labeling requirement")
+    else:
+        yield line(ERR, src,
+                   f"disclosure label {rule.disclosure_text!r}: MISSING from all "
+                   f"{len(lines)} lines → {rule.state} requires this label on written "
+                   f"solicitation; this draft needs REVIEW before send")
+        yield line(WARN, src,
+                   f"  first line as sent would be: {lines[0][:96]!r}"
+                   if lines else "  draft is empty")

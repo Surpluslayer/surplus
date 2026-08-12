@@ -68,6 +68,27 @@ _SIGNAL_DETAILS = {
 }
 
 
+def _draft_body(contact, kind: str, detail: str) -> str:
+    """A plain follow-up body for a generated signal row.
+
+    DETERMINISTIC TEMPLATE, NOT MODEL OUTPUT. Production's real drafts come
+    from pipeline.compose.drafting (an LLM in the host's voice); calling that
+    per generated row would cost thousands of model calls and, worse, would
+    let generated text be mistaken for a measured sample of what the composer
+    produces. This exists so the row is SHAPE-faithful -- something reads
+    meta_json["draft"] and gets a message -- not so the text can be judged as
+    drafting quality. Drafting quality has its own harness
+    (backend/eval/drafting_quality_harness.py) which calls the real composer.
+
+    Deliberately omits any advertising label, which is what lets Observe's
+    jurisdiction check surface a real finding on NY (see
+    backend/observe/logstream.py's disclosure check) instead of a
+    pre-satisfied one."""
+    first = (contact.name or "there").split(" ")[0]
+    return (f"Hi {first}, saw that you {detail}. Congratulations -- that's a real "
+            f"milestone. Would love to hear how it's going when you have a moment.")
+
+
 def _seeded_rng(cohort_id: str, salt: str) -> random.Random:
     """Deterministic per-(cohort, salt) RNG -- a re-run with the same
     cohort_id reproduces the same cohort, useful for tests and for diffing
@@ -207,7 +228,14 @@ def _emit_session(db, rng: random.Random, user: models.User,
             minutes_offset=minute,
             meta={"signal_kind": kind, "signal_category": category,
                   "practice_area": practice_area, "affinity_seed": round(aff, 3),
-                  "engaged": engaged, "disposition": disposition},
+                  "engaged": engaged, "disposition": disposition,
+                  # Production's updates_engine.autodraft() stores the composed
+                  # follow-up on the SAME meta key (there is no drafts table),
+                  # so a generated signal row without it is not schema-faithful:
+                  # every consumer that reads meta_json["draft"] -- the Today
+                  # feed's "Draft ready" tag, Observe's jurisdiction body check
+                  # -- silently found nothing on generated data and fell back.
+                  "draft": _draft_body(gc.contact, kind, detail)},
             source_type="activity_update",  # this row IS the detected signal + response
         )
         drafts_this_session += 1

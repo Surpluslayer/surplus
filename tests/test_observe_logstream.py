@@ -135,3 +135,47 @@ def test_jurisdiction_events_report_an_unset_bar_jurisdiction_honestly(db):
     joined = " | ".join(e["msg"] for e in logstream.jurisdiction_events(db, user, contact))
     assert "bar_jurisdiction is NOT SET" in joined
     assert "fail-closed" in joined
+
+
+def test_generated_signal_rows_carry_a_draft_like_production_autodraft(db):
+    """production's updates_engine.autodraft() stores the composed follow-up
+    on meta_json["draft"]; a generated signal row without it is not
+    schema-faithful and every consumer of that key silently finds nothing."""
+    import json
+    cohort.generate(db, n_lawyers=4, days=30, cohort_id="draft-cohort")
+    rows = db.execute(select(models.RelationshipInteraction).where(
+        models.RelationshipInteraction.title.like("Drafted follow-up%"))).scalars().all()
+    assert rows
+    for r in rows:
+        assert json.loads(r.meta_json or "{}").get("draft"), "generated signal has no draft body"
+
+
+def test_jurisdiction_quotes_the_real_draft_and_flags_a_missing_label(db):
+    cohort.generate(db, n_lawyers=4, days=30, cohort_id="label-cohort")
+    row = db.execute(select(models.RelationshipInteraction).where(
+        models.RelationshipInteraction.title.like("Drafted follow-up%"))).scalars().first()
+    user = db.get(models.User, row.actor_user_id)
+    user.bar_jurisdiction = "NY"
+    db.commit()
+    contact = db.get(models.Contact, row.contact_id)
+
+    events = list(logstream.jurisdiction_events(db, user, contact))
+    joined = " | ".join(e["msg"] for e in events)
+
+    # the real draft body is quoted line by line
+    assert " L1 " in joined or "L1  " in joined
+    # NY's label requirement is a real, surfaced finding on this draft
+    assert "Attorney Advertising" in joined
+    assert "MISSING" in joined
+    # and the missing citation is surfaced rather than invented
+    assert "NO CITATION recorded for the NY entry" in joined
+
+
+def test_feedback_loop_status_does_not_claim_the_taxonomy_learns(db):
+    """The single easiest thing to imply and not have."""
+    cohort.generate(db, n_lawyers=3, days=14, cohort_id="loop-cohort")
+    user = db.execute(select(models.User)).scalars().first()
+    joined = " | ".join(e["msg"] for e in logstream.feedback_loop_status(db, user))
+    assert "CLOSED:" in joined and "historical_behavior" in joined
+    assert "OPEN:" in joined
+    assert "not called anywhere in production" in joined
