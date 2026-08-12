@@ -54,3 +54,4 @@ backend/.build_time
 
 # browser extension build artifact
 /surplus-extension.zip
+.vite/
