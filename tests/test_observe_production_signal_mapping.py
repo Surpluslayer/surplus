@@ -182,3 +182,50 @@ def test_signal_trace_shows_real_kind_and_category_for_production_rows(db):
     assert "production" in kind_f["evidence"]["source"]
     assert cat_f["value"] == "acquisition_announced"
     assert d["decision"] == "classified as acquisition_announced"
+
+
+# ── production's real milestone vocabulary ──────────────────────────────────
+
+def test_the_role_milestone_type_maps_instead_of_falling_through():
+    """updates_engine._POST_SYSTEM returns "raise|launch|role|award|milestone".
+    Only `raise` and `launch` ever matched the keyword table, so every `role`
+    post logged "unclassified" -- pinning practice_fit at a neutral 0.5 and
+    leaving historical_behavior with no category to compare against."""
+    assert tax.production_signal_category(
+        "new_post", {"milestone_type": "role", "headline": "starting as General Counsel"}
+    ) == "gc_appointment"
+    assert tax.production_signal_category(
+        "new_post", {"milestone_type": "role", "headline": "new role at Acme"}
+    ) == "exec_appointment"
+
+
+def test_every_production_milestone_type_either_maps_or_is_explained():
+    """No production value may fall through silently: it either lands in a
+    category or produces a reason naming the value."""
+    for value in sorted(tax._PRODUCTION_MILESTONE_TYPES):
+        meta = {"milestone_type": value}
+        got = tax.production_signal_category("new_post", meta)
+        if got is None:
+            reason = tax.unmapped_reason("new_post", meta)
+            assert value in reason, f"{value!r} unmapped without naming itself"
+        else:
+            assert got in tax.ALL_SIGNAL_CATEGORIES
+
+
+def test_generic_good_news_is_left_unclassified_rather_than_forced():
+    """`award` and `milestone` have no honest home among the eight categories
+    -- none of them means "generic good news". Forcing them into the
+    nearest-looking bucket would fabricate a practice-area affinity."""
+    for value in ("award", "milestone"):
+        assert tax.production_signal_category("new_post", {"milestone_type": value}) is None
+        reason = tax.unmapped_reason("new_post", {"milestone_type": value})
+        assert "no honest bucket" in reason
+
+
+def test_the_unmapped_reason_names_the_actual_values():
+    """"no mapping for this interaction_type/milestone_type" is unactionable;
+    it took reading _POST_SYSTEM to find that three of five types had no
+    bucket. The log has to name what it saw."""
+    assert "no milestone_type" in tax.unmapped_reason("new_post", {})
+    assert "no new_title" in tax.unmapped_reason("job_change", {})
+    assert "account_cooling" in tax.unmapped_reason("profile_update", {})
