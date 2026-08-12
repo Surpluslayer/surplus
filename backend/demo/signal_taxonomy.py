@@ -182,6 +182,48 @@ def load_learned(db) -> dict:
         return {}
 
 
+def apply_outcome(db, practice_area: str | None, signal_category: str | None,
+                  engaged: bool, *, commit: bool = True) -> bool:
+    """Fold ONE freshly recorded outcome into the learned counts, immediately.
+
+    The daily affinity_refresh sweep recomputes the whole table from scratch,
+    which is correct but means a lawyer's decision does not show up in the
+    affinity numbers until the next sweep. That delay is invisible to the
+    product but it is exactly what someone watching the Observe log wants to
+    see, and "turn the poll interval down" is the wrong fix -- it makes every
+    account pay for a full recompute far more often to shorten one person's
+    feedback loop.
+
+    So the write path applies its own delta and the sweep stays the
+    reconciler: incremental for latency, periodic recompute for correctness.
+    Safe to do incrementally only because record_draft_outcome() is
+    idempotent -- a draft that already carries a disposition is never
+    re-marked, so an outcome cannot be counted twice.
+
+    Returns True when a row was updated.
+    """
+    if not practice_area or not signal_category:
+        return False
+    from sqlalchemy import select
+    from .. import models
+
+    row = db.execute(select(models.SignalAffinity).where(
+        models.SignalAffinity.practice_area == practice_area,
+        models.SignalAffinity.signal_category == signal_category)).scalar_one_or_none()
+    if row is None:
+        row = models.SignalAffinity(practice_area=practice_area,
+                                    signal_category=signal_category,
+                                    engaged=0, total=0)
+        db.add(row)
+    row.total = (row.total or 0) + 1
+    if engaged:
+        row.engaged = (row.engaged or 0) + 1
+    row.updated_at = datetime.now(timezone.utc)
+    if commit:
+        db.commit()
+    return True
+
+
 def refresh_from_outcomes(db) -> dict:
     """Recompute the learned counts from REAL recorded outcomes and persist.
 
@@ -237,17 +279,32 @@ def refresh_from_outcomes(db) -> dict:
         engaged, total = counts.get((area, category), (0, 0))
         counts[(area, category)] = (engaged + (1 if meta.get("engaged") else 0), total + 1)
 
+    now = datetime.now(timezone.utc)
+    existing = {(r.practice_area, r.signal_category): r
+                for r in db.execute(select(models.SignalAffinity)).scalars().all()}
     for (area, category), (engaged, total) in counts.items():
-        row = db.execute(select(models.SignalAffinity).where(
-            models.SignalAffinity.practice_area == area,
-            models.SignalAffinity.signal_category == category)).scalar_one_or_none()
+        row = existing.get((area, category))
         if row is None:
             row = models.SignalAffinity(practice_area=area, signal_category=category)
             db.add(row)
         row.engaged, row.total = engaged, total
-        row.updated_at = datetime.now(timezone.utc)
+        row.updated_at = now
+
+    # Drop pairs the recompute no longer supports. Without this the sweep can
+    # only ever ADD, which makes it an accumulator rather than a reconciler --
+    # so a count inflated by the incremental write path (a row later tagged as
+    # generated, an outcome whose interaction was deleted) would persist
+    # forever and quietly keep shaping rankings. The recompute is the source
+    # of truth, and that has to include being able to correct downward.
+    stale = 0
+    for key, row in existing.items():
+        if key not in counts:
+            db.delete(row)
+            stale += 1
+
     db.commit()
-    return {"pairs": len(counts), "outcomes": outcomes, "skipped_generated": skipped}
+    return {"pairs": len(counts), "outcomes": outcomes,
+            "skipped_generated": skipped, "stale_pairs_dropped": stale}
 
 
 def update_affinity_from_outcomes(engagement_rows: list[dict]) -> dict[str, dict[str, float]]:
