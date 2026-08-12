@@ -80,7 +80,7 @@ _HARNESS_ORDER = (
 def evaluation_cohort_id(db):
     """The cohort the data-driven harnesses should evaluate against.
 
-    Restricted to BASELINE provenance on purpose. Picking the plain newest
+    Restricted to prov.EVALUATION_VALUES on purpose. Picking the plain newest
     tag instead (as an earlier version did) selected
     `synthetic-scenarios-v1` -- the four hand-built known-answer fixtures
     that synthetic_scenarios.setup() writes lazily DURING the harness run,
@@ -89,13 +89,19 @@ def evaluation_cohort_id(db):
     fixture set instead of the generated cohort, so replay/ablation/
     relationship numbers came back as "3/3" and "1/1" and looked broken.
     Synthetic fixtures are a correctness check, never the evaluation
-    dataset."""
+    dataset.
+
+    The set (rather than BASELINE alone) is what lets an OBSERVED cohort --
+    a real account's own data, referenced in by backend/demo/seed_operator.py
+    -- actually become the evaluation dataset. Matching only BASELINE would
+    silently ignore it, which is the failure mode this whole predicate exists
+    to prevent."""
     from sqlalchemy import select
     from .. import models
     from ..demo import provenance as prov
     return db.execute(
         select(models.DemoProvenance.cohort_id)
-        .where(models.DemoProvenance.data_provenance == prov.BASELINE)
+        .where(models.DemoProvenance.data_provenance.in_(tuple(prov.EVALUATION_VALUES)))
         .order_by(models.DemoProvenance.id.desc()).limit(1)
     ).scalar_one_or_none()
 

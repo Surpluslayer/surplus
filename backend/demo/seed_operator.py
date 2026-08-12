@@ -1,23 +1,35 @@
-"""backend/demo/seed_operator.py : seed Observe with real Unipile data.
+"""backend/demo/seed_operator.py : point Observe's harnesses at a REAL account.
 
-Pulls actual contacts and interactions from Unipile-connected users' LinkedIn/email
-and tags them for observation-only (Observe harnesses only, not product-visible).
-No fake data; uses authentic patterns from real lawyer networks.
+Two separable jobs, and they fail independently:
+
+  1. set the account's bar_jurisdiction (drives the solicitation gate), and
+  2. reference that account's real, already-synced contacts and interactions
+     into an evaluation cohort so the data-driven harnesses evaluate actual
+     data instead of a generated one.
 
 Run it:
 
     python -m backend.demo.seed_operator --email you@example.com --jurisdiction NY
 
-Everything it writes is provenance-tagged (backend/demo/provenance.py), so
-`prov.delete_cohort(db, cohort_id)` removes it completely. Real Unipile accounts
-are never modified -- only their synced contacts/interactions are pulled into the
-evaluation dataset, marked observation-only via provenance tags.
+NOTHING HERE GENERATES DATA. It tags rows that already exist, produced by the
+normal sync path. That is why the tags say OBSERVED ("observed_real_account_
+data") rather than BASELINE ("generated_from_assumed_distribution") -- the
+latter would be a false statement about where the rows came from, in the one
+table whose whole job is recording where rows came from.
+
+It also means cleanup is untagging, not deletion: prov.delete_cohort() skips
+OBSERVED rows by construction and removes only their tags. An earlier version
+of this module tagged real rows as BASELINE and told operators to clean up
+with delete_cohort; doing so deleted a real account's entire book.
 """
 from __future__ import annotations
 
 import argparse
-import sys
+import json
+
 from datetime import datetime, timezone
+
+from sqlalchemy import select
 
 from .. import models
 from ..db import SessionLocal, init_db
@@ -54,89 +66,137 @@ def existing_baseline_cohort(db):
     return evaluation_cohort_id(db)
 
 
-def seed_from_unipile_users(db, cohort_id: str) -> dict:
-    """Pull real contacts and interactions from Unipile users.
+def _evaluable_contacts(db, contacts: list) -> int:
+    """How many of these contacts the data-driven harnesses can actually score.
 
-    Copies their synced LinkedIn and email data, tags with provenance so it's
-    observation-only and wipeable. Real accounts remain untouched.
-
-    Returns stats dict: {contacts: N, interactions: N, users: N}
+    ablation / relationship_evaluation / historical_replay grade against a
+    contact's most recent "Drafted follow-up" interaction (see
+    observe/cohort_query.py). A freshly synced contact has none until the
+    updates engine has drafted for it, so a cohort can be large and still
+    evaluate nothing -- worth reporting up front rather than letting the
+    boot log show a mysterious 0/0.
     """
-    # Find users with Unipile connections
-    unipile_users = (
-        db.query(models.User)
-        .filter(models.User.unipile_account_id != None)
-        .all()
-    )
+    if not contacts:
+        return 0
+    ids = [c.id for c in contacts]
+    n = 0
+    for i in range(0, len(ids), 400):
+        n += len(set(db.execute(
+            select(models.RelationshipInteraction.contact_id)
+            .where(models.RelationshipInteraction.contact_id.in_(ids[i:i + 400]),
+                   models.RelationshipInteraction.title.like("Drafted follow-up%"))
+            .distinct()
+        ).scalars().all()))
+    return n
 
+
+def seed_from_real_account(db, email: str, cohort_id: str) -> dict:
+    """Reference ONE account's real contacts and interactions into `cohort_id`.
+
+    Scoped to the named account on purpose. Tagging every Unipile-connected
+    user (as an earlier version did) mixes several people's books into one
+    evaluation set, which is both a privacy surprise and meaningless to
+    evaluate: Observe is account-scoped everywhere else.
+
+    The USER row is tagged too. Without that tag
+    observe/cohort_query.users_and_contacts() finds no lawyers for the cohort
+    and every data-driven harness silently reports 0/0 -- which is exactly
+    what the previous version did while printing that it had succeeded.
+    """
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if user is None:
+        return {"users": 0, "contacts": 0, "interactions": 0, "evaluable_contacts": 0}
+
+    if not user.unipile_account_id:
+        print(f"  [seed] NOTE: {email} has no Unipile connection. Referencing whatever "
+              f"contacts the account already has; if that is zero, connect an account "
+              f"and let it sync first.")
+
+    contacts = db.execute(select(models.Contact).where(
+        models.Contact.user_id == user.id)).scalars().all()
+
+    interactions: list = []
+    ids = [c.id for c in contacts]
+    for i in range(0, len(ids), 400):
+        interactions.extend(db.execute(
+            select(models.RelationshipInteraction).where(
+                models.RelationshipInteraction.contact_id.in_(ids[i:i + 400]))
+        ).scalars().all())
+
+    prov.tag(db, user, provenance=prov.OBSERVED, cohort_id=cohort_id)
+    for c in contacts:
+        prov.tag(db, c, provenance=prov.OBSERVED, cohort_id=cohort_id)
+    for r in interactions:
+        prov.tag(db, r, provenance=prov.OBSERVED, cohort_id=cohort_id)
+    db.commit()
+
+    return {
+        "users": 1,
+        "contacts": len(contacts),
+        "interactions": len(interactions),
+        "evaluable_contacts": _evaluable_contacts(db, contacts),
+    }
+
+
+def seed_from_unipile_users(db, cohort_id: str) -> dict:
+    """Reference EVERY Unipile-connected account's data into `cohort_id`.
+
+    The broad form, kept because an operator staging a multi-account
+    evaluation set genuinely wants it. Not the default: pooling several
+    people's books into one cohort is a privacy decision, and Observe is
+    account-scoped everywhere else, so it lives behind --all-unipile-users
+    rather than happening implicitly.
+
+    Tags the lawyer THEMSELVES, not just their rows: cohort_query.
+    users_and_contacts() resolves a cohort's lawyers strictly from a
+    table_name=="users" tag, so without it every harness silently found zero
+    lawyers no matter how much contact data was tagged underneath.
+    """
+    unipile_users = db.execute(select(models.User).where(
+        models.User.unipile_account_id.isnot(None))).scalars().all()
     if not unipile_users:
         print("  [seed] WARNING: no Unipile-connected users found.")
-        return {"users": 0, "contacts": 0, "interactions": 0}
+        return {"users": 0, "contacts": 0, "interactions": 0, "evaluable_contacts": 0}
 
-    stats = {"users": len(unipile_users), "contacts": 0, "interactions": 0}
-
+    stats = {"users": len(unipile_users), "contacts": 0,
+             "interactions": 0, "evaluable_contacts": 0}
     for user in unipile_users:
-        # Query their synced contacts (from LinkedIn/email)
-        contacts = (
-            db.query(models.Contact)
-            .filter(models.Contact.user_id == user.id)
-            .all()
-        )
+        contacts = db.execute(select(models.Contact).where(
+            models.Contact.user_id == user.id)).scalars().all()
+        interactions = db.execute(select(models.RelationshipInteraction).where(
+            models.RelationshipInteraction.actor_user_id == user.id,
+            models.RelationshipInteraction.source_type.in_(
+                ("email_sync", "linkedin", "linkedin_dm")))).scalars().all()
+
+        prov.tag(db, user, provenance=prov.OBSERVED, cohort_id=cohort_id)
+        for c in contacts:
+            prov.tag(db, c, provenance=prov.OBSERVED, cohort_id=cohort_id)
+        for r in interactions:
+            prov.tag(db, r, provenance=prov.OBSERVED, cohort_id=cohort_id)
+
         stats["contacts"] += len(contacts)
-
-        # Query their synced interactions (email_sync, linkedin, etc.)
-        interactions = (
-            db.query(models.RelationshipInteraction)
-            .filter(models.RelationshipInteraction.actor_user_id == user.id)
-            .filter(
-                models.RelationshipInteraction.source_type.in_(
-                    ["email_sync", "linkedin", "linkedin_dm"]
-                )
-            )
-            .all()
-        )
         stats["interactions"] += len(interactions)
-
-        # Tag the lawyer THEMSELVES, not just their rows -- cohort_query.
-        # users_and_contacts() (shared by every cohort-based harness) resolves
-        # a cohort's lawyers strictly from a table_name=="users" tag. Without
-        # this, every harness silently found zero lawyers for a Unipile-seeded
-        # cohort, regardless of how many contacts/interactions were tagged
-        # below.
-        prov.tag(db, user, provenance=prov.BASELINE, cohort_id=cohort_id)
-
-        # Tag all contacts and interactions with provenance
-        for contact in contacts:
-            prov.tag(db, contact, provenance=prov.BASELINE, cohort_id=cohort_id)
-
-        for interaction in interactions:
-            prov.tag(db, interaction, provenance=prov.BASELINE, cohort_id=cohort_id)
-
+        stats["evaluable_contacts"] += _evaluable_contacts(db, contacts)
     db.commit()
     return stats
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Seed Observe with real Unipile user data and set bar jurisdiction."
-    )
-    ap.add_argument("--email", required=True, help="account to set bar_jurisdiction on")
+        description="Set an account's bar jurisdiction and reference its real data "
+                    "into an Observe evaluation cohort.")
+    ap.add_argument("--email", required=True,
+                    help="the account to set bar_jurisdiction on AND seed from")
     ap.add_argument("--jurisdiction", default="NY", help="USPS 2-letter code (default: NY)")
-    ap.add_argument(
-        "--cohort-id",
-        default=None,
-        help="custom cohort ID (default: baseline-YYYYMMDDHHmmss)",
-    )
-    ap.add_argument(
-        "--skip-cohort",
-        action="store_true",
-        help="only set jurisdiction; do not seed cohort",
-    )
-    ap.add_argument(
-        "--force",
-        action="store_true",
-        help="seed another cohort even if one already exists",
-    )
+    ap.add_argument("--cohort-id", default=None,
+                    help="custom cohort ID (default: observed-YYYYMMDDHHmmss)")
+    ap.add_argument("--skip-cohort", action="store_true",
+                    help="only set jurisdiction; do not touch the evaluation cohort")
+    ap.add_argument("--force", action="store_true",
+                    help="seed another cohort even if one already exists")
+    ap.add_argument("--all-unipile-users", action="store_true",
+                    help="reference EVERY Unipile-connected account, not just --email "
+                         "(pools several people's books into one evaluation cohort)")
     args = ap.parse_args()
 
     init_db()
@@ -147,35 +207,58 @@ def main() -> int:
         if args.skip_cohort:
             print("  [seed] --skip-cohort: no cohort seeded.")
             return 0 if ok else 1
+        if not ok:
+            print("  [seed] account not found -- nothing to seed from.")
+            return 1
 
         existing = existing_baseline_cohort(db)
         if existing and not args.force:
             counts = prov.cohort_row_counts(db, existing)
             total = sum(sum(v.values()) for v in counts.values())
-            print(
-                f"  [seed] an evaluation cohort already exists: {existing} ({total} rows). "
-                f"Nothing to do -- pass --force to add another."
-            )
-            return 0 if ok else 1
+            print(f"  [seed] an evaluation cohort already exists: {existing} ({total} rows). "
+                  f"Nothing to do -- pass --force to add another.")
+            return 0
 
-        cohort_id = args.cohort_id or f"baseline-{datetime.now(timezone.utc):%Y%m%d%H%M%S}"
-        print(f"  [seed] seeding from Unipile users...")
-
-        stats = seed_from_unipile_users(db, cohort_id)
+        cohort_id = args.cohort_id or f"observed-{datetime.now(timezone.utc):%Y%m%d%H%M%S}"
+        if args.all_unipile_users:
+            print("  [seed] referencing EVERY Unipile-connected account ...")
+            stats = seed_from_unipile_users(db, cohort_id)
+        else:
+            print(f"  [seed] referencing real data from {args.email} ...")
+            stats = seed_from_real_account(db, args.email, cohort_id)
 
         counts = prov.cohort_row_counts(db, cohort_id)
         total = sum(sum(v.values()) for v in counts.values())
-
         print(f"  [seed] cohort_id={cohort_id}")
-        print(f"           users: {stats['users']}")
-        print(f"           contacts: {stats['contacts']}")
+        print(f"           users:        {stats['users']}")
+        print(f"           contacts:     {stats['contacts']}")
         print(f"           interactions: {stats['interactions']}")
-        print(f"           total_rows: {total}")
+        print(f"           total_rows:   {total}")
         for table, by_prov in sorted(counts.items()):
             print(f"           {table}: {by_prov}")
 
-        print("  [seed] done. Reload /observe -- harnesses now have real evaluation data.")
-        return 0 if ok else 1
+        # Report what the harnesses will actually be able to do, rather than
+        # asserting success. A cohort with no drafted follow-ups produces a
+        # boot log full of 0/0 and no explanation for it.
+        evaluable = stats["evaluable_contacts"]
+        if evaluable:
+            print(f"  [seed] {evaluable} of {stats['contacts']} contacts have a drafted "
+                  f"follow-up to grade against -- the data-driven harnesses can evaluate "
+                  f"those. Reload /observe.")
+        else:
+            print(f"  [seed] WARNING: none of the {stats['contacts']} contacts has a "
+                  f"'Drafted follow-up' interaction yet, so ablation / "
+                  f"relationship_evaluation / historical_replay will report 0/0 -- they "
+                  f"grade against drafted outcomes (see observe/cohort_query.py). "
+                  f"jurisdiction_regression and signal_library_evaluation do not need "
+                  f"this data and will still run. Let the updates engine draft for this "
+                  f"account first, or use a generated cohort "
+                  f"(python -m backend.demo.cohort) to exercise the harnesses.")
+
+        print("  [seed] cleanup, if ever needed: prov.delete_cohort(db, "
+              f"{cohort_id!r}) -- removes the TAGS only; OBSERVED rows are real "
+              "account data and are never deleted.")
+        return 0
     finally:
         db.close()
 
