@@ -195,8 +195,11 @@ def _apply_to_learned_affinity(db, row, meta: dict, engaged: bool) -> None:
             return
         from ...demo import signal_taxonomy as tax
         user = db.get(models.User, row.actor_user_id)
-        tax.apply_outcome(db, getattr(user, "practice_area", None),
-                          meta.get("signal_category"), engaged, commit=False)
+        # None only when actor_user_id doesn't resolve (orphaned row) -- a
+        # real user's unset practice_area still gets the default via
+        # effective_practice_area(); a missing user gets no attribution.
+        area = tax.effective_practice_area(user) if user is not None else None
+        tax.apply_outcome(db, area, meta.get("signal_category"), engaged, commit=False)
     except Exception as exc:  # noqa: BLE001
         print(f"  [outcomes] learned-affinity update skipped: "
               f"{type(exc).__name__}: {exc}", flush=True)

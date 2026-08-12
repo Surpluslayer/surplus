@@ -1315,6 +1315,12 @@ def send_contact_email(
         raise HTTPException(422, "message is required")
     prospect = _sendable_prospect(db, contact, user)
 
+    # See send_contact_followup: outcome recording needs the pre-label text
+    # to tell an approved-as-is send from an edited one.
+    approved_text = text
+    from ..agents.relationship import solicitation_signals
+    text = solicitation_signals.apply_disclosure_label(db, user, contact, "email", text)
+
     to_address = ((getattr(prospect, "email", None) or "").strip().lower()
                   or (contact.email or "").strip().lower())
     if not to_address:
@@ -1389,6 +1395,8 @@ def send_contact_email(
 
     if res.error and res.state == "failed":
         raise HTTPException(409, _send_fail_hint(res.error, contact.name, "Email"))
+    if res.state != "failed":
+        _record_send_outcome(db, user, contact_id, approved_text)
     return {"status": "unconfirmed" if res.state == "unconfirmed" else "sent",
             "dry_run": res.dry_run, "contact_id": contact_id,
             "prospect_id": prospect.id, "to": to_address, "subject": subject}
@@ -1933,6 +1941,14 @@ def send_contact_followup(
     require_can_send_linkedin(user)  # LinkedIn send paywall (bypasses unlimited)
     prospect = _sendable_prospect(db, contact, user)
 
+    # Outcome recording compares the SENT text against the stored draft to
+    # tell approved_as_is from edited_then_sent -- do that comparison against
+    # what the lawyer actually approved, before the label below is appended,
+    # so a compliance addition never reads as the lawyer having rewritten it.
+    approved_text = text
+    from ..agents.relationship import solicitation_signals
+    text = solicitation_signals.apply_disclosure_label(db, user, contact, "linkedin", text)
+
     # Approving a specific message IS the user deciding: a manual send, so it
     # always sends (the autonomy gates only govern UNATTENDED sends). The old
     # legacy-column branch quietly staged a private note instead -- an approve
@@ -1946,6 +1962,7 @@ def send_contact_followup(
         raise HTTPException(409, _send_fail_hint(exc, contact.name)) from exc
     if getattr(res, "error", None):
         raise HTTPException(409, _send_fail_hint(res.error, contact.name))
+    _record_send_outcome(db, user, contact_id, approved_text)
     return {"status": "sent", "contact_id": contact_id,
             "prospect_id": prospect.id, "message": text}
 
@@ -2015,6 +2032,11 @@ def schedule_contact_followup(
     booking_payload = getattr(body, "booking_payload", None)
     if send_at is None or send_at <= now:
         from ..agents.relationship.pipeline.send.sender import send_followup
+        # Outcome recording needs the pre-label text -- see send_contact_followup.
+        approved_text = text
+        from ..agents.relationship import solicitation_signals
+        text = solicitation_signals.apply_disclosure_label(
+            db, user, contact, "email" if want_email else "linkedin", text)
         if want_email:
             try:
                 res = send_followup(db, prospect, text, channel="email")
@@ -2024,7 +2046,7 @@ def schedule_contact_followup(
             if res.error and res.state == "failed":
                 raise HTTPException(409, _send_fail_hint(res.error, contact.name, "Email"))
             booked = _fire_booking_after_send(db, user, contact, booking_payload, text)
-            _record_send_outcome(db, user, contact_id, text)
+            _record_send_outcome(db, user, contact_id, approved_text)
             return {"status": "sent", "contact_id": contact_id,
                     "prospect_id": prospect.id, "channel": "email",
                     "dry_run": res.dry_run, **({"booking": booked} if booked else {})}
@@ -2037,7 +2059,7 @@ def schedule_contact_followup(
         if getattr(res, "error", None):
             raise HTTPException(409, _send_fail_hint(res.error, contact.name))
         booked = _fire_booking_after_send(db, user, contact, booking_payload, text)
-        _record_send_outcome(db, user, contact_id, text)
+        _record_send_outcome(db, user, contact_id, approved_text)
         return {"status": "sent", "contact_id": contact_id,
                 "prospect_id": prospect.id, "message": text,
                 **({"booking": booked} if booked else {})}

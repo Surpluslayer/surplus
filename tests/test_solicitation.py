@@ -88,14 +88,14 @@ def test_volume_cap_blocks_repeat_solicitation():
     assert "caps solicitation" in verdict.reason
 
 
-def test_unknown_jurisdiction_fails_closed():
+def test_unknown_jurisdiction_defaults_to_ny():
     ctx = SolicitationContext(
-        jurisdiction="ZZ",  # not in JURISDICTION_RULES
+        jurisdiction="ZZ",  # not in JURISDICTION_RULES -- falls through to NY
         channel="phone_call",
         relationship_type=RelationshipType.PROSPECT,
     )
     verdict = evaluate(ctx)
-    assert not verdict.allowed  # real-time is barred under the fail-closed default too
+    assert not verdict.allowed  # real-time is barred under NY's rule too
 
 
 def test_unknown_jurisdiction_written_channel_still_requires_disclosure():

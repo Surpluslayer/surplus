@@ -95,7 +95,7 @@ def record_signal_funnel(db, contact: models.Contact,
         meta = json.loads(interaction.meta_json or "{}")
         category = meta.get("signal_category") or tax.production_signal_category(
             interaction.interaction_type, meta)
-        affinity = tax.affinity(getattr(user, "practice_area", None), category)
+        affinity = tax.affinity(tax.effective_practice_area(user), category)
         # affinity() returns exactly 0.5 (neutral) whenever category is None, so
         # this also implies category is real -- no separate "and category" guard.
         if affinity > 0.5:

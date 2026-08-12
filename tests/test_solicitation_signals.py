@@ -89,11 +89,11 @@ def test_unrecognized_relationship_type_value_fails_closed(db):
     assert not verdict.allowed
 
 
-def test_unset_bar_jurisdiction_fails_closed(db):
+def test_unset_bar_jurisdiction_defaults_to_ny(db):
     user = _make_user(db, bar_jurisdiction=None)
     contact = _make_contact(db, user)
     verdict = sig.check(db, user, contact, "email")
-    # written channel still permitted, but under the fail-closed default rule
+    # unset jurisdiction falls through to solicitation.py's NY default
     assert verdict.allowed
     assert verdict.requires_disclosure_label
 
