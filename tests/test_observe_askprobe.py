@@ -25,11 +25,16 @@ def db():
                            poolclass=StaticPool)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    # The bus writes through its own session (it must not join the caller's
+    # transaction), so point it at this engine or it would write to the real
+    # dev database instead.
+    bus.use_session_factory(Session)
     s = Session()
     try:
         yield s
     finally:
         s.close()
+        bus.use_session_factory(None)
 
 
 @pytest.fixture
@@ -127,3 +132,61 @@ def test_publish_never_raises(db):
     """Instrumentation must not be able to break a real ask."""
     bus.publish(1, "info", "src", "msg", weird=object())  # non-serializable extra
     askprobe.ask_started(1, "x")   # must not raise even mid-failure
+
+
+def test_activity_survives_across_independent_sessions(db, user):
+    """The bug this table replaced a ring buffer to fix.
+
+    The ask is served by whichever uvicorn worker takes that request; the
+    Observe SSE stream is held open by whichever worker took THAT one. With
+    WEB_CONCURRENCY > 1 they are different processes, so an in-memory buffer
+    showed the reader nothing. Two independent sessions here stand in for two
+    workers: what one publishes, the other must be able to read.
+    """
+    from sqlalchemy.orm import sessionmaker
+    writer_factory = bus._session_factory
+    reader = sessionmaker(bind=writer_factory().get_bind(),
+                          autoflush=False, autocommit=False)()
+    try:
+        before = bus.latest_seq()
+        askprobe.ask_started(user.id, "cross-worker query")
+        seen = bus.since(user.id, before, db=reader)
+        assert any("cross-worker query" in e["msg"] for e in seen), \
+            "a reader on a different session could not see published activity"
+    finally:
+        reader.close()
+
+
+def test_publish_does_not_join_the_callers_transaction(db, user):
+    """A rolled-back ask must not erase its own log lines -- and an Observe
+    write must not accidentally commit the caller's half-finished work."""
+    before = bus.latest_seq()
+    db.add(models.Contact(user_id=user.id, name="Uncommitted Person"))
+    askprobe.ask_started(user.id, "during an open transaction")
+    db.rollback()
+
+    joined = " | ".join(e["msg"] for e in bus.since(user.id, before))
+    assert "during an open transaction" in joined, "log line lost to caller rollback"
+    names = [c.name for c in db.query(models.Contact).all()]
+    assert "Uncommitted Person" not in names, "bus write committed the caller's data"
+
+
+def test_rows_outside_the_ttl_are_pruned(db, user, monkeypatch):
+    """Retention is enforced on the write path, so this stays a live tail and
+    does not quietly become a permanent record of who a user asked about."""
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setenv("OBSERVE_ACTIVITY_TTL_MIN", "30")
+    bus.publish(user.id, "info", "src", "ancient line")
+    old = db.query(models.ObserveActivity).order_by(
+        models.ObserveActivity.id.desc()).first()
+    old.created_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=3)
+    db.commit()
+    old_id = old.id
+
+    bus.use_session_factory(bus._session_factory)   # reset the prune-once latch
+    bus.publish(user.id, "info", "src", "fresh line")
+
+    remaining = {r.id for r in db.query(models.ObserveActivity).all()}
+    assert old_id not in remaining, "row older than the TTL was retained"
+    assert any("fresh line" in r.msg for r in db.query(models.ObserveActivity).all())

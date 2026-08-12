@@ -24,7 +24,7 @@ from datetime import datetime
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
@@ -154,6 +154,15 @@ def _candidate_contacts(db: DbSession, owner: models.User, candidate_ids: str | 
 
 _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
+# How long one /stream/activity connection lives before closing so the client
+# reconnects. Sync SSE handlers occupy a threadpool worker and only notice a
+# vanished client when a write fails, so an unbounded loop leaks a worker per
+# abandoned tab. EventSource reconnects automatically, so the reader sees a
+# continuous tail either way. Comfortably under Cloudflare's 100s idle read
+# timeout is unnecessary (the heartbeat handles that); this is about
+# reclaiming threads.
+_ACTIVITY_STREAM_MAX_S = 600.0
+
 
 def _sse(gen_events):
     def gen():
@@ -187,33 +196,71 @@ def stream_boot(user: models.User = Depends(current_user)):
 
 
 @router.get("/stream/activity")
-def stream_activity(user: models.User = Depends(current_user)):
+def stream_activity(
+    user: models.User = Depends(current_user),
+    db: DbSession = Depends(get_db),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+):
     """Tail what the PRODUCT is doing right now -- ask-bar runs and Draft
     taps, narrated with the real machinery each one sets off (which model,
     cache, gate, fallback). Fed by backend/observe/bus.py, which
     routes/book.py publishes to as those requests run.
 
-    Long-lived: holds the connection open and polls the in-process buffer,
-    emitting a comment heartbeat so the edge can't time it out. See bus.py
-    on why this is in-process only."""
+    Long-lived: holds the connection open and polls, emitting a comment
+    heartbeat so the edge can't time it out.
+
+    Two things this endpoint must NOT do, both learned the hard way:
+
+    1. Hold a pooled DB connection. `Depends(current_user)` resolves through
+       get_db, and FastAPI keeps a dependency's resources alive until the
+       RESPONSE COMPLETES -- which for an endless generator is never. Every
+       open Observe tab would permanently consume one of DB_POOL_SIZE +
+       DB_MAX_OVERFLOW (8 by default) connections until the pool was gone and
+       the whole app started timing out on QueuePool. So the user id is read
+       out and the request-scoped session is CLOSED here, before a single byte
+       is streamed, returning its connection to the pool immediately. FastAPI
+       closes it again when the response ends; Session.close() is idempotent.
+       Each poll then opens and closes its own short session via bus.py.
+
+    2. Run forever. An SSE connection the client abandoned still occupies a
+       threadpool worker, and sync handlers only notice the disconnect when
+       they try to write. The loop is bounded; EventSource reconnects on its
+       own, so a bounded stream is invisible to the reader but frees the
+       thread on a schedule.
+    """
     import time as _time
+
+    # Read the id BEFORE closing: close() expunges the instance, and a later
+    # attribute load on a detached object would raise.
     account_id = user.id
+    db.close()   # see 1 above -- hand the pooled connection back now
+
+    # Resume where the last connection stopped. EventSource replays the id of
+    # the last event it saw in Last-Event-ID automatically on reconnect, so a
+    # bounded stream (above) hands off without dropping lines. Absent that
+    # header this is a fresh reader: start at the current tip so it sees new
+    # activity rather than replaying the retention window.
+    try:
+        resume_from = int(last_event_id) if last_event_id else None
+    except (TypeError, ValueError):
+        resume_from = None
 
     def gen():
         yield ": open\n\n"
-        cursor = logstream_bus.latest_seq()   # only NEW activity, not history
-        last_beat = _time.monotonic()
-        while True:
+        cursor = resume_from if resume_from is not None else logstream_bus.latest_seq()
+        started = _time.monotonic()
+        last_beat = started
+        while _time.monotonic() - started < _ACTIVITY_STREAM_MAX_S:
             events = logstream_bus.since(account_id, cursor)
             for ev in events:
                 cursor = max(cursor, ev["seq"])
-                yield f"event: log\ndata: {json.dumps(ev)}\n\n"
+                yield f"id: {ev['seq']}\nevent: log\ndata: {json.dumps(ev)}\n\n"
             if events:
                 last_beat = _time.monotonic()
             elif _time.monotonic() - last_beat > 15:
                 last_beat = _time.monotonic()
                 yield ": keepalive\n\n"
-            _time.sleep(0.4)
+            _time.sleep(0.5)
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
 

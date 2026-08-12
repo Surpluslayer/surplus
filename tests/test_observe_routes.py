@@ -182,3 +182,64 @@ def test_book_endpoint_rejects_another_real_users_email(client):
     s.close()
     r = c.get("/api/observe/book", params={"cohort_id": cohort_id, "user_email": "not-mine@example.com"})
     assert r.status_code == 404
+
+
+def test_activity_stream_replays_only_new_events_and_resumes(client, monkeypatch):
+    """/stream/activity is the endpoint the ask-bar narration reaches the UI
+    through. Two properties matter:
+
+      - a fresh reader starts at the tip (it must not dump the whole
+        retention window into the log on every page load), and
+      - a reconnecting reader resumes from Last-Event-ID, so bounding the
+        stream's lifetime cannot silently drop lines.
+    """
+    from backend.observe import bus
+
+    c, _cohort_id, _lawyer_id, _contact_id, _draft_id, Session, rid = client
+    bus.use_session_factory(Session)
+    monkeypatch.setattr("backend.routes.observe._ACTIVITY_STREAM_MAX_S", 1.5)
+    try:
+        bus.publish(rid, "info", "src", "BEFORE the reader connected")
+        tip = bus.latest_seq()
+
+        with c.stream("GET", "/api/observe/stream/activity") as r:
+            assert r.status_code == 200
+            body = "".join(r.iter_text())
+        assert "BEFORE the reader connected" not in body, "replayed stale history"
+
+        bus.publish(rid, "info", "src", "AFTER, while disconnected")
+        with c.stream("GET", "/api/observe/stream/activity",
+                      headers={"Last-Event-ID": str(tip)}) as r:
+            body = "".join(r.iter_text())
+        assert "AFTER, while disconnected" in body, "resume dropped an event"
+    finally:
+        bus.use_session_factory(None)
+
+
+def test_activity_stream_does_not_pin_a_pool_connection(client, monkeypatch):
+    """The request-scoped session must be released before streaming starts.
+
+    An endless generator never lets FastAPI tear its dependencies down, so a
+    stream that kept the get_db session would burn one pooled connection per
+    open Observe tab until the pool was exhausted.
+    """
+    from backend.observe import bus
+
+    c, _cohort_id, _lawyer_id, _contact_id, _draft_id, Session, _rid = client
+    bus.use_session_factory(Session)
+    monkeypatch.setattr("backend.routes.observe._ACTIVITY_STREAM_MAX_S", 1.0)
+
+    closed = {"n": 0}
+    real_close = Session.class_.close
+
+    def counting_close(self):
+        closed["n"] += 1
+        return real_close(self)
+
+    monkeypatch.setattr(Session.class_, "close", counting_close)
+    try:
+        with c.stream("GET", "/api/observe/stream/activity") as r:
+            "".join(r.iter_text())
+        assert closed["n"] > 0, "the request-scoped session was never closed"
+    finally:
+        bus.use_session_factory(None)
