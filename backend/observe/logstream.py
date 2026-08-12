@@ -61,9 +61,15 @@ def _is_missing_table(exc: Exception) -> bool:
 # against" -- so 9/10 means one lawyer's data wasn't evaluable, not that a
 # case failed. Rendering that as a red FAILED line (as an earlier version
 # did) reports a healthy run as broken.
+#
+# synthetic_scenarios is NOT in this boot list -- it's a correctness check
+# against four hand-built known-answer fixtures (see evaluation_cohort_id's
+# own docstring on why those must never become the evaluation dataset), not
+# a read of this account's real state, so it doesn't belong in "what has
+# Surplus actually been doing" the way the other five do. Still runnable
+# on demand via GET /api/observe/harness/synthetic_scenarios.
 _HARNESS_ORDER = (
     ("jurisdiction_regression", False, True),
-    ("synthetic_scenarios", False, True),
     ("historical_replay", True, True),
     ("ablation", True, False),
     ("relationship_evaluation", True, False),
@@ -95,8 +101,11 @@ def evaluation_cohort_id(db):
 
 
 def boot_events(db, user=None):
-    """On page load: report the live product pipeline first, then run all six
-    harnesses for real, streaming a line per execution.
+    """On page load: report the live product pipeline first, then run all five
+    account-state harnesses for real, streaming a line per execution.
+    synthetic_scenarios is deliberately excluded -- see _HARNESS_ORDER's own
+    comment; it's still reachable on demand via GET /api/observe/harness/
+    synthetic_scenarios.
 
     Order is deliberate. "What has the system actually been doing" (the
     updates pipeline that produced the feed on screen) comes before "does it
@@ -104,7 +113,7 @@ def boot_events(db, user=None):
     first invites treating them as the whole story, when they are the
     evaluation OF the pipeline above them."""
     from .harnesses import (ablation, jurisdiction_regression, relationship_eval,
-                             signal_library_eval, synthetic_scenarios)
+                             signal_library_eval)
     from .harnesses import replay as replay_harness
     from . import versions as ver
 
@@ -126,7 +135,6 @@ def boot_events(db, user=None):
 
     runners = {
         "jurisdiction_regression": lambda: jurisdiction_regression.run(),
-        "synthetic_scenarios": lambda: synthetic_scenarios.run(db),
         "historical_replay": lambda: replay_harness.run(db, cohort_id),
         "ablation": lambda: ablation.run(db, cohort_id),
         "relationship_evaluation": lambda: relationship_eval.run(db, cohort_id),
@@ -134,7 +142,6 @@ def boot_events(db, user=None):
     }
     modules = {
         "jurisdiction_regression": "backend.observe.harnesses.jurisdiction_regression:run",
-        "synthetic_scenarios": "backend.observe.harnesses.synthetic_scenarios:run",
         "historical_replay": "backend.observe.harnesses.replay:run",
         "ablation": "backend.observe.harnesses.ablation:run",
         "relationship_evaluation": "backend.observe.harnesses.relationship_eval:run",

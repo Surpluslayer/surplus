@@ -70,17 +70,20 @@ def test_boot_events_stream_real_harness_results(db):
 
     msgs = " | ".join(e["msg"] for e in events)
     assert "cohort_id=boot-cohort" in msgs
-    for harness_id in ("jurisdiction_regression", "synthetic_scenarios",
-                        "historical_replay", "ablation", "relationship_evaluation",
-                        "signal_library_evaluation"):
+    for harness_id in ("jurisdiction_regression", "historical_replay", "ablation",
+                        "relationship_evaluation", "signal_library_evaluation"):
         assert harness_id in msgs, f"{harness_id} never ran"
+    # synthetic_scenarios is a correctness check against hand-built fixtures,
+    # not a read of this account's real state -- deliberately excluded from
+    # the boot sequence (still reachable on demand via its own harness route).
+    assert "synthetic_scenarios" not in msgs
 
 
 def test_boot_events_warn_and_skip_when_there_is_no_dataset(db):
     events = list(logstream.boot_events(db))
     msgs = " | ".join(e["msg"] for e in events)
     assert "no demo cohort in this database" in msgs
-    # The two dataset-free harnesses still run; the four data-driven ones skip.
+    # The one dataset-free harness still runs; the four data-driven ones skip.
     assert "jurisdiction_regression" in msgs
     assert "SKIPPED" in msgs
 
