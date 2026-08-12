@@ -536,6 +536,17 @@ def _harness_detail_lines(harness_id: str, result):
 
 # ── per-contact: the agent's actual run, stage by stage ──────────────────
 
+def _modal_on() -> bool:
+    """Mirrors askprobe._modal_on's try/except-around-use_modal shape, without
+    importing askprobe -- logstream.py has no existing dependency on it and
+    shouldn't gain one just for this one line."""
+    try:
+        from .. import jobs
+        return bool(jobs.use_modal())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def contact_events(db, user, contact, channel: str = "linkedin_dm"):
     """Stream the real computation for one contact: every pipeline stage,
     the ranking factors and how they combine into the score, then the
@@ -548,6 +559,12 @@ def contact_events(db, user, contact, channel: str = "linkedin_dm"):
                f"trace requested · contact_id={contact.id} name={contact.name!r} "
                f"account={user.email}")
 
+    modal_on = _modal_on()
+    yield line(INFO, "backend.jobs:use_modal",
+               f"Modal batch dispatch: {'ON' if modal_on else 'OFF'} (USE_MODAL) -- not "
+               "reachable from this trace either way; pipeline/ranking/ablation/draft/"
+               "jurisdiction all run in-process on this worker")
+
     # ── pipeline: emit each stage the moment it finishes ──
     candidates, total_available = pipeline.resolve_candidates(db, user, contact, None)
     if total_available > len(candidates):
@@ -559,6 +576,9 @@ def contact_events(db, user, contact, channel: str = "linkedin_dm"):
     else:
         yield line(INFO, "backend.observe.pipeline:resolve_candidates",
                    f"ranking against all {len(candidates)} contacts in this book")
+
+    for ev in cache_status_events(db, user, contact, channel):
+        yield ev
 
     yield line(STEP, "backend.observe.pipeline:iter_stages", "running execution pipeline")
     t_pipe = time.perf_counter()
@@ -624,14 +644,133 @@ def contact_events(db, user, contact, channel: str = "linkedin_dm"):
                        f"(score {res['full_system']['score']} → {res['without_group']['score']}, "
                        f"{delta:+d} positions, {ams:.0f}ms)")
 
+    # ── draft: resolved once, unconditionally. This used to run only inside
+    # jurisdiction_events, gated behind requires_disclosure_label -- so a CA-
+    # barred lawyer (or any exempt relationship) never showed ANY LLM/drafting
+    # activity in the trace, because CA's rule doesn't require a disclosure
+    # label. That conflated "does this jurisdiction need a label check" with
+    # "should this trace show what drafting involved". jurisdiction_events
+    # below reuses this same resolved draft instead of re-triggering it. ──
+    yield line(STEP, "backend.observe.logstream:contact_events",
+               "resolving this contact's draft")
+    resolved: dict = {}
+    for ev in draft_events(db, user, contact, resolved, channel):
+        yield ev
+
+    for ev in judge_model_status():
+        yield ev
+
     # ── jurisdiction: the real rule set, check by check, on the real draft ──
-    for ev in jurisdiction_events(db, user, contact, channel):
+    for ev in jurisdiction_events(db, user, contact, channel, resolved=resolved):
         yield ev
 
     for ev in feedback_loop_status(db, user):
         yield ev
 
     yield line(OK, "backend.observe.logstream:contact_events", "trace complete")
+
+
+def cache_status_events(db, user, contact, channel: str = "linkedin_dm"):
+    """Whether THIS worker's in-process caches already have this contact warm.
+
+    book.py's `_assess_cache`/draft cache are plain module-level dicts -- no
+    cross-worker sharing, the same limitation bus.py had before it became a
+    DB table (see bus.py's own history). A MISS reported here means this
+    worker hasn't cached it; another worker may already hold it, and this
+    trace has no way to see that -- said explicitly below so a reader doesn't
+    mistake this for a durable/shared cache.
+
+    Both cache keys need a book-row DICT (days_since/raw_signals/
+    interaction_history don't exist on the models.Contact ORM object this
+    function is given), so this reuses routes/book.py's existing single-
+    contact fast path rather than building the whole book.
+    """
+    from ..agents.relationship import book as book_agent
+    from ..routes.book import _find_contact_fast
+
+    src = "backend.agents.relationship.book"
+    yield line(STEP, "backend.observe.logstream:cache_status_events",
+               "cache status -- this worker's in-process caches only")
+
+    t0 = time.perf_counter()
+    cdict = _find_contact_fast(db, user, str(contact.id))
+    lookup_ms = (time.perf_counter() - t0) * 1000.0
+    if not cdict:
+        yield line(WARN, "backend.routes.book:_find_contact_fast",
+                   "could not resolve a book-row dict for this contact -- cache "
+                   "membership check skipped")
+        return
+    yield line(INFO, "backend.routes.book:_find_contact_fast",
+               f"book-row dict resolved for the cache-key derivation below in "
+               f"{lookup_ms:.1f}ms -- a single bounded read (still calls "
+               f"list_contacts internally), comparable to resolve_candidates above")
+
+    akey = book_agent._assess_key(cdict)
+    entry = book_agent._assess_cache.get(akey)
+    if entry is not None:
+        age = time.time() - entry[0]
+        fresh = age < book_agent._ASSESS_TTL
+        yield line(OK if fresh else WARN, src,
+                   f"assess cache: HIT (this worker only) -- key={akey[:12]}… cached "
+                   f"{_ago(age)} ago, TTL {book_agent._ASSESS_TTL // 3600}h -- "
+                   + ("still warm" if fresh else "expired, next read recomputes"))
+    else:
+        yield line(INFO, src,
+                   f"assess cache: MISS on this worker (key={akey[:12]}…, TTL "
+                   f"{book_agent._ASSESS_TTL // 3600}h) -- another worker may already hold "
+                   f"this entry, this trace cannot see that; next real /today or /book load "
+                   f"recomputes assess(), which can spawn a background LLM call if "
+                   f"BOOK_LLM_ASSESS is on")
+
+    # The draft cache key includes the trigger string, so membership can only
+    # be checked for one concrete trigger -- use the same "catching up"
+    # trigger this trace's own draft_events call below uses.
+    trigger = "catching up"
+    dkey = book_agent._draft_key(cdict, trigger, channel)
+    dentry = book_agent._draft_cache.get(dkey)
+    if dentry is not None:
+        age = time.time() - dentry[0]
+        yield line(OK, src,
+                   f"draft cache: HIT for trigger={trigger!r} channel={channel!r} "
+                   f"(this worker only) -- key={dkey[:12]}… cached {_ago(age)} ago -- "
+                   f"other real triggers (detected signals) hash to different keys "
+                   f"not checked here")
+    else:
+        yield line(INFO, src,
+                   f"draft cache: MISS on this worker for trigger={trigger!r} "
+                   f"channel={channel!r} (key={dkey[:12]}…) -- other real triggers "
+                   f"(detected signals) hash to different keys not checked here")
+
+
+def judge_model_status():
+    """Name the "judge" precisely -- the word covers two different things in
+    this codebase, and conflating them would either overclaim or underclaim:
+
+      - llm.JUDGE_MODEL is REAL, LIVE cheap-tier infra: book.py:_llm_json
+        reads it (model=llm.JUDGE_MODEL if cheap else llm.MODEL) to back
+        assess()/ask_agent(), and company_resolve.py has an analogous cheap
+        call. It is NOT what drafted the message this trace just resolved --
+        that always runs at llm.MODEL (full tier), never the cheap tier.
+      - llm.judge_relevance_batch()/_judge_create() is a SEPARATE function
+        that has Haiku emit a batched relevance verdict. Verified dead code:
+        zero callers anywhere in backend/ outside one comment reference in
+        outreach.py.
+
+    Pure code facts -- no db/user needed, matches feedback_loop_status's own
+    CLOSED/OPEN honesty pattern.
+    """
+    from ..agents import llm
+
+    src = "backend.agents.llm"
+    yield line(STEP, "backend.observe.logstream:judge_model_status", "\"judge\" model status")
+    yield line(INFO, f"{src}:_llm_json",
+               f"JUDGE_MODEL={llm.JUDGE_MODEL} is real cheap-tier infra (book.py:_llm_json, "
+               f"company_resolve.py) backing assess()/ask_agent() -- NOT exercised by this "
+               f"trace's draft, which always resolves at MODEL={llm.MODEL} (full tier)")
+    yield line(WARN, f"{src}:judge_relevance_batch",
+               "llm.judge_relevance_batch()/_judge_create() -- a separate batched "
+               "relevance-judging function -- is verified dead code: zero callers in "
+               "backend/ outside a comment reference (outreach.py)")
 
 
 def feedback_loop_status(db, user):
@@ -829,7 +968,8 @@ def draft_events(db, user, contact, out: dict, channel: str = "linkedin_dm"):
     out.update(text=None, source=None, interaction_id=None)
 
 
-def jurisdiction_events(db, user, contact, channel: str = "linkedin_dm"):
+def jurisdiction_events(db, user, contact, channel: str = "linkedin_dm",
+                        resolved: dict | None = None):
     """Walk backend/solicitation.py's real rule set over this account's real
     jurisdiction and this contact's real drafted message.
 
@@ -838,6 +978,13 @@ def jurisdiction_events(db, user, contact, channel: str = "linkedin_dm"):
     volume cap) using the SAME rule table and the SAME resolved context, and
     the authoritative verdict at the end comes from calling the real
     `evaluate()` -- the trace explains the decision, it never replaces it.
+
+    `resolved`, when given, is the {"text", "source", "interaction_id"} dict
+    an earlier `draft_events` call in the same trace already filled in --
+    reused here instead of resolving the draft a second time. `None` (the
+    default) keeps this independently callable, standalone drafting its own
+    draft via `draft_events` -- the same behavior this function always had,
+    still relied on by tests that call it directly.
     """
     from ..agents.relationship import solicitation_signals as sig
     from ..solicitation import (JURISDICTION_RULES, _EXEMPT_RELATIONSHIP_TYPES,
@@ -915,19 +1062,38 @@ def jurisdiction_events(db, user, contact, channel: str = "linkedin_dm"):
                f"VERDICT: {'PASS' if verdict.allowed else 'BLOCK'} -- {verdict.reason}")
 
     # ── the disclosure check, run against the REAL drafted message ──
-    if not rule.requires_disclosure_label:
+    #
+    # Not a `return` when the state needs no label: whether this state
+    # requires a disclosure label and whether this trace should show what
+    # drafting involved are two different questions. An earlier version
+    # answered only the first and returned, which meant a CA-barred lawyer
+    # (CA's rule has requires_disclosure_label=False) never saw ANY LLM/
+    # drafting activity in a contact-click trace.
+    no_label_needed = not rule.requires_disclosure_label
+    if no_label_needed:
         yield line(INFO, src,
                    f"{rule.state} requires no advertising label on written solicitation -- "
                    "no message-body check needed")
-        return
 
-    # Resolving the draft is itself real work (often a live model call), so it
-    # streams its own progress rather than appearing as a finished string.
-    resolved: dict = {}
-    for ev in draft_events(db, user, contact, resolved, channel):
-        yield ev
-    draft = resolved.get("text")
-    draft_src, interaction_id = resolved.get("source"), resolved.get("interaction_id")
+    if resolved is not None:
+        draft = resolved.get("text")
+        draft_src, interaction_id = resolved.get("source"), resolved.get("interaction_id")
+    else:
+        # Standalone call (e.g. a test calling jurisdiction_events directly,
+        # with no earlier draft_events in this trace) -- resolve it here,
+        # same as this function always did before the `resolved` param.
+        own: dict = {}
+        for ev in draft_events(db, user, contact, own, channel):
+            yield ev
+        draft = own.get("text")
+        draft_src, interaction_id = own.get("source"), own.get("interaction_id")
+
+    if no_label_needed:
+        if draft:
+            yield line(INFO, "backend.observe.logstream:draft_events",
+                       f"draft resolved via {draft_src} ({len(draft)} chars) -- no label "
+                       f"check needed for {rule.state}")
+        return
 
     if not draft:
         yield line(WARN, "backend.observe.logstream:draft_events",
