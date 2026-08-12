@@ -57,13 +57,22 @@ def _rank_with_model(db, user, contacts, model_key: str) -> dict:
 def ablate_one(db, user, contact, candidates: list, remove_group: str) -> dict:
     """Single-opportunity UI action: full-system score/rank for `contact`
     among `candidates`, vs. the same ranking with one factor group removed.
-    `remove_group` must be a key in ranking_trace.FACTOR_GROUPS (e.g.
-    "relationship")."""
+    `remove_group` must be a key in ranking_trace.FACTOR_GROUPS -- including
+    the two overlapping named levers ("signal_affinity", "timing") alongside
+    the canonical partition ("signal_practice", "behavior", "relationship").
+
+    Deliberately NOT built by summing FACTOR_GROUPS' entries together: two of
+    its groups overlap (signal_affinity subsets signal_practice; timing
+    subsets relationship -- see that dict's own docstring), so summing would
+    double-count a factor and silently over-weight it. Instead: the full
+    system is always every factor in FACTOR_WEIGHTS, and "without" is that
+    complete set minus exactly the removed group's factors -- correct
+    regardless of overlap."""
     if remove_group not in rt.FACTOR_GROUPS:
         raise ValueError(f"unknown factor group: {remove_group!r}")
-    all_groups = tuple(rt.FACTOR_GROUPS.keys())
-    full_names = [n for g in all_groups for n in rt.FACTOR_GROUPS[g]]
-    without_names = [n for g in all_groups if g != remove_group for n in rt.FACTOR_GROUPS[g]]
+    full_names = list(rt.FACTOR_WEIGHTS.keys())
+    removed = set(rt.FACTOR_GROUPS[remove_group])
+    without_names = [n for n in full_names if n not in removed]
 
     full = rt.rank_opportunities(db, user, candidates, include_factors=full_names)
     without = rt.rank_opportunities(db, user, candidates, include_factors=without_names)

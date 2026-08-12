@@ -6,6 +6,15 @@ nothing else in this package hardcodes a version string of its own.
 """
 from __future__ import annotations
 
+# backend/agents/relationship/updates_engine.py's _DRAFTWORTHY_KINDS -- the
+# real, production signal-detection taxonomy (job_change/new_post).
+INGESTION_VERSION = "updates-engine-v1"
+
+# Contact identity resolution: primary_identity_key + relationship_type
+# fail-closed-to-PROSPECT default (backend/models.py Contact,
+# agents/relationship/solicitation_signals._relationship_type).
+ENTITY_RESOLUTION_VERSION = "identity-key-v1"
+
 # backend/demo/signal_taxonomy.py's SIGNAL_CATEGORIES + SIGNAL_AFFINITY_SEED shape.
 SIGNAL_LIBRARY_VERSION = "signal-taxonomy-v1"
 
@@ -27,4 +36,6 @@ VERSIONS = {
     "ranker_version": RANKER_VERSION,
     "relationship_feature_version": RELATIONSHIP_FEATURE_VERSION,
     "jurisdiction_policy_version": JURISDICTION_POLICY_VERSION,
+    "ingestion_version": INGESTION_VERSION,
+    "entity_resolution_version": ENTITY_RESOLUTION_VERSION,
 }
