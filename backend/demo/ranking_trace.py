@@ -49,17 +49,42 @@ FACTOR_WEIGHTS = {
 }
 assert abs(sum(FACTOR_WEIGHTS.values()) - 1.0) < 1e-9
 
-# Named, additive factor groups for progressive-richness experiments
-# (backend/observe/harnesses/ablation.py, relationship_eval.py). "Model A" =
-# signal_practice alone; "Model B" = + behavior; "Model C" = + relationship.
+# Named factor groups for backend/observe's ablation experiments. Two kinds
+# live in this one dict, on purpose:
+#
+#  - the CANONICAL PARTITION -- signal_practice / behavior / relationship --
+#    is disjoint and covers every factor exactly once. This is what
+#    backend/observe/harnesses/ablation.py's Model A/B/C progressive-richness
+#    comparison and relationship_eval.py's centerpiece NDCG-lift claim are
+#    built on; "Model A" = signal_practice alone, "Model B" = + behavior,
+#    "Model C" = + relationship (= every factor).
+#  - two NAMED ABLATION LEVERS -- signal_affinity / timing -- overlap the
+#    partition above on purpose, for the single-opportunity "Ablate ->" UI
+#    action (Observe checklist H: "remove signal affinity" / "remove
+#    timing" as their own probes, distinct from "remove the whole
+#    relationship dimension"). signal_affinity is practice_fit alone (a
+#    strict subset of signal_practice); timing is relationship_recency +
+#    relationship_trajectory (a strict subset of relationship -- the
+#    time-based half of it, as opposed to relationship_strength's
+#    volume/count-based half). Because of this overlap,
+#    ablation.ablate_one() computes "everything except this group" from the
+#    full factor set directly (a set difference), never by summing this
+#    dict's groups together -- summing would double-count practice_fit or
+#    the recency/trajectory pair for whichever request touches both an
+#    overlapping and a canonical group. See ablate_one()'s own docstring.
+#
 # Kept here, next to FACTOR_WEIGHTS, so the two can never drift out of sync
 # with each other (every name below must be a real key in FACTOR_WEIGHTS).
 FACTOR_GROUPS = {
     "signal_practice": ("signal_relevance", "practice_fit"),
     "behavior": ("historical_behavior",),
     "relationship": ("relationship_strength", "relationship_recency", "relationship_trajectory"),
+    "signal_affinity": ("practice_fit",),
+    "timing": ("relationship_recency", "relationship_trajectory"),
 }
-assert set(FACTOR_WEIGHTS) == {n for names in FACTOR_GROUPS.values() for n in names}
+_CANONICAL_PARTITION = ("signal_practice", "behavior", "relationship")
+assert set(FACTOR_WEIGHTS) == {n for g in _CANONICAL_PARTITION for n in FACTOR_GROUPS[g]}
+assert all(n in FACTOR_WEIGHTS for names in FACTOR_GROUPS.values() for n in names)
 
 
 def _aware(dt):
@@ -251,7 +276,16 @@ def compute_trace(db, user, contact, *, as_of: datetime | None = None,
     of FACTOR_WEIGHTS' keys, renormalized (backend/observe's ablation
     harness) -- e.g. ["signal_relevance", "practice_fit"] for a
     signal+practice-only model. Both default to the original, unrestricted
-    behavior."""
+    behavior.
+
+    De-duplicates `include_factors` before computing anything: FACTOR_GROUPS
+    has two INTENTIONALLY overlapping entries (signal_affinity subsets
+    signal_practice; timing subsets relationship -- see that dict's own
+    docstring), so a caller who naively concatenates every group's factors
+    (`[n for g in FACTOR_GROUPS.values() for n in g]`) would otherwise pass
+    a name twice, computing that factor twice and silently double-counting
+    its contribution to the score despite the renormalized weight only
+    counting it once. Safe regardless of how the caller built the list."""
     signal = _latest_signal(db, contact.id, as_of=as_of)
     interactions = _all_interactions(db, contact.id, as_of=as_of)
 
@@ -263,7 +297,8 @@ def compute_trace(db, user, contact, *, as_of: datetime | None = None,
         "relationship_trajectory": lambda: _relationship_trajectory(interactions, as_of=as_of),
         "historical_behavior": lambda: _historical_behavior(db, user, signal, as_of=as_of),
     }
-    names = include_factors if include_factors is not None else list(FACTOR_WEIGHTS.keys())
+    names = (list(dict.fromkeys(include_factors)) if include_factors is not None
+             else list(FACTOR_WEIGHTS.keys()))
     factors = [factor_fns[n]() for n in names]
     weights = _renormalized_weights(names)
     score = sum(f.value * weights[f.name] for f in factors)

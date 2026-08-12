@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session as DbSession
 from .. import models
 from ..auth import current_user
 from ..db import get_db
-from ..observe import adapters
+from ..observe import adapters, pipeline
 from ..observe.harnesses import ablation, jurisdiction_regression, relationship_eval
 from ..observe.harnesses import replay as replay_harness
 from ..observe.harnesses import signal_library_eval, synthetic_scenarios
@@ -183,6 +183,15 @@ def trace_jurisdiction(contact_id: int, channel: str = Query(default="linkedin_d
                         user: models.User = Depends(current_user), db: DbSession = Depends(get_db)):
     owner, contact = _owned_contact(db, user, contact_id)
     return adapters.jurisdiction_trace(db, owner, contact, channel).to_dict()
+
+
+@router.get("/trace/pipeline/{contact_id}")
+def trace_pipeline(contact_id: int, candidate_ids: str | None = Query(default=None),
+                    channel: str = Query(default="linkedin_dm"),
+                    user: models.User = Depends(current_user), db: DbSession = Depends(get_db)):
+    owner, contact = _owned_contact(db, user, contact_id)
+    candidates = _candidate_contacts(db, owner, candidate_ids)
+    return pipeline.compute_pipeline_trace(db, owner, contact, candidates, channel).to_dict()
 
 
 @router.get("/trace/signal_library/{category}")
