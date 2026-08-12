@@ -382,4 +382,67 @@ def test_updates_pipeline_survives_a_missing_scheduler_claims_table(db):
     user = db.execute(select(models.User)).scalars().first()
     events = list(logstream.updates_pipeline_events(db, user))
     joined = " | ".join(e["msg"] for e in events)
-    assert "no sweep has run in this database" in joined or "last ran" in joined
+    assert "no sweep has ever run in this database" in joined or "last ran" in joined
+
+
+def test_scheduler_claims_read_failure_is_not_reported_as_never_run(db, monkeypatch):
+    """A broken query and a not-yet-created table are different facts.
+
+    The old handler caught every exception and printed "no sweep has run",
+    so a genuine read failure was rendered as a confident (and false)
+    statement about the scheduler. In a panel whose whole premise is that
+    its lines are checkable, that is the worst kind of bug.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    cohort.generate(db, n_lawyers=2, days=14, cohort_id="brokenclaims")
+    user = db.execute(select(models.User)).scalars().first()
+
+    real_execute = db.execute
+
+    def boom(stmt, *a, **kw):
+        if "scheduler_claims" in str(stmt):
+            raise OperationalError("SELECT ...", {}, Exception("connection reset"))
+        return real_execute(stmt, *a, **kw)
+
+    monkeypatch.setattr(db, "execute", boom)
+    joined = " | ".join(e["msg"] for e in logstream.updates_pipeline_events(db, user))
+
+    assert "no sweep has ever run" not in joined, "a read failure was reported as fact"
+    assert "UNVERIFIED" in joined
+    assert "connection reset" in joined
+
+
+def test_missing_table_detector_separates_the_two_cases():
+    from sqlalchemy.exc import OperationalError, ProgrammingError
+
+    sqlite_missing = OperationalError("q", {}, Exception("no such table: scheduler_claims"))
+    pg_missing = ProgrammingError(
+        "q", {}, Exception('relation "scheduler_claims" does not exist'))
+    broken = OperationalError("q", {}, Exception("connection reset by peer"))
+
+    assert logstream._is_missing_table(sqlite_missing)
+    assert logstream._is_missing_table(pg_missing)
+    assert not logstream._is_missing_table(broken)
+
+
+def test_empty_scheduler_claims_table_is_reported(db, monkeypatch):
+    """Table present but no rows: the old loop yielded nothing at all, so the
+    reader saw silence where a real state exists."""
+    cohort.generate(db, n_lawyers=2, days=14, cohort_id="emptyclaims")
+    user = db.execute(select(models.User)).scalars().first()
+
+    real_execute = db.execute
+
+    class _Empty:
+        def all(self):
+            return []
+
+    def empty_claims(stmt, *a, **kw):
+        if "scheduler_claims" in str(stmt):
+            return _Empty()
+        return real_execute(stmt, *a, **kw)
+
+    monkeypatch.setattr(db, "execute", empty_claims)
+    joined = " | ".join(e["msg"] for e in logstream.updates_pipeline_events(db, user))
+    assert "exists but is empty" in joined

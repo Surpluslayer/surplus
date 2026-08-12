@@ -37,6 +37,19 @@ def _timed(fn):
     return result, (time.perf_counter() - t0) * 1000.0
 
 
+def _is_missing_table(exc: Exception) -> bool:
+    """True when `exc` is specifically a "relation/table does not exist" error.
+
+    Matched on the driver's message rather than an exception class because the
+    two backends disagree: SQLite raises OperationalError("no such table: x")
+    and Postgres raises ProgrammingError wrapping UndefinedTable. Both surface
+    as sqlalchemy.exc.DatabaseError, so the class alone can't distinguish a
+    not-yet-created table from a genuinely broken query.
+    """
+    msg = str(getattr(exc, "orig", exc)).lower()
+    return "no such table" in msg or "does not exist" in msg or "undefinedtable" in msg
+
+
 # ── boot: run every harness, one line per real execution ─────────────────
 
 # (harness_id, needs_evaluation_dataset, counts_are_pass_fail)
@@ -204,21 +217,39 @@ def updates_pipeline_events(db, user=None):
                f"standard every {ue._STD_DAYS}d · enabled={us._enabled()}")
 
     # When each sweep last actually ran -- a real row, not an inference.
+    #
+    # Two failure modes are distinct and must not be collapsed: the table is
+    # created lazily by the first sweep, so its ABSENCE really does mean "no
+    # sweep has run here". Any other error means the query itself broke, and
+    # reporting that as "no sweep has run" would state something false in a
+    # panel whose whole point is that its lines are checkable.
     try:
         rows = db.execute(text(
             "SELECT name, last_run_at FROM scheduler_claims ORDER BY name")).all()
+    except Exception as exc:  # noqa: BLE001
+        if _is_missing_table(exc):
+            yield line(WARN, f"{src_sched}:_ensure_claim_table",
+                       "  scheduler_claims table does not exist yet -- it is created "
+                       "by the first sweep, so no sweep has ever run in this database")
+        else:
+            yield line(ERR, f"{src_sched}:_claim",
+                       f"  could not read scheduler_claims ({type(exc).__name__}: "
+                       f"{str(exc)[:120]}) -- sweep cadence below is UNVERIFIED")
+        rows = None
+
+    if rows is not None:
+        if not rows:
+            yield line(WARN, f"{src_sched}:_claim",
+                       "  scheduler_claims exists but is empty -- the table was created "
+                       "and no sweep has claimed a run since")
         now_s = time.time()
-        for name, last_run_at in rows:
+        for name, last_run_at in rows or ():
             if not last_run_at:
                 yield line(WARN, f"{src_sched}:_claim", f"  {name}: never run")
                 continue
             age = now_s - float(last_run_at)
             yield line(INFO, f"{src_sched}:_claim",
                        f"  {name}: last ran {_ago(age)} ago")
-    except Exception as exc:  # noqa: BLE001 -- table absent before the first sweep
-        yield line(WARN, f"{src_sched}:_ensure_claim_table",
-                   f"  no scheduler_claims rows yet ({type(exc).__name__}) -- "
-                   "no sweep has run in this database")
 
     # The funnel, scoped to this account when we have one.
     cq = select(func.count(models.Contact.id))
