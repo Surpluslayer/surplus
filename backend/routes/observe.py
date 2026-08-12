@@ -32,7 +32,8 @@ from sqlalchemy.orm import Session as DbSession
 from .. import models
 from ..auth import current_user
 from ..db import get_db
-from ..observe import adapters, logstream, pipeline
+from ..demo import provenance as prov_mod
+from ..observe import adapters, cohort_query, logstream, pipeline
 from ..observe import bus as logstream_bus
 from ..observe.harnesses import ablation, jurisdiction_regression, relationship_eval
 from ..observe.harnesses import replay as replay_harness
@@ -43,6 +44,51 @@ router = APIRouter(prefix="/api/observe", tags=["observe"])
 
 # ── object browsing (so the Observe panel never has to touch the separate,
 #    token-gated /api/demo/observability/* surface -- one auth model here) ──
+
+@router.post("/evaluation-dataset")
+def create_evaluation_dataset(
+    lawyers: int = Query(default=25, ge=1, le=200),
+    days: int = Query(default=30, ge=1, le=365),
+    user: models.User = Depends(current_user),
+    db: DbSession = Depends(get_db),
+):
+    """Build a usable evaluation dataset, from the browser.
+
+    Exists because the alternative was a shell. Seeding was a CLI command
+    (`python -m backend.demo.cohort`), which on Railway means finding a
+    terminal, and until someone does that the four data-driven harnesses
+    report 0/0 with no way to fix it from the product. That is a bad failure
+    mode for the one screen whose job is to show the system working.
+
+    Generated, and labelled generated: rows carry prov.BASELINE
+    ("generated_from_assumed_distribution"), so the harness lines that read
+    them are measuring synthetic data and nothing here pretends otherwise.
+    Delete it with prov.delete_cohort(cohort_id) -- safe, because generated
+    rows are exactly the ones that function is allowed to remove.
+
+    Why generated rather than the caller's own book: the harnesses grade
+    against RECORDED OUTCOMES (a drafted follow-up the lawyer sent or
+    snoozed). A real account that has not acted on drafts yet has none, so
+    evaluating it produces NDCG=None -- correct, and useless as a
+    demonstration. Real outcomes accumulate through
+    agents/relationship/outcomes.py as the lawyer actually works.
+    """
+    from ..demo import cohort as demo_cohort
+
+    existing = logstream.evaluation_cohort_id(db)
+    cohort_id = demo_cohort.generate(db, n_lawyers=lawyers, days=days)
+    counts = prov_mod.cohort_row_counts(db, cohort_id)
+    pairs = cohort_query.users_and_contacts(db, cohort_id)
+    return {
+        "cohort_id": cohort_id,
+        "replaced_previous": existing,
+        "lawyers_resolvable": len(pairs),
+        "rows": counts,
+        "provenance": prov_mod.BASELINE,
+        "note": ("Generated data, tagged as generated. Harness numbers computed "
+                 "over it describe this synthetic cohort, not your book."),
+    }
+
 
 @router.get("/cohorts")
 def list_cohorts(user: models.User = Depends(current_user), db: DbSession = Depends(get_db)):

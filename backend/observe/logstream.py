@@ -99,11 +99,30 @@ def evaluation_cohort_id(db):
     from sqlalchemy import select
     from .. import models
     from ..demo import provenance as prov
-    return db.execute(
-        select(models.DemoProvenance.cohort_id)
+
+    # Only cohorts that actually have a LAWYER tagged are usable. Every
+    # data-driven harness resolves its lawyers through
+    # cohort_query.users_and_contacts(), which reads table_name=="users"
+    # tags -- so a cohort tagged with contacts and interactions but no user
+    # is not an evaluation dataset, it is a trap: being newest, it shadows a
+    # working cohort and every harness reports 0/0 lawyers with no
+    # explanation. A real one shipped exactly that way.
+    rows = db.execute(
+        select(models.DemoProvenance.cohort_id, models.DemoProvenance.table_name)
         .where(models.DemoProvenance.data_provenance.in_(tuple(prov.EVALUATION_VALUES)))
-        .order_by(models.DemoProvenance.id.desc()).limit(1)
-    ).scalar_one_or_none()
+        .order_by(models.DemoProvenance.id.desc())
+    ).all()
+    seen_order: list = []
+    has_user: set = set()
+    for cohort_id, table_name in rows:
+        if cohort_id not in seen_order:
+            seen_order.append(cohort_id)
+        if table_name == "users":
+            has_user.add(cohort_id)
+    for cohort_id in seen_order:
+        if cohort_id in has_user:
+            return cohort_id
+    return None
 
 
 def boot_events(db, user=None):
@@ -150,9 +169,13 @@ def boot_events(db, user=None):
                    f"  dataset: cohort_id={cohort_id}")
     else:
         yield line(WARN, "backend.observe.logstream:evaluation_cohort_id",
-                   "  no evaluation cohort in this database -- the four data-driven "
-                   "harnesses have nothing to evaluate against "
-                   "(run: python -m backend.demo.cohort)")
+                   "  no usable evaluation cohort -- the four data-driven harnesses "
+                   "will report 0/0. A cohort needs a TAGGED LAWYER, not just "
+                   "contacts; one tagged without a user is skipped here rather than "
+                   "shadowing a working one")
+        yield line(INFO, "backend.routes.observe:create_evaluation_dataset",
+                   "  fix without a shell: POST /api/observe/evaluation-dataset "
+                   "(or CLI: python -m backend.demo.cohort)")
 
     runners = {
         "jurisdiction_regression": lambda: jurisdiction_regression.run(),
@@ -425,11 +448,17 @@ def account_events(db, user=None):
 
     # What the outreach loop has actually produced for this account, by real
     # recorded disposition -- not an estimate.
-    drafts = db.execute(
-        select(models.RelationshipInteraction.meta_json)
+    # Both draft shapes -- production stores the draft on the detected-signal
+    # row's meta_json, the demo cohort writes a separate titled row. Counting
+    # only the demo shape is why this said "nothing drafted for this account"
+    # directly above a pipeline line reporting 250 stored autodrafts.
+    from ..agents.relationship import outcomes as _outcomes
+    draft_rows = db.execute(
+        select(models.RelationshipInteraction)
         .where(models.RelationshipInteraction.actor_user_id == user.id,
-               models.RelationshipInteraction.title.like("Drafted follow-up%"))
+               _outcomes.drafted_filter())
     ).scalars().all()
+    drafts = [r.meta_json for r in draft_rows if _outcomes.is_drafted(r)]
     by_disp: dict = {}
     for raw in drafts:
         try:

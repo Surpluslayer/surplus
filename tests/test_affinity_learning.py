@@ -366,3 +366,73 @@ def test_the_sweep_corrects_an_inflated_count_downward(db):
     stats = tax.refresh_from_outcomes(db)
     assert stats["stale_pairs_dropped"] == 1
     assert tax.load_learned(db) == {}, "the sweep could not correct downward"
+
+
+# ── production stores drafts differently from the demo cohort ───────────────
+
+def _production_signal_with_draft(db, user, contact, category=None, draft="Hi there."):
+    """How production ACTUALLY stores a draft: updates_engine.autodraft()
+    stashes it on the detected-signal row's meta_json. There is no separate
+    draft row and no "Drafted follow-up" title outside the demo cohort."""
+    meta = {"draft": draft, "milestone_type": "acquisition"}
+    if category:
+        meta["signal_category"] = category
+    row = models.RelationshipInteraction(
+        actor_user_id=user.id, contact_id=contact.id,
+        occurred_at=datetime.now(UTC) - timedelta(hours=1),
+        source_type="activity_update", interaction_type="new_post",
+        title="New LinkedIn post", meta_json=json.dumps(meta))
+    db.add(row)
+    db.flush()
+    return row
+
+
+def test_a_production_draft_is_recognised_as_a_draft(db):
+    """Matching only the demo title made the account summary report "nothing
+    drafted" on the same screen as a pipeline line counting 250 stored
+    autodrafts -- and left the outcome loop unable to fire on real data."""
+    u = _lawyer(db, practice_area="corporate_ma")
+    c = _contact(db, u)
+    row = _production_signal_with_draft(db, u, c)
+    db.commit()
+    assert outcomes.is_drafted(row)
+    assert outcomes.latest_undecided_draft(db, u.id, c.id) is not None
+
+
+def test_a_signal_with_no_draft_is_not_a_draft(db):
+    u = _lawyer(db)
+    c = _contact(db, u)
+    row = models.RelationshipInteraction(
+        actor_user_id=u.id, contact_id=c.id, occurred_at=datetime.now(UTC),
+        source_type="activity_update", interaction_type="new_post",
+        title="New LinkedIn post", meta_json=json.dumps({"milestone_type": "acquisition"}))
+    db.add(row)
+    db.commit()
+    assert not outcomes.is_drafted(row)
+    assert outcomes.latest_undecided_draft(db, u.id, c.id) is None
+
+
+def test_sending_records_an_outcome_on_a_production_draft(db):
+    """The whole learning loop, against production's storage shape."""
+    u = _lawyer(db, practice_area="corporate_ma")
+    c = _contact(db, u)
+    _production_signal_with_draft(db, u, c, category="acquisition_announced",
+                                  draft="Congrats on the deal.")
+    db.commit()
+
+    row = outcomes.record_draft_outcome(db, u.id, c.id, sent_body="Congrats on the deal.")
+    assert row is not None, "a real production draft was invisible to the outcome loop"
+    assert json.loads(row.meta_json)["disposition"] == "approved_as_is"
+    assert tax.load_learned(db)[("corporate_ma", "acquisition_announced")] == (1, 1)
+
+
+def test_the_sweep_aggregates_production_drafts_too(db):
+    u = _lawyer(db, practice_area="corporate_ma")
+    c = _contact(db, u)
+    _production_signal_with_draft(db, u, c, category="acquisition_announced")
+    db.commit()
+    outcomes.record_draft_outcome(db, u.id, c.id, disposition="discarded")
+
+    stats = tax.refresh_from_outcomes(db)
+    assert stats["outcomes"] == 1, "the sweep could not see a production draft"
+    assert tax.load_learned(db)[("corporate_ma", "acquisition_announced")] == (0, 1)

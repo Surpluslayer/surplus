@@ -45,10 +45,11 @@ def most_recent_draft_relevance(db, contact_id: int):
     recent drafted signal. None if no draft exists to evaluate against --
     excluded from a case list, never silently scored as 0 (0 means "resolved
     and discarded", not "unknown")."""
+    from ..agents.relationship import outcomes as _outcomes
     row = db.execute(
         select(models.RelationshipInteraction)
         .where(models.RelationshipInteraction.contact_id == contact_id,
-               models.RelationshipInteraction.title.like("Drafted follow-up%"))
+               _outcomes.drafted_filter())
         .order_by(models.RelationshipInteraction.occurred_at.desc())
         .limit(1)
     ).scalar_one_or_none()
