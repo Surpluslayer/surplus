@@ -202,6 +202,13 @@ def _build_matrix() -> list[Scenario]:
     return scenarios
 
 
+# Public alias -- backend/observe/harnesses/jurisdiction_regression.py reuses
+# this EXACT scenario matrix (never a duplicate/invented one) to render
+# structured per-case results in the Observe panel; run_harness() below stays
+# the pre-formatted-string CLI report this module has always produced.
+build_matrix = _build_matrix
+
+
 @dataclass
 class CategoryResult:
     total: int = 0

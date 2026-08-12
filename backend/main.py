@@ -30,7 +30,7 @@ from .db import ENGINE, init_db
 from .routes import (
     # shared
     auth, google_login, microsoft_login, password_auth, account_email,
-    billing, demo, webhooks, admin,
+    billing, demo, demo_observability, observe, webhooks, admin,
     # relationship side (the phone-first "book" / CRM) — book.py carries BOTH
     # routers (/api/book + /api/relationships); routes/relationships.py is a shim
     book, inperson, followups, integrations, settings,
@@ -306,6 +306,8 @@ app.include_router(password_auth.router)   # email + password signup / sign-in
 app.include_router(account_email.router)    # email verification + password reset
 app.include_router(billing.router)
 app.include_router(demo.router)
+app.include_router(demo_observability.router)  # /api/demo/observability: ranking-trace surface
+app.include_router(observe.router)          # /api/observe: Surplus Observe (universal decision traces + harnesses)
 app.include_router(webhooks.router)
 app.include_router(admin.router)
 

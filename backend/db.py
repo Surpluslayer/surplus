@@ -298,6 +298,8 @@ def init_db() -> None:
         # default -- see backend/solicitation.py.
         _migrate_user_bar_jurisdiction,
         _migrate_contact_relationship_type,
+        _migrate_demo_provenance_table,
+        _migrate_user_practice_area,
     ]
 
     # Schema-revision sentinel: the loop below plus create_all's checkfirst is
@@ -1896,6 +1898,31 @@ def _migrate_user_bar_jurisdiction() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN bar_jurisdiction VARCHAR(2)"))
+
+
+def _migrate_user_practice_area() -> None:
+    """Add users.practice_area (VARCHAR(40), NULL) -- the lawyer's practice
+    area, the second axis (alongside relationship state) the ranking-trace
+    signal-relevance score is computed against. See
+    backend/demo/ranking_trace.py."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("users")}
+    if "practice_area" in cols:
+        return
+    with ENGINE.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN practice_area VARCHAR(40)"))
+
+
+def _migrate_demo_provenance_table() -> None:
+    """No-op beyond bumping the schema revision: demo_provenance is a plain
+    new table (no ALTER needed), so create_all() already creates it wherever
+    it's missing. Same idiom as _migrate_deletion_audit / _migrate_audit_log --
+    appending this to the migrations list is what makes an ALREADY-migrated
+    existing database re-run create_all and pick the new table up."""
+    return
 
 
 def _migrate_contact_relationship_type() -> None:
