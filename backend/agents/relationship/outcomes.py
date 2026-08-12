@@ -45,6 +45,50 @@ DISPOSITIONS = ENGAGED_DISPOSITIONS + ("discarded",)
 
 _WS = re.compile(r"\s+")
 
+# WHERE A DRAFT ACTUALLY LIVES
+#
+# Two shapes, and only one of them is production:
+#
+#   production -- updates_engine.autodraft() stashes the composed follow-up on
+#     the EXISTING detected-signal row's meta_json["draft"]
+#     (source_type == "activity_update"). There is no separate draft row and
+#     no drafts table; that key IS the store.
+#   demo cohort -- backend/demo/cohort.py writes a separate interaction
+#     titled "Drafted follow-up (...)".
+#
+# Everything downstream was matching ONLY the demo title, so on a real
+# account: the account summary reported "nothing drafted" while the pipeline
+# section reported 250 stored autodrafts on the same screen, the harnesses
+# had nothing to grade, and the outcome loop could never fire. Matching both
+# shapes is what makes any of it work against real data.
+_DEMO_DRAFT_TITLE = "Drafted follow-up%"
+
+
+def is_drafted(row) -> bool:
+    """True when this interaction carries a follow-up draft, either shape."""
+    if (row.title or "").startswith("Drafted follow-up"):
+        return True
+    if row.source_type != "activity_update":
+        return False
+    try:
+        return bool((json.loads(row.meta_json or "{}") or {}).get("draft"))
+    except ValueError:
+        return False
+
+
+def drafted_filter():
+    """SQL predicate for either shape, for use in a .where().
+
+    meta_json is matched with LIKE rather than a JSON operator because the two
+    backends disagree (SQLite has no jsonb); is_drafted() re-checks properly
+    in Python, so the LIKE only has to be a superset."""
+    from sqlalchemy import or_
+    return or_(
+        models.RelationshipInteraction.title.like(_DEMO_DRAFT_TITLE),
+        (models.RelationshipInteraction.source_type == "activity_update")
+        & models.RelationshipInteraction.meta_json.like('%"draft"%'),
+    )
+
 
 def _normalized(text: str | None) -> str:
     """Whitespace/case-insensitive comparison: a trailing newline or a
@@ -62,11 +106,13 @@ def latest_undecided_draft(db, user_id: int, contact_id: int):
         select(models.RelationshipInteraction)
         .where(models.RelationshipInteraction.actor_user_id == user_id,
                models.RelationshipInteraction.contact_id == contact_id,
-               models.RelationshipInteraction.title.like("Drafted follow-up%"))
+               drafted_filter())
         .order_by(models.RelationshipInteraction.occurred_at.desc())
         .limit(10)
     ).scalars().all()
     for row in rows:
+        if not is_drafted(row):
+            continue
         try:
             meta = json.loads(row.meta_json or "{}") or {}
         except ValueError:

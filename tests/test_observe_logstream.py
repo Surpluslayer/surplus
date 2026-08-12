@@ -86,7 +86,7 @@ def test_boot_events_stream_real_harness_results(db):
 def test_boot_events_warn_and_skip_when_there_is_no_dataset(db):
     events = list(logstream.boot_events(db))
     msgs = " | ".join(e["msg"] for e in events)
-    assert "no evaluation cohort in this database" in msgs
+    assert "no usable evaluation cohort" in msgs
     # The one dataset-free harness still runs; the four data-driven ones skip.
     assert "jurisdiction_regression" in msgs
     assert "SKIPPED" in msgs
@@ -669,3 +669,37 @@ def test_empty_scheduler_claims_table_is_reported(db, monkeypatch):
     monkeypatch.setattr(db, "execute", empty_claims)
     joined = " | ".join(e["msg"] for e in logstream.updates_pipeline_events(db, user))
     assert "exists but is empty" in joined
+
+
+def test_a_cohort_with_no_tagged_lawyer_is_not_chosen_as_the_dataset(db):
+    """The exact failure that shipped: an earlier seed tagged contacts and
+    interactions but not the User row. Every harness resolves lawyers from a
+    table_name=="users" tag, so that cohort evaluated 0/0 -- and being newest,
+    it shadowed any working cohort behind it."""
+    from backend.demo import provenance as prov
+
+    good = cohort.generate(db, n_lawyers=3, days=14, cohort_id="good-cohort")
+
+    # A newer cohort with contacts but no user tag -- the trap. A fresh
+    # contact, since a row may only carry one provenance tag.
+    owner = db.execute(select(models.User)).scalars().first()
+    untagged = models.Contact(user_id=owner.id, primary_identity_key="ul:1",
+                              name="Untagged")
+    db.add(untagged)
+    db.flush()
+    prov.tag(db, untagged, provenance=prov.BASELINE, cohort_id="userless-cohort")
+    db.commit()
+
+    newest = db.execute(select(models.DemoProvenance.cohort_id)
+                        .order_by(models.DemoProvenance.id.desc()).limit(1)).scalar_one()
+    assert newest == "userless-cohort"
+    assert logstream.evaluation_cohort_id(db) == good, \
+        "a cohort with no tagged lawyer shadowed a working one"
+
+
+def test_a_missing_dataset_tells_the_reader_how_to_fix_it(db):
+    """0/0 with no explanation is the worst version of this screen."""
+    events = list(logstream.boot_events(db))
+    joined = " | ".join(e["msg"] for e in events)
+    assert "will report 0/0" in joined
+    assert "POST /api/observe/evaluation-dataset" in joined

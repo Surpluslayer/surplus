@@ -37,6 +37,29 @@ from ..solicitation import JURISDICTION_RULES
 from . import provenance as prov
 
 
+def set_practice_area(db, email: str, practice_area: str | None) -> bool:
+    """practice_area drives practice_fit. Unset, affinity() returns a neutral
+    0.5 for every contact -- so a fifth of the opportunity score carries no
+    information and the pipeline logs a fallback on every single trace. It is
+    one column, and nothing else sets it."""
+    if not practice_area:
+        return True
+    from . import signal_taxonomy as tax
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if user is None:
+        return False
+    area = practice_area.strip().lower()
+    if area not in tax.PRACTICE_AREAS:
+        print(f"  [seed] WARNING: {area!r} is not one of "
+              f"{', '.join(tax.PRACTICE_AREAS)} -- practice_fit will fall back to "
+              f"a neutral 0.5 for every signal category.")
+    before = user.practice_area
+    user.practice_area = area
+    db.commit()
+    print(f"  [seed] {email}: practice_area {before!r} -> {area!r}")
+    return True
+
+
 def set_jurisdiction(db, email: str, jurisdiction: str) -> bool:
     user = db.query(models.User).filter(models.User.email == email).first()
     if user is None:
@@ -70,24 +93,28 @@ def _evaluable_contacts(db, contacts: list) -> int:
     """How many of these contacts the data-driven harnesses can actually score.
 
     ablation / relationship_evaluation / historical_replay grade against a
-    contact's most recent "Drafted follow-up" interaction (see
-    observe/cohort_query.py). A freshly synced contact has none until the
-    updates engine has drafted for it, so a cohort can be large and still
-    evaluate nothing -- worth reporting up front rather than letting the
-    boot log show a mysterious 0/0.
+    contact's most recent drafted follow-up (see observe/cohort_query.py). A
+    freshly synced contact has none until the updates engine has drafted for
+    it, so a cohort can be large and still evaluate nothing -- worth
+    reporting up front rather than letting the boot log show a mysterious 0/0.
+
+    Matches BOTH draft shapes (production stores the draft on the
+    detected-signal row's meta_json; the demo cohort writes a separate titled
+    row), or this undercounts a real account to zero.
     """
     if not contacts:
         return 0
+    from ..agents.relationship import outcomes as _outcomes
     ids = [c.id for c in contacts]
-    n = 0
+    found: set = set()
     for i in range(0, len(ids), 400):
-        n += len(set(db.execute(
-            select(models.RelationshipInteraction.contact_id)
+        rows = db.execute(
+            select(models.RelationshipInteraction)
             .where(models.RelationshipInteraction.contact_id.in_(ids[i:i + 400]),
-                   models.RelationshipInteraction.title.like("Drafted follow-up%"))
-            .distinct()
-        ).scalars().all()))
-    return n
+                   _outcomes.drafted_filter())
+        ).scalars().all()
+        found.update(r.contact_id for r in rows if _outcomes.is_drafted(r))
+    return len(found)
 
 
 def seed_from_real_account(db, email: str, cohort_id: str) -> dict:
@@ -188,6 +215,10 @@ def main() -> int:
     ap.add_argument("--email", required=True,
                     help="the account to set bar_jurisdiction on AND seed from")
     ap.add_argument("--jurisdiction", default="NY", help="USPS 2-letter code (default: NY)")
+    ap.add_argument("--practice-area", default=None,
+                    help="drives practice_fit; unset means a neutral 0.5 on every "
+                         "trace (corporate_ma, litigation, real_estate, "
+                         "employment_labor, ip, regulatory)")
     ap.add_argument("--cohort-id", default=None,
                     help="custom cohort ID (default: observed-YYYYMMDDHHmmss)")
     ap.add_argument("--skip-cohort", action="store_true",
@@ -203,6 +234,7 @@ def main() -> int:
     db = SessionLocal()
     try:
         ok = set_jurisdiction(db, args.email, args.jurisdiction)
+        set_practice_area(db, args.email, args.practice_area)
 
         if args.skip_cohort:
             print("  [seed] --skip-cohort: no cohort seeded.")

@@ -258,11 +258,13 @@ def refresh_from_outcomes(db) -> dict:
 
     counts: dict = {}
     outcomes = skipped = 0
+    from ..agents.relationship import outcomes as _outcomes
     rows = db.execute(
-        select(models.RelationshipInteraction).where(
-            models.RelationshipInteraction.title.like("Drafted follow-up%"))
+        select(models.RelationshipInteraction).where(_outcomes.drafted_filter())
     ).scalars().all()
     for r in rows:
+        if not _outcomes.is_drafted(r):
+            continue
         if r.id in generated:
             skipped += 1
             continue
