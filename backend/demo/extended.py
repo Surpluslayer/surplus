@@ -30,9 +30,7 @@ never fabricate example draft text and imply it came from the model.
 from __future__ import annotations
 
 from datetime import timezone
-from typing import Optional
 
-from . import distributions as dist
 from . import provenance as prov
 from .. import models
 from ..agents.relationship.book import _score_health_heuristic

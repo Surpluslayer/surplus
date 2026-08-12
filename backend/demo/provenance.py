@@ -8,8 +8,6 @@ indistinguishable from real data to anything that doesn't know to look.
 """
 from __future__ import annotations
 
-from typing import Optional
-
 from .. import models
 
 # The only values this package writes. Kept as a closed set so a typo can't

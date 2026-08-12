@@ -46,7 +46,7 @@ def test_generate_writes_real_rows_with_baseline_provenance(db):
 
 
 def test_every_generated_row_has_a_provenance_tag(db):
-    cohort_id = cohort.generate(db, n_lawyers=3, days=7)
+    cohort.generate(db, n_lawyers=3, days=7)
     all_tags = db.execute(select(models.DemoProvenance)).scalars().all()
     all_users = db.execute(select(models.User)).scalars().all()
     all_contacts = db.execute(select(models.Contact)).scalars().all()

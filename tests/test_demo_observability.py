@@ -11,7 +11,6 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.db import Base, get_db
-from backend import models
 from backend.demo import cohort
 from backend.main import app
 
@@ -97,10 +96,6 @@ def test_opportunities_and_trace_round_trip(client):
 
 def test_trace_for_another_users_contact_is_404(client):
     c, cohort_id = client
-    r1 = c.get("/api/demo/observability/opportunities", params={
-        "key": "test-secret-key", "cohort_id": cohort_id,
-        "user_email": "demo-lawyer-000@example.com",
-    })
     all_contacts_r = c.get("/api/demo/observability/opportunities", params={
         "key": "test-secret-key", "cohort_id": cohort_id,
         "user_email": "demo-lawyer-001@example.com", "limit": 50,

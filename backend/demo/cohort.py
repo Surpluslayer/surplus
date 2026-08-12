@@ -61,9 +61,6 @@ _COMPANIES = ("Meridian Health Systems", "Northgate Capital", "Vantage Logistics
               "Ferris Industrial", "Corvus Analytics", "Palmer & Voss")
 _TITLES = ("General Counsel", "VP Operations", "Managing Partner", "CFO",
            "Director of Risk", "Founder", "Head of Compliance", "Principal")
-_MET_AT = ("a bar association mixer", "a CLE panel", "a client's closing dinner",
-           "a referral call", "a deposition", "a state bar conference",
-           "an intro from a mutual client")
 
 _SIGNAL_DETAILS = {
     "job_change": "just moved to {title} at {company}",
@@ -173,7 +170,6 @@ def _emit_session(db, rng: random.Random, user: models.User,
 
     n_investigate = rng.randint(*dist.SESSION_ACTION_RANGE["investigate_contact"])
     n_draft = rng.randint(*dist.SESSION_ACTION_RANGE["generate_draft"])
-    n_edit = min(rng.randint(*dist.SESSION_ACTION_RANGE["edit_draft"]), n_draft)
     n_search = rng.randint(*dist.SESSION_ACTION_RANGE["search"])
 
     minute = 0
@@ -236,7 +232,6 @@ def generate(db, *, n_lawyers: int = 80, days: int = 30,
     """Generate the baseline cohort. Returns the cohort_id (pass it to
     provenance.cohort_row_counts / delete_cohort)."""
     cohort_id = cohort_id or f"baseline-{_utcnow():%Y%m%d%H%M%S}"
-    rng = _seeded_rng(cohort_id, "top")
 
     for i in range(n_lawyers):
         user_rng = _seeded_rng(cohort_id, f"user{i}")
