@@ -67,10 +67,29 @@ def use_session_factory(factory) -> None:
 
 
 def _make_session():
-    if _session_factory is not None:
-        return _session_factory()
-    from ..db import SessionLocal
-    return SessionLocal()
+    """A session THIS module created, on whatever bind the app (or a test) is
+    configured for -- so closing it is always safe.
+
+    Deliberately not just `factory()`. A factory is not guaranteed to hand
+    back a NEW session: the app's SessionLocal does, but code that needs to
+    redirect the database (tests do this) may return a session the CALLER is
+    also using. Closing that detaches the caller's objects mid-request, which
+    is not a hypothetical -- it turned a live ask into
+    `DetachedInstanceError: Instance <User> is not bound to a Session` the
+    moment this module started closing what the factory gave it.
+
+    So the factory result is used only to read the bind, and the session we
+    actually work on is one we opened ourselves. The probe holds no
+    connection (a Session opens one lazily, on first use, and get_bind() is
+    not a use), so leaving it to the garbage collector costs nothing.
+    """
+    from sqlalchemy.orm import Session as _Session
+
+    factory = _session_factory
+    if factory is None:
+        from ..db import SessionLocal
+        factory = SessionLocal
+    return _Session(bind=factory().get_bind())
 
 
 def _ttl_minutes() -> int:

@@ -190,3 +190,27 @@ def test_rows_outside_the_ttl_are_pruned(db, user, monkeypatch):
     remaining = {r.id for r in db.query(models.ObserveActivity).all()}
     assert old_id not in remaining, "row older than the TTL was retained"
     assert any("fresh line" in r.msg for r in db.query(models.ObserveActivity).all())
+
+
+def test_publish_never_closes_a_session_it_did_not_create(db, user):
+    """Instrumentation must not close the caller's session.
+
+    A session factory is not guaranteed to hand back a NEW session -- code
+    that redirects the database (tests/test_ask_stream_narration.py does
+    exactly this) may return one the request is still using. Closing it
+    detaches the caller's loaded objects, and this is not hypothetical: it
+    broke a live ask with `DetachedInstanceError: Instance <User> is not
+    bound to a Session` the moment the bus started closing what the factory
+    returned.
+    """
+    shared = bus._session_factory()          # stands in for the caller's session
+    loaded = shared.query(models.User).filter_by(id=user.id).one()
+    bus.use_session_factory(lambda: shared)  # a factory that shares, not creates
+
+    bus.publish(user.id, "info", "src", "written while the caller holds a session")
+
+    # The caller's object must still be usable -- reading an attribute off a
+    # detached instance is what raised before.
+    assert loaded.email, "publish detached the caller's object by closing its session"
+    joined = " | ".join(e["msg"] for e in bus.since(user.id, 0))
+    assert "written while the caller holds a session" in joined
