@@ -37,7 +37,9 @@ def test_cache_reuses_build_then_rebuilds_on_change(db, monkeypatch):
     u = _user(db)
     calls = {"n": 0}
 
-    def _fake_spine(_db, _user):
+    # `contacts` is the roster _load_book may pass down so the caller's own
+    # list_contacts result is reused instead of fetched twice.
+    def _fake_spine(_db, _user, contacts=None):
         calls["n"] += 1
         return [{"id": 1, "name": "A"}]
 
