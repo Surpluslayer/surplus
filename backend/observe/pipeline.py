@@ -233,9 +233,29 @@ def resolve_candidates(db, user: models.User, contact: models.Contact,
         ).scalars().all())
     total = len(candidates)
     if total > MAX_RANKING_CANDIDATES:
-        signaled, plain = [], []
-        for c in candidates:
-            (signaled if rt._latest_signal(db, c.id) is not None else plain).append(c)
+        # Which contacts carry a detected signal, in one query per chunk
+        # instead of one per contact. This used to call rt._latest_signal per
+        # contact, so simply deciding WHAT to rank cost a query per contact in
+        # the book -- 650 of them on a real book, before any scoring started.
+        #
+        # Filtered on contact_id + source_type and nothing else, exactly as
+        # _latest_signal does. Narrowing by actor_user_id would look
+        # equivalent (these are all this user's contacts) but is not: it would
+        # drop a signal recorded against the contact by anyone else, silently
+        # changing which contacts are considered signal-carrying. Only
+        # membership is needed here -- the signal rows themselves are loaded
+        # by the ranking prefetch -- so this reads ids, not whole rows.
+        ids = [c.id for c in candidates]
+        signaled_ids: set = set()
+        for i in range(0, len(ids), rt._ID_CHUNK):
+            signaled_ids.update(db.execute(
+                select(models.RelationshipInteraction.contact_id)
+                .where(models.RelationshipInteraction.contact_id.in_(ids[i:i + rt._ID_CHUNK]),
+                       models.RelationshipInteraction.source_type == "activity_update")
+                .distinct()
+            ).scalars().all())
+        signaled = [c for c in candidates if c.id in signaled_ids]
+        plain = [c for c in candidates if c.id not in signaled_ids]
         candidates = (signaled + plain)[:MAX_RANKING_CANDIDATES]
     if contact not in candidates:
         candidates = candidates + [contact]

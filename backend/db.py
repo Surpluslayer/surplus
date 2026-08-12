@@ -300,6 +300,8 @@ def init_db() -> None:
         _migrate_contact_relationship_type,
         _migrate_demo_provenance_table,
         _migrate_user_practice_area,
+        _migrate_observe_activity_table,
+        _migrate_funnel_events_table,
     ]
 
     # Schema-revision sentinel: the loop below plus create_all's checkfirst is
@@ -1922,6 +1924,35 @@ def _migrate_demo_provenance_table() -> None:
     it's missing. Same idiom as _migrate_deletion_audit / _migrate_audit_log --
     appending this to the migrations list is what makes an ALREADY-migrated
     existing database re-run create_all and pick the new table up."""
+    return
+
+
+def _migrate_observe_activity_table() -> None:
+    """No-op beyond bumping the schema revision: observe_activity is a plain
+    new table (no ALTER needed), so create_all() creates it wherever it's
+    missing. Same idiom as _migrate_demo_provenance_table -- appending this to
+    the migrations list is what makes an ALREADY-stamped database re-run
+    create_all and pick the new table up. Without it, the model would exist in
+    code and the table would never appear in production, because the
+    schema_rev sentinel skips create_all entirely on a matching revision."""
+    return
+
+
+def _migrate_funnel_events_table() -> None:
+    """No-op beyond bumping the schema revision, for models.FunnelEvent.
+
+    funnel_events was added as a model without a corresponding entry in the
+    migrations list. On a fresh database that is invisible, because create_all
+    builds every table anyway -- but on an ALREADY-stamped one (i.e. every
+    deployed environment) the schema_rev sentinel skips create_all entirely,
+    so the table would never have been created and the first write to it would
+    fail with "relation does not exist".
+
+    It happens to be covered right now by the revision bump from
+    _migrate_observe_activity_table above, since any single new entry re-runs
+    create_all for ALL missing tables. That is luck, not design: reverting or
+    reordering that unrelated migration would silently take funnel_events with
+    it. Each new table owns its own bump."""
     return
 
 

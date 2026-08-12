@@ -2050,3 +2050,37 @@ class FunnelEvent(Base):
     # relationship_context, sent).
     value: Mapped[Optional[float]] = mapped_column(default=None)
     occurred_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
+
+
+class ObserveActivity(Base):
+    """One line of product-side activity for the Observe log (an ask-bar run,
+    a Draft tap), written by backend/observe/bus.py as the request runs.
+
+    Why a table rather than the in-process ring buffer this replaced: the ask
+    is served by whichever uvicorn worker takes the request, while the Observe
+    SSE stream is held open by whichever worker took THAT request. With
+    WEB_CONCURRENCY > 1 those are routinely different processes, so an
+    in-memory buffer showed the user nothing -- the feature silently did not
+    work on any multi-worker deploy, which is the deploy shape this app is
+    configured for.
+
+    This is a LIVE TAIL, not an audit log, and the distinction is deliberate:
+    rows carry query text and contact names, so bus.py prunes anything older
+    than OBSERVE_ACTIVITY_TTL_MIN (default 30) on write. Retention long enough
+    to watch work happen, short enough that this is not quietly a permanent
+    record of who a user asked about. Deleting a user cascades these away with
+    everything else.
+    """
+    __tablename__ = "observe_activity"
+
+    # Autoincrement id doubles as the stream cursor: monotonic per database,
+    # so a reader can resume with "id > last_seen" across workers.
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"),
+                                         index=True)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
+    level: Mapped[str] = mapped_column(String(10))
+    src: Mapped[str] = mapped_column(String(160))
+    msg: Mapped[str] = mapped_column(Text)
+    # Any structured extras the probe attached, as a JSON object string.
+    extra_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

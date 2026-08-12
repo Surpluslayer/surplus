@@ -464,14 +464,21 @@ def contact_events(db, user, contact, channel: str = "linkedin_dm"):
     # before/after ranks are comparable and the loop stays bounded.
     groups = ("relationship", "behavior", "signal_affinity", "timing")
     if len(candidates) > 1:
+        # Every lever re-ranks the SAME candidates from the SAME rows, so the
+        # data is loaded once for the whole loop. The scoring arithmetic still
+        # runs in full for each pass -- only the repeated fetching is removed.
+        abl_data, pf_ms = _timed(lambda: rt.prefetch(db, user, candidates))
         yield line(STEP, "backend.observe.harnesses.ablation:ablate_one",
                    f"ablation loop: {len(groups)} iterations, each re-ranking all "
                    f"{len(candidates)} candidates from scratch "
-                   f"({len(groups) * len(candidates) * 2} scoring passes total)")
+                   f"({len(groups) * len(candidates) * 2} scoring passes total, "
+                   f"one bulk load of {len(candidates)} candidates in {pf_ms:.0f}ms "
+                   f"shared across them)")
         for i, group in enumerate(groups, start=1):
             try:
                 res, ams = _timed(
-                    lambda g=group: ablation.ablate_one(db, user, contact, candidates, g))
+                    lambda g=group: ablation.ablate_one(db, user, contact, candidates, g,
+                                                        data=abl_data))
             except Exception as exc:  # noqa: BLE001
                 yield line(ERR, "backend.observe.harnesses.ablation:ablate_one",
                            f"  [{i}/{len(groups)}] {group}: {type(exc).__name__}: {exc}")
