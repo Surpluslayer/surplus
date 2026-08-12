@@ -619,14 +619,18 @@ def draft_stream(body: DraftIn, db: Session = Depends(get_db),
         wdb = SessionLocal()
         t0 = time.monotonic()
         streamed = False
+        body_chars = 0
+        resolved_name = nm or "?"
         try:
             wuser = wdb.query(models.User).get(user_id)
             orm = _find_contact_orm(wdb, wuser, cid)
             if orm is not None:
+                resolved_name = orm.name or resolved_name
                 from ..agents.relationship.pipeline.compose import drafting
                 for chunk in drafting.compose_stream(wdb, user_id, orm,
                                                      reason=trigger, channel=channel):
                     streamed = True
+                    body_chars += len(chunk)
                     yield f"event: token\ndata: {json.dumps({'t': chunk})}\n\n"
             if not streamed:
                 # No real contact (demo slug) or no key: emit the heuristic body
@@ -635,9 +639,24 @@ def draft_stream(body: DraftIn, db: Session = Depends(get_db),
                 contact = _find_contact(book, contact_id=cid, name=nm) or \
                     {"name": nm or "there", "title": "", "firm": "",
                      "interaction_history": ""}
+                resolved_name = contact.get("name") or resolved_name
                 msg = book_agent.draft_message_cached(
                     contact, trigger, channel=channel, user_name=name)
-                yield f"event: token\ndata: {json.dumps({'t': msg.get('body') or ''})}\n\n"
+                body = msg.get("body") or ""
+                body_chars = len(body)
+                yield f"event: token\ndata: {json.dumps({'t': body})}\n\n"
+            # Same narration /draft (above) sends -- this stream is
+            # DraftSheet's PRIMARY path (bookDraftStream is tried first;
+            # bookDraft only runs as a fallback when the stream fails to
+            # open), so without this a real Draft tap almost never reached
+            # the Observe activity log, only the rare fallback did.
+            try:
+                from ..observe import askprobe
+                askprobe.draft_tap(user_id, resolved_name, "shared" if streamed else "heuristic",
+                                   channel, trigger or "", (time.monotonic() - t0) * 1000,
+                                   body_chars)
+            except Exception:  # noqa: BLE001 -- instrumentation must never break a draft
+                pass
             yield f"event: done\ndata: {json.dumps({'total_s': round(time.monotonic()-t0, 1)})}\n\n"
             _trace(f"POST /draft/stream user={user_id} to={nm!r} "
                    f"in {time.monotonic()-t0:.1f}s (streamed={streamed})")
