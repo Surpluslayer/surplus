@@ -83,13 +83,18 @@ def test_boot_events_stream_real_harness_results(db):
     assert "synthetic_scenarios" not in msgs
 
 
-def test_boot_events_warn_and_skip_when_there_is_no_dataset(db):
+def test_boot_events_builds_a_dataset_automatically_when_there_is_none(db):
+    """A reader opening Observe with nothing seeded yet used to get four
+    SKIPPED harnesses and a POST to go issue themselves -- self-heal instead:
+    build the missing cohort right here, so the same boot's harnesses
+    actually run against it."""
     events = list(logstream.boot_events(db))
     msgs = " | ".join(e["msg"] for e in events)
-    assert "no usable evaluation cohort" in msgs
-    # The one dataset-free harness still runs; the four data-driven ones skip.
+    assert "built automatically" in msgs
     assert "jurisdiction_regression" in msgs
-    assert "SKIPPED" in msgs
+    assert "SKIPPED" not in msgs
+    assert logstream.evaluation_cohort_id(db) is not None, \
+        "the built cohort must be findable on the next boot too"
 
 
 def test_coverage_harnesses_are_not_reported_as_failures(db):
@@ -732,12 +737,13 @@ def test_a_cohort_with_no_tagged_lawyer_is_not_chosen_as_the_dataset(db):
         "a cohort with no tagged lawyer shadowed a working one"
 
 
-def test_a_missing_dataset_tells_the_reader_how_to_fix_it(db):
-    """0/0 with no explanation is the worst version of this screen."""
+def test_a_missing_dataset_is_built_rather_than_left_unexplained(db):
+    """0/0 with no explanation was the worst version of this screen; the fix
+    is to not leave it in that state at all."""
     events = list(logstream.boot_events(db))
     joined = " | ".join(e["msg"] for e in events)
-    assert "will report 0/0" in joined
-    assert "POST /api/observe/evaluation-dataset" in joined
+    assert "built automatically" in joined
+    assert logstream.evaluation_cohort_id(db) is not None
 
 
 # ── the numbers must say whether they are evidence or a wiring check ────────

@@ -234,21 +234,23 @@ def boot_events(db, user=None):
     yield line(STEP, "backend.observe.logstream:boot_events",
                "evaluation -- harnesses over a fixed dataset")
     cohort_id = evaluation_cohort_id(db)
+    if cohort_id is None:
+        # Self-healing rather than a dead end: the first boot to find nothing
+        # usable builds it right here, once, instead of reporting 0/0 with a
+        # POST the reader has to go issue themselves. Same call the "build
+        # evaluation dataset" button makes; every later boot finds this
+        # cohort via evaluation_cohort_id() and skips straight past this
+        # branch.
+        from ..demo import cohort as demo_cohort
+        cohort_id = demo_cohort.generate(db, n_lawyers=25, days=30)
+        yield line(OK, "backend.observe.logstream:boot_events",
+                   f"  starting evaluation dataset built automatically: "
+                   f"cohort_id={cohort_id} (generated, tagged demo data, not your book)")
     provenance = label_provenance(db, cohort_id)
-    if cohort_id:
-        yield line(INFO, "backend.observe.logstream:evaluation_cohort_id",
-                   f"  dataset: cohort_id={cohort_id}")
-        lvl, note = circularity_note(provenance)
-        yield line(lvl, "backend.observe.logstream:circularity_note", note)
-    else:
-        yield line(WARN, "backend.observe.logstream:evaluation_cohort_id",
-                   "  no usable evaluation cohort -- the four data-driven harnesses "
-                   "will report 0/0. A cohort needs a TAGGED LAWYER, not just "
-                   "contacts; one tagged without a user is skipped here rather than "
-                   "shadowing a working one")
-        yield line(INFO, "backend.routes.observe:create_evaluation_dataset",
-                   "  fix without a shell: POST /api/observe/evaluation-dataset "
-                   "(or CLI: python -m backend.demo.cohort)")
+    yield line(INFO, "backend.observe.logstream:evaluation_cohort_id",
+               f"  dataset: cohort_id={cohort_id}")
+    lvl, note = circularity_note(provenance)
+    yield line(lvl, "backend.observe.logstream:circularity_note", note)
 
     runners = {
         "jurisdiction_regression": lambda: jurisdiction_regression.run(),
