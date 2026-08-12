@@ -179,3 +179,40 @@ def test_feedback_loop_status_does_not_claim_the_taxonomy_learns(db):
     assert "CLOSED:" in joined and "historical_behavior" in joined
     assert "OPEN:" in joined
     assert "not called anywhere in production" in joined
+
+
+def test_ranking_candidates_are_bounded_on_a_large_book(db):
+    """A real book of hundreds of contacts scored every one of them, several
+    queries each, with nothing emitted until all eight stages finished --
+    which reads as a hang. The candidate set is bounded and the subject
+    contact is always included."""
+    from backend.observe import pipeline
+    cohort.generate(db, n_lawyers=2, days=14, cohort_id="big-cohort")
+    user = db.execute(select(models.User)).scalars().first()
+    base = db.execute(select(models.Contact).where(
+        models.Contact.user_id == user.id)).scalars().all()
+    for i in range(300):
+        db.add(models.Contact(user_id=user.id, primary_identity_key=f"big:{i}", name=f"C{i}"))
+    db.commit()
+
+    subject = base[0]
+    candidates, total = pipeline.resolve_candidates(db, user, subject, None)
+    assert total > pipeline.MAX_RANKING_CANDIDATES
+    assert len(candidates) <= pipeline.MAX_RANKING_CANDIDATES + 1
+    assert subject in candidates, "the contact being traced must always be scored"
+
+
+def test_iter_stages_yields_incrementally(db):
+    """compute_pipeline_trace consumes iter_stages, so a streaming caller
+    gets each stage as it completes rather than all eight at the end."""
+    from backend.observe import pipeline
+    cohort.generate(db, n_lawyers=2, days=14, cohort_id="iter-cohort")
+    user = db.execute(select(models.User)).scalars().first()
+    contact = db.execute(select(models.Contact).where(
+        models.Contact.user_id == user.id)).scalars().first()
+
+    it = pipeline.iter_stages(db, user, contact)
+    first = next(it)
+    assert first.name == "ingestion"          # arrives before the rest run
+    names = [first.name] + [s.name for s in it]
+    assert names == list(pipeline.STAGE_ORDER)
