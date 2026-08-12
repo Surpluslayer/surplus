@@ -256,14 +256,22 @@ def _emit_session(db, rng: random.Random, user: models.User,
 
 def generate(db, *, n_lawyers: int = 80, days: int = 30,
              contacts_per_lawyer: tuple[int, int] = (15, 60),
-             cohort_id: str | None = None) -> str:
+             cohort_id: str | None = None,
+             users: list[models.User] | None = None) -> str:
     """Generate the baseline cohort. Returns the cohort_id (pass it to
-    provenance.cohort_row_counts / delete_cohort)."""
+    provenance.cohort_row_counts / delete_cohort).
+
+    If users is provided, use those instead of generating new demo users.
+    """
     cohort_id = cohort_id or f"baseline-{_utcnow():%Y%m%d%H%M%S}"
 
-    for i in range(n_lawyers):
+    lawyers = users if users else [None] * n_lawyers
+    for i, user in enumerate(lawyers):
         user_rng = _seeded_rng(cohort_id, f"user{i}")
-        user = _make_lawyer_user(db, user_rng, i, cohort_id)
+        if user is None:
+            user = _make_lawyer_user(db, user_rng, i, cohort_id)
+        else:
+            prov.tag(db, user, provenance=prov.BASELINE, cohort_id=cohort_id)
 
         n_contacts = user_rng.randint(*contacts_per_lawyer)
         contacts = [

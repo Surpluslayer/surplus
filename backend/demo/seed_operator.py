@@ -25,15 +25,22 @@ Run it once against the deployed database:
     python -m backend.demo.seed_operator --email you@example.com \
         --jurisdiction NY --skip-cohort
 
+    # seed cohort using cloned real Unipile users instead of fake accounts
+    python -m backend.demo.seed_operator --email you@example.com \
+        --jurisdiction NY --unipile-users
+
 Everything it writes is provenance-tagged (backend/demo/provenance.py), so
 `prov.delete_cohort(db, cohort_id)` removes it completely. It does NOT touch
-any contact, interaction, or draft belonging to a real account -- the only
-write against a real account is the single bar_jurisdiction column.
+any contact, interaction, or draft belonging to a real account -- real Unipile
+users remain untouched; only their clones (marked is_demo=True) are seeded with
+interactions. When --unipile-users is used, the only write against a real account
+is the single bar_jurisdiction column.
 """
 from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timezone
 
 from .. import models
 from ..db import SessionLocal, init_db
@@ -71,6 +78,41 @@ def existing_baseline_cohort(db):
     return evaluation_cohort_id(db)
 
 
+def clone_unipile_users(db, limit: int = 20) -> list[models.User]:
+    """Clone up to `limit` real Unipile users as demo users for the cohort.
+
+    Real users are left untouched; clones are marked is_demo=True and return
+    so they can be used for cohort generation without polluting real data.
+    """
+    real_users = (
+        db.query(models.User)
+        .filter(models.User.unipile_account_id != None)
+        .limit(limit)
+        .all()
+    )
+
+    if not real_users:
+        print(f"  [seed] WARNING: no Unipile users found in database.")
+        return []
+
+    clones = []
+    for real_user in real_users:
+        clone = models.User(
+            email=f"demo-clone-{real_user.id}@demo.surplus",
+            name=real_user.name,
+            is_demo=True,
+            bar_jurisdiction=real_user.bar_jurisdiction,
+            practice_area=real_user.practice_area,
+            autonomy_mode=real_user.autonomy_mode or "ask",
+        )
+        db.add(clone)
+        db.flush()
+        clones.append(clone)
+
+    print(f"  [seed] cloned {len(clones)} Unipile users as demo accounts for cohort.")
+    return clones
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Seed an evaluation cohort and set an account's bar jurisdiction.")
     ap.add_argument("--email", required=True, help="account to set bar_jurisdiction on")
@@ -82,6 +124,8 @@ def main() -> int:
                     help="only set the jurisdiction; do not generate a cohort")
     ap.add_argument("--force", action="store_true",
                     help="generate another cohort even if one already exists")
+    ap.add_argument("--unipile-users", action="store_true",
+                    help="clone real Unipile users instead of generating demo users")
     args = ap.parse_args()
 
     init_db()
@@ -102,8 +146,16 @@ def main() -> int:
             return 0 if ok else 1
 
         print(f"  [seed] generating cohort: {args.lawyers} lawyers x {args.days} days ...")
+
+        users_for_cohort = None
+        if args.unipile_users:
+            users_for_cohort = clone_unipile_users(db, limit=args.lawyers)
+            if not users_for_cohort:
+                print("  [seed] ERROR: --unipile-users requested but no Unipile users found.")
+                return 1
+
         cohort_id = cohort_mod.generate(db, n_lawyers=args.lawyers, days=args.days,
-                                        cohort_id=args.cohort_id)
+                                        cohort_id=args.cohort_id, users=users_for_cohort)
         counts = prov.cohort_row_counts(db, cohort_id)
         total = sum(sum(v.values()) for v in counts.values())
         print(f"  [seed] cohort_id={cohort_id} ({total} rows)")
