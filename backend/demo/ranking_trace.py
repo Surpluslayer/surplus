@@ -145,6 +145,9 @@ class RankingData:
     latest_signal: dict = field(default_factory=dict)     # contact_id -> row | None
     # signal_category -> (seen, saved, dismissed), account-wide
     behavior: dict = field(default_factory=dict)
+    # (practice_area, signal_category) -> (engaged, total), learned from real
+    # recorded outcomes. Loaded once per run like everything else here.
+    learned_affinity: dict = field(default_factory=dict)
 
 
 # SQLite caps host parameters per statement (999 on older builds), so a book
@@ -200,7 +203,8 @@ def prefetch(db, user, contacts: list, *, as_of: datetime | None = None) -> Rank
             dismissed += 1
         behavior[cat] = (seen + 1, saved, dismissed)
 
-    return RankingData(interactions=by_contact, latest_signal=latest, behavior=behavior)
+    return RankingData(interactions=by_contact, latest_signal=latest, behavior=behavior,
+                       learned_affinity=tax.load_learned(db))
 
 
 def _latest_signal(db, contact_id: int, *, as_of: datetime | None = None):
@@ -250,7 +254,7 @@ def _signal_relevance(signal, *, as_of: datetime | None = None) -> RankingFactor
     })
 
 
-def _practice_fit(user, signal) -> RankingFactor:
+def _practice_fit(user, signal, learned: dict | None = None) -> RankingFactor:
     """Two sources for `category`, tried in order: backend/demo/cohort.py's
     own `signal_category` meta key (demo-cohort data only), then, when that's
     absent, a real mapping off PRODUCTION's actual interaction_type +
@@ -264,10 +268,25 @@ def _practice_fit(user, signal) -> RankingFactor:
     if not category and signal is not None:
         category = tax.production_signal_category(getattr(signal, "interaction_type", None), meta)
         category_source = "production_interaction_type" if category else "unmapped"
-    aff = tax.affinity(getattr(user, "practice_area", None), category)
+    area = getattr(user, "practice_area", None)
+    aff = tax.affinity(area, category, learned=learned)
+
+    # Say which table the number came from, and on how much evidence. A
+    # learned value and a seed guess are different claims, and a trace that
+    # reported both as "seed_table" would understate the first and overstate
+    # nothing -- but a trace that reported both as "learned" would be a lie.
+    counts = (learned or {}).get((area, category)) if area and category else None
+    if counts and counts[1] > 0:
+        engaged, total = counts
+        source = (f"learned (n={total}, engaged={engaged}, "
+                  f"seed {tax.seed_affinity(area, category)} blended with "
+                  f"prior_strength={tax.PRIOR_STRENGTH})")
+    else:
+        source = "seed_table (no recorded outcomes for this pair yet)"
+
     return RankingFactor("practice_fit", aff, {
-        "lawyer_practice_area": getattr(user, "practice_area", None),
-        "signal_category": category, "affinity_source": "seed_table",
+        "lawyer_practice_area": area,
+        "signal_category": category, "affinity_source": source,
         "category_source": category_source,
     })
 
@@ -400,14 +419,16 @@ def compute_trace(db, user, contact, *, as_of: datetime | None = None,
         interactions = data.interactions[contact.id]
         signal = data.latest_signal.get(contact.id)
         behavior = data.behavior
+        learned = data.learned_affinity
     else:
         signal = _latest_signal(db, contact.id, as_of=as_of)
         interactions = _all_interactions(db, contact.id, as_of=as_of)
         behavior = None
+        learned = tax.load_learned(db)
 
     factor_fns = {
         "signal_relevance": lambda: _signal_relevance(signal, as_of=as_of),
-        "practice_fit": lambda: _practice_fit(user, signal),
+        "practice_fit": lambda: _practice_fit(user, signal, learned=learned),
         "relationship_strength": lambda: _relationship_strength(interactions),
         "relationship_recency": lambda: _relationship_recency(interactions, as_of=as_of),
         "relationship_trajectory": lambda: _relationship_trajectory(interactions, as_of=as_of),

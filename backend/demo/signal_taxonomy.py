@@ -15,6 +15,8 @@ real outcome data, same posture as extended.py's outcome_feedback layer).
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 PRACTICE_AREAS = (
     "corporate_ma", "litigation", "real_estate", "employment_labor",
     "ip", "regulatory",
@@ -116,13 +118,136 @@ def production_signal_category(interaction_type: str | None, meta: dict) -> str 
     return None
 
 
-def affinity(practice_area: str | None, signal_category: str | None) -> float:
-    """Look up the (practice_area, signal_category) affinity. Unknown or
-    unset inputs return a neutral 0.5 -- fail toward "uninformative", not
-    toward a fabricated high or low confidence."""
+# How much observed evidence it takes to move a seed value meaningfully.
+#
+# The blend is (engaged + prior*K) / (total + K), i.e. the seed acts as K
+# pseudo-observations. This matters more than it looks: the original
+# recompute overwrote a prior outright on ANY non-zero sample, so a single
+# discarded draft drove an affinity to 0.000 and a single send drove it to
+# 1.000. That is not learning, it is overfitting to n=1 and calling the
+# result a measurement. At K=20 one observation moves a 0.90 prior by about
+# 0.04, and a hundred consistent observations largely take over.
+PRIOR_STRENGTH = 20
+
+
+def seed_affinity(practice_area: str | None, signal_category: str | None) -> float:
+    """The documented starting prior, ignoring anything learned."""
     if not practice_area or not signal_category:
         return 0.5
     return SIGNAL_AFFINITY_SEED.get(practice_area, {}).get(signal_category, 0.5)
+
+
+def blended_affinity(practice_area: str | None, signal_category: str | None,
+                     engaged: int, total: int) -> float:
+    """Seed prior blended with observed outcomes. See PRIOR_STRENGTH."""
+    prior = seed_affinity(practice_area, signal_category)
+    if total <= 0:
+        return prior
+    return round((engaged + prior * PRIOR_STRENGTH) / (total + PRIOR_STRENGTH), 4)
+
+
+def affinity(practice_area: str | None, signal_category: str | None,
+             learned: dict | None = None) -> float:
+    """Look up the (practice_area, signal_category) affinity. Unknown or
+    unset inputs return a neutral 0.5 -- fail toward "uninformative", not
+    toward a fabricated high or low confidence.
+
+    `learned`: {(practice_area, signal_category): (engaged, total)} from
+    load_learned(), which is how this stops being a fixed seed table. Omitted,
+    the seed prior is returned exactly as before -- callers that have no
+    session (and every existing test) are unaffected.
+    """
+    if not practice_area or not signal_category:
+        return 0.5
+    if learned:
+        counts = learned.get((practice_area, signal_category))
+        if counts:
+            return blended_affinity(practice_area, signal_category, *counts)
+    return seed_affinity(practice_area, signal_category)
+
+
+def load_learned(db) -> dict:
+    """{(practice_area, signal_category): (engaged, total)} from the DB.
+
+    Returns {} rather than raising when the table has not been created yet,
+    so a database mid-migration falls back to the seed instead of breaking
+    every ranking.
+    """
+    try:
+        from sqlalchemy import select
+        from .. import models
+        rows = db.execute(select(models.SignalAffinity)).scalars().all()
+        return {(r.practice_area, r.signal_category): (r.engaged, r.total) for r in rows}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def refresh_from_outcomes(db) -> dict:
+    """Recompute the learned counts from REAL recorded outcomes and persist.
+
+    Reads every drafted follow-up that carries a disposition (written by
+    agents/relationship/outcomes.py when the lawyer actually sends or
+    snoozes), pairs it with the drafting lawyer's practice_area and the
+    signal's category, and stores engaged/total per pair.
+
+    GENERATED ROWS ARE EXCLUDED. backend/demo/cohort.py writes dispositions
+    too, and letting those into this table would mean synthetic outcomes
+    quietly shaping real lawyers' rankings -- the exact thing the provenance
+    layer exists to prevent. Only rows with no generated-provenance tag
+    count; prov.OBSERVED rows are real data and do count.
+
+    Returns {"pairs": n, "outcomes": n, "skipped_generated": n}.
+    """
+    import json as _json
+    from sqlalchemy import select
+    from .. import models
+    from . import provenance as prov
+
+    generated = {
+        row_id for (row_id,) in db.execute(
+            select(models.DemoProvenance.row_id).where(
+                models.DemoProvenance.table_name == "relationship_interactions",
+                models.DemoProvenance.data_provenance.in_(tuple(prov.GENERATED_VALUES)))
+        ).all()
+    }
+
+    practice_by_user = dict(db.execute(
+        select(models.User.id, models.User.practice_area)).all())
+
+    counts: dict = {}
+    outcomes = skipped = 0
+    rows = db.execute(
+        select(models.RelationshipInteraction).where(
+            models.RelationshipInteraction.title.like("Drafted follow-up%"))
+    ).scalars().all()
+    for r in rows:
+        if r.id in generated:
+            skipped += 1
+            continue
+        try:
+            meta = _json.loads(r.meta_json or "{}") or {}
+        except ValueError:
+            continue
+        disposition = meta.get("disposition")
+        category = meta.get("signal_category")
+        area = practice_by_user.get(r.actor_user_id)
+        if not disposition or not category or not area:
+            continue
+        outcomes += 1
+        engaged, total = counts.get((area, category), (0, 0))
+        counts[(area, category)] = (engaged + (1 if meta.get("engaged") else 0), total + 1)
+
+    for (area, category), (engaged, total) in counts.items():
+        row = db.execute(select(models.SignalAffinity).where(
+            models.SignalAffinity.practice_area == area,
+            models.SignalAffinity.signal_category == category)).scalar_one_or_none()
+        if row is None:
+            row = models.SignalAffinity(practice_area=area, signal_category=category)
+            db.add(row)
+        row.engaged, row.total = engaged, total
+        row.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"pairs": len(counts), "outcomes": outcomes, "skipped_generated": skipped}
 
 
 def update_affinity_from_outcomes(engagement_rows: list[dict]) -> dict[str, dict[str, float]]:
@@ -152,5 +277,8 @@ def update_affinity_from_outcomes(engagement_rows: list[dict]) -> dict[str, dict
     for (pa, cat), (engaged, total) in counts.items():
         if total == 0:
             continue
-        out.setdefault(pa, {})[cat] = round(engaged / total, 3)
+        # Blended, not replaced. This used to be `engaged / total`, which let
+        # a single observation drive an affinity to 0.0 or 1.0 -- overfitting
+        # to n=1 and presenting it as a measurement. See PRIOR_STRENGTH.
+        out.setdefault(pa, {})[cat] = blended_affinity(pa, cat, engaged, total)
     return out
