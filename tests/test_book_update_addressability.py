@@ -38,7 +38,11 @@ def client():
     app.dependency_overrides[get_db] = _override_db
 
     db = Session()
-    cohort.generate(db, n_lawyers=8, days=30)
+    # Fixed cohort_id: an unlabeled call seeds the RNG off a wall-clock
+    # timestamp, so this fixture's random draws (and therefore whether any
+    # contact lands an addressable update) varied run to run -- flaky by
+    # construction, not a real signal about the code under test.
+    cohort.generate(db, n_lawyers=8, days=30, cohort_id="addressability-test-fixed")
     user = db.execute(select(models.User)).scalars().first()
     user_id = user.id
     db.close()
