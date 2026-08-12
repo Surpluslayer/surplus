@@ -3,23 +3,30 @@
 // /api/observe/stream/boot and every harness runs for real, one line each.
 // Click a contact in the Book to the left and its trace is APPENDED to the
 // same log: pipeline stages, the ranking arithmetic factor by factor, the
-// ablation deltas, then the jurisdiction rule set walked check by check over
-// that contact's real drafted message.
+// ablation deltas, the draft/judge/Modal/cache lines, then the jurisdiction
+// rule set walked check by check over that contact's real drafted message.
 //
 // Every line comes from backend/observe/logstream.py and corresponds to work
 // that actually executed -- `src` is the real module:function that produced
 // it, and every duration is a measured perf_counter delta. Nothing here is
 // printed to look busy.
 //
-// This replaced a card/accordion layout that fetched each section with
-// Promise.all and rendered nothing until ALL of them resolved -- so one slow
-// endpoint left the whole panel stuck on "loading...". A stream has no such
-// coupling: each line paints the moment its work finishes.
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+// This is deliberately ONE flow, not a log plus a separate summary reduction
+// of the same log. A summary panel was tried and reverted: it re-derived
+// "the ranking factors" by matching on `src` prefixes, and
+// feedback_loop_status's CLOSED/OPEN line for historical_behavior happens to
+// share its src with compute_trace's own historical_behavior factor line --
+// so the summary silently duplicated that row and made a real, non-zero
+// relationship reading look like "0". A single source of truth can't drift
+// from itself that way. Readability instead comes from visual structure
+// WITHIN the one stream: each STEP line starts a new section, and the lines
+// under it are lightly banded so a reader's eye can chunk the log without a
+// second view that has to be kept in sync with the first.
+import React, { useState, useEffect, useRef, useCallback } from "react";
 
 // Terminal palette -- dark, high contrast, deliberately close to a deploy log.
 const T = {
-  bg: "#0d1117", panel: "#111823", line: "#1f2733",
+  bg: "#0d1117", panel: "#111823", band: "#0f1620", line: "#1f2733",
   dim: "#5b6673", text: "#c9d3df", bright: "#e8eef6",
   ok: "#3fb950", warn: "#d29922", err: "#f85149", step: "#58a6ff",
   accent: "#58a6ff",
@@ -43,7 +50,7 @@ function shortSrc(src) {
   return (src || "").replace(/^backend\./, "");
 }
 
-function LogLine({ e }) {
+function LogLine({ e, banded }) {
   const color = LEVEL_COLOR[e.level] || T.text;
   const tag = LEVEL_TAG[e.level] || "";
   // A line that names a harness, or announces a step, is a section marker --
@@ -53,9 +60,12 @@ function LogLine({ e }) {
 
   return (
     <div style={{
-      display: "flex", gap: 10, padding: "1px 0", alignItems: "baseline",
-      fontFamily: MONO, fontSize: 11.5, lineHeight: 1.55, whiteSpace: "pre-wrap",
-      wordBreak: "break-word",
+      display: "flex", gap: 10, padding: "1px 10px", margin: "0 -10px",
+      alignItems: "baseline", fontFamily: MONO, fontSize: 11.5, lineHeight: 1.55,
+      whiteSpace: "pre-wrap", wordBreak: "break-word",
+      background: banded ? T.band : "transparent",
+      borderTop: isMarker ? `1px solid ${T.line}` : "none",
+      marginTop: isMarker ? 6 : 0, paddingTop: isMarker ? 5 : 1,
     }}>
       <span style={{ color: T.dim, flexShrink: 0, fontSize: 10.5 }}>{hhmmss(e.ts)}</span>
       <span style={{ color, flexShrink: 0, width: 34, fontSize: 10,
@@ -72,165 +82,6 @@ function LogLine({ e }) {
           {shortSrc(e.src)}
         </span>
       )}
-    </div>
-  );
-}
-
-// ── readable summary : a live reduction of the SAME lines the log below
-// renders, never a second fetch ──────────────────────────────────────────
-//
-// Observe used to open on a card per pipeline stage, each fetched
-// separately with Promise.all -- exactly the "nothing renders until every
-// section resolves" design that timed out at Cloudflare's 524 gateway limit
-// (see routes/observe.py's own comment on why that was replaced with this
-// stream). Reintroducing per-section readability without reintroducing that
-// failure mode means deriving it from the stream already in memory instead
-// of fetching anything new.
-//
-// Real pipeline stage order, from backend/observe/pipeline.py:STAGE_ORDER --
-// used only to label + order rows already present in the stream.
-const STAGE_LABELS = {
-  ingestion: "Ingestion", entity_resolution: "Entity resolution",
-  signal_library: "Signal library", targeting: "Targeting",
-  relationship: "Relationship", ranking: "Ranking",
-  jurisdiction: "Jurisdiction", output: "Output",
-};
-const STAGE_KEYS = Object.keys(STAGE_LABELS);
-const STAGE_SRC_RE = /^backend\.observe\.pipeline:_(\w+)$/;
-
-function extractSummary(lines) {
-  // Everything since the most recent "clicked X" marker is this contact's
-  // trace; before the first click, the summary reduces the boot sequence.
-  let start = 0;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i].harness === "click" && lines[i].kind === "marker") { start = i + 1; break; }
-  }
-  const seg = lines.slice(start);
-
-  if (start === 0) {
-    const harnesses = [];
-    let accountLine = null;
-    for (const e of seg) {
-      if (e.harness && e.kind) harnesses.push(e);
-      else if (e.src === "backend.models:User") accountLine = e;
-    }
-    return { mode: "boot", harnesses, accountLine };
-  }
-
-  const stages = {};
-  const rankingFactors = [];
-  let pipelineOverall = null, rankingScore = null, jurisdictionVerdict = null;
-  let modal = null, cacheAssess = null, cacheDraft = null;
-  let judgeLive = null, judgeDead = null, draft = null;
-
-  for (const e of seg) {
-    const src = e.src || "", msg = e.msg || "";
-    const stageMatch = STAGE_SRC_RE.exec(src);
-    if (stageMatch && STAGE_LABELS[stageMatch[1]]) { stages[stageMatch[1]] = e; continue; }
-    if (src === "backend.observe.pipeline:iter_stages" && msg.startsWith("pipeline complete")) {
-      pipelineOverall = e; continue;
-    }
-    if (src.startsWith("backend.demo.ranking_trace:_")) { rankingFactors.push(e); continue; }
-    if (src === "backend.demo.ranking_trace:compute_trace" && msg.startsWith("opportunity_score")) {
-      rankingScore = e; continue;
-    }
-    if (src === "backend.solicitation:evaluate" && msg.startsWith("VERDICT")) {
-      jurisdictionVerdict = e; continue;
-    }
-    if (src === "backend.jobs:use_modal") { modal = e; continue; }
-    if (src === "backend.agents.relationship.book" && msg.startsWith("assess cache")) {
-      cacheAssess = e; continue;
-    }
-    if (src === "backend.agents.relationship.book" && msg.startsWith("draft cache")) {
-      cacheDraft = e; continue;
-    }
-    if (src === "backend.agents.llm:_llm_json") { judgeLive = e; continue; }
-    if (src === "backend.agents.llm:judge_relevance_batch") { judgeDead = e; continue; }
-    if ((src.includes("drafting:compose_stream") && msg.startsWith("draft composed")) ||
-        (src.includes("updates_engine:autodraft") && msg.includes("reusing stored autodraft")) ||
-        (src.includes("book:draft_message_cached") && msg.includes("heuristic drafter produced"))) {
-      draft = e; continue;
-    }
-  }
-
-  return { mode: "contact", stages, pipelineOverall, rankingScore, rankingFactors,
-           jurisdictionVerdict, modal, cacheAssess, cacheDraft, judgeLive, judgeDead, draft };
-}
-
-function SummaryRow({ label, e }) {
-  if (!e) return null;
-  return (
-    <div style={{ display: "flex", gap: 8, padding: "2px 0", alignItems: "baseline" }}>
-      <span style={{ color: T.dim, width: 128, flexShrink: 0, fontSize: 10.5,
-                    fontFamily: MONO }}>{label}</span>
-      <span style={{ color: LEVEL_COLOR[e.level] || T.text, fontSize: 11.5, fontFamily: MONO,
-                    flex: 1, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-        {e.msg}
-      </span>
-    </div>
-  );
-}
-
-function SummarySection({ title, children }) {
-  return (
-    <div style={{ marginBottom: 10 }}>
-      <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.7, color: T.accent,
-                    textTransform: "uppercase", marginBottom: 3 }}>
-        {title}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function SummaryPanel({ summary, selection }) {
-  const boxStyle = { padding: "12px 18px", borderBottom: `1px solid ${T.line}`,
-                     maxHeight: "44%", overflowY: "auto", flexShrink: 0, background: T.panel };
-
-  if (summary.mode === "boot") {
-    return (
-      <div style={boxStyle}>
-        <SummarySection title="Account">
-          <SummaryRow label="signed in" e={summary.accountLine} />
-        </SummarySection>
-        <SummarySection title="Harness suite">
-          {summary.harnesses.length
-            ? summary.harnesses.map((e, i) => <SummaryRow key={i} label={e.harness} e={e} />)
-            : <div style={{ color: T.dim, fontSize: 11, fontFamily: MONO }}>
-                running harness suite… results appear here as each one finishes.
-              </div>}
-        </SummarySection>
-      </div>
-    );
-  }
-
-  return (
-    <div style={boxStyle}>
-      <div style={{ fontSize: 12, fontWeight: 700, color: T.bright, marginBottom: 8,
-                    fontFamily: MONO }}>
-        {(selection && selection.name) || "this contact"}
-      </div>
-      <SummarySection title="Pipeline">
-        {STAGE_KEYS.map(key => <SummaryRow key={key} label={STAGE_LABELS[key]} e={summary.stages[key]} />)}
-        <SummaryRow label="overall" e={summary.pipelineOverall} />
-      </SummarySection>
-      <SummarySection title="Ranking">
-        {summary.rankingFactors.map((e, i) => (
-          <SummaryRow key={i} label={(e.src || "").split(":_")[1] || "factor"} e={e} />
-        ))}
-        <SummaryRow label="opportunity_score" e={summary.rankingScore} />
-      </SummarySection>
-      <SummarySection title="Jurisdiction">
-        <SummaryRow label="verdict" e={summary.jurisdictionVerdict} />
-      </SummarySection>
-      <SummarySection title="Draft · judge · Modal · cache">
-        <SummaryRow label="draft" e={summary.draft} />
-        <SummaryRow label="judge (live)" e={summary.judgeLive} />
-        <SummaryRow label="judge (dead code)" e={summary.judgeDead} />
-        <SummaryRow label="Modal" e={summary.modal} />
-        <SummaryRow label="assess cache" e={summary.cacheAssess} />
-        <SummaryRow label="draft cache" e={summary.cacheDraft} />
-      </SummarySection>
     </div>
   );
 }
@@ -332,8 +183,6 @@ export default function ObservePanel({ selection }) {
     });
   }, []);
 
-  const summary = useMemo(() => extractSummary(lines), [lines]);
-
   const open = useLogStream(append);
   useClientEvents(append);
   useActivityStream(append);
@@ -400,6 +249,11 @@ export default function ObservePanel({ selection }) {
     );
   }
 
+  // Section banding: alternate a faint background every time a STEP line (a
+  // section marker) is hit, purely a rendering aid over the SAME lines array
+  // -- nothing here is a second computed view that could disagree with it.
+  let band = false;
+
   return (
     <div style={{ fontFamily: FONT, background: T.bg, minHeight: "100%",
                   display: "flex", flexDirection: "column", height: "100%" }}>
@@ -413,6 +267,12 @@ export default function ObservePanel({ selection }) {
           <span style={{ fontSize: 10.5, color: T.dim, fontFamily: MONO }}>
             {booting ? "running harness suite…" : `${lines.length} lines`}
           </span>
+          {selection && selection.name && (
+            <span style={{ fontSize: 10.5, color: T.bright, fontFamily: MONO,
+                          fontWeight: 700 }}>
+              · {selection.name}
+            </span>
+          )}
           {!follow && (
             <button onClick={() => { setFollow(true); }} style={{
               marginLeft: "auto", fontSize: 10.5, fontWeight: 700, color: T.accent,
@@ -429,21 +289,19 @@ export default function ObservePanel({ selection }) {
         </div>
       </div>
 
-      <SummaryPanel summary={summary} selection={selection} />
-
-      <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.7, color: T.dim,
-                    textTransform: "uppercase", padding: "8px 18px 4px", flexShrink: 0 }}>
-        Execution log
-      </div>
       <div ref={scrollRef} onScroll={onScroll}
-           style={{ flex: 1, overflowY: "auto", padding: "0 16px 40px",
+           style={{ flex: 1, overflowY: "auto", padding: "10px 16px 40px",
                     background: T.bg }}>
         {lines.length === 0 && (
           <div style={{ color: T.dim, fontFamily: MONO, fontSize: 11.5 }}>
             connecting…
           </div>
         )}
-        {lines.map(e => <LogLine key={e._k} e={e} />)}
+        {lines.map(e => {
+          const isMarker = e.level === "step" || (e.harness && e.kind);
+          if (isMarker) band = !band;
+          return <LogLine key={e._k} e={e} banded={band} />;
+        })}
         <div ref={bottomRef} />
       </div>
     </div>
