@@ -87,3 +87,27 @@ def check(db, user, contact, channel: str, **kwargs) -> Verdict:
     the Verdict. Never raises on missing data -- unset fields resolve to the
     fail-closed defaults built into resolve_context/evaluate above."""
     return evaluate(resolve_context(db, user, contact, channel, **kwargs))
+
+
+def apply_disclosure_label(db, user, contact, channel: str, text: str, **kwargs) -> str:
+    """Return `text` with this jurisdiction's required disclosure label
+    (e.g. NY's "Attorney Advertising") appended, if the label is required
+    here and not already present. No-op when no label is required, or when
+    it's already in the text (case-insensitive) -- never double-appends.
+
+    Unlike `check()`'s allowed/blocked verdict -- which gates only AUTOMATED
+    sends, per this module's docstring -- a labeling requirement is a content
+    rule on written solicitation itself, not a solicitation-permission rule,
+    so it applies whether a human approved this specific message or not.
+    Observe's per-contact trace (observe/logstream.py:jurisdiction_events)
+    checks a stored draft against the same requirement for visibility; this
+    is the enforcing counterpart consulted by the actual send paths, so a
+    real send can't go out missing the label the trace would flag."""
+    verdict = check(db, user, contact, channel, **kwargs)
+    if not verdict.requires_disclosure_label or not verdict.disclosure_text:
+        return text
+    label = verdict.disclosure_text.strip()
+    if label.lower() in (text or "").lower():
+        return text
+    body = (text or "").rstrip()
+    return f"{body}\n\n{label}" if body else label

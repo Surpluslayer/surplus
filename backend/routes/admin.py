@@ -463,10 +463,20 @@ def dispatch_due_followups(db: Session) -> dict:
     for row in to_send:
         prospect = row.prospect
         text = (row.body or "").strip()
+        channel = getattr(row, "channel", "") or "linkedin"
+        # Outcome recording (below) needs the pre-label text -- see
+        # book.py:send_contact_followup.
+        approved_text = text
+        owner = getattr(getattr(prospect, "event", None), "user", None)
+        contact = (db.get(models.Contact, prospect.contact_id)
+                   if prospect.contact_id is not None else None)
+        if owner is not None:
+            from ..agents.relationship import solicitation_signals
+            text = solicitation_signals.apply_disclosure_label(db, owner, contact, channel, text)
         try:
             res = send_followup(
                 db, prospect, text,
-                channel=(getattr(row, "channel", "") or "linkedin"),
+                channel=channel,
                 commit=False,
                 fallback_provider=fallback_provider,
             )
@@ -496,6 +506,12 @@ def dispatch_due_followups(db: Session) -> dict:
         # implicitly by reaching here (auto-send is ON). Never fails the send.
         _fire_followup_booking(db, prospect, getattr(row, "booking_payload", None),
                                text)
+        # Closes the outcome loop for the auto-send path too -- this dispatcher
+        # is the dominant real-world send path, so skipping it here was why
+        # affinity() never saw a recorded outcome despite live sends.
+        if owner is not None and prospect.contact_id is not None:
+            from ..agents.relationship import outcomes
+            outcomes.record_outcome_safely(db, owner.id, prospect.contact_id, sent_body=approved_text)
         db.commit()
         sent.append({"followup_id": row.id, "prospect_id": prospect.id,
                      "state": res.state, "dry_run": res.dry_run})

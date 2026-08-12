@@ -224,6 +224,12 @@ def skip_followup(
     row.status = "cancelled"
     row.cancel_reason = "skipped"
     row.updated_at = datetime.now(timezone.utc)
+    # A skip is a real decision not to send -- the same "discarded" signal a
+    # contact snooze records, just from the ask-mode queue.
+    prospect = row.prospect
+    if prospect is not None and prospect.contact_id is not None:
+        from ..agents.relationship import outcomes
+        outcomes.record_outcome_safely(db, user.id, prospect.contact_id, disposition="discarded")
     db.commit()
     db.refresh(row)
     return _to_out(row)
@@ -274,10 +280,19 @@ def send_followup_now(
     db.commit()
     row = locked
 
+    # Outcome recording (below) needs the pre-label text to tell an
+    # approved-as-is send from an edited one -- see book.py:send_contact_followup.
+    approved_text = text
+    channel = getattr(row, "channel", "") or "linkedin"
+    contact = (db.get(models.Contact, prospect.contact_id)
+               if prospect.contact_id is not None else None)
+    from ..agents.relationship import solicitation_signals
+    text = solicitation_signals.apply_disclosure_label(db, user, contact, channel, text)
+
     try:
         res = send_followup(
             db, prospect, text,
-            channel=(getattr(row, "channel", "") or "linkedin"),
+            channel=channel,
             commit=False,
             fallback_provider=get_provider(),
         )
@@ -303,6 +318,9 @@ def send_followup_now(
     # a meeting booking payload, fire the calendar event + invite now. Never fails
     # the send (no contact email / no open slot just skips the auto-create).
     _fire_followup_booking(db, prospect, getattr(row, "booking_payload", None), text)
+    if prospect.contact_id is not None:
+        from ..agents.relationship import outcomes
+        outcomes.record_outcome_safely(db, user.id, prospect.contact_id, sent_body=approved_text)
     db.commit()
     db.refresh(row)
     return _to_out(row)
