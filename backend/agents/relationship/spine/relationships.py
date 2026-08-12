@@ -922,25 +922,42 @@ def prefetch_activity_updates_by_contact(db, contacts) -> dict:
 def _latest_update_view(updates) -> Optional[dict]:
     """The single freshest activity_update as a compact card field, or None.
     `updates` is the newest-first list from fetch_activity_updates / the prefetch
-    index — we just read element 0."""
+    index — we just read element 0.
+
+    `id` is the underlying RelationshipInteraction's row id. Previously
+    dropped here (this projection is the one place addressability was lost:
+    the Today feed card had a contact_id but nothing that pointed at the
+    specific update row that produced it — one contact can carry several
+    activity_update rows and only the newest was ever surfaced or
+    addressable). Additive field, nothing downstream that ignores it
+    changes behavior. Surplus Observe (backend/observe/) uses it to trace a
+    specific detected signal rather than resolving only to its contact.
+
+    `milestone_type` is likewise surfaced (new_post rows only, per
+    updates_engine's real meta_json shape) for the same reason -- Observe's
+    practice_fit factor reads this off real production rows; it was
+    previously invisible past this projection."""
     if not updates:
         return None
     u = updates[0]
-    draft = draft_subject = None
+    draft = draft_subject = milestone_type = None
     try:
         import json as _json
         meta = _json.loads(getattr(u, "meta_json", None) or "{}")
         draft = _clean(meta.get("draft"))
         draft_subject = _clean(meta.get("draft_subject"))
+        milestone_type = _clean(meta.get("milestone_type"))
     except Exception:  # noqa: BLE001
         pass
     return {
+        "id": getattr(u, "id", None),
         "type": _clean(getattr(u, "interaction_type", None)),   # job_change | profile_update | new_post
         "title": _clean(getattr(u, "title", None)),
         "summary": _clean(getattr(u, "summary", None)),
         "occurred_at": _as_aware(getattr(u, "occurred_at", None)),
         "draft": draft,                 # pre-written follow-up (important updates only)
         "draft_subject": draft_subject,
+        "milestone_type": milestone_type,
     }
 
 

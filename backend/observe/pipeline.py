@@ -137,16 +137,23 @@ def _entity_resolution(db, contact) -> tuple:
 
 
 def _signal_library(db, contact) -> tuple:
+    from ..demo import signal_taxonomy as tax
     signal = rt._latest_signal(db, contact.id)
     if signal is None:
         return ("warning", "no signal to classify", {}, "no upstream signal from ingestion")
     meta = json.loads(signal.meta_json or "{}")
     category = meta.get("signal_category")
+    category_source = "demo_signal_category" if category else None
     if not category:
-        return ("warning", "unclassified", {"signal_kind": meta.get("signal_kind")},
-                "signal_kind resolved but no finer-grained category assigned")
+        category = tax.production_signal_category(signal.interaction_type, meta)
+        category_source = "production_interaction_type" if category else None
+    if not category:
+        return ("warning", "unclassified",
+                {"interaction_type": signal.interaction_type, "signal_kind": meta.get("signal_kind")},
+                "no fine-grained category mapping for this interaction_type/milestone_type")
     return ("success", f"classified as {category}",
-            {"signal_category": category, "signal_kind": meta.get("signal_kind")}, None)
+            {"signal_category": category, "category_source": category_source,
+             "signal_kind": meta.get("signal_kind")}, None)
 
 
 def _targeting(db, user, contact) -> tuple:

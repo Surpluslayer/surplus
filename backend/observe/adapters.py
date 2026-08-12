@@ -38,9 +38,28 @@ def _factors_to_features(factors) -> list:
 # ── Signal ───────────────────────────────────────────────────────────────
 
 def signal_trace(db, interaction: models.RelationshipInteraction) -> DecisionTrace:
-    """Why was this event classified as this signal?"""
+    """Why was this event classified as this signal?
+
+    `signal_kind` and `signal_category` each have two sources, tried in
+    order: the demo generator's own meta keys, then production's real
+    fields. backend/demo/cohort.py sets `interaction_type="message"`
+    literally and puts the real coarse kind in `meta["signal_kind"]`
+    instead -- production does the opposite: `interaction_type` IS the real
+    coarse kind (job_change/promotion/new_post/profile_update/
+    account_cooling; see updates_engine.py's _emit calls) and there is no
+    `signal_kind` meta key at all. Reading only meta["signal_kind"] (as this
+    function used to) meant every real production row showed a blank kind
+    and 'unclassified' category, regardless of whether a real mapping was
+    available -- see signal_taxonomy.production_signal_category."""
+    from ..demo import signal_taxonomy as tax
     meta = json.loads(interaction.meta_json or "{}")
     user = db.get(models.User, interaction.actor_user_id)
+
+    kind = meta.get("signal_kind") or interaction.interaction_type
+    category = meta.get("signal_category")
+    if not category:
+        category = tax.production_signal_category(interaction.interaction_type, meta)
+
     return DecisionTrace(
         account_id=interaction.actor_user_id,
         object_type="signal", object_id=str(interaction.id),
@@ -48,13 +67,16 @@ def signal_trace(db, interaction: models.RelationshipInteraction) -> DecisionTra
         inputs={"title": interaction.title, "summary": interaction.summary},
         entities={"contact_id": interaction.contact_id},
         features=[
-            TraceFeature(name="signal_kind", value=meta.get("signal_kind"),
-                         evidence={"source": "updates_engine._DRAFTWORTHY_KINDS (real, production)"}),
-            TraceFeature(name="signal_category", value=meta.get("signal_category"),
-                         evidence={"source": "demo/signal_taxonomy.py (demo-only, no production "
-                                              "classifier for this level yet)"}),
+            TraceFeature(name="signal_kind", value=kind,
+                         evidence={"source": ("meta.signal_kind (demo)" if meta.get("signal_kind")
+                                               else "interaction_type (production, real)")}),
+            TraceFeature(name="signal_category", value=category,
+                         evidence={"source": ("demo/signal_taxonomy.py seed table (demo meta)"
+                                               if meta.get("signal_category")
+                                               else "signal_taxonomy.production_signal_category "
+                                                    "(real interaction_type/milestone_type)")}),
         ],
-        decision=f"classified as {meta.get('signal_category') or 'unclassified'}",
+        decision=f"classified as {category or 'unclassified'}",
         versions=dict(ver.VERSIONS),
         outcome={"engaged": meta.get("engaged"), "disposition": meta.get("disposition")},
         provenance=_provenance_for(user) if user else DEMO,

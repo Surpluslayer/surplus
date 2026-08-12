@@ -294,6 +294,12 @@ def _book_from_spine_contacts(db, user, contacts, inter_index, update_index,
                 # draft is already there, no on-tap compose.
                 "draft": upd.get("draft"),
                 "draft_subject": upd.get("draft_subject"),
+                # The underlying RelationshipInteraction row id -- rides through
+                # to the Today feed card so it's addressable by something more
+                # specific than its contact_id (see _latest_update_view's own
+                # docstring in spine/relationships.py for why this was missing).
+                "update_id": upd.get("id"),
+                "milestone_type": upd.get("milestone_type"),
             }
         identity = row.get("identity") or {}
         book.append({

@@ -295,6 +295,8 @@ def _detect_update_heuristic(contact: dict) -> Optional[dict]:
             "detected_at": sig.get("detected_at", _iso_today()),
             "outreach_trigger": bool(sig.get("outreach_trigger", True)),
             "significance": sig.get("significance", "medium"),
+            "update_id": sig.get("update_id"),
+            "milestone_type": sig.get("milestone_type"),
         }
     return None
 
@@ -649,6 +651,13 @@ def build_today(book: list[dict]) -> dict:
             "draft": draft,
             "draft_subject": sig.get("draft_subject"),
             "has_draft": bool(draft),
+            # The specific RelationshipInteraction row this card came from --
+            # None on the LLM-assess path (detect_update() doesn't carry it
+            # through yet; that path is off by default via BOOK_LLM_ASSESS).
+            # Lets a consumer (Surplus Observe) address the exact detected
+            # signal instead of resolving only to its contact.
+            "update_id": u.get("update_id"),
+            "milestone_type": u.get("milestone_type"),
         })
     # IMPORTANT updates with a ready draft surface FIRST (then newest-first within
     # each group), so the Book leads with the messages already written for you.
