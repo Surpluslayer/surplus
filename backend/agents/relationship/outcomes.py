@@ -108,13 +108,52 @@ def record_draft_outcome(db, user_id: int, contact_id: int, *,
     if disposition not in DISPOSITIONS:
         raise ValueError(f"unknown disposition: {disposition!r}")
 
+    engaged = disposition in ENGAGED_DISPOSITIONS
     meta["disposition"] = disposition
-    meta["engaged"] = disposition in ENGAGED_DISPOSITIONS
+    meta["engaged"] = engaged
     row.meta_json = json.dumps(meta)
     db.add(row)
+    _apply_to_learned_affinity(db, row, meta, engaged)
     if commit:
         db.commit()
     return row
+
+
+def _is_generated(db, interaction_id: int) -> bool:
+    """True when this row was written by backend/demo/cohort.py rather than a
+    real sync. Generated outcomes must never reach the learned affinity table
+    -- synthetic data shaping real lawyers' rankings is the exact thing the
+    provenance layer exists to prevent. refresh_from_outcomes() applies the
+    same filter; this is its incremental counterpart."""
+    from sqlalchemy import select
+    from ...demo import provenance as prov
+    hit = db.execute(
+        select(models.DemoProvenance.id).where(
+            models.DemoProvenance.table_name == "relationship_interactions",
+            models.DemoProvenance.row_id == interaction_id,
+            models.DemoProvenance.data_provenance.in_(tuple(prov.GENERATED_VALUES)))
+        .limit(1)
+    ).scalar_one_or_none()
+    return hit is not None
+
+
+def _apply_to_learned_affinity(db, row, meta: dict, engaged: bool) -> None:
+    """Fold this outcome into the learned counts NOW, so the effect of a real
+    decision is visible immediately rather than at the next daily sweep. The
+    sweep still recomputes from scratch and reconciles any drift.
+
+    Guarded: this is bookkeeping for a future ranking, and must never break
+    the send it is attached to."""
+    try:
+        if _is_generated(db, row.id):
+            return
+        from ...demo import signal_taxonomy as tax
+        user = db.get(models.User, row.actor_user_id)
+        tax.apply_outcome(db, getattr(user, "practice_area", None),
+                          meta.get("signal_category"), engaged, commit=False)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [outcomes] learned-affinity update skipped: "
+              f"{type(exc).__name__}: {exc}", flush=True)
 
 
 def record_outcome_safely(db, user_id: int, contact_id: int, **kw) -> None:

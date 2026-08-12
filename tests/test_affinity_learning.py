@@ -285,3 +285,84 @@ def test_load_learned_survives_a_missing_table(db):
     assert tax.load_learned(db) == {}
     assert tax.affinity("litigation", "litigation_filed",
                         learned=tax.load_learned(db)) == 0.90
+
+
+# ── the learned table moves on the write, not only on the sweep ─────────────
+
+def test_recording_an_outcome_updates_the_learned_table_immediately(db):
+    """Waiting for the daily sweep is invisible to the product but is exactly
+    what someone watching the log wants to see. The write path applies its own
+    delta; the sweep stays the reconciler."""
+    u = _lawyer(db, practice_area="litigation")
+    c = _contact(db, u)
+    _drafted(db, u, c, category="litigation_filed")
+    db.commit()
+
+    assert tax.load_learned(db) == {}
+    outcomes.record_draft_outcome(db, u.id, c.id, disposition="approved_as_is")
+    assert tax.load_learned(db)[("litigation", "litigation_filed")] == (1, 1), \
+        "the learned table did not move until the sweep ran"
+
+
+def test_immediate_and_swept_counts_agree(db):
+    """Incremental for latency, periodic recompute for correctness -- the two
+    must not drift, or the number shown depends on when you looked."""
+    u = _lawyer(db, practice_area="corporate_ma")
+    for i in range(7):
+        c = _contact(db, u, key=f"li:{i}")
+        _drafted(db, u, c, category="acquisition_announced")
+        db.commit()
+        outcomes.record_draft_outcome(
+            db, u.id, c.id,
+            disposition="approved_as_is" if i % 3 else "discarded")
+
+    incremental = tax.load_learned(db)
+    tax.refresh_from_outcomes(db)
+    assert tax.load_learned(db) == incremental, "sweep disagreed with the write path"
+
+
+def test_the_immediate_update_also_excludes_generated_rows(db):
+    """refresh_from_outcomes filters these out; its incremental counterpart
+    has to as well, or the filter is only as good as the slower path."""
+    u = _lawyer(db, practice_area="litigation")
+    c = _contact(db, u)
+    row = _drafted(db, u, c, category="litigation_filed")
+    prov.tag(db, row, provenance=prov.BASELINE, cohort_id="generated")
+    db.commit()
+
+    outcomes.record_draft_outcome(db, u.id, c.id, disposition="approved_as_is")
+    assert tax.load_learned(db) == {}, "a generated outcome reached the learned table"
+
+
+def test_idempotent_recording_cannot_double_count_the_learned_table(db):
+    """The incremental path is only safe because a decided draft is never
+    re-marked. Pin that the two facts stay connected."""
+    u = _lawyer(db, practice_area="litigation")
+    c = _contact(db, u)
+    _drafted(db, u, c, category="litigation_filed")
+    db.commit()
+
+    outcomes.record_draft_outcome(db, u.id, c.id, disposition="approved_as_is")
+    outcomes.record_draft_outcome(db, u.id, c.id, disposition="approved_as_is")
+    assert tax.load_learned(db)[("litigation", "litigation_filed")] == (1, 1)
+
+
+def test_the_sweep_corrects_an_inflated_count_downward(db):
+    """The sweep is the reconciler, not an accumulator. If it could only add,
+    a count inflated by the incremental write path -- a row later tagged as
+    generated, an outcome whose interaction was deleted -- would persist
+    forever and keep shaping rankings."""
+    u = _lawyer(db, practice_area="litigation")
+    c = _contact(db, u)
+    _drafted(db, u, c, category="litigation_filed")
+    db.commit()
+    outcomes.record_draft_outcome(db, u.id, c.id, disposition="approved_as_is")
+    assert tax.load_learned(db)[("litigation", "litigation_filed")] == (1, 1)
+
+    # The supporting outcome goes away.
+    db.query(models.RelationshipInteraction).delete()
+    db.commit()
+
+    stats = tax.refresh_from_outcomes(db)
+    assert stats["stale_pairs_dropped"] == 1
+    assert tax.load_learned(db) == {}, "the sweep could not correct downward"
