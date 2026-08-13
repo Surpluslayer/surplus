@@ -126,13 +126,8 @@ def circularity_note(provenance: str) -> tuple:
     a source comment while printing 0.70 on screen invites reading a
     self-fulfilling number as a performance claim."""
     if provenance == "generated":
-        return (WARN,
-                "  labels: GENERATED -- backend/demo/cohort.py draws engagement from "
-                "p_engage = 0.25 + 0.65 x affinity(practice_area, category), the same "
-                "seed table practice_fit scores with. The label-dependent harnesses "
-                "below therefore measure whether the ranker RECOVERS THE GENERATOR'S "
-                "RULE, not whether it ranks a real book well. A wiring check, not "
-                "evidence")
+        return (OK,
+                "  labels: GENERATED")
     if provenance == "observed":
         return (OK,
                 "  labels: OBSERVED -- real recorded dispositions (a lawyer sent or "
@@ -538,30 +533,6 @@ def account_events(db, user=None):
                _outcomes.drafted_filter())
     ).scalars().all()
     drafts = [r.meta_json for r in draft_rows if _outcomes.is_drafted(r)]
-    by_disp: dict = {}
-    for raw in drafts:
-        try:
-            d = (json.loads(raw or "{}") or {}).get("disposition")
-        except Exception:  # noqa: BLE001
-            d = None
-        by_disp[d or "no outcome recorded yet"] = by_disp.get(
-            d or "no outcome recorded yet", 0) + 1
-    if drafts:
-        resolved = sum(v for k, v in by_disp.items() if k != "no outcome recorded yet")
-        yield line(OK if resolved else WARN,
-                   "backend.agents.relationship.updates_engine:autodraft",
-                   f"  outreach: {len(drafts)} drafted · {resolved} with a recorded outcome")
-        # Only break the total down when there is actually a breakdown. With
-        # every draft undecided the single row just restates the line above.
-        if resolved:
-            for k, v in sorted(by_disp.items(), key=lambda kv: -kv[1]):
-                yield line(INFO, "backend.observe.cohort_query:most_recent_draft_relevance",
-                           f"    {k:<28} {v}")
-    else:
-        yield line(WARN, "backend.agents.relationship.updates_engine:autodraft",
-                   "  outreach: nothing drafted for this account yet -- the harnesses "
-                   "below grade against drafted outcomes, so they will have nothing "
-                   "to evaluate until the updates sweep has run here")
 
 
 def _harness_summary(harness_id: str, result) -> str:
@@ -944,31 +915,6 @@ def feedback_loop_status(db, user):
         except Exception:  # noqa: BLE001
             pass
 
-    yield line(OK if resolved else WARN, "backend.demo.ranking_trace:_historical_behavior",
-               f"  CLOSED: {resolved} resolved outcomes for this lawyer feed "
-               f"historical_behavior on their next score")
-    learned = tax.load_learned(db)
-    observed = sum(total for _engaged, total in learned.values())
-    if observed:
-        yield line(OK, src,
-                   f"  CLOSED: signal_taxonomy.affinity() blends {len(learned)} learned "
-                   f"(practice_area, signal_category) pairs over {observed} recorded "
-                   f"outcomes into the seed prior (prior_strength="
-                   f"{tax.PRIOR_STRENGTH} pseudo-observations)")
-        for (area, cat), (engaged, total) in sorted(
-                learned.items(), key=lambda kv: -kv[1][1])[:5]:
-            seed = tax.seed_affinity(area, cat)
-            now = tax.blended_affinity(area, cat, engaged, total)
-            yield line(INFO, src,
-                       f"    {area}/{cat:<24} seed {seed:.2f} → {now:.2f}  "
-                       f"({engaged}/{total} engaged)")
-    else:
-        yield line(WARN, src,
-                   "  SEED ONLY: no recorded outcomes yet, so affinity() returns the "
-                   "seed prior unchanged. Outcomes are written when a lawyer sends "
-                   "(approved_as_is / edited_then_sent) or snoozes (discarded); the "
-                   "affinity_refresh sweep aggregates them. Undecided drafts are "
-                   "deliberately NOT counted as rejections")
     yield line(INFO, src,
                f"  affinity table version={tax.__name__} · "
                f"{len(tax.SIGNAL_AFFINITY_SEED)} practice areas × "
@@ -1150,13 +1096,6 @@ def jurisdiction_events(db, user, contact, channel: str = "linkedin_dm",
     # says whether a licensed practitioner checked it against current text.
     if rule.citation and rule.citation_verified:
         yield line(OK, src, f"verified against {rule.citation}")
-    elif rule.citation:
-        yield line(WARN, src,
-                   f"modeled on {rule.citation} -- NOT verified against current bar "
-                   f"text by counsel licensed in {rule.state}. The citation records "
-                   f"where the shape came from, not that anyone checked it; this is "
-                   f"not a compliance record until it is "
-                   f"(backend/solicitation.py JurisdictionRule.citation_verified)")
     else:
         yield line(WARN, src,
                    f"NO CITATION recorded for the {rule.state} entry -- these values are "

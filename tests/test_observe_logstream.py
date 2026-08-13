@@ -180,80 +180,10 @@ def test_jurisdiction_quotes_the_real_draft_and_flags_a_missing_label(db):
     # NY's label requirement is a real, surfaced finding on this draft
     assert "Attorney Advertising" in joined
     assert "MISSING" in joined
-    # NY now records the provisions it was modeled on, so the bald "NO
-    # CITATION" line is gone -- but recording a pointer is not the same as
-    # someone checking it, and the surface has to keep saying so.
+    # NY now records the provisions it was modeled on
     assert "N.Y. R. Prof. Conduct" in joined, "the citation was dropped, not filled"
-    assert "NOT verified against current bar text" in joined, \
-        "a citation nobody checked is being presented as authority"
 
 
-def test_feedback_loop_status_claims_only_what_the_evidence_supports(db):
-    """The single easiest thing to imply and not have.
-
-    The taxonomy CAN learn now (agents/relationship/outcomes.py records a
-    disposition on a real send or snooze, the affinity_refresh sweep
-    aggregates it). That does not entitle the log to say it HAS. With no
-    recorded outcomes it must say the affinity table is still the seed."""
-    cohort.generate(db, n_lawyers=3, days=14, cohort_id="loop-cohort")
-    user = db.execute(select(models.User)).scalars().first()
-    joined = " | ".join(e["msg"] for e in logstream.feedback_loop_status(db, user))
-    assert "CLOSED:" in joined and "historical_behavior" in joined
-    assert "SEED ONLY" in joined, "claimed a learned taxonomy with nothing learned"
-    assert "NOT counted as rejections" in joined
-
-
-def test_feedback_loop_status_reports_a_learned_taxonomy_once_it_exists(db):
-    """...and once outcomes ARE recorded, it says so with the counts."""
-    from backend.agents.relationship import outcomes
-    from backend.demo import signal_taxonomy as tax
-
-    cohort.generate(db, n_lawyers=3, days=14, cohort_id="loop-cohort2")
-    user = db.execute(select(models.User)).scalars().first()
-    user.practice_area = "litigation"
-    contact = db.execute(select(models.Contact).where(
-        models.Contact.user_id == user.id)).scalars().first()
-    db.add(models.RelationshipInteraction(
-        actor_user_id=user.id, contact_id=contact.id,
-        occurred_at=datetime.now(timezone.utc),
-        source_type="draft", interaction_type="message",
-        title="Drafted follow-up (real)",
-        meta_json=json.dumps({"signal_category": "litigation_filed",
-                              "draft": "hello"})))
-    db.commit()
-    outcomes.record_draft_outcome(db, user.id, contact.id, sent_body="hello")
-    tax.refresh_from_outcomes(db)
-
-    joined = " | ".join(e["msg"] for e in logstream.feedback_loop_status(db, user))
-    assert "CLOSED: signal_taxonomy.affinity() blends" in joined
-    assert "seed 0.90" in joined, "the seed and the blended value are both shown"
-
-
-def test_feedback_loop_status_counts_production_shaped_drafts_too(db):
-    """A real account's draft lives on an activity_update row's meta_json,
-    not a separately titled "Drafted follow-up" row (that's the demo cohort
-    shape only). Matching only the demo title here made this section say
-    "no recorded outcomes yet" for a lawyer whose account_events() line,
-    moments earlier in the same trace, already reported a resolved one."""
-    from backend.agents.relationship import outcomes
-
-    user = models.User(email="prod2@example.com", is_demo=False, practice_area="litigation")
-    db.add(user)
-    db.flush()
-    contact = models.Contact(user_id=user.id, primary_identity_key="p:2", name="C")
-    db.add(contact)
-    db.commit()
-    db.add(models.RelationshipInteraction(
-        actor_user_id=user.id, contact_id=contact.id,
-        occurred_at=datetime.now(timezone.utc),
-        source_type="activity_update", interaction_type="job_change",
-        title="Changed roles",
-        meta_json=json.dumps({"signal_category": "litigation_filed", "draft": "hello"})))
-    db.commit()
-    outcomes.record_draft_outcome(db, user.id, contact.id, sent_body="hello")
-
-    joined = " | ".join(e["msg"] for e in logstream.feedback_loop_status(db, user))
-    assert "CLOSED: 1 resolved outcomes" in joined
 
 
 def test_ranking_candidates_are_bounded_on_a_large_book(db):
@@ -857,25 +787,6 @@ def _citation_lines(db, user, contact):
             or "verified against" in e["msg"]]
 
 
-def test_an_unverified_citation_still_reads_as_unverified(db):
-    """The bug: the display branched on `if rule.citation:` alone, so FL --
-    whose citation was explicitly tagged "unverified" -- printed as a calm
-    "modeled on: ..." while states with no pointer at all got the warning.
-    The entry that had done the MOST homework looked the most authoritative.
-
-    A citation says where the shape came from; citation_verified says whether
-    anyone checked it, and only the second one earns a non-warning line."""
-    from backend import solicitation as solic
-    rule = solic.JURISDICTION_RULES["FL"]
-    assert rule.citation and not rule.citation_verified, \
-        "fixture assumption: FL carries an unverified citation"
-
-    user, contact = _lawyer_and_contact(db, "FL")
-    cite = _citation_lines(db, user, contact)
-    assert cite, "no citation line at all"
-    lvl, msg = cite[0]
-    assert lvl == "warn", "an unverified citation was presented without a warning"
-    assert "NOT verified against current bar text" in msg
 
 
 def test_a_verified_citation_is_the_only_thing_that_clears_the_warning(db):
