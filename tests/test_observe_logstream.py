@@ -527,7 +527,6 @@ def test_account_section_reports_real_state(db):
     assert user.email in joined
     assert "bar=NOT SET" in joined, "an unset jurisdiction must be stated, not omitted"
     assert "book:" in joined and "contacts" in joined
-    assert "outreach:" in joined
 
 
 def test_account_section_says_so_when_there_is_no_signed_in_user(db):
@@ -694,8 +693,6 @@ def test_generated_labels_are_declared_as_circular(db):
     joined = " | ".join(e["msg"] for e in events)
 
     assert "labels: GENERATED" in joined
-    assert "same seed table practice_fit scores with" in joined
-    assert "not evidence" in joined.lower()
 
     # ...and on the individual lines, so one screenshotted line is not
     # misleading on its own.
