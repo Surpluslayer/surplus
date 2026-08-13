@@ -782,6 +782,11 @@ def contact_events(db, user, contact, channel: str = "linkedin_dm"):
     for ev in jurisdiction_events(db, user, contact, channel, resolved=resolved):
         yield ev
 
+    # ── venue: candidate forums, when this contact has a location on file.
+    # Silent when it doesn't -- see venue_events' own docstring. ──
+    for ev in venue_events(db, user, contact):
+        yield ev
+
     for ev in feedback_loop_status(db, user):
         yield ev
 
@@ -1272,3 +1277,64 @@ def jurisdiction_events(db, user, contact, channel: str = "linkedin_dm",
         yield line(WARN, src,
                    f"  first line as sent would be: {lines[0][:96]!r}"
                    if lines else "  draft is empty")
+
+
+def venue_events(db, user, contact):
+    """Candidate forums for a matter involving this contact (backend/venue.py).
+
+    Yields NOTHING when the contact has no location on file. That is the point:
+    the venue tables cannot say anything useful without at least a state, and a
+    section that rendered "unresolved" on every contact would be a permanent
+    empty shelf in a log whose whole contract is that it shows the parts that
+    actually ran. Set a location (POST /api/relationships/contacts/{id}/location)
+    and the section appears.
+
+    Distinct from jurisdiction_events above, which walks the Rule 7.3 SEND gate.
+    These two answer different questions and share no data -- see venue.py's
+    module docstring on why they are separate files.
+    """
+    from .. import venue as venue_mod
+
+    state = (getattr(contact, "location_state", None) or "").strip()
+    city = (getattr(contact, "location_city", None) or "").strip()
+    county = (getattr(contact, "location_county", None) or "").strip()
+    if not (state or county):
+        return
+
+    src = "backend.venue:resolve_venue"
+    yield line(STEP, "backend.observe.logstream:venue_events",
+               "resolving candidate forums from this contact's recorded location")
+    where = " · ".join(p for p in (f"city={city!r}" if city else "",
+                                   f"state={state!r}" if state else "",
+                                   f"county={county!r}" if county else "") if p)
+    yield line(INFO, "backend.models:Contact", f"  location on file: {where}")
+
+    res = venue_mod.resolve_venue(venue_mod.VenueQuery(
+        state=state or "NY", county=county or None))
+
+    if res.county:
+        borough = venue_mod.borough_for_county(res.county)
+        yield line(OK, src, f"  county: {res.county}"
+                            + (f" ({borough.value.replace('_', ' ').title()})"
+                               if borough else ""))
+    if res.federal_district:
+        yield line(OK, src, f"  federal: {res.federal_district.value} → "
+                            f"{res.circuit.value if res.circuit else '?'}")
+    for reason in res.unresolved:
+        yield line(INFO, src, f"  unresolved: {reason}")
+
+    # The forum depends on the case shape, which no Surplus object carries --
+    # there is no Matter entity. Say so rather than routing a case type nobody
+    # supplied, and name what a caller would have to pass.
+    yield line(INFO, src,
+               "  state court: not resolved -- needs a case type and amount, "
+               "which no Surplus record carries today (no Matter entity); "
+               "venue.resolve_venue() takes both when a caller has them")
+    # Caveat only what was actually claimed. With no sources nothing above
+    # asserted a forum, so warning that the tables are unverified would be
+    # disclaiming a statement the log never made.
+    if res.sources:
+        yield line(WARN, "backend.venue:SourceNote",
+                   f"  venue tables are UNVERIFIED scaffolding -- "
+                   f"{', '.join(s.citation for s in res.sources)} -- candidate "
+                   f"forums for research, never a venue determination")

@@ -307,6 +307,10 @@ def init_db() -> None:
         # resolved at read time. Appending it bumps schema_rev, which is what
         # makes it run once on the next deploy.
         _migrate_backfill_practice_area,
+        # Venue inputs (backend/venue.py) + a one-time seed from each contact's
+        # capture event. Schema then data, in that order.
+        _migrate_contact_location,
+        _migrate_backfill_contact_location,
     ]
 
     # Schema-revision sentinel: the loop below plus create_all's checkfirst is
@@ -1921,6 +1925,85 @@ def _migrate_user_practice_area() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN practice_area VARCHAR(40)"))
+
+
+def _migrate_contact_location() -> None:
+    """Add contacts.location_city / location_state / location_county -- the
+    inputs backend/venue.py resolves a candidate forum from. All NULL; see the
+    Contact model for why they are never inferred."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "contacts" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("contacts")}
+    specs = (("location_city", "VARCHAR(80)"),
+             ("location_state", "VARCHAR(2)"),
+             ("location_county", "VARCHAR(60)"))
+    with ENGINE.begin() as conn:
+        for name, coltype in specs:
+            if name not in cols:
+                conn.execute(text(f"ALTER TABLE contacts ADD COLUMN {name} {coltype}"))
+
+
+def _migrate_backfill_contact_location() -> None:
+    """Seed contact locations from the event each contact was captured at.
+
+    This is the one place a location is written without someone typing it, and
+    it is defensible only because `events.city` is a value the USER recorded
+    about their own event -- not an address parsed out of a company profile.
+    Even so it is treated as weak evidence:
+
+      * only contacts with NO location at all are touched, so a typed value is
+        never overwritten;
+      * the city is copied verbatim;
+      * state and county are filled ONLY from venue.CITY_HINTS, a nine-entry
+        table of unambiguous names. "NYC" yields state NY and county NULL,
+        because the city spans five counties and the string does not say
+        which. A contact captured at an event in an unrecognized city gets the
+        city and nothing else.
+
+    A contact linked to several events with conflicting cities is skipped
+    entirely rather than resolved by picking one. Idempotent: a second run
+    finds nothing with a NULL location left to fill."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    tables = set(insp.get_table_names())
+    if not {"contacts", "prospects", "events"} <= tables:
+        return
+    if "location_city" not in {c["name"] for c in insp.get_columns("contacts")}:
+        return
+    from .venue import hint_for_city
+
+    with ENGINE.begin() as conn:
+        rows = conn.execute(text(
+            "SELECT p.contact_id, e.city FROM prospects p "
+            "JOIN events e ON e.id = p.event_id "
+            "JOIN contacts c ON c.id = p.contact_id "
+            "WHERE p.contact_id IS NOT NULL AND e.city IS NOT NULL "
+            "  AND TRIM(e.city) <> '' "
+            "  AND c.location_city IS NULL AND c.location_state IS NULL "
+            "  AND c.location_county IS NULL"
+        )).all()
+
+        by_contact: dict = {}
+        for contact_id, city in rows:
+            by_contact.setdefault(contact_id, set()).add((city or "").strip())
+
+        filled = 0
+        for contact_id, cities in by_contact.items():
+            if len(cities) != 1:
+                continue          # conflicting capture cities -- leave it unset
+            city = next(iter(cities))
+            state, county = hint_for_city(city)
+            conn.execute(
+                text("UPDATE contacts SET location_city = :city, "
+                     "location_state = :state, location_county = :county "
+                     "WHERE id = :cid"),
+                {"city": city, "state": state, "county": county, "cid": contact_id})
+            filled += 1
+    if filled:
+        print(f"  [init_db] contact location seeded from capture event on "
+              f"{filled} contact(s)")
 
 
 def _migrate_backfill_practice_area() -> None:
