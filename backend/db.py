@@ -303,6 +303,10 @@ def init_db() -> None:
         _migrate_observe_activity_table,
         _migrate_funnel_events_table,
         _migrate_signal_affinity_table,
+        # DATA, not schema: stores the practice_area that was previously only
+        # resolved at read time. Appending it bumps schema_rev, which is what
+        # makes it run once on the next deploy.
+        _migrate_backfill_practice_area,
     ]
 
     # Schema-revision sentinel: the loop below plus create_all's checkfirst is
@@ -1917,6 +1921,38 @@ def _migrate_user_practice_area() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN practice_area VARCHAR(40)"))
+
+
+def _migrate_backfill_practice_area() -> None:
+    """Write practice_area='corporate_ma' onto rows that never set one.
+
+    signal_taxonomy.effective_practice_area() already RESOLVES an unset value
+    to corporate_ma at read time, so ranking and affinity behave the same
+    either way. What differs is everything that reads the column directly:
+    Observe's account line says "NOT SET (defaults to ...)", the operator seed
+    treats the account as unconfigured, and any future consumer that forgets
+    the helper silently falls back to a neutral 0.5. Storing the value makes
+    the column the single answer instead of a question four callers each
+    resolve on their own.
+
+    Only NULL/empty rows are touched -- a user who picked a practice area
+    keeps it, and the demo cohort assigns one per lawyer at generation, so
+    seeded rows are unaffected. Idempotent: a second run matches nothing."""
+    from sqlalchemy import inspect, text
+    insp = inspect(ENGINE)
+    if "users" not in insp.get_table_names():
+        return
+    if "practice_area" not in {c["name"] for c in insp.get_columns("users")}:
+        return
+    from .demo.signal_taxonomy import _DEFAULT_PRACTICE_AREA
+    with ENGINE.begin() as conn:
+        res = conn.execute(
+            text("UPDATE users SET practice_area = :v "
+                 "WHERE practice_area IS NULL OR TRIM(practice_area) = ''"),
+            {"v": _DEFAULT_PRACTICE_AREA})
+    if res.rowcount:
+        print(f"  [init_db] practice_area backfilled to "
+              f"{_DEFAULT_PRACTICE_AREA!r} on {res.rowcount} user row(s)")
 
 
 def _migrate_demo_provenance_table() -> None:

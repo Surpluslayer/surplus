@@ -87,6 +87,36 @@ def test_a_signaled_contact_produces_clean_signal_stages(db):
         assert by_name[name].status == "success", f"{name}: {by_name[name].to_dict()}"
 
 
+def test_a_draft_awaiting_a_decision_is_not_a_warning(db):
+    """The expected state of every fresh draft was being reported as a
+    pipeline warning. Nothing is substituted and nothing degraded when a
+    lawyer simply hasn't sent or snoozed a draft yet -- the stage computed the
+    right answer. It still has to say WHY the outcome is unresolved, otherwise
+    "output: unresolved" is unreadable."""
+    import json
+    from datetime import datetime, timedelta, timezone
+    user = models.User(email="pending@example.com", name="L", is_demo=True,
+                       practice_area="litigation", bar_jurisdiction="NY")
+    db.add(user)
+    db.flush()
+    contact = models.Contact(user_id=user.id, primary_identity_key="pend:1", name="Drafted Person")
+    db.add(contact)
+    db.flush()
+    db.add(models.RelationshipInteraction(
+        actor_user_id=user.id, contact_id=contact.id,
+        occurred_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1),
+        source_type="activity_update", interaction_type="job_change",
+        title="Changed roles", meta_json=json.dumps({"draft": "Congrats!",
+                                                     "milestone_type": "role"})))
+    db.commit()
+
+    out = {s.name: s for s in
+           pipeline.compute_pipeline_trace(db, user, contact, [contact]).stages}["output"]
+    assert out.status == "success", out.to_dict()
+    assert out.fallback is None
+    assert out.note and "awaiting a send/snooze decision" in out.note
+
+
 def test_an_unsignaled_contact_reports_ingestion_and_output_warnings(db):
     user = models.User(email="cold@example.com", name="Cold Lawyer", is_demo=True,
                        practice_area="litigation", bar_jurisdiction="NY")
@@ -118,7 +148,15 @@ def test_unset_practice_area_and_jurisdiction_trigger_documented_fallbacks(db):
     assert "practice_area" in by_name["targeting"].fallback
     assert by_name["jurisdiction"].status == "warning"
     assert "bar_jurisdiction" in by_name["jurisdiction"].fallback
-    assert by_name["entity_resolution"].status == "warning"  # relationship_type unset -> PROSPECT
+    # relationship_type unset -> PROSPECT is a NOTE, not a fallback: PROSPECT
+    # is the stricter classification (clients are exempt from the Rule 7.3
+    # gate, prospects are not), so nothing is degraded and the log must not
+    # warn. It still has to SAY so -- the reader needs to know the contact was
+    # classified rather than declared.
+    entity = by_name["entity_resolution"]
+    assert entity.status == "success"
+    assert entity.fallback is None
+    assert "PROSPECT" in entity.note and "stricter" in entity.note
 
 
 def test_pipeline_provenance_matches_demo_vs_observed(db):
