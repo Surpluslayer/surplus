@@ -311,6 +311,9 @@ def init_db() -> None:
         # capture event. Schema then data, in that order.
         _migrate_contact_location,
         _migrate_backfill_contact_location,
+        # The Matter entity (backend/matters.py): case type + amount + location
+        # for venue resolution, and the client status Rule 7.3 turns on.
+        _migrate_matters_table,
     ]
 
     # Schema-revision sentinel: the loop below plus create_all's checkfirst is
@@ -1925,6 +1928,19 @@ def _migrate_user_practice_area() -> None:
         return
     with ENGINE.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN practice_area VARCHAR(40)"))
+
+
+def _migrate_matters_table() -> None:
+    """No-op beyond bumping the schema revision: `matters` is a plain new table
+    that create_all creates.
+
+    It exists because create_all is SKIPPED entirely when the stamped
+    schema_rev already matches -- so a new model with no migration appended
+    never gets its table in a deployed environment, and every write to it 500s
+    against a table that does not exist. That is not hypothetical: it is
+    exactly what happened to funnel_events. Appending this makes
+    len(migrations) move, which re-runs create_all once."""
+    return None
 
 
 def _migrate_contact_location() -> None:
