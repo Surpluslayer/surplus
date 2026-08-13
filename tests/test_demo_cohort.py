@@ -85,7 +85,14 @@ def test_delete_cohort_removes_everything(db):
 
 
 def test_extended_jurisdiction_layer_uses_the_real_gate(db):
-    cohort_id = cohort.generate(db, n_lawyers=10, days=30)
+    # Pinned cohort_id, because generate() otherwise derives one from the
+    # wall-clock SECOND (f"baseline-{now:%Y%m%d%H%M%S}") and seeds every rng
+    # off it. The assertion below needs the draw across 10 lawyers to contain
+    # both an allow and a block, which most seconds satisfy and some do not --
+    # so this failed intermittently in full-suite runs and passed every time
+    # it was re-run in isolation. A fixed id makes the draw reproducible.
+    cohort_id = cohort.generate(db, n_lawyers=10, days=30,
+                                cohort_id="jurisdiction-gate-fixture")
     result = extended.run_all(db, cohort_id)
 
     j_counts = prov.cohort_row_counts(db, result["jurisdiction_cohort_id"])
