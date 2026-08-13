@@ -1111,6 +1111,70 @@ class Contact(Base):
     )
 
 
+class Matter(Base):
+    """One engagement: the client, what kind of matter it is, what it is worth,
+    where it sits, and whether it is open.
+
+    This is the entity backend/solicitation.py's docstring says is missing
+    ("Surplus has no Matter/client-status entity yet") and the one
+    backend/venue.py needs to finish a forum resolution. Two consumers, and
+    they use different halves of the row:
+
+      * VENUE (backend/venue.py) reads `case_type` + `amount_in_controversy` +
+        the location. Those are the inputs that separate N.Y.C. Civil Court
+        from Supreme Court; without them venue resolution stops at the county.
+      * CLIENT STATUS reads `status`. An open matter means this person is an
+        existing client and a closed one means a former client -- both Rule 7.3
+        exemption categories. See matters.derived_relationship_type(), and read
+        its docstring before wiring it into a send: deriving an exemption
+        LOOSENS the solicitation gate, so it is surfaced in Observe rather than
+        applied silently.
+
+    DELIBERATELY NOT an ethical-wall boundary. docs/accounts-architecture.md
+    §8 leaves matter-level walls as an open question and leans toward
+    company/contact walls until a design partner needs otherwise; this row adds
+    the engagement concept without claiming to partition visibility.
+
+    The location columns mirror Contact's and mean something subtly different:
+    where the MATTER sits, which is not always where the client lives. A New
+    Jersey client with a Kings County dispute is one row with
+    location_county="Kings". Matter location wins over the contact's when both
+    are present (see matters.venue_query_for)."""
+    __tablename__ = "matters"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    # NULL is legitimate: a matter can be opened before the client exists as a
+    # durable Contact, and a contact merge should not take the matter with it.
+    contact_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("contacts.id"), index=True, default=None)
+
+    title: Mapped[str] = mapped_column(String(160))
+    # One of backend.venue.CaseType, or NULL when not yet characterized. Stored
+    # as its string value rather than an enum column so adding a case type is
+    # a code change, not a migration.
+    case_type: Mapped[Optional[str]] = mapped_column(String(40), default=None)
+    # Whole dollars. NULL means "not known", which venue.py treats differently
+    # from zero -- it is what separates Civil from Supreme Court, so a guessed
+    # value here picks a court.
+    amount_in_controversy: Mapped[Optional[int]] = mapped_column(default=None)
+
+    location_city: Mapped[Optional[str]] = mapped_column(String(80), default=None)
+    location_state: Mapped[Optional[str]] = mapped_column(String(2), default=None)
+    location_county: Mapped[Optional[str]] = mapped_column(String(60), default=None)
+
+    # prospective | open | closed. "prospective" is the important one: it is a
+    # matter being discussed, and it does NOT make the person a client, so it
+    # confers no Rule 7.3 exemption.
+    status: Mapped[str] = mapped_column(String(16), default="prospective",
+                                        index=True)
+    opened_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+    closed_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
+
+
 class ContactIdentity(Base):
     """One STRONG identity that points at a Contact -- the identity-resolution
     spine for the merge layer.

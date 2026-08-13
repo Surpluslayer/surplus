@@ -1730,6 +1730,207 @@ def set_contact_star(
     return {"contact_id": contact_id, "vip": contact.vip}
 
 
+class MatterIn(BaseModel):
+    title: str
+    contact_id: Optional[int] = None
+    case_type: Optional[str] = None
+    amount_in_controversy: Optional[int] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    county: Optional[str] = None
+    borough: Optional[str] = None
+    status: Optional[str] = None      # prospective | open | closed
+
+
+def _matter_fields(body: MatterIn, *, partial: bool) -> dict:
+    """Validate and normalize a matter payload into column values. `partial`
+    (the update path) keeps unset fields out of the dict entirely, so a PATCH
+    that mentions only the status cannot blank the location."""
+    from .. import matters as matters_mod
+    from .. import venue as venue_mod
+    fields = body.model_dump(exclude_unset=True) if partial else body.model_dump()
+
+    if fields.get("borough"):
+        raw = str(fields["borough"]).strip().lower().replace(" ", "_")
+        try:
+            b = venue_mod.Borough(raw)
+        except ValueError:
+            raise HTTPException(422, f"unknown borough {raw!r}; expected one of "
+                                     f"{[x.value for x in venue_mod.Borough]}")
+        fields["county"] = venue_mod.BOROUGH_COUNTY[b]
+        # NOT setdefault: on the create path model_dump() includes every key,
+        # so "state" is already present as None and setdefault would leave it
+        # there -- silently dropping the state a borough necessarily implies,
+        # which drops the whole venue resolution with it.
+        if not fields.get("state"):
+            fields["state"] = "NY"
+    fields.pop("borough", None)
+
+    if fields.get("state"):
+        st = str(fields["state"]).strip().upper()
+        if len(st) != 2 or not st.isalpha():
+            raise HTTPException(422, "state must be a USPS 2-letter code")
+        fields["state"] = st
+
+    if fields.get("case_type"):
+        try:
+            venue_mod.CaseType(str(fields["case_type"]).strip())
+        except ValueError:
+            raise HTTPException(422, f"unknown case_type; expected one of "
+                                     f"{[x.value for x in venue_mod.CaseType]}")
+        fields["case_type"] = str(fields["case_type"]).strip()
+
+    if fields.get("status"):
+        st = str(fields["status"]).strip().lower()
+        if st not in matters_mod.STATUSES:
+            raise HTTPException(422, f"status must be one of "
+                                     f"{list(matters_mod.STATUSES)}")
+        fields["status"] = st
+
+    amount = fields.get("amount_in_controversy")
+    if amount is not None and int(amount) < 0:
+        raise HTTPException(422, "amount_in_controversy cannot be negative")
+
+    out = {}
+    for key in ("title", "contact_id", "case_type", "amount_in_controversy",
+                "status"):
+        if key in fields:
+            out[key] = fields[key]
+    for key in ("city", "state", "county"):
+        if key in fields:
+            val = fields[key]
+            out[f"location_{key}"] = ((str(val).strip() or None)
+                                      if val is not None else None)
+    return out
+
+
+def _matter_view(db, matter, contact=None) -> dict:
+    from .. import matters as matters_mod
+    res = matters_mod.resolve(matter, contact)
+    return {
+        "id": matter.id, "title": matter.title, "contact_id": matter.contact_id,
+        "case_type": matter.case_type,
+        "amount_in_controversy": matter.amount_in_controversy,
+        "status": matter.status,
+        "location": {"city": matter.location_city, "state": matter.location_state,
+                     "county": matter.location_county},
+        "venue": res.to_dict(),
+    }
+
+
+@relationships_router.post("/matters")
+def create_matter(body: MatterIn, db: Session = Depends(get_db),
+                  user: models.User = Depends(current_user)):
+    """Open a matter. `contact_id`, when given, must be a contact this user
+    owns -- a matter pointing at someone else's contact would leak that the
+    contact exists and would feed their location into this user's venue."""
+    fields = _matter_fields(body, partial=False)
+    if not (fields.get("title") or "").strip():
+        raise HTTPException(422, "title is required")
+    contact = None
+    if fields.get("contact_id") is not None:
+        contact = _owned_contact(db, int(fields["contact_id"]), user)
+    fields.setdefault("status", "prospective")
+    matter = models.Matter(user_id=user.id, **fields)
+    if matter.status == "open" and matter.opened_at is None:
+        matter.opened_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.add(matter)
+    db.commit()
+    return _matter_view(db, matter, contact)
+
+
+def _owned_matter(db: Session, matter_id: int, user: models.User):
+    """404 in both the not-found and not-owned cases, matching
+    _owned_contact -- never leak that another account's matter exists."""
+    m = db.get(models.Matter, matter_id)
+    if m is None or getattr(m, "user_id", None) != user.id:
+        raise HTTPException(404, "matter not found")
+    return m
+
+
+@relationships_router.get("/matters")
+def list_matters(contact_id: Optional[int] = None, db: Session = Depends(get_db),
+                 user: models.User = Depends(current_user)):
+    q = db.query(models.Matter).filter(models.Matter.user_id == user.id)
+    if contact_id is not None:
+        q = q.filter(models.Matter.contact_id == contact_id)
+    rows = q.order_by(models.Matter.id.desc()).all()
+    by_contact = {c.id: c for c in rel_agent.list_contacts(db, user.id)}
+    return {"matters": [_matter_view(db, m, by_contact.get(m.contact_id))
+                        for m in rows]}
+
+
+@relationships_router.post("/matters/{matter_id}")
+def update_matter(matter_id: int, body: MatterIn, db: Session = Depends(get_db),
+                  user: models.User = Depends(current_user)):
+    """Partial update: omitted fields are left alone, explicit nulls clear."""
+    matter = _owned_matter(db, matter_id, user)
+    fields = _matter_fields(body, partial=True)
+    contact = None
+    if "contact_id" in fields and fields["contact_id"] is not None:
+        contact = _owned_contact(db, int(fields["contact_id"]), user)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for key, val in fields.items():
+        setattr(matter, key, val)
+    # Stamp the lifecycle dates the first time a status is reached, so a matter
+    # reopened and re-closed keeps its original opened_at.
+    if matter.status == "open" and matter.opened_at is None:
+        matter.opened_at = now
+    if matter.status == "closed" and matter.closed_at is None:
+        matter.closed_at = now
+    db.commit()
+    if contact is None and matter.contact_id is not None:
+        contact = db.get(models.Contact, matter.contact_id)
+    return _matter_view(db, matter, contact)
+
+
+class RelationshipTypeIn(BaseModel):
+    relationship_type: Optional[str] = None   # null clears -> back to prospect
+
+
+@relationships_router.post("/contacts/{contact_id}/relationship-type")
+def set_contact_relationship_type(
+    contact_id: int,
+    body: RelationshipTypeIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Record which Rule 7.3 exemption category this contact falls under.
+
+    This is the deliberate act backend/matters.py's derived_relationship_type
+    refuses to perform on the lawyer's behalf: every category here EXEMPTS the
+    person from the solicitation gate, so it is set by a human who knows the
+    relationship, not derived from a matter row that could be wrong. Observe's
+    client_status_events surfaces when the matters disagree with what is set.
+
+    Null clears it, which returns the contact to `prospect` -- the only
+    category Rule 7.3 actually restricts, and the conservative default.
+    """
+    from ..solicitation import RelationshipType
+    contact = _owned_contact(db, contact_id, user)
+    raw = (body.relationship_type or "").strip().lower()
+    if not raw:
+        contact.relationship_type = None
+    else:
+        try:
+            rt = RelationshipType(raw)
+        except ValueError:
+            raise HTTPException(
+                422, f"unknown relationship_type {raw!r}; expected one of "
+                     f"{[x.value for x in RelationshipType]}")
+        if rt is RelationshipType.PROSPECT:
+            # Storing "prospect" and storing nothing mean the same thing to the
+            # gate; keep one representation so a reader never wonders whether
+            # an explicit prospect differs from an unset one.
+            contact.relationship_type = None
+        else:
+            contact.relationship_type = rt.value
+    db.commit()
+    return {"contact_id": contact.id,
+            "relationship_type": contact.relationship_type,
+            "gate_treats_as": contact.relationship_type or "prospect"}
+
+
 class ContactLocationIn(BaseModel):
     """Any field omitted is left alone; an explicit null clears it. Sending
     `{}` is therefore a no-op rather than a wipe."""
@@ -1767,7 +1968,8 @@ def set_contact_location(
                     422, f"unknown borough {raw!r}; expected one of "
                          f"{[x.value for x in venue_mod.Borough]}")
             fields["county"] = venue_mod.BOROUGH_COUNTY[b]
-            fields.setdefault("state", "NY")
+            if not fields.get("state"):
+                fields["state"] = "NY"
 
     if "state" in fields and fields["state"]:
         st = str(fields["state"]).strip().upper()

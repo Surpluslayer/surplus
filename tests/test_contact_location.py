@@ -222,8 +222,10 @@ def test_the_venue_section_reports_the_hierarchy_when_a_location_exists(db):
     joined = " | ".join(e["msg"] for e in logstream.venue_events(db, user, c))
     assert "county: Kings (Brooklyn)" in joined
     assert "federal: EDNY → Second Circuit" in joined
-    # The forum needs a case shape nothing in Surplus carries; say so.
-    assert "no Matter entity" in joined
+    # The forum needs a case shape, which now lives on a Matter -- this contact
+    # has none, so the section says what is missing and where it comes from.
+    assert "state court: not resolved" in joined
+    assert "this contact has none" in joined
     # And it must never read as a determination.
     assert "UNVERIFIED scaffolding" in joined
     assert "never a venue determination" in joined

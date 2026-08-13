@@ -787,6 +787,11 @@ def contact_events(db, user, contact, channel: str = "linkedin_dm"):
     for ev in venue_events(db, user, contact):
         yield ev
 
+    # ── client status: what the matters imply vs what the 7.3 gate reads.
+    # Silent when the contact has no matters. ──
+    for ev in client_status_events(db, user, contact):
+        yield ev
+
     for ev in feedback_loop_status(db, user):
         yield ev
 
@@ -1293,12 +1298,16 @@ def venue_events(db, user, contact):
     These two answer different questions and share no data -- see venue.py's
     module docstring on why they are separate files.
     """
+    from .. import matters as matters_mod
     from .. import venue as venue_mod
 
     state = (getattr(contact, "location_state", None) or "").strip()
     city = (getattr(contact, "location_city", None) or "").strip()
     county = (getattr(contact, "location_county", None) or "").strip()
-    if not (state or county):
+    open_matters = matters_mod.matters_for_contact(
+        db, getattr(user, "id", None), getattr(contact, "id", None))
+    matter = matters_mod.strongest(open_matters)
+    if not (state or county or matter is not None):
         return
 
     src = "backend.venue:resolve_venue"
@@ -1307,10 +1316,28 @@ def venue_events(db, user, contact):
     where = " · ".join(p for p in (f"city={city!r}" if city else "",
                                    f"state={state!r}" if state else "",
                                    f"county={county!r}" if county else "") if p)
-    yield line(INFO, "backend.models:Contact", f"  location on file: {where}")
+    yield line(INFO, "backend.models:Contact",
+               f"  location on file: {where or '(none)'}")
 
-    res = venue_mod.resolve_venue(venue_mod.VenueQuery(
-        state=state or "NY", county=county or None))
+    if matter is None:
+        res = venue_mod.resolve_venue(venue_mod.VenueQuery(
+            state=state or "NY", county=county or None))
+    else:
+        # The matter's own location wins per field, so a matter that records
+        # only a county still inherits the client's state -- see
+        # matters.venue_query_for on why the merge is per field, not per object.
+        q = matters_mod.venue_query_for(matter, contact)
+        res = venue_mod.resolve_venue(q)
+        amount = (f"${matter.amount_in_controversy:,}"
+                  if matter.amount_in_controversy is not None else "amount unknown")
+        yield line(INFO, "backend.models:Matter",
+                   f"  matter #{matter.id} {matter.title!r} · status={matter.status}"
+                   f" · case_type={matter.case_type or '(unset)'} · {amount}")
+        if len(open_matters) > 1:
+            yield line(INFO, "backend.matters:strongest",
+                       f"    {len(open_matters)} matters on this contact; venue and "
+                       f"client status read the strongest (open > closed > "
+                       f"prospective, newest within a rank)")
 
     if res.county:
         borough = venue_mod.borough_for_county(res.county)
@@ -1323,13 +1350,13 @@ def venue_events(db, user, contact):
     for reason in res.unresolved:
         yield line(INFO, src, f"  unresolved: {reason}")
 
-    # The forum depends on the case shape, which no Surplus object carries --
-    # there is no Matter entity. Say so rather than routing a case type nobody
-    # supplied, and name what a caller would have to pass.
-    yield line(INFO, src,
-               "  state court: not resolved -- needs a case type and amount, "
-               "which no Surplus record carries today (no Matter entity); "
-               "venue.resolve_venue() takes both when a caller has them")
+    if res.state_court:
+        yield line(OK, src, f"  state court: {res.state_court}")
+    elif matter is None:
+        yield line(INFO, src,
+                   "  state court: not resolved -- needs a case type and amount, "
+                   "which live on a Matter (POST /api/relationships/matters); "
+                   "this contact has none")
     # Caveat only what was actually claimed. With no sources nothing above
     # asserted a forum, so warning that the tables are unverified would be
     # disclaiming a statement the log never made.
@@ -1338,3 +1365,61 @@ def venue_events(db, user, contact):
                    f"  venue tables are UNVERIFIED scaffolding -- "
                    f"{', '.join(s.citation for s in res.sources)} -- candidate "
                    f"forums for research, never a venue determination")
+
+
+def client_status_events(db, user, contact):
+    """Whether a Matter says this contact is a client, and whether the Rule 7.3
+    gate agrees.
+
+    Reports a DIVERGENCE; it never resolves one. matters.derived_relationship_type
+    returns only exemption categories, and solicitation.evaluate() short-circuits
+    to allowed for every one of them -- so applying it here would loosen the send
+    gate off a derived value, in the one direction where being wrong is a bar
+    complaint rather than a stack trace. Contact.relationship_type stays the
+    authority the gate reads; this section exists so the lawyer can SEE that it
+    disagrees with their own matter list and set it deliberately.
+
+    Silent when there are no matters: nothing to diverge from.
+    """
+    from .. import matters as matters_mod
+
+    rows = matters_mod.matters_for_contact(
+        db, getattr(user, "id", None), getattr(contact, "id", None))
+    if not rows:
+        return
+
+    derived = matters_mod.derived_relationship_type(rows)
+    stored = (getattr(contact, "relationship_type", None) or "").strip()
+    src = "backend.matters:derived_relationship_type"
+
+    yield line(STEP, "backend.observe.logstream:client_status_events",
+               "checking client status against this contact's matters")
+    counts = {}
+    for m in rows:
+        counts[m.status] = counts.get(m.status, 0) + 1
+    yield line(INFO, "backend.models:Matter",
+               "  matters: " + " · ".join(f"{n} {s}" for s, n in sorted(counts.items())))
+
+    if derived is None:
+        yield line(INFO, src,
+                   "  no matter implies a client relationship -- a prospective "
+                   "matter is a matter under DISCUSSION, which is what Rule 7.3 "
+                   "governs rather than exempts")
+        return
+
+    if stored == derived.value:
+        yield line(OK, src,
+                   f"  relationship_type={stored!r} matches what the matters imply "
+                   f"-- the 7.3 gate already treats this person as exempt")
+        return
+
+    yield line(WARN, src,
+               f"  DIVERGENCE: the matters imply {derived.value!r}, but "
+               f"contacts.relationship_type is {repr(stored) if stored else 'unset'}"
+               f", so the Rule 7.3 gate is still treating this person as a prospect")
+    yield line(INFO, "backend.solicitation:evaluate",
+               "    not auto-applied on purpose: every category this derives is an "
+               "EXEMPTION, so a stray or mis-imported matter row would silently "
+               "open the gate for someone the rule protects. Set it explicitly "
+               "(POST /api/relationships/contacts/{id}/relationship-type) and the "
+               "gate follows")
