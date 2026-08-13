@@ -1132,8 +1132,21 @@ def jurisdiction_events(db, user, contact, channel: str = "linkedin_dm",
                + (f" ({rule.disclosure_text!r})" if rule.disclosure_text else "")
                + f" · cooldown_days={rule.sensitive_matter_cooldown_days}"
                f" · volume_cap={rule.max_solicitations_per_window}")
-    if rule.citation:
-        yield line(INFO, src, f"modeled on: {rule.citation}")
+    # Three states, not two. The old branch was `if rule.citation:` -> INFO,
+    # which meant an entry carrying a citation explicitly tagged "unverified"
+    # printed as plain provenance while entries admitting they had none got
+    # the warning -- the least-checked-looking row was the one that HAD a
+    # pointer. `citation` says where the shape came from; `citation_verified`
+    # says whether a licensed practitioner checked it against current text.
+    if rule.citation and rule.citation_verified:
+        yield line(OK, src, f"verified against {rule.citation}")
+    elif rule.citation:
+        yield line(WARN, src,
+                   f"modeled on {rule.citation} -- NOT verified against current bar "
+                   f"text by counsel licensed in {rule.state}. The citation records "
+                   f"where the shape came from, not that anyone checked it; this is "
+                   f"not a compliance record until it is "
+                   f"(backend/solicitation.py JurisdictionRule.citation_verified)")
     else:
         yield line(WARN, src,
                    f"NO CITATION recorded for the {rule.state} entry -- these values are "

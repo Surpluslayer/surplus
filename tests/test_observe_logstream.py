@@ -180,8 +180,12 @@ def test_jurisdiction_quotes_the_real_draft_and_flags_a_missing_label(db):
     # NY's label requirement is a real, surfaced finding on this draft
     assert "Attorney Advertising" in joined
     assert "MISSING" in joined
-    # and the missing citation is surfaced rather than invented
-    assert "NO CITATION recorded for the NY entry" in joined
+    # NY now records the provisions it was modeled on, so the bald "NO
+    # CITATION" line is gone -- but recording a pointer is not the same as
+    # someone checking it, and the surface has to keep saying so.
+    assert "N.Y. R. Prof. Conduct" in joined, "the citation was dropped, not filled"
+    assert "NOT verified against current bar text" in joined, \
+        "a citation nobody checked is being presented as authority"
 
 
 def test_feedback_loop_status_claims_only_what_the_evidence_supports(db):
@@ -830,3 +834,84 @@ def test_a_near_chance_agreement_rate_says_so(db):
         metrics = {"temporal_leakage_violations": 0, "reconstruction_failures": 0,
                    "prediction_outcome_agreement_rate": 0.83}
     assert "≈chance" not in logstream._harness_summary("historical_replay", _S())
+
+
+# ── the jurisdiction citation surface ───────────────────────────────────────
+
+def _lawyer_and_contact(db, state):
+    user = models.User(email=f"{state.lower()}@example.com", name="Lawyer",
+                       bar_jurisdiction=state, practice_area="litigation")
+    db.add(user)
+    db.flush()
+    contact = models.Contact(user_id=user.id, primary_identity_key=f"{state}:1",
+                             name="A Prospect")
+    db.add(contact)
+    db.commit()
+    return user, contact
+
+
+def _citation_lines(db, user, contact):
+    return [(e["level"], e["msg"])
+            for e in logstream.jurisdiction_events(db, user, contact)
+            if "modeled on" in e["msg"] or "CITATION" in e["msg"]
+            or "verified against" in e["msg"]]
+
+
+def test_an_unverified_citation_still_reads_as_unverified(db):
+    """The bug: the display branched on `if rule.citation:` alone, so FL --
+    whose citation was explicitly tagged "unverified" -- printed as a calm
+    "modeled on: ..." while states with no pointer at all got the warning.
+    The entry that had done the MOST homework looked the most authoritative.
+
+    A citation says where the shape came from; citation_verified says whether
+    anyone checked it, and only the second one earns a non-warning line."""
+    from backend import solicitation as solic
+    rule = solic.JURISDICTION_RULES["FL"]
+    assert rule.citation and not rule.citation_verified, \
+        "fixture assumption: FL carries an unverified citation"
+
+    user, contact = _lawyer_and_contact(db, "FL")
+    cite = _citation_lines(db, user, contact)
+    assert cite, "no citation line at all"
+    lvl, msg = cite[0]
+    assert lvl == "warn", "an unverified citation was presented without a warning"
+    assert "NOT verified against current bar text" in msg
+
+
+def test_a_verified_citation_is_the_only_thing_that_clears_the_warning(db):
+    from dataclasses import replace
+    from backend import solicitation as solic
+    user, contact = _lawyer_and_contact(db, "NY")
+
+    signed_off = replace(solic.JURISDICTION_RULES["NY"], citation_verified=True)
+    orig = dict(solic.JURISDICTION_RULES)
+    solic.JURISDICTION_RULES["NY"] = signed_off
+    try:
+        cite = _citation_lines(db, user, contact)
+    finally:
+        solic.JURISDICTION_RULES.clear()
+        solic.JURISDICTION_RULES.update(orig)
+
+    assert cite and cite[0][0] == "ok", f"a signed-off rule still warned: {cite}"
+    assert "verified against" in cite[0][1]
+
+
+def test_no_shipped_rule_claims_to_be_verified():
+    """The table is scaffolding. If this fails, someone flipped
+    citation_verified in code rather than after a legal review -- the one
+    thing the flag exists to prevent."""
+    from backend import solicitation as solic
+    claimed = [s for s, r in solic.JURISDICTION_RULES.items() if r.citation_verified]
+    assert not claimed, f"unreviewed rules marked verified: {claimed}"
+
+
+def test_ny_cooldown_carries_its_open_question_into_the_citation(db):
+    """sensitive_matter_cooldown_days=0 for NY is the entry's weakest value --
+    NY is understood to restrict solicitation tied to a specific personal-
+    injury or wrongful-death incident, which would make 0 permissive exactly
+    where the rule is strictest. The citation must not paper over that."""
+    from backend import solicitation as solic
+    ny = solic.JURISDICTION_RULES["NY"]
+    assert ny.sensitive_matter_cooldown_days == 0
+    assert "cooldown UNRESOLVED" in (ny.citation or ""), \
+        "the NY citation reads as though the cooldown value were sourced"

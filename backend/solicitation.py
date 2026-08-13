@@ -87,14 +87,21 @@ class JurisdictionRule:
     sensitive_matter_cooldown_days: int  # 0 = no cooldown rule
     max_solicitations_per_window: Optional[tuple[int, int]]  # (count, days)
     # Pointer to the bar provision this entry was MODELED ON, when one was
-    # recorded alongside the values. Deliberately None where no citation was
+    # recorded alongside the values. Deliberately None where nothing was
     # recorded rather than filled in with a plausible-looking rule number: an
     # unverified citation on a compliance record is worse than a visibly
     # missing one, because it reads as authority nobody actually checked.
-    # backend/observe/logstream.py surfaces the None case as a gap for
-    # counsel to close. Populating these is a legal-review task, not a
-    # coding one.
     citation: Optional[str] = None
+    # Whether a licensed practitioner in `state` has confirmed the five
+    # substantive fields above against CURRENT bar text. Separate from
+    # `citation` because they answer different questions and the surface was
+    # conflating them: FL carried a citation explicitly tagged "unverified",
+    # and logstream's `if rule.citation:` branch printed it as "modeled on:
+    # ..." with no warning -- so the one entry that HAD a pointer looked more
+    # authoritative than the ones that admitted having none. A citation says
+    # where the shape came from; this says whether anyone checked it.
+    # Flipping this to True is a legal-review task, not a coding one.
+    citation_verified: bool = False
 
 
 # ILLUSTRATIVE VALUES ONLY -- see module docstring. Not legal advice, not
@@ -107,18 +114,30 @@ JURISDICTION_RULES: dict[str, JurisdictionRule] = {
         disclosure_text="ADVERTISEMENT",
         sensitive_matter_cooldown_days=30,  # Fla. Bar Reg. 4-7.18(b)(1)(A) shape
         max_solicitations_per_window=(1, 30),
-        # The only citation this table carries, and it was already recorded
-        # in-code beside the cooldown value above. Still unverified against
-        # current bar text -- see the block comment above this dict.
-        citation="Fla. Bar Reg. 4-7.18(b)(1)(A) (shape only, unverified)",
+        citation="Fla. Bar Reg. 4-7.18(b)(1)(A)",
     ),
     "NY": JurisdictionRule(
         state="NY",
+        # N.Y. R. Prof. Conduct 7.3(a)(1) -- in-person / telephone solicitation
+        # of a prospective client for pecuniary gain.
         prohibited_realtime_channels=REALTIME_CHANNELS,
+        # N.Y. R. Prof. Conduct 7.1(f) -- the "Attorney Advertising" label on
+        # advertisements outside the enumerated media.
         requires_disclosure_label=True,
         disclosure_text="Attorney Advertising",
+        # OPEN QUESTION FOR COUNSEL, and the reason this entry is still
+        # unverified. 0 means "NY has no cooling-off window", modeled on NY
+        # having no Florida-style general post-incident blackout. But NY is
+        # understood to restrict solicitation tied to a specific personal-
+        # injury or wrongful-death incident for a period after it, which -- if
+        # that is current law -- makes 0 WRONG for those matters and this gate
+        # permissive exactly where it should be strictest. Not changed here:
+        # guessing 30 would be as unverified as guessing 0, and the guess that
+        # looks careful is the more dangerous one. Confirm and set explicitly.
         sensitive_matter_cooldown_days=0,
         max_solicitations_per_window=None,
+        citation="N.Y. R. Prof. Conduct 7.1(f), 7.3(a)(1) "
+                 "(label + real-time channels; cooldown UNRESOLVED)",
     ),
     "CA": JurisdictionRule(
         state="CA",
