@@ -57,6 +57,12 @@ class PipelineStage:
     decision: str
     evidence: dict = field(default_factory=dict)
     fallback: str | None = None
+    # A stage detail worth stating that is NOT a degradation: a state the
+    # pipeline hasn't reached yet, or a default that is the stricter choice
+    # rather than a worse one. Distinct from `fallback` because that one
+    # renders as a WARN, and a log that warns about ordinary states trains
+    # the reader to ignore the warnings that matter.
+    note: str | None = None
     error: str | None = None
 
     def to_dict(self) -> dict:
@@ -64,7 +70,7 @@ class PipelineStage:
             "name": self.name, "status": self.status,
             "latency_ms": round(self.latency_ms, 3), "version": self.version,
             "decision": self.decision, "evidence": self.evidence,
-            "fallback": self.fallback, "error": self.error,
+            "fallback": self.fallback, "note": self.note, "error": self.error,
         }
 
 
@@ -103,10 +109,15 @@ def _timed(fn):
 
 
 def _run_stage(name: str, version: str, fn) -> PipelineStage:
+    """Stages return (status, decision, evidence, fallback) and may append a
+    fifth element, `note` -- see PipelineStage.note for the difference."""
     try:
-        (status, decision, evidence, fallback), latency_ms = _timed(fn)
+        out, latency_ms = _timed(fn)
+        status, decision, evidence, fallback = out[:4]
+        note = out[4] if len(out) > 4 else None
         return PipelineStage(name=name, status=status, latency_ms=latency_ms, version=version,
-                             decision=decision, evidence=evidence, fallback=fallback)
+                             decision=decision, evidence=evidence, fallback=fallback,
+                             note=note)
     except Exception as exc:  # a real stage failure must not blank the rest of the pipeline
         return PipelineStage(name=name, status="failure", latency_ms=0.0, version=version,
                              decision="stage failed", evidence={}, error=str(exc))
@@ -128,14 +139,21 @@ def _ingestion(db, contact) -> tuple:
 def _entity_resolution(db, contact) -> tuple:
     rtype = sig._relationship_type(contact)
     raw = (getattr(contact, "relationship_type", None) or "").strip()
-    fallback = None
-    status = "success"
+    note = None
     if not raw:
-        status, fallback = "warning", "relationship_type unset -- fail-closed default to PROSPECT"
-    return (status, f"resolved as {rtype.value}", {
+        # Not a degradation, so not a `fallback`: PROSPECT is the STRICTER of
+        # the two classifications (prospects get the full Rule 7.3 treatment
+        # that existing clients are exempt from), and it is the norm for an
+        # imported book, where nothing sets relationship_type. Flagging every
+        # such contact as a warning made an entire book read as broken while
+        # the gate was in fact erring safe on all of it.
+        note = ("relationship_type unset -- classified PROSPECT, the stricter "
+                "of the two (clients are exempt from the Rule 7.3 gate; "
+                "prospects are not), so the gate errs safe here")
+    return ("success", f"resolved as {rtype.value}", {
         "contact_id": contact.id, "primary_identity_key": contact.primary_identity_key,
         "relationship_type_raw": raw or None, "resolved_relationship_type": rtype.value,
-    }, fallback)
+    }, None, note)
 
 
 def _signal_library(db, contact) -> tuple:
@@ -215,11 +233,16 @@ def _output(db, contact) -> tuple:
     if signal is None:
         return ("warning", "no output produced yet", {}, "no drafted signal to report an outcome for")
     trace = adapters.outcome_trace(db, signal)
-    fallback = None
-    status = "success"
+    note = None
     if trace.outcome and trace.outcome.get("disposition") is None:
-        status, fallback = "warning", "no disposition recorded yet -- outcome pending"
-    return (status, trace.decision, {"outcome": trace.outcome}, fallback)
+        # Nothing was substituted here, so this was never a fallback: a draft
+        # the lawyer has not yet sent or snoozed HAS no disposition, and the
+        # stage reported that correctly. Warning about it made the expected
+        # state of every fresh draft look like a malfunction.
+        note = ("awaiting a send/snooze decision -- a disposition is recorded "
+                "when the lawyer acts on this draft, and only then does it "
+                "count as an observed outcome")
+    return ("success", trace.decision, {"outcome": trace.outcome}, None, note)
 
 
 # Ranking scores EVERY candidate independently, and each score costs several

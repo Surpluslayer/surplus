@@ -709,6 +709,8 @@ def contact_events(db, user, contact, channel: str = "linkedin_dm"):
                    f"{s.name}: {s.decision} ({s.latency_ms:.2f}ms, {s.version})")
         if s.fallback:
             yield line(WARN, f"backend.observe.pipeline:_{s.name}", f"  fallback: {s.fallback}")
+        if getattr(s, "note", None):
+            yield line(INFO, f"backend.observe.pipeline:_{s.name}", f"  {s.note}")
         if s.error:
             yield line(ERR, f"backend.observe.pipeline:_{s.name}", f"  error: {s.error}")
     overall = ("failure" if "failure" in statuses
