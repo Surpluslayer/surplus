@@ -881,6 +881,61 @@ def prefetch_interactions_by_contact(db, contacts) -> dict:
     return out
 
 
+def last_touch_index(db, contacts) -> dict:
+    """{contact_id: newest real touch} for a whole roster, WITHOUT building the
+    book. Same value contact_summary()["last_touch_at"] returns — proven equal
+    by tests/test_book_prerank_sql.py, which compares the two per contact — but
+    reached by aggregating instead of reconstructing.
+
+    contact_summary gets there the expensive way: hydrate every
+    RelationshipInteraction row for the roster, run build_timeline per linked
+    Prospect, sort each timeline, take the last item. That is the right shape
+    for BUILDING a book row (the timeline is what the row is made of) and the
+    wrong shape for merely ORDERING one, which is all the ask's pre-rank needs.
+
+    build_timeline's last non-activity_update item can only come from four
+    places, so this reads exactly those four:
+
+      1. interactions tied to the Contact          -> MAX(occurred_at), in SQL
+      2. interactions tied to a linked Prospect    -> MAX(occurred_at), in SQL
+      3. the capture item, stamped prospect.captured_at (the note / private_note
+         / next_step items carry that same timestamp, so the max is unchanged
+         whether or not they exist)
+      4. each linkedin_outreach state transition, stamped outreach_log.ts
+
+    The conversion item is deliberately absent: it has no timestamp column, so
+    build_timeline gives it occurred_at=None and the touched filter drops it.
+
+    (1) and (2) are prefetch_interactions_by_contact's two GROUP BY aggregates —
+    no row hydration. (3) and (4) cost NOTHING: list_contacts already
+    selectinloads prospects and their outreach logs, so they are in memory.
+
+    Returns tz-aware datetimes; a contact with no timestamped touch is absent
+    from the dict (distinct from "touched today"). {} on error, like its
+    neighbours, so a broken read degrades the pre-rank to book order rather
+    than sinking the ask."""
+    try:
+        out = {cid: _as_aware(ts)
+               for cid, ts in prefetch_interactions_by_contact(db, contacts).items()}
+        for c in contacts:
+            cid = getattr(c, "id", None)
+            if cid is None:
+                continue
+            best = out.get(cid)
+            for p in (getattr(c, "prospects", None) or []):
+                cands = [_as_aware(getattr(p, "captured_at", None))]
+                cands += [_as_aware(getattr(o, "ts", None))
+                          for o in (getattr(p, "outreach", None) or [])]
+                for t in cands:
+                    if t is not None and (best is None or t > best):
+                        best = t
+            if best is not None:
+                out[cid] = best
+        return out
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def fetch_activity_updates(db, contact) -> list:
     """Newest-first activity_update interactions for one durable Contact — the
     'what's new about them' the relationship-watch poller emits (job changes,

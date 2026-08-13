@@ -109,6 +109,61 @@ def test_who_has_gone_quiet_chip_narrates_the_full_lifecycle(client, monkeypatch
     assert idx_start < idx_done
 
 
+def test_a_big_book_takes_the_sql_prerank_end_to_end(client, monkeypatch):
+    """The SQL pre-rank through a real request, not just its unit tests.
+
+    tests/test_book_prerank_sql.py proves the ranking is the same ranking; this
+    proves the ask actually reaches it -- that a >cap book routes through
+    _book_for_ask's SQL path, still answers, and says so in the log with the
+    numbers a reader can check against each other (roster > cap = rows never
+    built)."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("ASK_BOOK_CAP", "80")
+    c, user_id = client
+
+    from backend.db import SessionLocal
+    from backend.routes import book as routes_book
+    from datetime import datetime, timedelta, timezone
+    s = SessionLocal()
+    # The cohort seeds demo-lawyer-NNN@example.com, and a demo user's book is
+    # the spine PLUS the demo roster -- a shape the pre-rank deliberately
+    # refuses. Move this user off the demo convention so the request exercises
+    # the real-account path the pre-rank is FOR.
+    u = s.get(models.User, user_id)
+    u.email, u.is_demo = "real-account@surpluslayer.com", False
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i in range(200):
+        ct = models.Contact(user_id=user_id, name=f"Bulk {i:03d}",
+                            primary_identity_key=f"{user_id}:bulk:{i}")
+        s.add(ct)
+        s.flush()
+        s.add(models.RelationshipInteraction(
+            actor_user_id=user_id, contact_id=ct.id,
+            occurred_at=now - timedelta(days=(i % 120)),
+            source_type="message", interaction_type="message", title="Message"))
+    s.commit()
+    routes_book._BOOK_CACHE.clear()
+
+    before = bus.latest_seq()
+    r = c.post("/api/book/ask/stream",
+               json={"query": "Who's gone quiet lately", "mode": "book"})
+    assert r.status_code == 200
+    assert "event: people" in r.text, "the ask stopped answering on the SQL path"
+
+    events = bus.since(user_id, before)
+    joined = " | ".join(e["msg"] for e in events)
+    assert "pre-rank (SQL):" in joined, f"the ask did not take the SQL path: {joined}"
+    assert "→ top 80" in joined
+    assert "built 80 book rows, not " in joined
+    # The old in-agent line must not ALSO appear -- two pre-rank lines for one
+    # pre-rank is exactly the split, contradictory log this work is undoing.
+    assert "whole book sent to selection" not in joined
+    assert joined.count("pre-rank") == 1, (
+        "one pre-rank ran, so the log must carry exactly one pre-rank line: "
+        + " | ".join(m for m in [e["msg"] for e in events] if "pre-rank" in m))
+    assert "ranked from a last-touch index" in joined, "no provenance for the ranking"
+
+
 def test_ask_stream_narration_survives_a_broken_askprobe_call(client, monkeypatch):
     """Matches draft_stream's posture: instrumentation must never turn a
     real ask into a dead stream. bus.publish already swallows its own

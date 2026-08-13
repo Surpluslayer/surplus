@@ -268,6 +268,35 @@ def _find_contact_fast(db: Session, user: models.User,
     return book[0] if book else None
 
 
+# Cadence fields a spine row is built with. They are CONSTANT for every real
+# contact -- the spine has no per-person cadence policy -- and that is exactly
+# what makes the SQL pre-rank below exact rather than approximate: with tier,
+# cadence_days and review_due fixed, _score_health_heuristic is a function of
+# days_since alone. Named here, used by both the row build and _spine_prerank,
+# so the pre-rank cannot start scoring a shape the book no longer has.
+# tests/test_book_prerank_sql.py asserts the built rows still match these.
+_SPINE_TIER = "core"
+_SPINE_CADENCE_DAYS = 30
+_SPINE_REVIEW_DUE = False
+
+
+def _days_since(last, now: datetime) -> Optional[int]:
+    """Whole days since a last-touch timestamp, or None when there is no known
+    interaction (never messaged / no synced history) -- deliberately distinct
+    from 0 ("touched today"), so the UI can say so honestly instead of showing
+    a misleading "moments ago". Shared by the book row build and the pre-rank
+    so both derive days_since from a timestamp identically."""
+    if last is None:
+        return None
+    try:
+        dt = last if isinstance(last, datetime) else datetime.fromisoformat(str(last))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0, (now - dt).days)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _book_from_spine_contacts(db, user, contacts, inter_index, update_index,
                               contact_index=None):
     """Inner loop of _book_from_spine, reusable for single-contact fast path."""
@@ -281,19 +310,7 @@ def _book_from_spine_contacts(db, user, contacts, inter_index, update_index,
         row = rel_agent.contact_summary(
             db, c, inter_index, update_index.get(c.id) or [],
             interactions_by_contact=(contact_index if contact_index is not None else {}))
-        # days_since = None means "no known interaction" (never messaged / no
-        # synced history) -- distinct from 0 ("touched today"), so the UI can say
-        # so honestly instead of a misleading "moments ago".
-        days = None
-        last = row.get("last_touch_at")
-        if last is not None:
-            try:
-                dt = last if isinstance(last, datetime) else datetime.fromisoformat(str(last))
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                days = max(0, (now - dt).days)
-            except Exception:
-                days = None
+        days = _days_since(row.get("last_touch_at"), now)
         upd = row.get("latest_update") or {}
         # Prefer a specific title, but a bare "Update" (account-cooling and other
         # kinds not in _TITLES) tells the user nothing -- fall back to the summary
@@ -331,10 +348,10 @@ def _book_from_spine_contacts(db, user, contacts, inter_index, update_index,
             "vip": bool(getattr(c, "vip", False)),
             "title": _real(identity.get("headline")) or _real(identity.get("role")),
             "firm": _real(row.get("company")) or _real(identity.get("company")),
-            "tier": "core",
+            "tier": _SPINE_TIER,
             "days_since": days,
-            "cadence_days": 30,
-            "review_due": False,
+            "cadence_days": _SPINE_CADENCE_DAYS,
+            "review_due": _SPINE_REVIEW_DUE,
             "met_at": row.get("met_at") or "",
             "value": "",
             "is_prospect": not row.get("is_connection"),
@@ -419,6 +436,120 @@ def _load_book(db: Session, user: models.User, contacts=None) -> list[dict]:
     _trace(f"load_book user={user.id} -> {len(book)} contacts ({src}) "
            f"in {time.monotonic()-t0:.2f}s")
     return book
+
+
+def _cached_book(db: Session, user: models.User) -> Optional[list[dict]]:
+    """The user's already-built book if the cache is warm and current, else
+    None. Split out of _load_book so the ask can ASK whether a full build is
+    about to happen -- when one isn't, pre-ranking would be pure added work."""
+    fp = _book_fingerprint(db, user.id)
+    with _BOOK_CACHE_LOCK:
+        hit = _BOOK_CACHE.get(user.id)
+    if hit and hit[0] == fp and (time.monotonic() - hit[2]) < _BOOK_CACHE_TTL:
+        return hit[1]
+    return None
+
+
+def _spine_prerank(contacts: list, last_touch: dict, query: str, cap: int,
+                   now: Optional[datetime] = None) -> list:
+    """Pick the CAP contacts the ask should build book rows for, scoring from a
+    last-touch index instead of from built rows.
+
+    This is book_agent._prioritized_for_ask, line for line, with one
+    substitution: where that function reads days_since off a built row, this
+    one derives it from last_touch[contact_id]. Everything else -- the same
+    _score_health_heuristic, the same cadence split, the same
+    `or scored` fallback when the needs-outreach pool is empty, the same
+    stable descending sort over the SAME contact order -- is shared code, not
+    a reimplementation.
+
+    That is what makes the result IDENTICAL rather than merely similar, ties
+    included. Priority saturates at 100 for anything quiet 51+ days, so a real
+    book has a large tie group at the cap boundary; both sorts are Python's
+    stable sort over the roster in list_contacts order, so both break those
+    ties the same way. An ORDER BY in SQL would not -- it would have to invent
+    a tiebreak, and the top-N would legitimately differ.
+
+    Scoring the row shape (_SPINE_* constants) rather than the row is only
+    sound because every spine row carries those constants; a demo book, whose
+    rows have varying tier/cadence/review_due, must not come through here."""
+    if len(contacts) <= cap:
+        return contacts
+    now = now or datetime.now(timezone.utc)
+    scored = [
+        (c, book_agent._score_health_heuristic({
+            "tier": _SPINE_TIER,
+            "cadence_days": _SPINE_CADENCE_DAYS,
+            "review_due": _SPINE_REVIEW_DUE,
+            "days_since": _days_since(last_touch.get(getattr(c, "id", None)), now),
+        }))
+        for c in contacts
+    ]
+    if book_agent.is_cadence_query(query):
+        pool = [(c, h) for (c, h) in scored if h.get("needs_outreach")] or scored
+    else:
+        pool = scored
+    pool.sort(key=lambda ch: -(ch[1].get("priority") or 0))
+    return [c for (c, _h) in pool[:cap]]
+
+
+def _book_for_ask(db: Session, user: models.User, contacts: list,
+                  query: str) -> tuple[list[dict], dict]:
+    """The book the ask reasons over, plus what it took to get it (for the
+    Observe log). Returns (book, info).
+
+    The ask only ever reasons over ASK_BOOK_CAP contacts -- selection has
+    always thrown the rest away. Building the whole book first and then
+    discarding 88% of it is work nobody reads: for every contact past the cap
+    it hydrates that person's interaction rows, reconstructs a timeline per
+    linked prospect and sorts it, to produce a row that goes straight in the
+    bin. So when a full build is actually about to happen, decide WHO first --
+    from a last-touch aggregate that costs two GROUP BYs -- and build only
+    those rows.
+
+    Three cases take the old path unchanged:
+      * demo users, whose book is the spine PLUS a demo roster with varying
+        tier/cadence/review_due -- the pre-rank's scoring shortcut is not valid
+        over those rows, and it cannot see rows that aren't in the spine at all;
+      * books at or under the cap, where nothing would be discarded anyway;
+      * a warm book cache, where there is no build to avoid and pre-ranking
+        would only add queries.
+
+    The narrowed book is deliberately NOT written to _BOOK_CACHE: that cache is
+    the user's whole book and the Today feed reads it, so caching 80 of 650
+    rows there would quietly shrink the feed. The cost of that is real and
+    small -- an ask no longer incidentally warms the cache for a later Today
+    render, so that render pays for its own build, exactly as it would have if
+    no ask had happened.
+    """
+    from ..auth import is_demo_user
+    cap = book_agent.ask_cap()
+    n_roster = len(contacts)
+    if is_demo_user(user):
+        return _load_book(db, user, contacts=contacts), {
+            "path": "full", "why": "demo user (book includes the demo roster)",
+            "roster": n_roster, "cap": cap}
+    if n_roster <= cap:
+        return _load_book(db, user, contacts=contacts), {
+            "path": "full", "why": f"book of {n_roster} is at or under the cap",
+            "roster": n_roster, "cap": cap}
+    cached = _cached_book(db, user)
+    if cached is not None:
+        return cached, {"path": "cache", "why": "book cache warm",
+                        "roster": n_roster, "cap": cap}
+
+    t0 = time.monotonic()
+    last_touch = rel_agent.last_touch_index(db, contacts)
+    t_idx = time.monotonic() - t0
+    ranked = _spine_prerank(contacts, last_touch, query, cap)
+    t0 = time.monotonic()
+    book = _book_from_spine(db, user, contacts=ranked)
+    _trace(f"_book_for_ask user={user.id} sql pre-rank {n_roster}->{len(ranked)} "
+           f"in {t_idx:.2f}s, built {len(book)} rows in {time.monotonic()-t0:.2f}s")
+    return book, {"path": "sql", "roster": n_roster, "cap": cap,
+                  "ranked": len(ranked), "index_ms": t_idx * 1000,
+                  "with_touch": len(last_touch),
+                  "cadence": book_agent.is_cadence_query(query)}
 
 
 def _host_name(user: models.User) -> str:
@@ -730,12 +861,19 @@ def ask_stream(body: AskIn, db: Session = Depends(get_db),
             # twice -- and on a warm book cache the second fetch was pure
             # waste, since _load_book never touched the database at all.
             contacts_orm = rel_agent.list_contacts(wdb, user_id)
-            book = _load_book(wdb, wuser, contacts=contacts_orm)
+            # The roster stays WHOLE for enrichment below (network/referral
+            # search matches against every contact); only the book BUILD is
+            # narrowed to the contacts selection can actually reach.
+            book, prerank = _book_for_ask(wdb, wuser, contacts_orm, q)
+            # Pre-rank first, THEN the load result: on the SQL path the load
+            # result is 80 of 694, and a reader who meets that number before
+            # the line that explains it just sees a book that lost 614 people.
+            _narrate(askprobe.prerank_done, user_id, prerank)
             _narrate(askprobe.book_loaded, user_id, len(book), len(contacts_orm))
             t_sel = time.monotonic()
             res = book_agent.ask_agent(book, q)          # selection (Haiku, gated)
             _narrate(askprobe.selection_done, user_id, q, book, res,
-                    (time.monotonic() - t_sel) * 1000)
+                    (time.monotonic() - t_sel) * 1000, prerank=prerank)
             res = enrich_book_ask(wuser, q, contacts_orm, res,
                                   force=(body.mode == "referral"))
             people = res.get("people") or []
