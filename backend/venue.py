@@ -87,6 +87,47 @@ BOROUGH_COUNTY_SOURCE = SourceNote(
 )
 
 
+COUNTY_BOROUGH: dict[str, Borough] = {c: b for b, c in BOROUGH_COUNTY.items()}
+
+
+def borough_for_county(county: Optional[str]) -> Optional[Borough]:
+    """The borough a New York City county IS, or None for anywhere else.
+    Storage keeps counties (statutes and captions name those); display often
+    wants the borough back."""
+    return COUNTY_BOROUGH.get((county or "").strip())
+
+
+# City strings this module is willing to turn into a state and, where the
+# string names a borough, a county. DELIBERATELY TINY: it covers the one city
+# this account works in, and every entry is a name that identifies its place
+# unambiguously. It is NOT a general city-to-state gazetteer and must not grow
+# into one -- "Springfield" is in 30-odd states, and a lookup that guesses
+# wrong here produces a confident forum for the wrong half of the country.
+#
+# Note what the bare-city entries do NOT do: "NYC" resolves the state and
+# leaves the county None, because the city spans five counties and nothing in
+# the string says which. That is the correct partial answer, not a gap to fill
+# with the most populous borough.
+CITY_HINTS: dict[str, tuple[str, Optional[str]]] = {
+    "nyc": ("NY", None),
+    "new york": ("NY", None),
+    "new york city": ("NY", None),
+    "manhattan": ("NY", "New York"),
+    "brooklyn": ("NY", "Kings"),
+    "queens": ("NY", "Queens"),
+    "bronx": ("NY", "Bronx"),
+    "the bronx": ("NY", "Bronx"),
+    "staten island": ("NY", "Richmond"),
+}
+
+
+def hint_for_city(city: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """(state, county) for a city string this module recognizes, else
+    (None, None). Never a partial guess: an unrecognized city yields nothing
+    rather than a state inferred from a substring."""
+    return CITY_HINTS.get((city or "").strip().lower(), (None, None))
+
+
 class FederalDistrict(str, Enum):
     SDNY = "SDNY"
     EDNY = "EDNY"

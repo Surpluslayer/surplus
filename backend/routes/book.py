@@ -1730,6 +1730,64 @@ def set_contact_star(
     return {"contact_id": contact_id, "vip": contact.vip}
 
 
+class ContactLocationIn(BaseModel):
+    """Any field omitted is left alone; an explicit null clears it. Sending
+    `{}` is therefore a no-op rather than a wipe."""
+    city: Optional[str] = None
+    state: Optional[str] = None      # USPS 2-letter
+    county: Optional[str] = None
+    borough: Optional[str] = None    # convenience: converted to its county
+
+
+@relationships_router.post("/contacts/{contact_id}/location")
+def set_contact_location(
+    contact_id: int,
+    body: ContactLocationIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(current_user),
+):
+    """Record where this person / their matter sits, for venue resolution.
+
+    Explicit only -- nothing here is inferred from a company address or a
+    LinkedIn profile string (see the Contact model's comment on why). A
+    `borough` is accepted for convenience and stored as its COUNTY, because
+    that is what statutes and court captions name and what venue.py routes on.
+    """
+    from .. import venue as venue_mod
+    contact = _owned_contact(db, contact_id, user)
+    fields = body.model_dump(exclude_unset=True)
+
+    if "borough" in fields:
+        raw = (fields.pop("borough") or "").strip().lower().replace(" ", "_")
+        if raw:
+            try:
+                b = venue_mod.Borough(raw)
+            except ValueError:
+                raise HTTPException(
+                    422, f"unknown borough {raw!r}; expected one of "
+                         f"{[x.value for x in venue_mod.Borough]}")
+            fields["county"] = venue_mod.BOROUGH_COUNTY[b]
+            fields.setdefault("state", "NY")
+
+    if "state" in fields and fields["state"]:
+        st = str(fields["state"]).strip().upper()
+        if len(st) != 2 or not st.isalpha():
+            raise HTTPException(422, "state must be a USPS 2-letter code")
+        fields["state"] = st
+
+    for key in ("city", "state", "county"):
+        if key in fields:
+            val = fields[key]
+            setattr(contact, f"location_{key}",
+                    (str(val).strip() or None) if val is not None else None)
+    db.commit()
+    return {"contact_id": contact.id, "location": {
+        "city": contact.location_city, "state": contact.location_state,
+        "county": contact.location_county,
+        "borough": (b.value if (b := venue_mod.borough_for_county(
+            contact.location_county)) else None)}}
+
+
 class ThreadLinkIn(BaseModel):
     thread_id: Optional[str] = None  # null unlinks
 

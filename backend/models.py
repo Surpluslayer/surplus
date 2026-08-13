@@ -1045,6 +1045,29 @@ class Contact(Base):
     # prospect, the only category the gate restricts. Never auto-populated by
     # capture/enrichment -- set explicitly, same posture as VIP starring.
     relationship_type: Mapped[Optional[str]] = mapped_column(String(32), default=None)
+    # Where this person / their matter sits, for backend/venue.py's forum
+    # resolution. Three separate columns rather than one free-text blob because
+    # venue routing needs them at different granularities and they resolve
+    # independently: the state selects whether there is a venue table at all,
+    # the county selects the federal district and whether the New York City
+    # courts apply, and the city is the human-readable label neither of those
+    # gives you ("Brooklyn", not "Kings").
+    #
+    # `location_county` is the load-bearing one -- statutes and court captions
+    # name counties, not boroughs -- so a caller that knows only the borough
+    # should convert via venue.BOROUGH_COUNTY rather than storing "Brooklyn"
+    # here.
+    #
+    # All NULL by default and never inferred from an address, a company
+    # headquarters or a LinkedIn profile string: same posture as
+    # relationship_type above. A guessed location silently produces a
+    # confidently wrong forum, which is the failure mode venue.py is built to
+    # refuse. The one exception is the capture-event backfill in
+    # db.py:_migrate_backfill_contact_location, which copies a city the user
+    # themselves recorded on the event and never invents a county.
+    location_city: Mapped[Optional[str]] = mapped_column(String(80), default=None)
+    location_state: Mapped[Optional[str]] = mapped_column(String(2), default=None)
+    location_county: Mapped[Optional[str]] = mapped_column(String(60), default=None)
     # The Unipile email thread the HOST CONFIRMED as "my thread with this
     # person" (manual link via /contacts/{id}/email-thread — never guessed).
     # Once set, the email channel reads (pull) and replies (push) within
