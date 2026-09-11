@@ -750,49 +750,85 @@ def _when(date: str, time: str = "") -> str:
     return f"{day} {time}".strip() if day else ""
 
 
-def council_agenda(city: str, limit: int = 4) -> dict:
-    """The next meetings and the newest legislation, straight from the clerk.
+def _meetings(slug: str, limit: int) -> list[dict]:
+    """The next meetings on the clerk's calendar.
 
-    Two calls, both public records with a file number and a link on them.
-    Nothing here is summarised or inferred -- an agenda item is what the
-    council wrote down that it intends to discuss.
+    Asked with a date filter first, because a council's history is thousands
+    of rows. Not every city's Legistar accepts the same OData spelling of a
+    date, though, so a rejection falls back to the unfiltered list and drops
+    the past here -- a calendar that loads is worth more than a tidy query.
     """
-    slug = legistar_client(city)
-    if not slug:
-        return {"meetings": [], "matters": [], "source": ""}
     today = time.strftime("%Y-%m-%d", time.gmtime())
-    limit = max(1, min(int(limit), 10))
-
-    meetings = []
-    for row in _legistar(slug, "events", {
+    try:
+        rows = _legistar(slug, "events", {
             "$top": limit, "$orderby": "EventDate",
-            "$filter": f"EventDate ge datetime'{today}'"}):
-        body = " ".join((row.get("EventBodyName") or "").split())[:120]
+            "$filter": f"EventDate ge datetime'{today}'"})
+    except Exception as exc:  # noqa: BLE001 : the plain list still works
+        print(f"  [civic.legistar] {slug} date filter refused "
+              f"({type(exc).__name__}); asking without it")
+        rows = [row for row in _legistar(slug, "events",
+                                         {"$top": 60, "$orderby": "EventDate desc"})
+                if (row.get("EventDate") or "")[:10] >= today]
+        rows.sort(key=lambda r: r.get("EventDate") or "")
+
+    out = []
+    for row in rows[:limit]:
+        # Legistar marks a special or amended meeting with a leading star.
+        body = " ".join((row.get("EventBodyName") or "").split()).lstrip("* ")[:120]
         if not body:
             continue
-        meetings.append({
+        out.append({
             "body": body,
             "when": _when(row.get("EventDate"), row.get("EventTime") or ""),
             "where": " ".join((row.get("EventLocation") or "").split())[:120],
             "url": (row.get("EventInSiteURL") or row.get("EventAgendaFile") or "")[:400],
         })
+    return out
 
-    matters = []
-    for row in _legistar(slug, "matters", {
-            "$top": limit, "$orderby": "MatterIntroDate desc"}):
+
+def _matters(slug: str, limit: int) -> list[dict]:
+    """The newest legislation the council has taken up."""
+    out = []
+    for row in _legistar(slug, "matters",
+                         {"$top": limit, "$orderby": "MatterIntroDate desc"}):
         title = " ".join((row.get("MatterTitle") or row.get("MatterName") or "").split())
         if not title:
             continue
-        matters.append({
+        out.append({
             "file": " ".join((row.get("MatterFile") or "").split())[:40],
             "what": title[:240],
             "kind": " ".join((row.get("MatterTypeName") or "").split())[:60],
             "status": " ".join((row.get("MatterStatusName") or "").split())[:60],
             "when": (row.get("MatterIntroDate") or "")[:10],
         })
+    return out
 
-    return {"meetings": meetings, "matters": matters,
-            "source": "legistar", "client": slug}
+
+def council_agenda(city: str, limit: int = 4) -> dict:
+    """The next meetings and the newest legislation, straight from the clerk.
+
+    The calendar and the docket are asked for separately and fail separately:
+    a city whose events endpoint is unhappy still has a docket worth showing,
+    and losing both because one of them errored is the sort of blank that
+    reads as "nothing is happening here".
+    """
+    slug = legistar_client(city)
+    if not slug:
+        return {"meetings": [], "matters": [], "source": ""}
+    limit = max(1, min(int(limit), 10))
+
+    found: dict = {"meetings": [], "matters": [], "source": "legistar",
+                   "client": slug}
+    for key, fetch in (("meetings", _meetings), ("matters", _matters)):
+        try:
+            found[key] = fetch(slug, limit)
+        except Exception as exc:  # noqa: BLE001 : the other half still stands
+            found.setdefault("partial", []).append(f"{key}:{type(exc).__name__}")
+            print(f"  [civic.legistar] {slug} {key}: {type(exc).__name__}: "
+                  f"{str(exc)[:120]}")
+    if not found["meetings"] and not found["matters"]:
+        found["source"] = ""
+    return found
 
 
 def activity(layer_key: str, person_id: int = 0, place: str = "") -> dict:

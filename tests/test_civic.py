@@ -2508,3 +2508,69 @@ def test_the_agenda_does_not_wait_for_a_roster_that_will_never_come():
     seats = page.split("function fillSeats(", 1)[1].split("\n}", 1)[0]
     before_branch = seats.split("if (people.length)", 1)[0]
     assert "fillActs(layer, people)" in before_branch
+
+
+def test_a_broken_calendar_does_not_take_the_docket_with_it(monkeypatch):
+    # Losing both because one endpoint errored reads as "nothing is happening
+    # here", which is a claim about the council rather than about us.
+    def handler(url, params):
+        if url.endswith("/bodies"):
+            return _Reply([{"BodyId": 1}])
+        if url.endswith("/events"):
+            return _Reply({}, status=500)
+        return _Reply(_MATTERS)
+
+    _http(monkeypatch, handler)
+    got = civic_geo.council_agenda("Oakland")
+    assert got["matters"] and got["meetings"] == []
+    assert got["source"] == "legistar"
+    assert any(p.startswith("meetings:") for p in got["partial"])
+
+
+def test_a_city_whose_legistar_refuses_the_date_filter_still_gets_a_calendar(monkeypatch):
+    # Not every Legistar accepts the same OData spelling of a date. A calendar
+    # that loads beats a tidy query.
+    future = "2099-01-01T00:00:00"
+    asked = []
+
+    def handler(url, params):
+        if url.endswith("/bodies"):
+            return _Reply([{"BodyId": 1}])
+        if url.endswith("/events"):
+            asked.append(params)
+            if "$filter" in params:
+                return _Reply({}, status=400)
+            return _Reply([
+                {"EventBodyName": "Board of Supervisors", "EventDate": future,
+                 "EventTime": "2:00 PM"},
+                {"EventBodyName": "Old Meeting", "EventDate": "2001-01-01T00:00:00"},
+            ])
+        return _Reply([])
+
+    _http(monkeypatch, handler)
+    got = civic_geo.council_agenda("San Francisco")
+    assert [m["body"] for m in got["meetings"]] == ["Board of Supervisors"]
+    assert len(asked) == 2 and "$filter" not in asked[1]
+
+
+def test_a_starred_meeting_keeps_its_name(monkeypatch):
+    # Legistar marks a special or amended meeting with a leading star.
+    def handler(url, params):
+        if url.endswith("/bodies"):
+            return _Reply([{"BodyId": 1}])
+        if url.endswith("/events"):
+            return _Reply([{"EventBodyName": "*Rules & Legislation Committee",
+                            "EventDate": "2099-01-01T00:00:00"}])
+        return _Reply([])
+
+    _http(monkeypatch, handler)
+    got = civic_geo.council_agenda("Oakland")
+    assert got["meetings"][0]["body"] == "Rules & Legislation Committee"
+
+
+def test_a_city_on_legistar_with_nothing_to_show_is_not_called_a_source(monkeypatch):
+    def handler(url, params):
+        return _Reply([{"BodyId": 1}] if url.endswith("/bodies") else [])
+
+    _http(monkeypatch, handler)
+    assert civic_geo.council_agenda("Oakland")["source"] == ""
