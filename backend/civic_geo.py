@@ -668,22 +668,160 @@ def recent_votes(person_id: int, limit: int = 5) -> list[dict]:
     return out
 
 
-def activity(layer_key: str, person_id: int = 0) -> dict:
-    """What the body behind this lens has actually done lately.
+# ---------------------------------------------------------------------------
+# What the council is actually deciding
+# ---------------------------------------------------------------------------
+# A large share of US city councils run Legistar, which publishes the agenda,
+# the meeting calendar and every piece of legislation as JSON, with no key.
+# That is the literal answer to "what is my council deciding" -- and paying a
+# ranked web search to go and find a PDF of the same agenda is both slower and
+# worse. No model is involved: these are records, not judgements.
 
-    Only where a public roll call exists. A lens with no vote record says
-    nothing rather than filling the space with something that reads like a
-    record and is not one.
+LEGISTAR_URL = "https://webapi.legistar.com/v1"
+
+# Most councils are reachable at their own name. These are the ones that are
+# not, and guessing would quietly return another city's agenda.
+_LEGISTAR_SLUGS = {
+    "san francisco": "sfgov",
+    "new york": "nyc",
+    "boston": "bostonma",
+    "austin": "austintexas",
+    "seattle": "seattle",
+    "philadelphia": "phila",
+    "washington": "dc",
+    "san jose": "sanjose",
+    "long beach": "longbeach",
+    "saint paul": "stpaul",
+    "st. paul": "stpaul",
+}
+
+
+def _slug_candidates(city: str) -> list[str]:
+    """The Legistar client names a city might answer to, best guess first."""
+    plain = "".join(ch for ch in (city or "").lower() if ch.isalnum() or ch == " ")
+    plain = " ".join(plain.split())
+    if not plain:
+        return []
+    known = _LEGISTAR_SLUGS.get(plain)
+    if known:
+        return [known]
+    joined = plain.replace(" ", "")
+    return [joined, f"cityof{joined}"][:2]
+
+
+def _legistar(slug: str, path: str, params: dict) -> list:
+    """One Legistar call. The slug lands in the URL path, so it is checked."""
+    if not slug.isalnum() or len(slug) > 40:
+        raise ValueError("bad legistar client")
+    import httpx
+    with httpx.Client(timeout=ROSTER_TIMEOUT_S, follow_redirects=True) as client:
+        resp = client.get(f"{LEGISTAR_URL}/{slug}/{path}", params=params,
+                          headers={"user-agent": USER_AGENT,
+                                   "accept": "application/json"})
+    if resp.status_code == 404:
+        return []
+    if resp.status_code >= 400:
+        raise RuntimeError(f"HTTP {resp.status_code}")
+    found = resp.json()
+    return found if isinstance(found, list) else []
+
+
+def legistar_client(city: str) -> str:
+    """The Legistar client name for a city, or "" if it does not run one.
+
+    Both answers are cached. A city that is not on Legistar is the common
+    case, and re-probing two URLs for it on every card is the sort of thing
+    that makes a page feel broken.
     """
     def build():
-        if layer_key != "congress":
-            return {"votes": [], "source": ""}
-        try:
-            return {"votes": recent_votes(person_id), "source": "govtrack"}
-        except Exception as exc:  # noqa: BLE001 : no record is not an error
-            return {"votes": [], "source": "", "error": type(exc).__name__}
+        for slug in _slug_candidates(city):
+            try:
+                if _legistar(slug, "bodies", {"$top": 1}):
+                    return slug
+            except Exception as exc:  # noqa: BLE001 : try the next spelling
+                print(f"  [civic.legistar] {slug}: {type(exc).__name__}")
+        return ""
 
-    return _cached(f"acts:{layer_key}:{person_id}", build)
+    return _cached(f"legistar:{(city or '').lower()}", build)
+
+
+def _when(date: str, time: str = "") -> str:
+    day = (date or "")[:10]
+    return f"{day} {time}".strip() if day else ""
+
+
+def council_agenda(city: str, limit: int = 4) -> dict:
+    """The next meetings and the newest legislation, straight from the clerk.
+
+    Two calls, both public records with a file number and a link on them.
+    Nothing here is summarised or inferred -- an agenda item is what the
+    council wrote down that it intends to discuss.
+    """
+    slug = legistar_client(city)
+    if not slug:
+        return {"meetings": [], "matters": [], "source": ""}
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    limit = max(1, min(int(limit), 10))
+
+    meetings = []
+    for row in _legistar(slug, "events", {
+            "$top": limit, "$orderby": "EventDate",
+            "$filter": f"EventDate ge datetime'{today}'"}):
+        body = " ".join((row.get("EventBodyName") or "").split())[:120]
+        if not body:
+            continue
+        meetings.append({
+            "body": body,
+            "when": _when(row.get("EventDate"), row.get("EventTime") or ""),
+            "where": " ".join((row.get("EventLocation") or "").split())[:120],
+            "url": (row.get("EventInSiteURL") or row.get("EventAgendaFile") or "")[:400],
+        })
+
+    matters = []
+    for row in _legistar(slug, "matters", {
+            "$top": limit, "$orderby": "MatterIntroDate desc"}):
+        title = " ".join((row.get("MatterTitle") or row.get("MatterName") or "").split())
+        if not title:
+            continue
+        matters.append({
+            "file": " ".join((row.get("MatterFile") or "").split())[:40],
+            "what": title[:240],
+            "kind": " ".join((row.get("MatterTypeName") or "").split())[:60],
+            "status": " ".join((row.get("MatterStatusName") or "").split())[:60],
+            "when": (row.get("MatterIntroDate") or "")[:10],
+        })
+
+    return {"meetings": meetings, "matters": matters,
+            "source": "legistar", "client": slug}
+
+
+def activity(layer_key: str, person_id: int = 0, place: str = "") -> dict:
+    """What the body behind this lens has actually done lately.
+
+    Records, not judgements, and no model anywhere near them: a roll call for
+    the House seat, the clerk's own calendar and legislation list for a city
+    council. A lens with neither says nothing rather than filling the space
+    with something that reads like a record and is not one.
+    """
+    empty = {"votes": [], "meetings": [], "matters": [], "source": ""}
+
+    def build():
+        try:
+            if layer_key == "congress":
+                return dict(empty, votes=recent_votes(person_id),
+                            source="govtrack")
+            if layer_key in ("council", "place") and place:
+                return dict(empty, **council_agenda(_city_of(place)))
+        except Exception as exc:  # noqa: BLE001 : no record is not an error
+            return dict(empty, error=type(exc).__name__)
+        return empty
+
+    return _cached(f"acts:{layer_key}:{person_id}:{place.lower()}", build)
+
+
+def _city_of(place: str) -> str:
+    """The city out of "Oakland, California, US"."""
+    return (place or "").split(",")[0].strip()
 
 
 def outline_by_name(name: str) -> dict:

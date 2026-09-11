@@ -513,17 +513,18 @@ def officials(lat: float, lon: float, congress: str = "",
 
 
 @router.get("/activity", dependencies=[Depends(_GEO_LIMIT)])
-def activity(layer: str = "", person: int = 0) -> dict:
+def activity(layer: str = "", person: int = 0, place: str = "") -> dict:
     """What the body behind this lens has actually done lately.
 
-    A roll call is a fact with a date and a link on it. It is the only thing
-    on this card that answers "what is this district doing" without anyone
-    having to characterise it.
+    A roll call and a council agenda are facts with dates and links on them.
+    They are the part of this card that answers "what is this district doing"
+    without anyone having to characterise it -- no search, no model, no cost
+    beyond one call to a public record.
     """
     if not enabled():
         raise HTTPException(503, {"code": "disabled",
                                   "message": "Civic search is switched off here."})
-    return civic_geo.activity(layer[:40], person)
+    return civic_geo.activity(layer[:40], person, place[:120])
 
 
 # How a drawn boundary was arrived at, worst case first. The map says which
