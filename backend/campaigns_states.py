@@ -128,7 +128,13 @@ PROFILES: dict[str, StateProfile] = {
         socrata_domain="data.pa.gov",
         source_page="https://data.pa.gov/",
         note="Socrata portal confirmed; 2026 dataset id NOT identified. "
-             "campaigns_pa.discover() searches the catalogue for it.",
+             "campaigns_pa.discover() searches the catalogue for it. "
+             "RULED OUT: 53wp-ib3s 'Campaign Finance Disclosure Filer Data' "
+             "is the obvious catalogue hit and is the WRONG UNIVERSE -- it "
+             "lists whoever filed an expense report, across cycles, including "
+             "committees and lobbyists, and omits any candidate who filed to "
+             "appear on the ballot without reporting. It would parse, produce "
+             "records, and be a different set of people than the 2026 ballot.",
         office_trap="'Representative in the General Assembly' is the STATE "
                     "house and 'Senator in the General Assembly' the state "
                     "senate. Pennsylvania never says 'state', which is the "
