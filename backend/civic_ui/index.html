@@ -212,6 +212,11 @@
   .card-acts .how.nay{background:rgba(214,109,109,.16);color:#E39A9A}
   .card-acts .what{color:var(--on-glass)}
   .card-acts .when{display:block;font-size:11px;color:var(--on-glass-2);margin-top:1px}
+  .card-acts .file{font-size:10.5px;font-weight:700;letter-spacing:.03em;flex:none;
+    border-radius:5px;padding:2px 6px;background:rgba(238,241,238,.10);color:var(--on-glass-2)}
+  .card-acts .meet{display:flex;gap:8px;align-items:baseline;margin-top:8px;font-size:12.5px}
+  .card-acts .meet .date{font-variant-numeric:tabular-nums;font-weight:600;flex:none;
+    color:var(--on-glass)}
   .card-acts a{text-decoration:none}
   .card-acts a:hover{text-decoration:underline}
   /* An outline the map estimated says so, next to the outline. */
@@ -1020,15 +1025,44 @@ function noRoster(layer){
 // How the person in the seat has voted lately. Not "cares about housing" --
 // "Voted Yea on H.R. 1, passed, 14 Feb", with the roll call behind it.
 function fillActs(layer, people){
-  const who = people.find(p => p.id) || {};
-  if (!who.id) return;
+  const who = (people || []).find(p => p.id) || {};
+  // Congress answers by person, a council by place. Either way this is a
+  // public record read straight out, not a search and not a summary.
+  if (!who.id && !(["council", "place"].includes(layer.key) && state.place)) return;
   fetch("/api/civic/activity?layer=" + encodeURIComponent(layer.key) +
-        "&person=" + who.id)
-    .then(r => r.ok ? r.json() : {votes: []})
-    .catch(() => ({votes: []}))
+        "&person=" + (who.id || 0) +
+        "&place=" + encodeURIComponent(state.place || ""))
+    .then(r => r.ok ? r.json() : {})
+    .catch(() => ({}))
     .then(data => {
       const box = $("card-acts");
-      if (cardSubject !== layer || !box || !(data.votes || []).length) return;
+      if (cardSubject !== layer || !box) return;
+      const meetings = data.meetings || [], matters = data.matters || [];
+      if (meetings.length || matters.length) {
+        box.innerHTML =
+          (meetings.length
+            ? '<div class="facts-head">Next meetings</div>' +
+              meetings.slice(0, 3).map(m =>
+                '<div class="meet"><span class="date">' + esc(m.when || "TBC") +
+                '</span><div><span class="what">' +
+                (m.url ? link(m.url, m.body) : esc(m.body)) + "</span>" +
+                (m.where ? '<span class="when">' + esc(m.where) + "</span>" : "") +
+                "</div></div>").join("")
+            : "") +
+          (matters.length
+            ? '<div class="facts-head" style="margin-top:12px">Newest on the docket</div>' +
+              matters.slice(0, 4).map(m =>
+                '<div class="act">' +
+                (m.file ? '<span class="file">' + esc(m.file) + "</span>" : "") +
+                '<div><span class="what">' + esc(m.what) + "</span>" +
+                '<span class="when">' +
+                esc([m.kind, m.status, m.when].filter(Boolean).join(" \u00b7 ")) +
+                "</span></div></div>").join("")
+            : "");
+        markCardOverflow();
+        return;
+      }
+      if (!(data.votes || []).length) return;
       box.innerHTML = '<div class="facts-head">How ' + esc(who.name.split(" ").pop()) +
         " voted lately</div>" +
         data.votes.slice(0, 5).map(v => {
@@ -1050,8 +1084,10 @@ function fillSeats(layer){
     if (cardSubject !== layer || !$("card-seats")) return;
     const people = (data.by_layer || {})[layer.key] || [];
     const box = $("card-seats");
+    // The record does not depend on anyone being named: a council has no
+    // national roster and is exactly the lens whose agenda is published.
+    fillActs(layer, people);
     if (people.length) {
-      fillActs(layer, people);
       box.innerHTML = '<div class="facts-head">Who holds this seat</div>' +
         people.slice(0, 4).map(p =>
           '<div class="who"><div><b>' +

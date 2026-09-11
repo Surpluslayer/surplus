@@ -2026,9 +2026,15 @@ def test_a_member_with_no_id_is_not_asked_for_votes(monkeypatch, bad):
     assert civic_geo.recent_votes(bad) == []
 
 
-def test_a_lens_with_no_roll_call_says_nothing_rather_than_something_else(monkeypatch):
+def test_a_lens_with_no_record_at_all_says_nothing(monkeypatch):
     _http(monkeypatch, lambda url, params: (_ for _ in ()).throw(AssertionError("called")))
-    assert civic_geo.activity("school", 400001) == {"votes": [], "source": ""}
+    assert civic_geo.activity("landuse", 400001, "Oakland, CA") == {
+        "votes": [], "meetings": [], "matters": [], "source": ""}
+
+
+def test_a_council_with_no_place_asks_nobody(monkeypatch):
+    _http(monkeypatch, lambda url, params: (_ for _ in ()).throw(AssertionError("called")))
+    assert civic_geo.activity("council", 0, "")["source"] == ""
 
 
 def test_a_broken_vote_feed_is_an_empty_record_not_a_failed_card(monkeypatch):
@@ -2405,3 +2411,100 @@ def test_the_only_searches_left_are_presses_and_permalinks():
     assert page.count("ask({question:") == 3
     site = page.split("function askAboutSite(", 1)[1].split("\n}", 1)[0]
     assert "if (andSearch) ask(" in site               # tapping the map does not
+
+
+# --- the council agenda, straight from the clerk ----------------------------
+# No search, no model: Legistar publishes the calendar and the legislation as
+# JSON, and a large share of US city councils run it.
+
+_EVENTS = [{"EventBodyName": "City Council", "EventDate": "2026-09-15T00:00:00",
+            "EventTime": "5:30 PM", "EventLocation": "Council Chamber",
+            "EventInSiteURL": "https://oakland.legistar.com/MeetingDetail.aspx?ID=1"}]
+_MATTERS = [{"MatterFile": "26-0412", "MatterTitle": "Ordinance amending the rent board fee",
+             "MatterTypeName": "Ordinance", "MatterStatusName": "In Committee",
+             "MatterIntroDate": "2026-09-02T00:00:00"}]
+
+
+def _legistar(monkeypatch, by_path, seen=None):
+    def handler(url, params):
+        path = url.rsplit("/", 1)[-1]
+        if seen is not None:
+            seen.append((url, dict(params)))
+        return _Reply(by_path.get(path, []))
+
+    return _http(monkeypatch, handler)
+
+
+def test_the_council_card_reads_the_clerks_own_calendar(monkeypatch):
+    _legistar(monkeypatch, {"bodies": [{"BodyId": 1}], "events": _EVENTS,
+                            "matters": _MATTERS})
+    got = civic_geo.council_agenda("Oakland")
+    assert got["source"] == "legistar" and got["client"] == "oakland"
+    assert got["meetings"][0]["body"] == "City Council"
+    assert got["meetings"][0]["when"] == "2026-09-15 5:30 PM"
+    assert got["matters"][0]["file"] == "26-0412"
+    assert "rent board fee" in got["matters"][0]["what"]
+
+
+def test_only_meetings_that_have_not_happened_yet_are_asked_for(monkeypatch):
+    seen = []
+    _legistar(monkeypatch, {"bodies": [{"BodyId": 1}], "events": [], "matters": []}, seen)
+    civic_geo.council_agenda("Oakland")
+    events = [p for url, p in seen if url.endswith("/events")][0]
+    assert events["$filter"].startswith("EventDate ge datetime'")
+    assert events["$orderby"] == "EventDate"
+
+
+def test_a_city_that_is_not_on_legistar_is_not_probed_twice(monkeypatch):
+    seen = []
+    _legistar(monkeypatch, {}, seen)                 # every path 404s to []
+    assert civic_geo.legistar_client("Nowheresville") == ""
+    before = len(seen)
+    assert civic_geo.legistar_client("Nowheresville") == ""
+    assert len(seen) == before                       # the miss was cached
+
+
+@pytest.mark.parametrize("city,first", [
+    ("Oakland", "oakland"), ("San Francisco", "sfgov"), ("New York", "nyc"),
+    ("St. Paul", "stpaul"), ("Ann Arbor", "annarbor"),
+])
+def test_the_client_name_is_guessed_or_known(city, first):
+    assert civic_geo._slug_candidates(city)[0] == first
+
+
+@pytest.mark.parametrize("bad", ["../admin", "oak land", "a" * 41, "oakland/x", ""])
+def test_a_client_name_that_could_escape_the_url_is_refused(monkeypatch, bad):
+    _http(monkeypatch, lambda url, params: (_ for _ in ()).throw(AssertionError("called")))
+    with pytest.raises(ValueError):
+        civic_geo._legistar(bad, "events", {})
+
+
+def test_the_city_is_taken_off_the_front_of_the_place():
+    assert civic_geo._city_of("Oakland, California, US") == "Oakland"
+    assert civic_geo._city_of("  Oakland  ") == "Oakland"
+    assert civic_geo._city_of("") == ""
+
+
+def test_the_agenda_reaches_the_card_without_a_person(monkeypatch):
+    _legistar(monkeypatch, {"bodies": [{"BodyId": 1}], "events": _EVENTS,
+                            "matters": _MATTERS})
+    got = civic_geo.activity("council", 0, "Oakland, California, US")
+    assert got["meetings"] and got["source"] == "legistar"
+    assert got["votes"] == []
+
+
+def test_the_card_asks_for_an_agenda_even_with_nobody_named():
+    page = _page()
+    acts = page.split("function fillActs(", 1)[1].split("\n}", 1)[0]
+    assert '["council", "place"].includes(layer.key)' in acts
+    assert "&place=" in acts
+    assert "Next meetings" in acts and "Newest on the docket" in acts
+
+
+def test_the_agenda_does_not_wait_for_a_roster_that_will_never_come():
+    # A council has no national roster and is exactly the lens whose agenda
+    # is published, so hanging the record off "someone was named" hid it.
+    page = _page()
+    seats = page.split("function fillSeats(", 1)[1].split("\n}", 1)[0]
+    before_branch = seats.split("if (people.length)", 1)[0]
+    assert "fillActs(layer, people)" in before_branch
