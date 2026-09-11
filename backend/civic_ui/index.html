@@ -568,12 +568,12 @@ const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g,
 const isHttp = u => typeof u === "string" && /^https?:\/\//i.test(u);
 
 const state = {pin: null, place: "", busy: false, spinning: !reduced, map: null,
-               marker: null, briefed: "", briefTimer: null};
+               marker: null, offered: ""};
 
-// Dropping a pin asks the place what is going on, without waiting for anyone
-// to type. Debounced, because dragging the pin across a county should ask once
-// at the end, not once per frame.
-const BRIEF_DELAY_MS = 900;
+// Dropping a pin used to fire a full search on its own. Every settle was a
+// paid question -- dragging the pin across a city billed one per stop, and
+// nobody had asked for any of them. The pin now writes the question and
+// leaves it in the box; pressing the button is what spends money.
 const briefQuestion = place =>
   "What is happening in " + place + " right now \u2014 what decisions are open, " +
   "what is changing, and what is driving it?";
@@ -696,9 +696,11 @@ function setPlace(name, lat, lon){
     (coords ? ' <span class="coords">' + esc(coords) + "</span>" : "");
   if (name) {
     $("loc").value = name;
-    $("hint").textContent = "Asking about this place. Drag the pin to ask about somewhere else.";
+    $("hint").textContent = "Below the map: who holds each seat here, how they voted, " +
+      "and what has been written lately \u2014 all without searching. " +
+      "Press Find the evidence when you want the ranked answer.";
     placeChips(name);
-    scheduleBrief(name);
+    offerBrief(name);
   }
 }
 
@@ -715,18 +717,15 @@ function placeChips(place){
     '<button type="button">' + esc(c) + "</button>").join("");
 }
 
-// Ask about the place as soon as the pin settles. Skipped when the reader has
-// typed a question of their own -- theirs wins -- and never asked twice for
-// the same place.
-function scheduleBrief(place){
-  clearTimeout(state.briefTimer);
-  if ($("q").value.trim()) return;
-  if (state.briefed === place) return;
-  state.briefTimer = setTimeout(() => {
-    if ($("q").value.trim() || state.busy) return;
-    state.briefed = place;
-    ask({question: briefQuestion(place), brief: true});
-  }, BRIEF_DELAY_MS);
+// Write the question the pin raises into the box, ready to send. A question
+// the reader typed always wins ; one we wrote for an earlier pin does not, so
+// dragging the pin keeps the offer in step with where it landed.
+function offerBrief(place){
+  const box = $("q"), typed = box.value.trim();
+  if (typed && typed !== state.offered) return;
+  const question = briefQuestion(place);
+  state.offered = question;
+  setQuestion(question);
 }
 
 // ---------------------------------------------------------------------------
@@ -1228,7 +1227,7 @@ function openSiteCard(site){
   $("card-close").addEventListener("click", closeSiteCard);
   $("card-ask").addEventListener("click", () => {
     closeSiteCard();
-    askAboutSite(site, {lat: site.lat, lng: site.lon});
+    askAboutSite(site, {lat: site.lat, lng: site.lon}, true);
   });
   loadSiteNews(site);
 }
@@ -1243,16 +1242,18 @@ function loadSiteNews(site){
   return fillNews(site, subject, state.place || "");
 }
 
-function askAboutSite(props, lngLat){
+function askAboutSite(props, lngLat, andSearch){
   const where = props.street || props.name || (state.place || "this area");
   const place = state.place || "this area";
   const name = props.name || props.what.toLowerCase();
   const ask_ = SITE_QUESTIONS[props.kind] || SITE_QUESTIONS.development;
   const question = ask_(name, where, place);
+  state.offered = question;
   setQuestion(question);
-  clearTimeout(state.briefTimer);
   if (lngLat) dropPin(lngLat.lat, lngLat.lng, {fly: false});
-  ask({question: question, brief: true});
+  // Tapping the thing on the map offers the question ; the card's button is
+  // the press that spends.
+  if (andSearch) ask({question: question, brief: true});
 }
 
 // ---------------------------------------------------------------------------
@@ -1590,11 +1591,9 @@ $("r-rewrites").addEventListener("click", e => {
   ask();
 });
 
-// A typed question outranks the automatic briefing : as soon as there is one,
-// the pending brief is cancelled.
-$("q").addEventListener("input", () => {
-  if ($("q").value.trim()) clearTimeout(state.briefTimer);
-});
+// Once the reader edits the box it is theirs, and the next pin will not
+// overwrite it.
+$("q").addEventListener("input", () => { state.offered = ""; });
 $("close").addEventListener("click", closePanel);
 
 // On a phone the ask sheet covers the map it is asking about; collapsing it

@@ -2368,3 +2368,40 @@ def test_the_civic_api_survives_the_landing_hosts(client, host):
     r = client.get("/api/civic/selftest", headers={"host": host})
     assert r.status_code == 200
     assert "boot" in r.json()
+
+
+# --- nothing paid happens without a press -----------------------------------
+
+def test_dropping_a_pin_no_longer_fires_a_search():
+    # Every settle used to be a paid question: dragging the pin across a city
+    # billed one per stop, and nobody had asked for any of them.
+    page = _page()
+    assert "scheduleBrief" not in page
+    assert "briefTimer" not in page
+    offer = page.split("function offerBrief(", 1)[1].split("\n}", 1)[0]
+    assert "ask(" not in offer
+    assert "setQuestion(question)" in offer
+
+
+def test_the_pin_still_writes_the_question_it_raises():
+    # Turning the search off must not leave the reader with an empty box and
+    # nothing to press.
+    page = _page()
+    assert "const briefQuestion" in page
+    assert "offerBrief(name)" in page
+
+
+def test_a_typed_question_is_never_overwritten_by_a_later_pin():
+    page = _page()
+    offer = page.split("function offerBrief(", 1)[1].split("\n}", 1)[0]
+    assert "typed !== state.offered" in offer          # ours may be replaced
+    assert 'state.offered = ""' in page                # editing claims the box
+
+
+def test_the_only_searches_left_are_presses_and_permalinks():
+    page = _page()
+    # Three: the lens card button, the site card button, and re-answering a
+    # permalink this replica has no cached answer for.
+    assert page.count("ask({question:") == 3
+    site = page.split("function askAboutSite(", 1)[1].split("\n}", 1)[0]
+    assert "if (andSearch) ask(" in site               # tapping the map does not
